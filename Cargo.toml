@@ -1,0 +1,52 @@
+[package]
+name = "aioduct"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Async-native HTTP client built directly on hyper 1.x — no hyper-util, no legacy"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/adamcavendish/aioduct"
+keywords = ["http", "client", "async", "hyper", "rustls"]
+categories = ["network-programming", "web-programming::http-client"]
+
+[features]
+default = []
+rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile"]
+tokio = ["dep:tokio"]
+smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
+compio = ["dep:compio-runtime", "dep:compio-net"]
+http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "rustls"]
+
+[dependencies]
+# Core — always required
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+pin-project-lite = "0.2"
+thiserror = "2"
+
+# TLS
+rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "tls12"] }
+webpki-roots = { version = "1", optional = true }
+rustls-pemfile = { version = "2", optional = true }
+
+# Runtime: tokio
+tokio = { version = "1", optional = true, features = ["net", "rt", "time"] }
+
+# Runtime: smol
+smol = { version = "2", optional = true }
+async-io = { version = "2", optional = true }
+futures-io = { version = "0.3", optional = true }
+
+# Runtime: compio
+compio-runtime = { version = "0.5", optional = true }
+compio-net = { version = "0.4", optional = true }
+
+# HTTP/3
+h3 = { version = "0.0.8", optional = true }
+h3-quinn = { version = "0.0.10", optional = true }
+quinn = { version = "0.11", optional = true, default-features = false, features = ["rustls-ring"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

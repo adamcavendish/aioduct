@@ -1,0 +1,56 @@
+use std::future::Future;
+use std::io;
+use std::marker::PhantomData;
+use std::net::SocketAddr;
+use std::time::Duration;
+
+#[allow(async_fn_in_trait)]
+pub trait Runtime: Send + Sync + 'static {
+    type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
+    type Sleep: Future<Output = ()> + Send;
+
+    async fn connect(addr: SocketAddr) -> io::Result<Self::TcpStream>;
+    fn sleep(duration: Duration) -> Self::Sleep;
+    fn spawn<F>(future: F)
+    where
+        F: Future<Output = ()> + Send + 'static;
+}
+
+pub struct HyperExecutor<R>(PhantomData<fn() -> R>);
+
+impl<R> Clone for HyperExecutor<R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R> Copy for HyperExecutor<R> {}
+
+impl<R, F> hyper::rt::Executor<F> for HyperExecutor<R>
+where
+    R: Runtime,
+    F: Future<Output = ()> + Send + 'static,
+{
+    fn execute(&self, fut: F) {
+        R::spawn(fut);
+    }
+}
+
+pub fn hyper_executor<R: Runtime>() -> HyperExecutor<R> {
+    HyperExecutor(PhantomData)
+}
+
+#[cfg(feature = "tokio")]
+mod tokio_rt;
+#[cfg(feature = "tokio")]
+pub use tokio_rt::TokioRuntime;
+
+#[cfg(feature = "smol")]
+mod smol_rt;
+#[cfg(feature = "smol")]
+pub use smol_rt::SmolRuntime;
+
+#[cfg(feature = "compio")]
+mod compio_rt;
+#[cfg(feature = "compio")]
+pub use compio_rt::CompioRuntime;
