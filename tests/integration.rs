@@ -911,3 +911,81 @@ async fn test_client_default_retry() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(attempt.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn test_redirect_policy_none() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(302)
+                .header("location", "/target")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .redirect_policy(aioduct::RedirectPolicy::none())
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::FOUND);
+}
+
+#[tokio::test]
+async fn test_redirect_policy_custom() {
+    let final_addr = start_server().await;
+    let addr = start_server_with(move |req| {
+        let target = format!("http://{final_addr}/");
+        async move {
+            if req.uri().path() == "/allowed" {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(302)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            } else {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(302)
+                        .header("location", "/blocked-target")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .redirect_policy(aioduct::RedirectPolicy::custom(
+            |_current, next, _status, _method| {
+                if next.host() == Some("127.0.0.1") {
+                    aioduct::RedirectAction::Follow
+                } else {
+                    aioduct::RedirectAction::Stop
+                }
+            },
+        ))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/allowed"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+}

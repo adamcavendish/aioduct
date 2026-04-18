@@ -10,17 +10,17 @@ use http_body_util::BodyExt;
 
 use crate::error::{Error, HyperBody, Result};
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
+use crate::redirect::{RedirectAction, RedirectPolicy};
 use crate::request::RequestBuilder;
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::Runtime;
 
-const DEFAULT_MAX_REDIRECTS: usize = 10;
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
 pub struct Client<R: Runtime> {
     pool: ConnectionPool<R>,
-    max_redirects: usize,
+    redirect_policy: RedirectPolicy,
     timeout: Option<Duration>,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
@@ -32,7 +32,7 @@ pub struct Client<R: Runtime> {
 pub struct ClientBuilder<R: Runtime> {
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
-    max_redirects: usize,
+    redirect_policy: RedirectPolicy,
     timeout: Option<Duration>,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
@@ -49,7 +49,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
         Self {
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_idle_per_host: 10,
-            max_redirects: DEFAULT_MAX_REDIRECTS,
+            redirect_policy: RedirectPolicy::default(),
             timeout: None,
             default_headers,
             retry: None,
@@ -72,7 +72,12 @@ impl<R: Runtime> ClientBuilder<R> {
     }
 
     pub fn max_redirects(mut self, max: usize) -> Self {
-        self.max_redirects = max;
+        self.redirect_policy = RedirectPolicy::limited(max);
+        self
+    }
+
+    pub fn redirect_policy(mut self, policy: RedirectPolicy) -> Self {
+        self.redirect_policy = policy;
         self
     }
 
@@ -105,7 +110,7 @@ impl<R: Runtime> ClientBuilder<R> {
     pub fn build(self) -> Client<R> {
         Client {
             pool: ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout),
-            max_redirects: self.max_redirects,
+            redirect_policy: self.redirect_policy,
             timeout: self.timeout,
             default_headers: self.default_headers,
             retry: self.retry,
@@ -200,7 +205,7 @@ impl<R: Runtime> Client<R> {
             }
         }
 
-        for _ in 0..=self.max_redirects {
+        for _ in 0..=self.redirect_policy.max_redirects() {
             let req_body: HyperBody = match &current_body {
                 Some(b) => http_body_util::Full::new(b.clone())
                     .map_err(|never| match never {})
@@ -242,7 +247,9 @@ impl<R: Runtime> Client<R> {
 
             let resp = self.execute_single(request, &current_uri).await?;
 
-            if !resp.status().is_redirection() || self.max_redirects == 0 {
+            if !resp.status().is_redirection()
+                || matches!(self.redirect_policy, RedirectPolicy::None)
+            {
                 return Ok(resp);
             }
 
@@ -256,6 +263,24 @@ impl<R: Runtime> Client<R> {
                 .to_owned();
 
             let next_uri = resolve_redirect(&current_uri, &location)?;
+
+            if self
+                .redirect_policy
+                .check(&current_uri, &next_uri, status, &current_method)
+                == RedirectAction::Stop
+            {
+                let _ = resp.bytes().await;
+                return Ok(Response::new(
+                    http::Response::builder()
+                        .status(status)
+                        .header(LOCATION, location)
+                        .body(
+                            http_body_util::Full::new(Bytes::new())
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        )?,
+                ));
+            }
 
             let _ = resp.bytes().await;
 
@@ -279,7 +304,11 @@ impl<R: Runtime> Client<R> {
         }
 
         Err(Error::Other(
-            format!("too many redirects (max {})", self.max_redirects).into(),
+            format!(
+                "too many redirects (max {})",
+                self.redirect_policy.max_redirects()
+            )
+            .into(),
         ))
     }
 

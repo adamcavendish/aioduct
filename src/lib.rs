@@ -4,6 +4,7 @@ compile_error!("aioduct: enable at least one runtime feature: tokio, smol, or co
 pub mod client;
 pub mod error;
 pub mod pool;
+pub mod redirect;
 pub mod request;
 pub mod response;
 pub mod retry;
@@ -18,6 +19,7 @@ pub mod h3_transport;
 
 pub use client::Client;
 pub use error::Error;
+pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;
 pub use response::Response;
 pub use retry::RetryConfig;
