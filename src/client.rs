@@ -9,6 +9,7 @@ use http::header::{HOST, HeaderMap, HeaderValue, LOCATION, USER_AGENT};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
+use crate::body::RequestBody;
 use crate::cookie::CookieJar;
 use crate::error::{Error, HyperBody, Result};
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
@@ -212,7 +213,7 @@ impl<R: Runtime> Client<R> {
         method: Method,
         original_uri: Uri,
         headers: http::HeaderMap,
-        body: Option<Bytes>,
+        body: Option<RequestBody>,
         version: Option<http::Version>,
     ) -> Result<Response> {
         let mut current_uri = original_uri;
@@ -234,13 +235,18 @@ impl<R: Runtime> Client<R> {
                 }
             }
 
-            let req_body: HyperBody = match &current_body {
-                Some(b) => http_body_util::Full::new(b.clone())
-                    .map_err(|never| match never {})
-                    .boxed(),
-                None => http_body_util::Full::new(Bytes::new())
-                    .map_err(|never| match never {})
-                    .boxed(),
+            let (req_body, body_for_redirect) = match current_body.take() {
+                Some(RequestBody::Buffered(b)) => {
+                    let body_clone = RequestBody::Buffered(b.clone());
+                    (RequestBody::Buffered(b).into_hyper_body(), Some(body_clone))
+                }
+                Some(rb @ RequestBody::Streaming(_)) => (rb.into_hyper_body(), None),
+                None => {
+                    let empty: HyperBody = http_body_util::Full::new(Bytes::new())
+                        .map_err(|never| match never {})
+                        .boxed();
+                    (empty, None)
+                }
             };
 
             if !current_headers.contains_key(HOST) {
@@ -323,7 +329,9 @@ impl<R: Runtime> Client<R> {
                     current_method = Method::GET;
                     current_body = None;
                 }
-                StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {}
+                StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
+                    current_body = body_for_redirect;
+                }
                 _ => return Err(Error::Other("unexpected redirect status".into())),
             }
 

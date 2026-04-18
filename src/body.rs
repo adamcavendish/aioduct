@@ -3,6 +3,58 @@ use http_body_util::BodyExt;
 
 use crate::error::{HyperBody, Result};
 
+pub enum RequestBody {
+    Buffered(Bytes),
+    Streaming(HyperBody),
+}
+
+impl RequestBody {
+    pub(crate) fn into_hyper_body(self) -> HyperBody {
+        match self {
+            RequestBody::Buffered(b) => http_body_util::Full::new(b)
+                .map_err(|never| match never {})
+                .boxed(),
+            RequestBody::Streaming(body) => body,
+        }
+    }
+}
+
+impl From<Bytes> for RequestBody {
+    fn from(b: Bytes) -> Self {
+        RequestBody::Buffered(b)
+    }
+}
+
+impl From<Vec<u8>> for RequestBody {
+    fn from(v: Vec<u8>) -> Self {
+        RequestBody::Buffered(Bytes::from(v))
+    }
+}
+
+impl From<String> for RequestBody {
+    fn from(s: String) -> Self {
+        RequestBody::Buffered(Bytes::from(s))
+    }
+}
+
+impl From<&'static str> for RequestBody {
+    fn from(s: &'static str) -> Self {
+        RequestBody::Buffered(Bytes::from_static(s.as_bytes()))
+    }
+}
+
+impl From<&'static [u8]> for RequestBody {
+    fn from(s: &'static [u8]) -> Self {
+        RequestBody::Buffered(Bytes::from_static(s))
+    }
+}
+
+impl From<HyperBody> for RequestBody {
+    fn from(body: HyperBody) -> Self {
+        RequestBody::Streaming(body)
+    }
+}
+
 pub struct BodyStream {
     body: HyperBody,
     done: bool,

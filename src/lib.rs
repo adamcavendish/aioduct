@@ -21,10 +21,10 @@ pub mod tls;
 #[path = "h3/mod.rs"]
 pub mod h3_transport;
 
-pub use body::BodyStream;
+pub use body::{BodyStream, RequestBody};
 pub use client::Client;
 pub use cookie::CookieJar;
-pub use error::Error;
+pub use error::{Error, HyperBody};
 pub use multipart::Multipart;
 pub use proxy::ProxyConfig;
 pub use redirect::{RedirectAction, RedirectPolicy};

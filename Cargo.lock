@@ -12,6 +12,7 @@ dependencies = [
  "compio-net",
  "compio-runtime 0.5.1",
  "futures-io",
+ "futures-util",
  "h3",
  "h3-quinn",
  "http",

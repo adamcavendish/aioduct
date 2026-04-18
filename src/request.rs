@@ -6,8 +6,9 @@ use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Uri, Version};
 
+use crate::body::RequestBody;
 use crate::client::Client;
-use crate::error::{Error, Result};
+use crate::error::{Error, HyperBody, Result};
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::Runtime;
@@ -18,7 +19,7 @@ pub struct RequestBuilder<'a, R: Runtime> {
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-    body: Option<Bytes>,
+    body: Option<RequestBody>,
     version: Option<Version>,
     timeout: Option<Duration>,
     retry: Option<RetryConfig>,
@@ -103,7 +104,12 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     }
 
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {
-        self.body = Some(body.into());
+        self.body = Some(RequestBody::Buffered(body.into()));
+        self
+    }
+
+    pub fn body_stream(mut self, body: HyperBody) -> Self {
+        self.body = Some(RequestBody::Streaming(body));
         self
     }
 
@@ -114,7 +120,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
             http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
-        self.body = Some(bytes.into());
+        self.body = Some(RequestBody::Buffered(bytes.into()));
         Ok(self)
     }
 
@@ -144,7 +150,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
             http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/x-www-form-urlencoded"),
         );
-        self.body = Some(encoded.into());
+        self.body = Some(RequestBody::Buffered(encoded.into()));
         self
     }
 
@@ -152,7 +158,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         let ct = multipart.content_type();
         let value = HeaderValue::from_str(&ct).expect("valid multipart content-type");
         self.headers.insert(http::header::CONTENT_TYPE, value);
-        self.body = Some(multipart.into_bytes());
+        self.body = Some(RequestBody::Buffered(multipart.into_bytes()));
         self
     }
 
@@ -206,6 +212,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     async fn send_with_retry(self, config: RetryConfig) -> Result<Response> {
         let effective_timeout = self.timeout.or(self.client.default_timeout());
         let mut last_error = None;
+        let mut body = self.body;
 
         for attempt in 0..=config.max_retries {
             if attempt > 0 {
@@ -213,11 +220,17 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                 R::sleep(delay).await;
             }
 
+            let body_for_attempt = match &mut body {
+                Some(RequestBody::Buffered(b)) => Some(RequestBody::Buffered(b.clone())),
+                Some(RequestBody::Streaming(_)) => body.take(),
+                None => None,
+            };
+
             let execute_fut = self.client.execute(
                 self.method.clone(),
                 self.uri.clone(),
                 self.headers.clone(),
-                self.body.clone(),
+                body_for_attempt,
                 self.version,
             );
 

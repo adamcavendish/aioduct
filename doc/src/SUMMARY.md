@@ -12,6 +12,7 @@
 - [Redirect Policy](redirect.md)
 - [Multipart/Form-Data](multipart.md)
 - [Streaming Downloads](streaming.md)
+- [Streaming Uploads](streaming_upload.md)
 - [Cookie Jar](cookies.md)
 - [Proxy Support](proxy.md)
 - [API Reference](api_reference.md)

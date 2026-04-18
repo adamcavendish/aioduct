@@ -1282,3 +1282,59 @@ async fn test_http_proxy() {
     );
     assert!(body.contains("/path"), "expected path in URI, got: {body}");
 }
+
+#[tokio::test]
+async fn test_streaming_body_upload() {
+    use http_body_util::BodyExt;
+
+    let addr = start_server_with(|req| async move {
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(body)))
+    })
+    .await;
+
+    let chunks: Vec<Result<hyper::body::Frame<Bytes>, aioduct::Error>> = vec![
+        Ok(hyper::body::Frame::data(Bytes::from("hello "))),
+        Ok(hyper::body::Frame::data(Bytes::from("streaming "))),
+        Ok(hyper::body::Frame::data(Bytes::from("world"))),
+    ];
+
+    let stream = futures_util::stream::iter(chunks);
+    let stream_body: aioduct::HyperBody = http_body_util::StreamBody::new(stream).boxed();
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .body_stream(stream_body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello streaming world");
+}
+
+#[tokio::test]
+async fn test_streaming_body_from_request_body() {
+    use http_body_util::BodyExt;
+
+    let addr = start_server_with(|req| async move {
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(body)))
+    })
+    .await;
+
+    let data = "buffered body content";
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .body(data)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "buffered body content");
+}
