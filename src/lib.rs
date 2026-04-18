@@ -1,6 +1,7 @@
 #[cfg(not(any(feature = "tokio", feature = "smol", feature = "compio")))]
 compile_error!("aioduct: enable at least one runtime feature: tokio, smol, or compio");
 
+pub mod body;
 pub mod client;
 pub mod error;
 pub mod multipart;
@@ -18,6 +19,7 @@ pub mod tls;
 #[path = "h3/mod.rs"]
 pub mod h3_transport;
 
+pub use body::BodyStream;
 pub use client::Client;
 pub use error::Error;
 pub use multipart::Multipart;

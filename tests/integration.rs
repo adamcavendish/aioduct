@@ -1079,3 +1079,46 @@ async fn test_multipart_file_upload() {
         "expected description field, got: {body}"
     );
 }
+
+#[tokio::test]
+async fn test_bytes_stream() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("chunk1chunk2chunk3"))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let mut stream = resp.into_bytes_stream();
+    let mut collected = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        collected.extend_from_slice(&chunk.unwrap());
+    }
+
+    assert_eq!(String::from_utf8(collected).unwrap(), "chunk1chunk2chunk3");
+}
+
+#[tokio::test]
+async fn test_bytes_stream_empty() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let mut stream = resp.into_bytes_stream();
+    assert!(stream.next().await.is_none());
+}
