@@ -1408,3 +1408,389 @@ async fn test_chunk_download_fallback_no_range() {
         "no range support"
     );
 }
+
+// === Comprehensive test suite ===
+
+#[tokio::test]
+async fn test_put_request() {
+    use http_body_util::BodyExt;
+
+    let addr = start_server_with(|req| async move {
+        let method = req.method().to_string();
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        let resp_body = format!("method={method} body={}", String::from_utf8_lossy(&body));
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(resp_body))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .put(&format!("http://{addr}/"))
+        .unwrap()
+        .body("update data")
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("method=PUT"), "expected PUT, got: {body}");
+    assert!(
+        body.contains("body=update data"),
+        "expected body, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_patch_request() {
+    let addr = start_server_with(|req| async move {
+        let method = req.method().to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(method))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .patch(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "PATCH");
+}
+
+#[tokio::test]
+async fn test_delete_request() {
+    let addr = start_server_with(|req| async move {
+        let method = req.method().to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(method))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .delete(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "DELETE");
+}
+
+#[tokio::test]
+async fn test_head_request() {
+    let addr = start_server_with(|req| async move {
+        let method = req.method().to_string();
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("x-method", method)
+                .header("content-length", "1000")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .head(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("x-method").unwrap().to_str().unwrap(),
+        "HEAD"
+    );
+    assert_eq!(resp.content_length(), Some(1000));
+}
+
+#[tokio::test]
+async fn test_connection_refused() {
+    let client = Client::<TokioRuntime>::new();
+    let result = client.get("http://127.0.0.1:1/").unwrap().send().await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_empty_body_response() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "");
+}
+
+#[tokio::test]
+async fn test_large_body() {
+    let data = "x".repeat(100_000);
+    let data_clone = data.clone();
+
+    let addr = start_server_with(move |_req| {
+        let data = data_clone.clone();
+        async move { Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(data)))) }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body.len(), 100_000);
+}
+
+#[tokio::test]
+async fn test_query_params_with_existing_query() {
+    let addr = start_server_with(|req| async move {
+        let query = req.uri().query().unwrap_or("").to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(query))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/?existing=1"))
+        .unwrap()
+        .query(&[("extra", "2")])
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("existing=1"),
+        "expected existing, got: {body}"
+    );
+    assert!(body.contains("extra=2"), "expected extra, got: {body}");
+}
+
+#[tokio::test]
+async fn test_cookie_jar_same_host_shared() {
+    let jar = aioduct::CookieJar::new();
+
+    let addr1 = start_server_with(|req| async move {
+        let cookie = req
+            .headers()
+            .get("cookie")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("set-cookie", "session=abc123")
+                .body(Full::new(Bytes::from(cookie)))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder().cookie_jar(jar).build();
+
+    // First request stores the cookie
+    let resp1 = client
+        .get(&format!("http://{addr1}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body1 = resp1.text().await.unwrap();
+    assert!(body1.is_empty(), "first request should have no cookie");
+
+    // Second request to same host should include the stored cookie
+    let resp2 = client
+        .get(&format!("http://{addr1}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body2 = resp2.text().await.unwrap();
+    assert!(
+        body2.contains("session=abc123"),
+        "second request should have cookie, got: {body2}"
+    );
+}
+
+#[tokio::test]
+async fn test_no_default_headers() {
+    let addr = start_server_with(|req| async move {
+        let ua = req
+            .headers()
+            .get("user-agent")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_else(|| "none".to_owned());
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(ua))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .no_default_headers()
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "none");
+}
+
+#[tokio::test]
+async fn test_response_content_length() {
+    let body = "x".repeat(42);
+    let body_clone = body.clone();
+    let addr = start_server_with(move |_req| {
+        let body = body_clone.clone();
+        async move { Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body)))) }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.content_length(), Some(42));
+}
+
+#[tokio::test]
+async fn test_response_version() {
+    let addr = start_server().await;
+    let client = Client::<TokioRuntime>::new();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.version(), http::Version::HTTP_11);
+}
+
+#[tokio::test]
+async fn test_client_clone_shares_pool() {
+    let addr = start_server().await;
+    let client = Client::<TokioRuntime>::new();
+    let cloned = client.clone();
+
+    let resp1 = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let _ = resp1.text().await.unwrap();
+
+    let resp2 = cloned
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp2.status(), http::StatusCode::OK);
+    let body = resp2.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+}
+
+#[tokio::test]
+async fn test_custom_method() {
+    let addr = start_server_with(|req| async move {
+        let method = req.method().to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(method))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .request(http::Method::OPTIONS, &format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "OPTIONS");
+}
+
+#[tokio::test]
+async fn test_multiple_headers_same_name() {
+    let addr = start_server_with(|req| async move {
+        let values: Vec<String> = req
+            .headers()
+            .get_all("x-multi")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        let body = values.join(",");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let mut headers = http::HeaderMap::new();
+    headers.append("x-multi", "value1".parse().unwrap());
+    headers.append("x-multi", "value2".parse().unwrap());
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("value1"), "expected value1, got: {body}");
+    assert!(body.contains("value2"), "expected value2, got: {body}");
+}
+
+#[tokio::test]
+async fn test_concurrent_requests() {
+    let addr = start_server().await;
+    let client = Client::<TokioRuntime>::new();
+
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let client = client.clone();
+        let url = format!("http://{addr}/");
+        handles.push(tokio::spawn(async move {
+            client
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        }));
+    }
+
+    for handle in handles {
+        let body = handle.await.unwrap();
+        assert_eq!(body, "hello aioduct");
+    }
+}
