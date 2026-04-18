@@ -7,6 +7,7 @@ pub mod pool;
 pub mod request;
 pub mod response;
 pub mod runtime;
+pub mod sse;
 mod timeout;
 pub mod tls;
 
@@ -19,5 +20,6 @@ pub use error::Error;
 pub use request::RequestBuilder;
 pub use response::Response;
 pub use runtime::Runtime;
+pub use sse::{SseEvent, SseStream};
 
 pub use http::{HeaderMap, Method, StatusCode, Version};

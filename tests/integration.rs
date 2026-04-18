@@ -659,3 +659,96 @@ async fn test_form_data() {
         "expected encoded password, got: {body}"
     );
 }
+
+#[tokio::test]
+async fn test_sse_stream() {
+    let addr = start_server_with(|_req| async move {
+        let sse_body =
+            "event: greeting\ndata: hello\n\ndata: world\n\nevent: done\ndata: bye\nid: 3\n\n";
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Full::new(Bytes::from(sse_body)))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let mut sse = resp.into_sse_stream();
+    let mut events = Vec::new();
+    while let Some(event) = sse.next().await {
+        events.push(event.unwrap());
+    }
+
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].event.as_deref(), Some("greeting"));
+    assert_eq!(events[0].data, "hello");
+    assert_eq!(events[1].event, None);
+    assert_eq!(events[1].data, "world");
+    assert_eq!(events[2].event.as_deref(), Some("done"));
+    assert_eq!(events[2].data, "bye");
+    assert_eq!(events[2].id.as_deref(), Some("3"));
+}
+
+#[tokio::test]
+async fn test_sse_multiline_data() {
+    let addr = start_server_with(|_req| async move {
+        let sse_body = "data: line1\ndata: line2\ndata: line3\n\n";
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Full::new(Bytes::from(sse_body)))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let mut sse = resp.into_sse_stream();
+    let event = sse.next().await.unwrap().unwrap();
+    assert_eq!(event.data, "line1\nline2\nline3");
+    assert!(sse.next().await.is_none());
+}
+
+#[tokio::test]
+async fn test_sse_comments_and_retry() {
+    let addr = start_server_with(|_req| async move {
+        let sse_body = ": this is a comment\nretry: 5000\ndata: after comment\n\n";
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Full::new(Bytes::from(sse_body)))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let mut sse = resp.into_sse_stream();
+    let event = sse.next().await.unwrap().unwrap();
+    assert_eq!(event.data, "after comment");
+    assert_eq!(event.retry, Some(5000));
+    assert!(sse.next().await.is_none());
+}

@@ -68,4 +68,8 @@ impl Response {
     pub fn into_body(self) -> HyperBody {
         self.inner.into_body()
     }
+
+    pub fn into_sse_stream(self) -> crate::sse::SseStream {
+        crate::sse::SseStream::new(self.inner.into_body())
+    }
 }

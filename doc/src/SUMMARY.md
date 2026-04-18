@@ -7,4 +7,5 @@
 - [Runtime Trait](runtime.md)
 - [TLS & HTTPS](tls.md)
 - [Connection Pool](connection_pool.md)
+- [Server-Sent Events](sse.md)
 - [API Reference](api_reference.md)
