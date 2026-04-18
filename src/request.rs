@@ -1,8 +1,9 @@
+use std::fmt::Write as _;
 use std::marker::PhantomData;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http::header::{HeaderMap, HeaderName, HeaderValue};
+use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Uri, Version};
 
 use crate::client::Client;
@@ -51,6 +52,51 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         let value: HeaderValue = value.parse().map_err(|e| Error::Other(Box::new(e)))?;
         self.headers.insert(name, value);
         Ok(self)
+    }
+
+    pub fn bearer_auth(mut self, token: &str) -> Self {
+        let value = HeaderValue::from_str(&format!("Bearer {token}")).expect("valid bearer token");
+        self.headers.insert(AUTHORIZATION, value);
+        self
+    }
+
+    pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
+        use base64::engine::{Engine, general_purpose::STANDARD};
+        let credentials = match password {
+            Some(pw) => format!("{username}:{pw}"),
+            None => format!("{username}:"),
+        };
+        let encoded = STANDARD.encode(credentials);
+        let value =
+            HeaderValue::from_str(&format!("Basic {encoded}")).expect("valid basic auth header");
+        self.headers.insert(AUTHORIZATION, value);
+        self
+    }
+
+    pub fn query(mut self, params: &[(&str, &str)]) -> Self {
+        use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+        const QUERY_ENCODE: &AsciiSet = &CONTROLS
+            .add(b' ')
+            .add(b'"')
+            .add(b'#')
+            .add(b'<')
+            .add(b'>')
+            .add(b'&')
+            .add(b'=')
+            .add(b'+');
+
+        let mut uri_str = self.uri.to_string();
+        let has_query = self.uri.query().is_some();
+        for (i, (key, val)) in params.iter().enumerate() {
+            let sep = if i == 0 && !has_query { '?' } else { '&' };
+            let key = utf8_percent_encode(key, QUERY_ENCODE);
+            let val = utf8_percent_encode(val, QUERY_ENCODE);
+            write!(uri_str, "{sep}{key}={val}").unwrap();
+        }
+        if let Ok(new_uri) = uri_str.parse() {
+            self.uri = new_uri;
+        }
+        self
     }
 
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {

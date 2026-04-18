@@ -465,3 +465,74 @@ async fn test_json_request_and_response() {
         }
     );
 }
+
+#[tokio::test]
+async fn test_bearer_auth() {
+    let addr = start_server_with(|req| async move {
+        let auth = req
+            .headers()
+            .get("authorization")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(auth))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .bearer_auth("my-secret-token")
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "Bearer my-secret-token");
+}
+
+#[tokio::test]
+async fn test_basic_auth() {
+    let addr = start_server_with(|req| async move {
+        let auth = req
+            .headers()
+            .get("authorization")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(auth))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .basic_auth("user", Some("pass"))
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "Basic dXNlcjpwYXNz");
+}
+
+#[tokio::test]
+async fn test_query_params() {
+    let addr = start_server_with(|req| async move {
+        let query = req.uri().query().unwrap_or("none").to_owned();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(query))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/search"))
+        .unwrap()
+        .query(&[("q", "hello world"), ("page", "1")])
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "q=hello%20world&page=1");
+}
