@@ -47,7 +47,7 @@ pub mod tokio_rt;
 pub use tokio_rt::TokioRuntime;
 
 #[cfg(feature = "smol")]
-mod smol_rt;
+pub mod smol_rt;
 #[cfg(feature = "smol")]
 pub use smol_rt::SmolRuntime;
 

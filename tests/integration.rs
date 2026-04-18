@@ -1,3 +1,5 @@
+#![cfg(feature = "tokio")]
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::time::Duration;
