@@ -12,4 +12,5 @@
 - [Redirect Policy](redirect.md)
 - [Multipart/Form-Data](multipart.md)
 - [Streaming Downloads](streaming.md)
+- [Cookie Jar](cookies.md)
 - [API Reference](api_reference.md)

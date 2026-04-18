@@ -1122,3 +1122,130 @@ async fn test_bytes_stream_empty() {
     let mut stream = resp.into_bytes_stream();
     assert!(stream.next().await.is_none());
 }
+
+#[tokio::test]
+async fn test_cookie_jar_stores_and_sends() {
+    let addr = start_server_with(|req| async move {
+        let cookie = req
+            .headers()
+            .get("cookie")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+
+        if req.uri().path() == "/set" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("set-cookie", "session=abc123; Path=/")
+                    .body(Full::new(Bytes::from("cookie set")))
+                    .unwrap(),
+            )
+        } else {
+            Ok(Response::new(Full::new(Bytes::from(format!(
+                "cookies={cookie}"
+            )))))
+        }
+    })
+    .await;
+
+    let jar = aioduct::CookieJar::new();
+    let client = Client::<TokioRuntime>::builder().cookie_jar(jar).build();
+
+    let resp = client
+        .get(&format!("http://{addr}/set"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cookie set");
+
+    let resp = client
+        .get(&format!("http://{addr}/check"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "cookies=session=abc123");
+}
+
+#[tokio::test]
+async fn test_cookie_jar_multiple_cookies() {
+    let addr = start_server_with(|req| async move {
+        let cookie = req
+            .headers()
+            .get("cookie")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+
+        match req.uri().path() {
+            "/set1" => Ok::<_, Infallible>(
+                Response::builder()
+                    .header("set-cookie", "a=1")
+                    .body(Full::new(Bytes::from("ok")))
+                    .unwrap(),
+            ),
+            "/set2" => Ok(Response::builder()
+                .header("set-cookie", "b=2")
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap()),
+            _ => Ok(Response::new(Full::new(Bytes::from(format!(
+                "cookies={cookie}"
+            ))))),
+        }
+    })
+    .await;
+
+    let jar = aioduct::CookieJar::new();
+    let client = Client::<TokioRuntime>::builder().cookie_jar(jar).build();
+
+    client
+        .get(&format!("http://{addr}/set1"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    client
+        .get(&format!("http://{addr}/set2"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/check"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("a=1"), "expected cookie a, got: {body}");
+    assert!(body.contains("b=2"), "expected cookie b, got: {body}");
+}
+
+#[tokio::test]
+async fn test_no_cookie_jar_no_cookies() {
+    let addr = start_server_with(|req| async move {
+        let has_cookie = req.headers().contains_key("cookie");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "has_cookie={has_cookie}"
+        )))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "has_cookie=false");
+}

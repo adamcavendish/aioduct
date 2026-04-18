@@ -8,6 +8,7 @@ use http::header::{HOST, HeaderMap, HeaderValue, LOCATION, USER_AGENT};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
+use crate::cookie::CookieJar;
 use crate::error::{Error, HyperBody, Result};
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
 use crate::redirect::{RedirectAction, RedirectPolicy};
@@ -24,6 +25,7 @@ pub struct Client<R: Runtime> {
     timeout: Option<Duration>,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
+    cookie_jar: Option<CookieJar>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -36,6 +38,7 @@ pub struct ClientBuilder<R: Runtime> {
     timeout: Option<Duration>,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
+    cookie_jar: Option<CookieJar>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -53,6 +56,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             timeout: None,
             default_headers,
             retry: None,
+            cookie_jar: None,
             #[cfg(feature = "rustls")]
             tls: None,
             _runtime: PhantomData,
@@ -101,6 +105,11 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    pub fn cookie_jar(mut self, jar: CookieJar) -> Self {
+        self.cookie_jar = Some(jar);
+        self
+    }
+
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.tls = Some(Arc::new(connector));
@@ -114,6 +123,7 @@ impl<R: Runtime> ClientBuilder<R> {
             timeout: self.timeout,
             default_headers: self.default_headers,
             retry: self.retry,
+            cookie_jar: self.cookie_jar,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             _runtime: PhantomData,
@@ -206,6 +216,13 @@ impl<R: Runtime> Client<R> {
         }
 
         for _ in 0..=self.redirect_policy.max_redirects() {
+            if let Some(jar) = &self.cookie_jar {
+                if let Some(authority) = current_uri.authority() {
+                    let is_secure = current_uri.scheme() == Some(&http::uri::Scheme::HTTPS);
+                    jar.apply_to_request(authority.host(), is_secure, &mut current_headers);
+                }
+            }
+
             let req_body: HyperBody = match &current_body {
                 Some(b) => http_body_util::Full::new(b.clone())
                     .map_err(|never| match never {})
@@ -246,6 +263,12 @@ impl<R: Runtime> Client<R> {
             let request = builder.body(req_body)?;
 
             let resp = self.execute_single(request, &current_uri).await?;
+
+            if let Some(jar) = &self.cookie_jar {
+                if let Some(authority) = current_uri.authority() {
+                    jar.store_from_response(authority.host(), resp.headers());
+                }
+            }
 
             if !resp.status().is_redirection()
                 || matches!(self.redirect_policy, RedirectPolicy::None)

@@ -3,6 +3,7 @@ compile_error!("aioduct: enable at least one runtime feature: tokio, smol, or co
 
 pub mod body;
 pub mod client;
+pub mod cookie;
 pub mod error;
 pub mod multipart;
 pub mod pool;
@@ -21,6 +22,7 @@ pub mod h3_transport;
 
 pub use body::BodyStream;
 pub use client::Client;
+pub use cookie::CookieJar;
 pub use error::Error;
 pub use multipart::Multipart;
 pub use redirect::{RedirectAction, RedirectPolicy};
