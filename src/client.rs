@@ -113,12 +113,15 @@ impl<R: Runtime> Client<R> {
         Ok(RequestBuilder::new(self, method, uri))
     }
 
-    pub(crate) async fn execute(&self, request: http::Request<HyperBody>) -> Result<Response> {
-        let uri = request.uri().clone();
-        let scheme = uri
+    pub(crate) async fn execute(
+        &self,
+        request: http::Request<HyperBody>,
+        original_uri: &Uri,
+    ) -> Result<Response> {
+        let scheme = original_uri
             .scheme()
             .ok_or_else(|| Error::InvalidUrl("missing scheme".into()))?;
-        let authority = uri
+        let authority = original_uri
             .authority()
             .ok_or_else(|| Error::InvalidUrl("missing authority".into()))?;
 
@@ -137,13 +140,12 @@ impl<R: Runtime> Client<R> {
         let addr = Self::resolve_authority(authority, default_port).await?;
         let tcp_stream = R::connect(addr).await?;
 
-        let pooled = if is_https {
+        let mut pooled = if is_https {
             self.connect_tls(tcp_stream, authority.host()).await?
         } else {
             self.connect_h1(tcp_stream).await?
         };
 
-        let mut pooled = pooled;
         let resp = Self::send_on_connection(&mut pooled, request).await?;
         self.pool.checkin(pool_key, pooled);
 

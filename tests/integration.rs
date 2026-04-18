@@ -15,7 +15,28 @@ async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Byt
     Ok(Response::new(Full::new(Bytes::from("hello aioduct"))))
 }
 
+async fn echo_headers(
+    req: Request<hyper::body::Incoming>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let host = req
+        .headers()
+        .get("host")
+        .map(|v| v.to_str().unwrap_or(""))
+        .unwrap_or("missing");
+    let path = req.uri().path().to_string();
+    let body = format!("host={host}\npath={path}");
+    Ok(Response::new(Full::new(Bytes::from(body))))
+}
+
 async fn start_server() -> SocketAddr {
+    start_server_with(|req| async { hello(req).await }).await
+}
+
+async fn start_server_with<F, Fut>(handler: F) -> SocketAddr
+where
+    F: Fn(Request<hyper::body::Incoming>) -> Fut + Send + Clone + 'static,
+    Fut: std::future::Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send,
+{
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -23,9 +44,10 @@ async fn start_server() -> SocketAddr {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
             let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+            let handler = handler.clone();
             tokio::spawn(async move {
                 let _ = server_http1::Builder::new()
-                    .serve_connection(io, service_fn(hello))
+                    .serve_connection(io, service_fn(handler))
                     .await;
             });
         }
@@ -84,6 +106,56 @@ async fn test_connection_reuse() {
 }
 
 #[tokio::test]
+async fn test_host_header_and_path() {
+    let addr = start_server_with(echo_headers).await;
+    let client = Client::<TokioRuntime>::new();
+
+    let resp = client
+        .get(&format!("http://{addr}/some/path?key=value"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains(&format!("host={addr}")),
+        "expected Host header to be set, got: {body}"
+    );
+    assert!(
+        body.contains("path=/some/path"),
+        "expected path-only URI, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_custom_header() {
+    let addr = start_server_with(|req| async move {
+        let custom = req
+            .headers()
+            .get("x-custom")
+            .map(|v| v.to_str().unwrap_or(""))
+            .unwrap_or("missing");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(custom.to_string()))))
+    })
+    .await;
+    let client = Client::<TokioRuntime>::new();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .header_str("x-custom", "test-value")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "test-value");
+}
+
+#[tokio::test]
 async fn test_invalid_url() {
     let client = Client::<TokioRuntime>::new();
     assert!(client.get("not a url").is_err());
@@ -92,6 +164,5 @@ async fn test_invalid_url() {
 #[tokio::test]
 async fn test_missing_scheme() {
     let client = Client::<TokioRuntime>::new();
-    // "127.0.0.1/path" is not a valid absolute URI, so get() returns an error
     assert!(client.get("127.0.0.1/path").is_err());
 }

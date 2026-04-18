@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use bytes::Bytes;
-use http::header::{HeaderMap, HeaderName, HeaderValue};
+use http::header::{HOST, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Uri, Version};
 use http_body_util::BodyExt;
 
@@ -61,18 +61,39 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
             .map_err(|never| match never {})
             .boxed();
 
-        let mut builder = http::Request::builder().method(self.method).uri(self.uri);
+        let mut headers = self.headers;
+
+        if !headers.contains_key(HOST) {
+            if let Some(authority) = self.uri.authority() {
+                let host_value: HeaderValue = authority
+                    .as_str()
+                    .parse()
+                    .map_err(|e| Error::Other(Box::new(e)))?;
+                headers.insert(HOST, host_value);
+            }
+        }
+
+        let path_and_query = self
+            .uri
+            .path_and_query()
+            .map(|pq| pq.as_str())
+            .unwrap_or("/");
+        let req_uri: Uri = path_and_query
+            .parse()
+            .map_err(|e| Error::Other(Box::new(e)))?;
+
+        let mut builder = http::Request::builder().method(self.method).uri(req_uri);
 
         if let Some(version) = self.version {
             builder = builder.version(version);
         }
 
-        for (name, value) in &self.headers {
+        for (name, value) in &headers {
             builder = builder.header(name, value);
         }
 
         let request = builder.body(body)?;
 
-        self.client.execute(request).await
+        self.client.execute(request, &self.uri).await
     }
 }
