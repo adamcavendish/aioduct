@@ -10,4 +10,5 @@
 - [Server-Sent Events](sse.md)
 - [Retry with Backoff](retry.md)
 - [Redirect Policy](redirect.md)
+- [Multipart/Form-Data](multipart.md)
 - [API Reference](api_reference.md)

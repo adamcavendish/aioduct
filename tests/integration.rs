@@ -989,3 +989,93 @@ async fn test_redirect_policy_custom() {
     let body = resp.text().await.unwrap();
     assert_eq!(body, "hello aioduct");
 }
+
+#[tokio::test]
+async fn test_multipart_text_fields() {
+    use http_body_util::BodyExt;
+
+    let addr = start_server_with(|req| async move {
+        let ct = req
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8_lossy(&body).to_string();
+        let resp_body = format!("ct={ct}\nbody={body_str}");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(resp_body))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let form = aioduct::Multipart::new()
+        .text("field1", "value1")
+        .text("field2", "value2");
+
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("multipart/form-data; boundary="),
+        "expected multipart content-type, got: {body}"
+    );
+    assert!(
+        body.contains("name=\"field1\""),
+        "expected field1, got: {body}"
+    );
+    assert!(body.contains("value1"), "expected value1, got: {body}");
+    assert!(
+        body.contains("name=\"field2\""),
+        "expected field2, got: {body}"
+    );
+    assert!(body.contains("value2"), "expected value2, got: {body}");
+}
+
+#[tokio::test]
+async fn test_multipart_file_upload() {
+    use http_body_util::BodyExt;
+
+    let addr = start_server_with(|req| async move {
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8_lossy(&body).to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body_str))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let form = aioduct::Multipart::new()
+        .text("description", "test upload")
+        .file("file", "hello.txt", "text/plain", "file contents here");
+
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("filename=\"hello.txt\""),
+        "expected filename, got: {body}"
+    );
+    assert!(
+        body.contains("Content-Type: text/plain"),
+        "expected file content-type, got: {body}"
+    );
+    assert!(
+        body.contains("file contents here"),
+        "expected file data, got: {body}"
+    );
+    assert!(
+        body.contains("name=\"description\""),
+        "expected description field, got: {body}"
+    );
+}

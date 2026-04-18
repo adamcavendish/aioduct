@@ -148,6 +148,14 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    pub fn multipart(mut self, multipart: crate::multipart::Multipart) -> Self {
+        let ct = multipart.content_type();
+        let value = HeaderValue::from_str(&ct).expect("valid multipart content-type");
+        self.headers.insert(http::header::CONTENT_TYPE, value);
+        self.body = Some(multipart.into_bytes());
+        self
+    }
+
     pub fn version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self
