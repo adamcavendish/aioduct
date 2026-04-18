@@ -1,0 +1,16 @@
+[book]
+title = "aioduct"
+description = "Async-native HTTP client built directly on hyper 1.x — no hyper-util, no legacy"
+authors = ["Adam Cavendish"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/adamcavendish/aioduct"
+edit-url-template = "https://github.com/adamcavendish/aioduct/edit/master/doc/{path}"
+
+[output.html.search]
+enable = true
