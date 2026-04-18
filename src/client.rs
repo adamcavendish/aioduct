@@ -115,6 +115,11 @@ impl<R: Runtime> Client<R> {
         Ok(RequestBuilder::new(self, Method::GET, uri))
     }
 
+    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        Ok(RequestBuilder::new(self, Method::HEAD, uri))
+    }
+
     pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::POST, uri))
@@ -123,6 +128,11 @@ impl<R: Runtime> Client<R> {
     pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::PUT, uri))
+    }
+
+    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        Ok(RequestBuilder::new(self, Method::PATCH, uri))
     }
 
     pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
@@ -145,6 +155,7 @@ impl<R: Runtime> Client<R> {
         original_uri: Uri,
         headers: http::HeaderMap,
         body: Option<Bytes>,
+        version: Option<http::Version>,
     ) -> Result<Response> {
         let mut current_uri = original_uri;
         let mut current_method = method;
@@ -180,6 +191,10 @@ impl<R: Runtime> Client<R> {
             let mut builder = http::Request::builder()
                 .method(current_method.clone())
                 .uri(req_uri);
+
+            if let Some(ver) = version {
+                builder = builder.version(ver);
+            }
 
             for (name, value) in &current_headers {
                 builder = builder.header(name, value);

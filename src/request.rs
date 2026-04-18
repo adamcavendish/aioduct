@@ -41,6 +41,11 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    pub fn headers(mut self, headers: HeaderMap) -> Self {
+        self.headers.extend(headers);
+        self
+    }
+
     pub fn header_str(mut self, name: &str, value: &str) -> Result<Self> {
         let name: HeaderName = name.parse().map_err(|e| Error::Other(Box::new(e)))?;
         let value: HeaderValue = value.parse().map_err(|e| Error::Other(Box::new(e)))?;
@@ -65,9 +70,9 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
 
     pub async fn send(self) -> Result<Response> {
         let effective_timeout = self.timeout.or(self.client.default_timeout());
-        let execute_fut = self
-            .client
-            .execute(self.method, self.uri, self.headers, self.body);
+        let execute_fut =
+            self.client
+                .execute(self.method, self.uri, self.headers, self.body, self.version);
 
         match effective_timeout {
             Some(duration) => {
