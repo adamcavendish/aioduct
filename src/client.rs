@@ -3,7 +3,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
-use http::{Method, Uri};
+use bytes::Bytes;
+use http::header::{HOST, LOCATION};
+use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
 use crate::error::{Error, HyperBody, Result};
@@ -12,8 +14,11 @@ use crate::request::RequestBuilder;
 use crate::response::Response;
 use crate::runtime::Runtime;
 
+const DEFAULT_MAX_REDIRECTS: usize = 10;
+
 pub struct Client<R: Runtime> {
     pool: ConnectionPool<R>,
+    max_redirects: usize,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -22,6 +27,7 @@ pub struct Client<R: Runtime> {
 pub struct ClientBuilder<R: Runtime> {
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
+    max_redirects: usize,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -32,6 +38,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
         Self {
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_idle_per_host: 10,
+            max_redirects: DEFAULT_MAX_REDIRECTS,
             #[cfg(feature = "rustls")]
             tls: None,
             _runtime: PhantomData,
@@ -50,6 +57,11 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    pub fn max_redirects(mut self, max: usize) -> Self {
+        self.max_redirects = max;
+        self
+    }
+
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.tls = Some(Arc::new(connector));
@@ -59,6 +71,7 @@ impl<R: Runtime> ClientBuilder<R> {
     pub fn build(self) -> Client<R> {
         Client {
             pool: ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout),
+            max_redirects: self.max_redirects,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             _runtime: PhantomData,
@@ -114,6 +127,97 @@ impl<R: Runtime> Client<R> {
     }
 
     pub(crate) async fn execute(
+        &self,
+        method: Method,
+        original_uri: Uri,
+        headers: http::HeaderMap,
+        body: Option<Bytes>,
+    ) -> Result<Response> {
+        let mut current_uri = original_uri;
+        let mut current_method = method;
+        let mut current_body = body;
+        let mut current_headers = headers;
+
+        for _ in 0..=self.max_redirects {
+            let req_body: HyperBody = match &current_body {
+                Some(b) => http_body_util::Full::new(b.clone())
+                    .map_err(|never| match never {})
+                    .boxed(),
+                None => http_body_util::Full::new(Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed(),
+            };
+
+            if !current_headers.contains_key(HOST) {
+                if let Some(authority) = current_uri.authority() {
+                    if let Ok(host_value) = authority.as_str().parse() {
+                        current_headers.insert(HOST, host_value);
+                    }
+                }
+            }
+
+            let path_and_query = current_uri
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/");
+            let req_uri: Uri = path_and_query
+                .parse()
+                .map_err(|e| Error::Other(Box::new(e)))?;
+
+            let mut builder = http::Request::builder()
+                .method(current_method.clone())
+                .uri(req_uri);
+
+            for (name, value) in &current_headers {
+                builder = builder.header(name, value);
+            }
+
+            let request = builder.body(req_body)?;
+
+            let resp = self.execute_single(request, &current_uri).await?;
+
+            if !resp.status().is_redirection() || self.max_redirects == 0 {
+                return Ok(resp);
+            }
+
+            let status = resp.status();
+            let location = resp
+                .headers()
+                .get(LOCATION)
+                .ok_or_else(|| Error::Other("redirect without Location header".into()))?
+                .to_str()
+                .map_err(|e| Error::Other(Box::new(e)))?
+                .to_owned();
+
+            let next_uri = resolve_redirect(&current_uri, &location)?;
+
+            let _ = resp.bytes().await;
+
+            match status {
+                StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND | StatusCode::SEE_OTHER => {
+                    current_method = Method::GET;
+                    current_body = None;
+                }
+                StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {}
+                _ => return Err(Error::Other("unexpected redirect status".into())),
+            }
+
+            // Update Host header for the new target
+            if let Some(authority) = next_uri.authority() {
+                if let Ok(host_value) = authority.as_str().parse() {
+                    current_headers.insert(HOST, host_value);
+                }
+            }
+
+            current_uri = next_uri;
+        }
+
+        Err(Error::Other(
+            format!("too many redirects (max {})", self.max_redirects).into(),
+        ))
+    }
+
+    async fn execute_single(
         &self,
         request: http::Request<HyperBody>,
         original_uri: &Uri,
@@ -247,4 +351,24 @@ impl<R: Runtime> Client<R> {
             .await
             .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
     }
+}
+
+fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri> {
+    if let Ok(absolute) = location.parse::<Uri>() {
+        if absolute.scheme().is_some() {
+            return Ok(absolute);
+        }
+    }
+
+    let scheme = base
+        .scheme_str()
+        .ok_or_else(|| Error::InvalidUrl("missing scheme in base".into()))?;
+    let authority = base
+        .authority()
+        .ok_or_else(|| Error::InvalidUrl("missing authority in base".into()))?;
+
+    let new_uri = format!("{scheme}://{authority}{location}");
+    new_uri
+        .parse()
+        .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))
 }

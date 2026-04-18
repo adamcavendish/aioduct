@@ -1,12 +1,11 @@
 use std::marker::PhantomData;
 
 use bytes::Bytes;
-use http::header::{HOST, HeaderMap, HeaderName, HeaderValue};
+use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Uri, Version};
-use http_body_util::BodyExt;
 
 use crate::client::Client;
-use crate::error::{Error, HyperBody, Result};
+use crate::error::{Error, Result};
 use crate::response::Response;
 use crate::runtime::Runtime;
 
@@ -56,44 +55,8 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     }
 
     pub async fn send(self) -> Result<Response> {
-        let body_bytes = self.body.unwrap_or_default();
-        let body: HyperBody = http_body_util::Full::new(body_bytes)
-            .map_err(|never| match never {})
-            .boxed();
-
-        let mut headers = self.headers;
-
-        if !headers.contains_key(HOST) {
-            if let Some(authority) = self.uri.authority() {
-                let host_value: HeaderValue = authority
-                    .as_str()
-                    .parse()
-                    .map_err(|e| Error::Other(Box::new(e)))?;
-                headers.insert(HOST, host_value);
-            }
-        }
-
-        let path_and_query = self
-            .uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/");
-        let req_uri: Uri = path_and_query
-            .parse()
-            .map_err(|e| Error::Other(Box::new(e)))?;
-
-        let mut builder = http::Request::builder().method(self.method).uri(req_uri);
-
-        if let Some(version) = self.version {
-            builder = builder.version(version);
-        }
-
-        for (name, value) in &headers {
-            builder = builder.header(name, value);
-        }
-
-        let request = builder.body(body)?;
-
-        self.client.execute(request, &self.uri).await
+        self.client
+            .execute(self.method, self.uri, self.headers, self.body)
+            .await
     }
 }

@@ -166,3 +166,147 @@ async fn test_missing_scheme() {
     let client = Client::<TokioRuntime>::new();
     assert!(client.get("127.0.0.1/path").is_err());
 }
+
+#[tokio::test]
+async fn test_redirect_302() {
+    let final_addr = start_server().await;
+    let redirect_addr = start_server_with(move |_req| {
+        let target = format!("http://{final_addr}/");
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{redirect_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+}
+
+#[tokio::test]
+async fn test_redirect_relative() {
+    let addr = start_server_with(|req| async move {
+        if req.uri().path() == "/redirect" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", "/final")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            Ok(Response::new(Full::new(Bytes::from("final destination"))))
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/redirect"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "final destination");
+}
+
+#[tokio::test]
+async fn test_redirect_max_exceeded() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(302)
+                .header("location", "/loop")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder().max_redirects(3).build();
+
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_redirect_307_preserves_method() {
+    let addr = start_server_with(|req| async move {
+        if req.uri().path() == "/redirect" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(307)
+                    .header("location", "/final")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            let method = req.method().to_string();
+            Ok(Response::new(Full::new(Bytes::from(method))))
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .post(&format!("http://{addr}/redirect"))
+        .unwrap()
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "POST");
+}
+
+#[tokio::test]
+async fn test_redirect_303_changes_to_get() {
+    let addr = start_server_with(|req| async move {
+        if req.uri().path() == "/redirect" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(303)
+                    .header("location", "/final")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            let method = req.method().to_string();
+            Ok(Response::new(Full::new(Bytes::from(method))))
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .post(&format!("http://{addr}/redirect"))
+        .unwrap()
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "GET");
+}
