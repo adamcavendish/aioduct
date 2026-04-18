@@ -12,6 +12,7 @@ use crate::error::{Error, HyperBody, Result};
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
 use crate::request::RequestBuilder;
 use crate::response::Response;
+use crate::retry::RetryConfig;
 use crate::runtime::Runtime;
 
 const DEFAULT_MAX_REDIRECTS: usize = 10;
@@ -22,6 +23,7 @@ pub struct Client<R: Runtime> {
     max_redirects: usize,
     timeout: Option<Duration>,
     default_headers: HeaderMap,
+    retry: Option<RetryConfig>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -33,6 +35,7 @@ pub struct ClientBuilder<R: Runtime> {
     max_redirects: usize,
     timeout: Option<Duration>,
     default_headers: HeaderMap,
+    retry: Option<RetryConfig>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -49,6 +52,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             max_redirects: DEFAULT_MAX_REDIRECTS,
             timeout: None,
             default_headers,
+            retry: None,
             #[cfg(feature = "rustls")]
             tls: None,
             _runtime: PhantomData,
@@ -87,6 +91,11 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    pub fn retry(mut self, config: RetryConfig) -> Self {
+        self.retry = Some(config);
+        self
+    }
+
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.tls = Some(Arc::new(connector));
@@ -99,6 +108,7 @@ impl<R: Runtime> ClientBuilder<R> {
             max_redirects: self.max_redirects,
             timeout: self.timeout,
             default_headers: self.default_headers,
+            retry: self.retry,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             _runtime: PhantomData,
@@ -165,6 +175,10 @@ impl<R: Runtime> Client<R> {
 
     pub(crate) fn default_timeout(&self) -> Option<Duration> {
         self.timeout
+    }
+
+    pub(crate) fn default_retry(&self) -> Option<&RetryConfig> {
+        self.retry.as_ref()
     }
 
     pub(crate) async fn execute(

@@ -6,6 +6,7 @@ pub mod error;
 pub mod pool;
 pub mod request;
 pub mod response;
+pub mod retry;
 pub mod runtime;
 pub mod sse;
 mod timeout;
@@ -19,6 +20,7 @@ pub use client::Client;
 pub use error::Error;
 pub use request::RequestBuilder;
 pub use response::Response;
+pub use retry::RetryConfig;
 pub use runtime::Runtime;
 pub use sse::{SseEvent, SseStream};
 

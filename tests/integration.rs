@@ -2,6 +2,8 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -751,4 +753,161 @@ async fn test_sse_comments_and_retry() {
     assert_eq!(event.data, "after comment");
     assert_eq!(event.retry, Some(5000));
     assert!(sse.next().await.is_none());
+}
+
+#[tokio::test]
+async fn test_retry_on_server_error() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(500)
+                        .body(Full::new(Bytes::from("error")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::new(Full::new(Bytes::from("success"))))
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(3)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "success");
+    assert_eq!(attempt.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_retry_exhausted() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(503)
+                    .body(Full::new(Bytes::from("unavailable")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(attempt.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_retry_disabled_on_status() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::from("error")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(3)
+                .retry_on_status(false)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(attempt.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_client_default_retry() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n < 1 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(500)
+                        .body(Full::new(Bytes::from("error")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::new(Full::new(Bytes::from("ok"))))
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
 }

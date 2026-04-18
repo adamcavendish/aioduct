@@ -9,6 +9,7 @@ use http::{Method, Uri, Version};
 use crate::client::Client;
 use crate::error::{Error, Result};
 use crate::response::Response;
+use crate::retry::RetryConfig;
 use crate::runtime::Runtime;
 use crate::timeout::Timeout;
 
@@ -20,6 +21,7 @@ pub struct RequestBuilder<'a, R: Runtime> {
     body: Option<Bytes>,
     version: Option<Version>,
     timeout: Option<Duration>,
+    retry: Option<RetryConfig>,
     _runtime: PhantomData<R>,
 }
 
@@ -33,6 +35,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
             body: None,
             version: None,
             timeout: None,
+            retry: None,
             _runtime: PhantomData,
         }
     }
@@ -155,7 +158,21 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    pub fn retry(mut self, config: RetryConfig) -> Self {
+        self.retry = Some(config);
+        self
+    }
+
     pub async fn send(self) -> Result<Response> {
+        let effective_retry = self.retry.as_ref().or(self.client.default_retry()).cloned();
+
+        match effective_retry {
+            Some(config) => self.send_with_retry(config).await,
+            None => self.send_once().await,
+        }
+    }
+
+    async fn send_once(self) -> Result<Response> {
         let effective_timeout = self.timeout.or(self.client.default_timeout());
         let execute_fut =
             self.client
@@ -176,5 +193,65 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                 .await
             }
         }
+    }
+
+    async fn send_with_retry(self, config: RetryConfig) -> Result<Response> {
+        let effective_timeout = self.timeout.or(self.client.default_timeout());
+        let mut last_error = None;
+
+        for attempt in 0..=config.max_retries {
+            if attempt > 0 {
+                let delay = config.delay_for_attempt(attempt - 1);
+                R::sleep(delay).await;
+            }
+
+            let execute_fut = self.client.execute(
+                self.method.clone(),
+                self.uri.clone(),
+                self.headers.clone(),
+                self.body.clone(),
+                self.version,
+            );
+
+            let result = match effective_timeout {
+                Some(duration) => {
+                    Timeout::WithTimeout {
+                        future: execute_fut,
+                        sleep: R::sleep(duration),
+                    }
+                    .await
+                }
+                None => {
+                    Timeout::<_, R::Sleep>::NoTimeout {
+                        future: execute_fut,
+                    }
+                    .await
+                }
+            };
+
+            match result {
+                Ok(resp) => {
+                    if config.retry_on_status
+                        && resp.status().is_server_error()
+                        && attempt < config.max_retries
+                    {
+                        last_error = Some(Error::Other(
+                            format!("server error: {}", resp.status()).into(),
+                        ));
+                        continue;
+                    }
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    if attempt < config.max_retries && crate::retry::is_retryable_error(&e) {
+                        last_error = Some(e);
+                        continue;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or(Error::Other("retry exhausted".into())))
     }
 }
