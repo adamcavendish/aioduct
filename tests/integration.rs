@@ -1249,3 +1249,36 @@ async fn test_no_cookie_jar_no_cookies() {
     let body = resp.text().await.unwrap();
     assert_eq!(body, "has_cookie=false");
 }
+
+#[tokio::test]
+async fn test_http_proxy() {
+    let proxy_addr = start_server_with(|req| async move {
+        let uri = req.uri().to_string();
+        let host = req
+            .headers()
+            .get("host")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        let body = format!("proxied: uri={uri} host={host}");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build();
+
+    let resp = client
+        .get("http://example.com/path")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("proxied:"),
+        "expected proxied response, got: {body}"
+    );
+    assert!(body.contains("/path"), "expected path in URI, got: {body}");
+}

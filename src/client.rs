@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::pin::Pin;
 #[cfg(feature = "rustls")]
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,6 +12,7 @@ use http_body_util::BodyExt;
 use crate::cookie::CookieJar;
 use crate::error::{Error, HyperBody, Result};
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
+use crate::proxy::ProxyConfig;
 use crate::redirect::{RedirectAction, RedirectPolicy};
 use crate::request::RequestBuilder;
 use crate::response::Response;
@@ -26,6 +28,7 @@ pub struct Client<R: Runtime> {
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
+    proxy: Option<ProxyConfig>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -39,6 +42,7 @@ pub struct ClientBuilder<R: Runtime> {
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
+    proxy: Option<ProxyConfig>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -57,6 +61,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             default_headers,
             retry: None,
             cookie_jar: None,
+            proxy: None,
             #[cfg(feature = "rustls")]
             tls: None,
             _runtime: PhantomData,
@@ -110,6 +115,11 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    pub fn proxy(mut self, config: ProxyConfig) -> Self {
+        self.proxy = Some(config);
+        self
+    }
+
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.tls = Some(Arc::new(connector));
@@ -124,6 +134,7 @@ impl<R: Runtime> ClientBuilder<R> {
             default_headers: self.default_headers,
             retry: self.retry,
             cookie_jar: self.cookie_jar,
+            proxy: self.proxy,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             _runtime: PhantomData,
@@ -358,20 +369,109 @@ impl<R: Runtime> Client<R> {
         }
 
         let is_https = scheme == &http::uri::Scheme::HTTPS;
-        let default_port = if is_https { 443 } else { 80 };
-        let addr = Self::resolve_authority(authority, default_port).await?;
-        let tcp_stream = R::connect(addr).await?;
 
-        let mut pooled = if is_https {
-            self.connect_tls(tcp_stream, authority.host()).await?
+        let mut pooled = if let Some(proxy) = &self.proxy {
+            self.connect_via_proxy(proxy, authority, is_https).await?
         } else {
-            self.connect_h1(tcp_stream).await?
+            let default_port = if is_https { 443 } else { 80 };
+            let addr = Self::resolve_authority(authority, default_port).await?;
+            let tcp_stream = R::connect(addr).await?;
+
+            if is_https {
+                self.connect_tls(tcp_stream, authority.host()).await?
+            } else {
+                self.connect_h1(tcp_stream).await?
+            }
         };
 
         let resp = Self::send_on_connection(&mut pooled, request).await?;
         self.pool.checkin(pool_key, pooled);
 
         Ok(resp)
+    }
+
+    async fn connect_via_proxy(
+        &self,
+        proxy: &ProxyConfig,
+        target_authority: &http::uri::Authority,
+        is_https: bool,
+    ) -> Result<PooledConnection<R>> {
+        let proxy_authority = proxy.authority()?;
+        let default_port = 80;
+        let proxy_addr = Self::resolve_authority(proxy_authority, default_port).await?;
+        let tcp_stream = R::connect(proxy_addr).await?;
+
+        if is_https {
+            self.connect_tunnel(tcp_stream, proxy, target_authority)
+                .await
+        } else {
+            self.connect_h1(tcp_stream).await
+        }
+    }
+
+    async fn connect_tunnel(
+        &self,
+        mut tcp_stream: R::TcpStream,
+        proxy: &ProxyConfig,
+        target_authority: &http::uri::Authority,
+    ) -> Result<PooledConnection<R>> {
+        use hyper::rt::{Read, Write};
+
+        let target = target_authority.as_str();
+
+        let mut connect_msg = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+        if let Some(auth_value) = proxy.connect_header(target) {
+            connect_msg.push_str(&format!("Proxy-Authorization: {auth_value}\r\n"));
+        }
+        connect_msg.push_str("\r\n");
+
+        let buf = connect_msg.into_bytes();
+        let mut written = 0;
+        while written < buf.len() {
+            let n = std::future::poll_fn(|cx| {
+                Pin::new(&mut tcp_stream).poll_write(cx, &buf[written..])
+            })
+            .await
+            .map_err(Error::Io)?;
+            written += n;
+        }
+
+        let mut resp_buf = Vec::with_capacity(256);
+        loop {
+            let mut one = [0u8; 1];
+            let mut read_buf = hyper::rt::ReadBuf::new(&mut one);
+            std::future::poll_fn(|cx| Pin::new(&mut tcp_stream).poll_read(cx, read_buf.unfilled()))
+                .await
+                .map_err(Error::Io)?;
+
+            if read_buf.filled().is_empty() {
+                return Err(Error::Other("proxy closed connection".into()));
+            }
+            resp_buf.push(one[0]);
+            read_buf = hyper::rt::ReadBuf::new(&mut one);
+
+            if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == *b"\r\n\r\n" {
+                break;
+            }
+
+            if resp_buf.len() > 8192 {
+                return Err(Error::Other("CONNECT response too large".into()));
+            }
+        }
+
+        let resp_str = String::from_utf8_lossy(&resp_buf);
+        let status_line = resp_str
+            .lines()
+            .next()
+            .ok_or_else(|| Error::Other("empty CONNECT response".into()))?;
+
+        if !status_line.contains("200") {
+            return Err(Error::Other(
+                format!("CONNECT tunnel failed: {status_line}").into(),
+            ));
+        }
+
+        self.connect_tls(tcp_stream, target_authority.host()).await
     }
 
     async fn connect_h1(&self, tcp_stream: R::TcpStream) -> Result<PooledConnection<R>> {

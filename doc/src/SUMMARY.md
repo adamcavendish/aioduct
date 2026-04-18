@@ -13,4 +13,5 @@
 - [Multipart/Form-Data](multipart.md)
 - [Streaming Downloads](streaming.md)
 - [Cookie Jar](cookies.md)
+- [Proxy Support](proxy.md)
 - [API Reference](api_reference.md)
