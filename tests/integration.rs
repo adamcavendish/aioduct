@@ -618,3 +618,44 @@ async fn test_request_headers_override_defaults() {
     let body = resp.text().await.unwrap();
     assert_eq!(body, "custom-agent/1.0");
 }
+
+#[tokio::test]
+async fn test_form_data() {
+    use http_body_util::BodyExt;
+
+    let addr = start_server_with(|req| async move {
+        let ct = req
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8_lossy(&body).to_string();
+        let resp_body = format!("ct={ct}\nbody={body_str}");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(resp_body))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .form(&[("username", "admin"), ("password", "s3cr&t=val")])
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("ct=application/x-www-form-urlencoded"),
+        "expected form content-type, got: {body}"
+    );
+    assert!(
+        body.contains("username=admin"),
+        "expected username param, got: {body}"
+    );
+    assert!(
+        body.contains("password=s3cr%26t%3Dval"),
+        "expected encoded password, got: {body}"
+    );
+}

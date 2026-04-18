@@ -115,6 +115,36 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         Ok(self)
     }
 
+    pub fn form(mut self, params: &[(&str, &str)]) -> Self {
+        use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+        const FORM_ENCODE: &AsciiSet = &CONTROLS
+            .add(b' ')
+            .add(b'"')
+            .add(b'#')
+            .add(b'<')
+            .add(b'>')
+            .add(b'&')
+            .add(b'=')
+            .add(b'+')
+            .add(b'%');
+
+        let mut encoded = String::new();
+        for (i, (key, val)) in params.iter().enumerate() {
+            if i > 0 {
+                encoded.push('&');
+            }
+            let k = utf8_percent_encode(key, FORM_ENCODE);
+            let v = utf8_percent_encode(val, FORM_ENCODE);
+            write!(encoded, "{k}={v}").unwrap();
+        }
+        self.headers.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-www-form-urlencoded"),
+        );
+        self.body = Some(encoded.into());
+        self
+    }
+
     pub fn version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self
