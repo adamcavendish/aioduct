@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http::header::{HOST, LOCATION};
+use http::header::{HOST, HeaderMap, HeaderValue, LOCATION, USER_AGENT};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
@@ -15,11 +15,13 @@ use crate::response::Response;
 use crate::runtime::Runtime;
 
 const DEFAULT_MAX_REDIRECTS: usize = 10;
+const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
 pub struct Client<R: Runtime> {
     pool: ConnectionPool<R>,
     max_redirects: usize,
     timeout: Option<Duration>,
+    default_headers: HeaderMap,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -30,6 +32,7 @@ pub struct ClientBuilder<R: Runtime> {
     pool_max_idle_per_host: usize,
     max_redirects: usize,
     timeout: Option<Duration>,
+    default_headers: HeaderMap,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -37,11 +40,15 @@ pub struct ClientBuilder<R: Runtime> {
 
 impl<R: Runtime> Default for ClientBuilder<R> {
     fn default() -> Self {
+        let mut default_headers = HeaderMap::new();
+        default_headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
+
         Self {
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_idle_per_host: 10,
             max_redirects: DEFAULT_MAX_REDIRECTS,
             timeout: None,
+            default_headers,
             #[cfg(feature = "rustls")]
             tls: None,
             _runtime: PhantomData,
@@ -70,6 +77,16 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    pub fn default_headers(mut self, headers: HeaderMap) -> Self {
+        self.default_headers.extend(headers);
+        self
+    }
+
+    pub fn no_default_headers(mut self) -> Self {
+        self.default_headers.clear();
+        self
+    }
+
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.tls = Some(Arc::new(connector));
@@ -81,6 +98,7 @@ impl<R: Runtime> ClientBuilder<R> {
             pool: ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout),
             max_redirects: self.max_redirects,
             timeout: self.timeout,
+            default_headers: self.default_headers,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             _runtime: PhantomData,
@@ -161,6 +179,12 @@ impl<R: Runtime> Client<R> {
         let mut current_method = method;
         let mut current_body = body;
         let mut current_headers = headers;
+
+        for (name, value) in &self.default_headers {
+            if !current_headers.contains_key(name) {
+                current_headers.insert(name, value.clone());
+            }
+        }
 
         for _ in 0..=self.max_redirects {
             let req_body: HyperBody = match &current_body {

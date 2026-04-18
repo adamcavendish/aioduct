@@ -536,3 +536,85 @@ async fn test_query_params() {
     let body = resp.text().await.unwrap();
     assert_eq!(body, "q=hello%20world&page=1");
 }
+
+#[tokio::test]
+async fn test_default_user_agent() {
+    let addr = start_server_with(|req| async move {
+        let ua = req
+            .headers()
+            .get("user-agent")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(ua))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.starts_with("aioduct/"),
+        "expected default User-Agent, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_custom_default_headers() {
+    let addr = start_server_with(|req| async move {
+        let custom = req
+            .headers()
+            .get("x-default")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(custom))))
+    })
+    .await;
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert("x-default", "from-client".parse().unwrap());
+    let client = Client::<TokioRuntime>::builder()
+        .default_headers(headers)
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "from-client");
+}
+
+#[tokio::test]
+async fn test_request_headers_override_defaults() {
+    let addr = start_server_with(|req| async move {
+        let ua = req
+            .headers()
+            .get("user-agent")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(ua))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .header_str("user-agent", "custom-agent/1.0")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "custom-agent/1.0");
+}
