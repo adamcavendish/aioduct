@@ -9,8 +9,8 @@ pub trait Runtime: Send + Sync + 'static {
     type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
     type Sleep: Future<Output = ()> + Send;
 
-    async fn connect(addr: SocketAddr) -> io::Result<Self::TcpStream>;
-    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr>;
+    fn connect(addr: SocketAddr) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
+    fn resolve(host: &str, port: u16) -> impl Future<Output = io::Result<SocketAddr>> + Send;
     fn sleep(duration: Duration) -> Self::Sleep;
     fn spawn<F>(future: F)
     where

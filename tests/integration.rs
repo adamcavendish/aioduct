@@ -1338,3 +1338,73 @@ async fn test_streaming_body_from_request_body() {
 
     assert_eq!(resp.text().await.unwrap(), "buffered body content");
 }
+
+#[tokio::test]
+async fn test_chunk_download() {
+    let data = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+    let addr = start_server_with(move |req| async move {
+        let total = data.len();
+        if req.method() == http::Method::HEAD {
+            return Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-length", total.to_string())
+                    .header("accept-ranges", "bytes")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            );
+        }
+
+        if let Some(range) = req.headers().get("range") {
+            let range_str = range.to_str().unwrap();
+            let range_str = range_str.trim_start_matches("bytes=");
+            let parts: Vec<&str> = range_str.split('-').collect();
+            let start: usize = parts[0].parse().unwrap();
+            let end: usize = parts[1].parse().unwrap();
+            let slice = &data[start..=end];
+            return Ok(Response::builder()
+                .status(206)
+                .header("content-range", format!("bytes {start}-{end}/{total}"))
+                .body(Full::new(Bytes::from(slice.to_owned())))
+                .unwrap());
+        }
+
+        Ok(Response::new(Full::new(Bytes::from(data))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let result = client
+        .chunk_download(&format!("http://{addr}/"))
+        .chunks(4)
+        .download()
+        .await
+        .unwrap();
+
+    assert_eq!(result.total_size, 36);
+    assert_eq!(
+        String::from_utf8(result.data.to_vec()).unwrap(),
+        "abcdefghijklmnopqrstuvwxyz0123456789"
+    );
+}
+
+#[tokio::test]
+async fn test_chunk_download_fallback_no_range() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("no range support"))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let result = client
+        .chunk_download(&format!("http://{addr}/"))
+        .chunks(4)
+        .download()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        String::from_utf8(result.data.to_vec()).unwrap(),
+        "no range support"
+    );
+}

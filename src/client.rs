@@ -35,6 +35,23 @@ pub struct Client<R: Runtime> {
     _runtime: PhantomData<R>,
 }
 
+impl<R: Runtime> Clone for Client<R> {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            redirect_policy: self.redirect_policy.clone(),
+            timeout: self.timeout,
+            default_headers: self.default_headers.clone(),
+            retry: self.retry.clone(),
+            cookie_jar: self.cookie_jar.clone(),
+            proxy: self.proxy.clone(),
+            #[cfg(feature = "rustls")]
+            tls: self.tls.clone(),
+            _runtime: PhantomData,
+        }
+    }
+}
+
 pub struct ClientBuilder<R: Runtime> {
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
@@ -198,6 +215,10 @@ impl<R: Runtime> Client<R> {
     pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, method, uri))
+    }
+
+    pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownload<R> {
+        crate::chunk_download::ChunkDownload::new(self.clone(), url.to_owned())
     }
 
     pub(crate) fn default_timeout(&self) -> Option<Duration> {

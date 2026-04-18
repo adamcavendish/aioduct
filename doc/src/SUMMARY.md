@@ -13,6 +13,7 @@
 - [Multipart/Form-Data](multipart.md)
 - [Streaming Downloads](streaming.md)
 - [Streaming Uploads](streaming_upload.md)
+- [Parallel Chunk Download](chunk_download.md)
 - [Cookie Jar](cookies.md)
 - [Proxy Support](proxy.md)
 - [API Reference](api_reference.md)

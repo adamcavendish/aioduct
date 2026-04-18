@@ -2,6 +2,7 @@
 compile_error!("aioduct: enable at least one runtime feature: tokio, smol, or compio");
 
 pub mod body;
+pub mod chunk_download;
 pub mod client;
 pub mod cookie;
 pub mod error;
@@ -22,6 +23,7 @@ pub mod tls;
 pub mod h3_transport;
 
 pub use body::{BodyStream, RequestBody};
+pub use chunk_download::ChunkDownload;
 pub use client::Client;
 pub use cookie::CookieJar;
 pub use error::{Error, HyperBody};
