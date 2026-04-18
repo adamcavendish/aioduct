@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use http::header::HeaderMap;
+use http::header::{CONTENT_LENGTH, HeaderMap};
 use http::{StatusCode, Version};
 use http_body_util::BodyExt;
 
@@ -35,6 +35,16 @@ impl Response {
         self.inner.version()
     }
 
+    pub fn content_length(&self) -> Option<u64> {
+        self.inner
+            .headers()
+            .get(CONTENT_LENGTH)?
+            .to_str()
+            .ok()?
+            .parse()
+            .ok()
+    }
+
     pub async fn bytes(self) -> Result<Bytes> {
         let body = self.inner.into_body();
         let collected = body
@@ -47,6 +57,12 @@ impl Response {
     pub async fn text(self) -> Result<String> {
         let bytes = self.bytes().await?;
         String::from_utf8(bytes.to_vec()).map_err(|e| Error::Other(Box::new(e)))
+    }
+
+    #[cfg(feature = "json")]
+    pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
+        let bytes = self.bytes().await?;
+        serde_json::from_slice(&bytes).map_err(|e| Error::Other(Box::new(e)))
     }
 
     pub fn into_body(self) -> HyperBody {

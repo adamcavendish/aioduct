@@ -58,6 +58,17 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    #[cfg(feature = "json")]
+    pub fn json(mut self, value: &impl serde::Serialize) -> Result<Self> {
+        let bytes = serde_json::to_vec(value).map_err(|e| Error::Other(Box::new(e)))?;
+        self.headers.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        self.body = Some(bytes.into());
+        Ok(self)
+    }
+
     pub fn version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self

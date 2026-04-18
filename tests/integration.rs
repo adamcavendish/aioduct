@@ -398,3 +398,70 @@ async fn test_request_timeout_overrides_client_timeout() {
     let body = resp.text().await.unwrap();
     assert_eq!(body, "delayed");
 }
+
+#[cfg(feature = "json")]
+#[tokio::test]
+async fn test_json_request_and_response() {
+    use http_body_util::BodyExt;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Payload {
+        name: String,
+        value: u32,
+    }
+
+    let addr = start_server_with(|req| async move {
+        let content_type = req
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap_or("missing").to_owned())
+            .unwrap_or_else(|| "missing".to_owned());
+
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        let payload: Payload = serde_json::from_slice(&body).unwrap();
+
+        let resp_body = serde_json::to_string(&Payload {
+            name: payload.name.to_uppercase(),
+            value: payload.value + 1,
+        })
+        .unwrap();
+
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("content-type", content_type)
+                .body(Full::new(Bytes::from(resp_body)))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let input = Payload {
+        name: "test".into(),
+        value: 42,
+    };
+
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .json(&input)
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/json"
+    );
+    let output: Payload = resp.json().await.unwrap();
+    assert_eq!(
+        output,
+        Payload {
+            name: "TEST".into(),
+            value: 43
+        }
+    );
+}

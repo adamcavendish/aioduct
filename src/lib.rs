@@ -19,3 +19,5 @@ pub use error::Error;
 pub use request::RequestBuilder;
 pub use response::Response;
 pub use runtime::Runtime;
+
+pub use http::{HeaderMap, Method, StatusCode, Version};
