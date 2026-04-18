@@ -22,6 +22,14 @@ impl Runtime for TokioRuntime {
         Ok(TokioIo::new(stream))
     }
 
+    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr> {
+        let addr = format!("{host}:{port}");
+        tokio::net::lookup_host(addr)
+            .await?
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found"))
+    }
+
     fn sleep(duration: Duration) -> Self::Sleep {
         TokioSleep {
             inner: tokio::time::sleep(duration),

@@ -24,6 +24,10 @@ impl Runtime for CompioRuntime {
         todo!("compio TcpStream -> CompioIo adapter requires completion-to-readiness bridge")
     }
 
+    async fn resolve(_host: &str, _port: u16) -> io::Result<SocketAddr> {
+        todo!("compio DNS resolution")
+    }
+
     fn sleep(duration: Duration) -> Self::Sleep {
         CompioSleep { duration }
     }

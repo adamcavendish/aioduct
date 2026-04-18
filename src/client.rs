@@ -236,9 +236,13 @@ impl<R: Runtime> Client<R> {
     ) -> Result<std::net::SocketAddr> {
         let host = authority.host();
         let port = authority.port_u16().unwrap_or(default_port);
-        let addr_str = format!("{host}:{port}");
-        addr_str
-            .parse()
-            .map_err(|e| Error::InvalidUrl(format!("cannot resolve {addr_str}: {e}")))
+
+        if let Ok(addr) = format!("{host}:{port}").parse() {
+            return Ok(addr);
+        }
+
+        R::resolve(host, port)
+            .await
+            .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
     }
 }

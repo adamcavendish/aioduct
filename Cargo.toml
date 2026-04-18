@@ -50,3 +50,5 @@ quinn = { version = "0.11", optional = true, default-features = false, features 
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["server", "http1"] }
+http = "1"

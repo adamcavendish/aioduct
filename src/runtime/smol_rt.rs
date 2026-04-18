@@ -22,6 +22,15 @@ impl Runtime for SmolRuntime {
         Ok(SmolIo::new(stream))
     }
 
+    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr> {
+        let addr = format!("{host}:{port}");
+        smol::net::resolve(addr)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found"))
+    }
+
     fn sleep(duration: Duration) -> Self::Sleep {
         SmolSleep {
             inner: async_io::Timer::after(duration),

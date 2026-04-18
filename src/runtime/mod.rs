@@ -10,6 +10,7 @@ pub trait Runtime: Send + Sync + 'static {
     type Sleep: Future<Output = ()> + Send;
 
     async fn connect(addr: SocketAddr) -> io::Result<Self::TcpStream>;
+    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr>;
     fn sleep(duration: Duration) -> Self::Sleep;
     fn spawn<F>(future: F)
     where
@@ -41,7 +42,7 @@ pub fn hyper_executor<R: Runtime>() -> HyperExecutor<R> {
 }
 
 #[cfg(feature = "tokio")]
-mod tokio_rt;
+pub mod tokio_rt;
 #[cfg(feature = "tokio")]
 pub use tokio_rt::TokioRuntime;
 
