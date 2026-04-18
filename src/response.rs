@@ -9,6 +9,15 @@ pub struct Response {
     inner: http::Response<HyperBody>,
 }
 
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.inner.status())
+            .field("version", &self.inner.version())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Response {
     pub(crate) fn new(inner: http::Response<HyperBody>) -> Self {
         Self { inner }

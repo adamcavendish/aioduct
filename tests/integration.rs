@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -309,4 +310,89 @@ async fn test_redirect_303_changes_to_get() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "GET");
+}
+
+#[tokio::test]
+async fn test_request_timeout_triggers() {
+    let addr = start_server_with(|_req| async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow"))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let result = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .timeout(Duration::from_millis(50))
+        .send()
+        .await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, aioduct::Error::Timeout),
+        "expected Timeout error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_request_timeout_completes_in_time() {
+    let addr = start_server().await;
+    let client = Client::<TokioRuntime>::new();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+}
+
+#[tokio::test]
+async fn test_client_default_timeout_triggers() {
+    let addr = start_server_with(|_req| async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow"))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .timeout(Duration::from_millis(50))
+        .build();
+
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), aioduct::Error::Timeout));
+}
+
+#[tokio::test]
+async fn test_request_timeout_overrides_client_timeout() {
+    let addr = start_server_with(|_req| async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("delayed"))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .timeout(Duration::from_millis(10))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "delayed");
 }

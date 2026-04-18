@@ -19,6 +19,7 @@ const DEFAULT_MAX_REDIRECTS: usize = 10;
 pub struct Client<R: Runtime> {
     pool: ConnectionPool<R>,
     max_redirects: usize,
+    timeout: Option<Duration>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -28,6 +29,7 @@ pub struct ClientBuilder<R: Runtime> {
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
     max_redirects: usize,
+    timeout: Option<Duration>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     _runtime: PhantomData<R>,
@@ -39,6 +41,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_idle_per_host: 10,
             max_redirects: DEFAULT_MAX_REDIRECTS,
+            timeout: None,
             #[cfg(feature = "rustls")]
             tls: None,
             _runtime: PhantomData,
@@ -62,6 +65,11 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.tls = Some(Arc::new(connector));
@@ -72,6 +80,7 @@ impl<R: Runtime> ClientBuilder<R> {
         Client {
             pool: ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout),
             max_redirects: self.max_redirects,
+            timeout: self.timeout,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             _runtime: PhantomData,
@@ -124,6 +133,10 @@ impl<R: Runtime> Client<R> {
     pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, method, uri))
+    }
+
+    pub(crate) fn default_timeout(&self) -> Option<Duration> {
+        self.timeout
     }
 
     pub(crate) async fn execute(

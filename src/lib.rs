@@ -7,6 +7,7 @@ pub mod pool;
 pub mod request;
 pub mod response;
 pub mod runtime;
+mod timeout;
 pub mod tls;
 
 #[cfg(feature = "http3")]
