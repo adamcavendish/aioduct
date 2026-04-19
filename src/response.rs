@@ -26,6 +26,10 @@ impl Response {
         Self { inner, url }
     }
 
+    pub(crate) fn inner_mut(&mut self) -> &mut http::Response<HyperBody> {
+        &mut self.inner
+    }
+
     pub(crate) fn decompress(self, accept: &crate::decompress::AcceptEncoding) -> Self {
         let (mut parts, body) = self.inner.into_parts();
         let body = crate::decompress::maybe_decompress(&mut parts.headers, body, accept);

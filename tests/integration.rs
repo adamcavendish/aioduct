@@ -2253,3 +2253,125 @@ async fn test_socks5_proxy_with_auth() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
+
+#[tokio::test]
+async fn test_middleware_adds_request_header() {
+    let addr = start_server_with(|req| async move {
+        let val = req
+            .headers()
+            .get("x-middleware")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .middleware(
+            |req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+                req.headers_mut().insert(
+                    http::header::HeaderName::from_static("x-middleware"),
+                    http::header::HeaderValue::from_static("injected"),
+                );
+            },
+        )
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "injected");
+}
+
+#[tokio::test]
+async fn test_middleware_modifies_response_header() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let addr = start_server().await;
+
+    struct ResponseTagger {
+        called: Arc<AtomicBool>,
+    }
+
+    impl aioduct::Middleware for ResponseTagger {
+        fn on_response(&self, response: &mut http::Response<aioduct::HyperBody>, _uri: &http::Uri) {
+            self.called.store(true, Ordering::SeqCst);
+            response.headers_mut().insert(
+                http::header::HeaderName::from_static("x-from-middleware"),
+                http::header::HeaderValue::from_static("yes"),
+            );
+        }
+    }
+
+    let called = Arc::new(AtomicBool::new(false));
+    let client = Client::<TokioRuntime>::builder()
+        .middleware(ResponseTagger {
+            called: called.clone(),
+        })
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert!(called.load(Ordering::SeqCst));
+    assert_eq!(
+        resp.headers()
+            .get("x-from-middleware")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "yes"
+    );
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}
+
+#[tokio::test]
+async fn test_multiple_middleware_ordering() {
+    let addr = start_server_with(|req| async move {
+        let val = req
+            .headers()
+            .get("x-order")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .middleware(
+            |req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+                req.headers_mut().insert(
+                    http::header::HeaderName::from_static("x-order"),
+                    http::header::HeaderValue::from_static("first"),
+                );
+            },
+        )
+        .middleware(
+            |req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+                req.headers_mut().insert(
+                    http::header::HeaderName::from_static("x-order"),
+                    http::header::HeaderValue::from_static("second"),
+                );
+            },
+        )
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "second");
+}

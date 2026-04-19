@@ -15,6 +15,7 @@ use crate::body::RequestBody;
 use crate::cookie::CookieJar;
 use crate::error::{Error, HyperBody, Result};
 use crate::http2::Http2Config;
+use crate::middleware::{Middleware, MiddlewareStack};
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
 use crate::proxy::{ProxyConfig, ProxySettings};
 use crate::redirect::{RedirectAction, RedirectPolicy};
@@ -41,6 +42,7 @@ pub struct Client<R: Runtime> {
     proxy: Option<ProxySettings>,
     resolver: Option<Arc<dyn Resolve>>,
     http2: Option<Http2Config>,
+    middleware: MiddlewareStack,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -69,6 +71,7 @@ impl<R: Runtime> Clone for Client<R> {
             proxy: self.proxy.clone(),
             resolver: self.resolver.clone(),
             http2: self.http2.clone(),
+            middleware: self.middleware.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(feature = "http3")]
@@ -99,6 +102,7 @@ pub struct ClientBuilder<R: Runtime> {
     proxy: Option<ProxySettings>,
     resolver: Option<Arc<dyn Resolve>>,
     http2: Option<Http2Config>,
+    middleware: MiddlewareStack,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -129,6 +133,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             proxy: None,
             resolver: None,
             http2: None,
+            middleware: MiddlewareStack::new(),
             #[cfg(feature = "rustls")]
             tls: None,
             #[cfg(feature = "http3")]
@@ -255,6 +260,12 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Add a middleware layer that can inspect or modify requests and responses.
+    pub fn middleware(mut self, middleware: impl Middleware) -> Self {
+        self.middleware.push(Arc::new(middleware));
+        self
+    }
+
     #[cfg(feature = "rustls")]
     /// Set the TLS connector for HTTPS.
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
@@ -325,6 +336,7 @@ impl<R: Runtime> ClientBuilder<R> {
             proxy: self.proxy,
             resolver: self.resolver,
             http2: self.http2,
+            middleware: self.middleware,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             #[cfg(feature = "http3")]
@@ -517,7 +529,11 @@ impl<R: Runtime> Client<R> {
                 builder = builder.header(name, value);
             }
 
-            let request = builder.body(req_body)?;
+            let mut request = builder.body(req_body)?;
+
+            if !self.middleware.is_empty() {
+                self.middleware.apply_request(&mut request, &current_uri);
+            }
 
             let resp = self.execute_single(request, &current_uri).await?;
 
@@ -533,6 +549,11 @@ impl<R: Runtime> Client<R> {
                 #[cfg(feature = "http3")]
                 if self.h3_endpoint.is_some() {
                     self.cache_alt_svc(&current_uri, resp.headers());
+                }
+                let mut resp = resp;
+                if !self.middleware.is_empty() {
+                    self.middleware
+                        .apply_response(resp.inner_mut(), &current_uri);
                 }
                 return Ok(resp.decompress(&self.accept_encoding));
             }

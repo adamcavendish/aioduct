@@ -62,6 +62,7 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 | `proxy_settings(ProxySettings)` | None | Fine-grained HTTP/HTTPS proxy with bypass rules |
 | `resolver(impl Resolve)` | None   | Custom DNS resolver, overrides runtime default |
 | `http2(Http2Config)`    | None   | Configure HTTP/2 parameters (window sizes, keepalive, frame size) |
+| `middleware(impl Middleware)` | None | Add a middleware layer that can inspect/modify requests and responses |
 
 ## RequestBuilder
 

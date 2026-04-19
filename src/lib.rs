@@ -25,6 +25,7 @@ pub mod tls;
 
 mod decompress;
 pub mod http2;
+pub mod middleware;
 mod socks5;
 
 #[cfg(feature = "http3")]
@@ -39,6 +40,7 @@ pub use client::Client;
 pub use cookie::CookieJar;
 pub use error::{Error, HyperBody};
 pub use http2::Http2Config;
+pub use middleware::Middleware;
 pub use multipart::Multipart;
 pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
