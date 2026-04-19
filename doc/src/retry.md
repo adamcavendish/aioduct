@@ -33,6 +33,7 @@ async fn main() -> Result<(), aioduct::Error> {
 | `max_backoff`       | `Duration` | `30s`    | Upper bound on backoff delay                 |
 | `backoff_multiplier`| `f64`      | `2.0`    | Multiplier applied to backoff each attempt   |
 | `retry_on_status`   | `bool`     | `true`   | Whether to retry on 5xx server errors        |
+| `budget`            | `Option<RetryBudget>` | `None` | Token-bucket budget to prevent retry storms |
 
 The delay for attempt *n* (0-indexed) is:
 
@@ -48,6 +49,23 @@ By default, aioduct retries on:
 - **5xx server errors** — 500, 502, 503, etc. (when `retry_on_status` is true)
 
 Client errors (4xx) are never retried. To disable 5xx retry, set `retry_on_status(false)`.
+
+## Retry Budget
+
+A `RetryBudget` prevents retry storms by limiting the total retry rate across all requests. Each successful (non-retried) request deposits tokens; each retry attempt withdraws one. When the budget is exhausted, retries are suppressed.
+
+```rust,no_run
+use std::time::Duration;
+use aioduct::{Client, RetryConfig, RetryBudget};
+use aioduct::runtime::TokioRuntime;
+
+let client = Client::<TokioRuntime>::builder()
+    .retry(
+        RetryConfig::default()
+            .budget(RetryBudget::new(10, 1)),  // max 10 tokens, +1 per success
+    )
+    .build();
+```
 
 ## Client-Level Retry
 

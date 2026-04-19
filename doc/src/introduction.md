@@ -26,8 +26,13 @@ aioduct fills this gap: a production-quality HTTP client that uses hyper 1.x **t
 |---------------------|-------------------------------|-------------------------------|
 | hyper version       | 1.x via hyper-util legacy     | 1.x direct                    |
 | hyper-util          | Required                      | Not used                      |
-| Runtime             | tokio only                    | tokio / smol / compio         |
+| Runtime             | tokio only                    | tokio / smol / compio / wasm  |
 | TLS                 | rustls or native-tls          | rustls                        |
 | HTTP/3              | Experimental                  | Experimental                  |
 | io_uring            | No                            | Via compio feature             |
 | Connection pool     | hyper-util legacy              | Custom, built for h1/h2/h3   |
+| Cookie jar          | Yes                           | Yes                           |
+| SSE streaming       | No (manual)                   | Built-in                      |
+| Rate limiting       | No                            | Built-in                      |
+| HTTP caching        | No                            | Built-in                      |
+| Middleware          | Via tower                     | Built-in + tower              |

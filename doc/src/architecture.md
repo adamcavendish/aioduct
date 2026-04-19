@@ -9,12 +9,28 @@ src/
   client.rs           # Client<R> and ClientBuilder<R>
   request.rs          # RequestBuilder<R> — fluent request API
   response.rs         # Response — status, headers, body consumption
+  body.rs             # BodyStream, RequestBody (buffered/streaming)
   timeout.rs          # Pin-projected Timeout future
+  cookie.rs           # CookieJar, Cookie, Set-Cookie parsing
+  cache.rs            # HttpCache, CacheConfig — in-memory HTTP cache
+  retry.rs            # RetryConfig, RetryBudget — exponential backoff
+  throttle.rs         # RateLimiter — token-bucket rate limiting
+  redirect.rs         # RedirectPolicy, RedirectAction
+  middleware.rs       # Middleware trait
+  sse.rs              # SseStream, SseEvent — Server-Sent Events
+  multipart.rs        # Multipart, Part — multipart/form-data
+  chunk_download.rs   # ChunkDownload — parallel range requests
+  upgrade.rs          # Upgraded — HTTP/1.1 protocol upgrade
+  decompress.rs       # DecompressBody — gzip/brotli/zstd/deflate
+  proxy.rs            # ProxyConfig, ProxySettings, NoProxy
+  socks4.rs           # SOCKS4/4a handshake
+  socks5.rs           # SOCKS5 handshake
+  blocking.rs         # Blocking client wrapper (requires tokio)
   runtime/
     mod.rs            # Runtime trait, HyperExecutor<R>
     tokio_rt.rs       # TokioRuntime, TokioIo, TokioSleep
     smol_rt.rs        # SmolRuntime, SmolIo, SmolSleep
-    compio_rt.rs      # CompioRuntime (placeholder)
+    compio_rt.rs      # CompioRuntime
   pool/
     mod.rs            # ConnectionPool<R> — keyed pooling
     connection.rs     # PooledConnection, HttpConnection enum
@@ -22,7 +38,11 @@ src/
     mod.rs            # TlsConnect trait, re-exports
     rustls_connector.rs  # RustlsConnector, TlsStream, ALPN
   h3/
-    mod.rs            # HTTP/3 transport (placeholder)
+    mod.rs            # HTTP/3 transport (experimental)
+  http2.rs            # Http2Config
+  connector.rs        # Tower Service connector (requires tower)
+  hickory.rs          # HickoryResolver (requires hickory-dns)
+  wasm/               # WASM/browser runtime
 ```
 
 ## Request Flow
@@ -34,17 +54,26 @@ Client::get("http://example.com/path")
   → RequestBuilder (accumulate headers, body, timeout, query params)
   → RequestBuilder::send()
     → apply timeout wrapper (Timeout future)
+    → rate limiter wait (if configured)
+    → check HTTP cache (if configured, return cached response on hit)
     → Client::execute()
       → merge default headers
-      → redirect loop (up to max_redirects):
-        → build http::Request with method, path-only URI, headers
-        → Client::execute_single()
-          → pool checkout (reuse existing connection?)
-          → if miss: DNS resolve → TCP connect → TLS handshake (if HTTPS)
-          → ALPN → select h1 or h2 sender
-          → send request on connection
-          → pool checkin
-        → check redirect status → follow or return
+      → apply cookie jar cookies (if configured)
+      → retry loop (if configured):
+        → redirect loop (up to max_redirects):
+          → run middleware on_request hooks
+          → build http::Request with method, path-only URI, headers
+          → Client::execute_single()
+            → pool checkout (reuse existing connection?)
+            → if miss: DNS resolve → TCP connect → TLS handshake (if HTTPS)
+            → ALPN → select h1 or h2 sender
+            → send request on connection
+            → pool checkin
+          → run middleware on_response hooks
+          → store response cookies in jar (if configured)
+          → check redirect status → follow or return
+      → cache response (if configured and cacheable)
+      → decompress body (if content-encoding matches)
   → Response
 ```
 

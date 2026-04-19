@@ -143,6 +143,29 @@ async fn main() -> Result<(), aioduct::Error> {
 }
 ```
 
+## SOCKS4/SOCKS4a Proxy
+
+SOCKS4/SOCKS4a proxies are also supported. SOCKS4a extends SOCKS4 with domain name resolution on the proxy side:
+
+```rust,no_run
+use aioduct::{Client, ProxyConfig};
+use aioduct::runtime::TokioRuntime;
+
+// SOCKS4a proxy (domain resolution on proxy)
+let client = Client::<TokioRuntime>::builder()
+    .proxy(ProxyConfig::socks4("socks4a://localhost:1080").unwrap())
+    .build();
+
+// SOCKS4 proxy
+let client = Client::<TokioRuntime>::builder()
+    .proxy(ProxyConfig::socks4("socks4://localhost:1080").unwrap())
+    .build();
+```
+
+SOCKS4 supports optional user ID authentication (passed via `basic_auth` — only the username is used).
+
+Environment variables with `socks4://` or `socks4a://` URLs are automatically detected by `system_proxy()`.
+
 ## SOCKS5 Proxy
 
 SOCKS5 proxies tunnel TCP connections at a lower level than HTTP proxies. After the SOCKS5 handshake, the TCP stream is used directly — for HTTP targets, the client sends a normal request; for HTTPS targets, TLS is negotiated over the tunnel.
@@ -171,5 +194,5 @@ Environment variables with `socks5://` URLs are automatically detected by `syste
 ## Limitations
 
 - SOCKS5 supports no-auth and username/password authentication (RFC 1928/1929)
-- SOCKS4 is not supported
-- The HTTP proxy URI must use `http://` scheme; the SOCKS5 proxy URI must use `socks5://`
+- SOCKS4 supports optional user ID authentication
+- The HTTP proxy URI must use `http://` scheme; the SOCKS5 proxy URI must use `socks5://`; the SOCKS4 proxy URI must use `socks4://` or `socks4a://`

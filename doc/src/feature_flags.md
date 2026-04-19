@@ -9,12 +9,20 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 | `tokio`  | tokio                             | Stable       | Tokio async runtime                  |
 | `smol`   | smol, async-io, futures-io        | Stable       | Smol async runtime                   |
 | `compio` | compio-runtime, async-io          | Experimental | Compio runtime (io_uring / IOCP)     |
+| `wasm`   | wasm-bindgen, web-sys, js-sys     | Experimental | Browser/WASM runtime                 |
 | `rustls` | rustls, webpki-roots, rustls-pemfile | Stable    | TLS via rustls (required for HTTPS)  |
-| `json`   | serde, serde_json                 | Stable       | JSON request/response helpers        |
+| `rustls-native-roots` | rustls, rustls-native-certs | Stable | Use OS certificate store instead of webpki-roots |
+| `json`   | serde, serde_json, serde_urlencoded | Stable    | JSON request/response helpers        |
+| `charset`| encoding_rs, mime                 | Stable       | Charset decoding for response text   |
 | `gzip`   | flate2                            | Stable       | Gzip response decompression          |
 | `deflate`| flate2                            | Stable       | Deflate response decompression       |
 | `brotli` | brotli                            | Stable       | Brotli response decompression        |
 | `zstd`   | zstd                              | Stable       | Zstd response decompression          |
+| `blocking`| tokio                            | Stable       | Synchronous blocking client wrapper  |
+| `hickory-dns` | hickory-resolver, tokio      | Stable       | DNS resolution via hickory           |
+| `tower`  | tower-service, tower-layer        | Stable       | Tower Service/Layer integration      |
+| `tracing`| tracing                           | Stable       | Tracing spans for HTTP requests      |
+| `otel`   | opentelemetry, opentelemetry-http | Stable       | OpenTelemetry middleware             |
 | `http3`  | h3, h3-quinn, quinn (+ rustls)    | Experimental | HTTP/3 transport                     |
 
 ## Compile Error Without Runtime
@@ -22,7 +30,7 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 If no runtime feature is selected, aioduct emits a compile error:
 
 ```text
-error: aioduct: enable at least one runtime feature: tokio, smol, or compio
+error: aioduct: enable at least one runtime feature: tokio, smol, compio, or wasm
 ```
 
 ## Common Feature Combinations
@@ -45,6 +53,18 @@ aioduct = { version = "0.1", features = ["compio"] }
 
 # HTTPS + JSON + compression, tokio runtime
 aioduct = { version = "0.1", features = ["tokio", "rustls", "json", "gzip", "brotli", "zstd", "deflate"] }
+
+# Blocking client (synchronous)
+aioduct = { version = "0.1", features = ["tokio", "rustls", "blocking"] }
+
+# With tracing and OpenTelemetry
+aioduct = { version = "0.1", features = ["tokio", "rustls", "tracing", "otel"] }
+
+# With tower integration
+aioduct = { version = "0.1", features = ["tokio", "rustls", "tower"] }
+
+# Hickory DNS resolver
+aioduct = { version = "0.1", features = ["tokio", "rustls", "hickory-dns"] }
 ```
 
 ## Core Dependencies (Always Included)

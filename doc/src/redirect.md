@@ -15,8 +15,10 @@ aioduct follows HTTP redirects automatically by default (up to 10 hops). You can
 
 Regardless of policy, aioduct follows RFC semantics for method changes:
 
-- **301, 302, 303** → method changes to `GET`, body is dropped
+- **301, 302, 303** → method changes to `GET`, body is dropped, content headers (`Content-Type`, `Content-Length`, `Content-Encoding`) are stripped
 - **307, 308** → method and body are preserved
+
+Sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are automatically stripped when redirecting to a different origin.
 
 ## No Redirects
 
@@ -72,3 +74,18 @@ let client = Client::<TokioRuntime>::builder()
 - **HTTPS-only**: reject downgrades from HTTPS to HTTP
 - **Logging**: log each redirect decision while still following
 - **Domain allowlist**: only follow redirects to trusted domains
+
+## Referer Header
+
+By default, aioduct does **not** set a `Referer` header on redirect hops. Enable it on the client builder:
+
+```rust,no_run
+use aioduct::Client;
+use aioduct::runtime::TokioRuntime;
+
+let client = Client::<TokioRuntime>::builder()
+    .referer(true)
+    .build();
+```
+
+When enabled, each redirect sets the `Referer` header to the URI of the previous request.

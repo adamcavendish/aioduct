@@ -47,9 +47,11 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 |-------------------------|-------------|--------------------------------------|
 | `timeout(Duration)`     | None        | Default timeout for all requests     |
 | `connect_timeout(Duration)` | None   | Timeout for TCP connect + TLS handshake |
+| `read_timeout(Duration)` | None      | Timeout between body data chunks     |
 | `tcp_keepalive(Duration)` | None     | Enable TCP keepalive with given interval |
 | `local_address(IpAddr)`   | None     | Bind outgoing connections to a local IP  |
 | `max_redirects(usize)`  | 10          | Maximum redirect hops (0 = disabled) |
+| `referer(bool)`         | false       | Set `Referer` header on redirects    |
 | `https_only(bool)`      | false       | Reject non-HTTPS URLs                |
 | `pool_idle_timeout(Duration)` | 90s  | Idle connection lifetime             |
 | `pool_max_idle_per_host(usize)` | 10 | Max idle connections per origin      |
@@ -63,6 +65,10 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 | `resolver(impl Resolve)` | None   | Custom DNS resolver, overrides runtime default |
 | `http2(Http2Config)`    | None   | Configure HTTP/2 parameters (window sizes, keepalive, frame size) |
 | `middleware(impl Middleware)` | None | Add a middleware layer that can inspect/modify requests and responses |
+| `retry(RetryConfig)`    | None        | Default retry policy for all requests |
+| `cookie_jar(CookieJar)` | None       | Enable automatic cookie management   |
+| `rate_limiter(RateLimiter)` | None   | Token-bucket rate limiter for outgoing requests |
+| `cache(HttpCache)`      | None        | Enable in-memory HTTP response caching |
 
 ## RequestBuilder
 
@@ -234,9 +240,9 @@ aioduct follows redirects automatically (up to `max_redirects`, default 10):
 
 | Status | Behavior                            |
 |--------|-------------------------------------|
-| 301    | Follow with GET, drop body          |
-| 302    | Follow with GET, drop body          |
-| 303    | Follow with GET, drop body          |
+| 301    | Follow with GET, drop body + content headers |
+| 302    | Follow with GET, drop body + content headers |
+| 303    | Follow with GET, drop body + content headers |
 | 307    | Follow with original method + body  |
 | 308    | Follow with original method + body  |
 

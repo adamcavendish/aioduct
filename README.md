@@ -18,14 +18,25 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 ## Features
 
 - **No hyper-util** — custom IO adapters and executor directly against `hyper::rt` traits
-- **Multi-runtime** — tokio, smol, and compio (io_uring) via feature flags
+- **Multi-runtime** — tokio, smol, and compio (io_uring) via feature flags; WASM/browser support
 - **rustls TLS** — async handshake with ALPN-based HTTP/1.1 and HTTP/2 negotiation
 - **Connection pooling** — keyed by (scheme, authority) with idle timeout and per-host limits
-- **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping
-- **Timeouts** — per-request, client-level, and connect timeouts
+- **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping and content header removal
+- **Cookie jar** — automatic cookie storage, domain/path/subdomain matching, Max-Age and Expires expiration, Secure flag enforcement
+- **Timeouts** — per-request, client-level, connect, and read timeouts
+- **Retry** — configurable exponential backoff with retry budgets, per-request or client-level
 - **Decompression** — automatic gzip, brotli, zstd, deflate response decompression
-- **Proxy** — HTTP proxy with CONNECT tunneling, SOCKS5 proxy, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
-- **Custom DNS** — pluggable resolver via the `Resolve` trait
+- **Proxy** — HTTP CONNECT tunneling, SOCKS4/SOCKS4a, SOCKS5, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
+- **Middleware** — pluggable request/response interceptors via trait or closure
+- **Rate limiting** — token-bucket rate limiter for outgoing requests
+- **Caching** — in-memory HTTP cache with configurable max entries
+- **SSE** — Server-Sent Events stream parsing for LLM APIs
+- **Multipart** — `multipart/form-data` uploads with text fields and file parts
+- **Streaming** — chunked downloads and streaming uploads without buffering
+- **Chunk download** — parallel HTTP Range requests for large files
+- **HTTP upgrade** — WebSocket and other protocol upgrades via HTTP/1.1 101
+- **Blocking client** — synchronous wrapper for non-async contexts (requires tokio)
+- **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
 - **TCP keepalive** — configurable keepalive interval for long-lived connections
 - **Local address binding** — bind outgoing connections to a specific local IP
@@ -34,6 +45,8 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Form data** — URL-encoded form bodies
 - **Query parameters** — with percent-encoding
 - **Default headers** — automatic User-Agent, configurable defaults
+- **Observability** — optional tracing spans and OpenTelemetry middleware
+- **Tower integration** — use aioduct as a tower `Service`
 
 ## Quick Start
 
@@ -80,12 +93,20 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 | `tokio`   | Tokio async runtime                    | Stable       |
 | `smol`    | Smol async runtime                     | Stable       |
 | `compio`  | Compio runtime (io_uring / IOCP)       | Experimental |
+| `wasm`    | Browser/WASM runtime via web-sys       | Experimental |
 | `rustls`  | TLS via rustls (required for HTTPS)    | Stable       |
+| `rustls-native-roots` | Use OS certificate store instead of webpki-roots | Stable |
 | `json`    | JSON request/response with serde       | Stable       |
+| `charset` | Charset decoding via encoding_rs       | Stable       |
 | `gzip`    | Gzip response decompression            | Stable       |
 | `deflate` | Deflate response decompression         | Stable       |
 | `brotli`  | Brotli response decompression          | Stable       |
 | `zstd`    | Zstd response decompression            | Stable       |
+| `blocking`| Synchronous blocking client (requires tokio) | Stable |
+| `hickory-dns` | DNS via hickory-resolver (requires tokio) | Stable |
+| `tower`   | Tower `Service` and `Layer` integration | Stable      |
+| `tracing` | Tracing spans for requests             | Stable       |
+| `otel`    | OpenTelemetry middleware               | Stable       |
 | `http3`   | HTTP/3 via h3 + h3-quinn              | Experimental |
 
 At least one runtime feature must be enabled or compilation will fail.
@@ -239,11 +260,16 @@ pub trait Runtime: Send + Sync + 'static {
 |---|---|---|
 | hyper | 1.x via hyper-util legacy | 1.x direct |
 | hyper-util | Required | Not used |
-| Runtime | tokio only | tokio / smol / compio |
+| Runtime | tokio only | tokio / smol / compio / wasm |
 | TLS | rustls or native-tls | rustls |
 | HTTP/3 | Experimental | Experimental |
 | io_uring | No | Via compio |
 | Connection pool | hyper-util legacy | Custom h1/h2/h3 |
+| Cookie jar | Yes | Yes |
+| SSE streaming | No (manual) | Built-in |
+| Rate limiting | No | Built-in |
+| HTTP caching | No | Built-in |
+| Middleware | Via tower | Built-in + tower |
 
 ## MSRV
 
