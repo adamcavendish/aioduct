@@ -2060,3 +2060,21 @@ async fn test_tcp_keepalive() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
+
+#[tokio::test]
+async fn test_local_address_binding() {
+    let addr = start_server().await;
+    let client = Client::<TokioRuntime>::builder()
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}

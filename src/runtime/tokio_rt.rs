@@ -50,6 +50,28 @@ impl Runtime for TokioRuntime {
         let keepalive = socket2::TcpKeepalive::new().with_time(interval);
         sock_ref.set_tcp_keepalive(&keepalive)
     }
+
+    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let tokio_stream = tokio::net::TcpStream::from_std(stream)?;
+        Ok(TokioIo::new(tokio_stream))
+    }
+
+    async fn connect_bound(
+        addr: SocketAddr,
+        local: std::net::IpAddr,
+    ) -> io::Result<Self::TcpStream> {
+        let socket = if addr.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()?
+        } else {
+            tokio::net::TcpSocket::new_v6()?
+        };
+        socket.bind(std::net::SocketAddr::new(local, 0))?;
+        let stream = socket.connect(addr).await?;
+        stream.set_nodelay(true)?;
+        Ok(TokioIo::new(stream))
+    }
 }
 
 // -- TokioSleep: bridges hyper::rt::Sleep to tokio::time::Sleep --

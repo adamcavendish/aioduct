@@ -21,6 +21,13 @@ pub trait Runtime: Send + Sync + 'static {
     fn set_tcp_keepalive(_stream: &Self::TcpStream, _interval: Duration) -> io::Result<()> {
         Ok(())
     }
+
+    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream>;
+
+    fn connect_bound(
+        addr: SocketAddr,
+        local: std::net::IpAddr,
+    ) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
 }
 
 /// Custom DNS resolver trait.

@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::net::IpAddr;
 use std::pin::Pin;
 #[cfg(feature = "rustls")]
 use std::sync::Arc;
@@ -31,6 +32,7 @@ pub struct Client<R: Runtime> {
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
     tcp_keepalive: Option<Duration>,
+    local_address: Option<IpAddr>,
     https_only: bool,
     accept_encoding: crate::decompress::AcceptEncoding,
     default_headers: HeaderMap,
@@ -57,6 +59,7 @@ impl<R: Runtime> Clone for Client<R> {
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
             tcp_keepalive: self.tcp_keepalive,
+            local_address: self.local_address,
             https_only: self.https_only,
             accept_encoding: self.accept_encoding.clone(),
             default_headers: self.default_headers.clone(),
@@ -85,6 +88,7 @@ pub struct ClientBuilder<R: Runtime> {
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
     tcp_keepalive: Option<Duration>,
+    local_address: Option<IpAddr>,
     https_only: bool,
     accept_encoding: crate::decompress::AcceptEncoding,
     default_headers: HeaderMap,
@@ -113,6 +117,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             timeout: None,
             connect_timeout: None,
             tcp_keepalive: None,
+            local_address: None,
             https_only: false,
             accept_encoding: crate::decompress::AcceptEncoding::default(),
             default_headers,
@@ -171,6 +176,12 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Enable TCP keepalive with the given interval.
     pub fn tcp_keepalive(mut self, interval: Duration) -> Self {
         self.tcp_keepalive = Some(interval);
+        self
+    }
+
+    /// Bind outgoing connections to a specific local IP address.
+    pub fn local_address(mut self, addr: IpAddr) -> Self {
+        self.local_address = Some(addr);
         self
     }
 
@@ -295,6 +306,7 @@ impl<R: Runtime> ClientBuilder<R> {
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
             tcp_keepalive: self.tcp_keepalive,
+            local_address: self.local_address,
             https_only: self.https_only,
             accept_encoding: self.accept_encoding,
             default_headers: self.default_headers,
@@ -649,8 +661,15 @@ impl<R: Runtime> Client<R> {
             let addr = self.resolve_authority(authority, default_port).await?;
 
             let tcp_keepalive = self.tcp_keepalive;
+            let local_address = self.local_address;
             let connect_fut = async {
-                let tcp_stream = R::connect(addr).await?;
+                let tcp_stream = if let Some(local_addr) = local_address {
+                    R::connect_bound(addr, local_addr)
+                        .await
+                        .map_err(Error::Io)?
+                } else {
+                    R::connect(addr).await?
+                };
                 if let Some(interval) = tcp_keepalive {
                     R::set_tcp_keepalive(&tcp_stream, interval)?;
                 }
@@ -690,7 +709,13 @@ impl<R: Runtime> Client<R> {
         let proxy_addr = self
             .resolve_authority(proxy_authority, default_port)
             .await?;
-        let tcp_stream = R::connect(proxy_addr).await?;
+        let tcp_stream = if let Some(local_addr) = self.local_address {
+            R::connect_bound(proxy_addr, local_addr)
+                .await
+                .map_err(Error::Io)?
+        } else {
+            R::connect(proxy_addr).await?
+        };
         if let Some(interval) = self.tcp_keepalive {
             R::set_tcp_keepalive(&tcp_stream, interval)?;
         }

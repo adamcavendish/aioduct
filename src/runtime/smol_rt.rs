@@ -51,6 +51,37 @@ impl Runtime for SmolRuntime {
         let keepalive = socket2::TcpKeepalive::new().with_time(interval);
         sock_ref.set_tcp_keepalive(&keepalive)
     }
+
+    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let async_stream = smol::net::TcpStream::try_from(stream)?;
+        Ok(SmolIo::new(async_stream))
+    }
+
+    async fn connect_bound(
+        addr: SocketAddr,
+        local: std::net::IpAddr,
+    ) -> io::Result<Self::TcpStream> {
+        use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
+        let std_stream = smol::unblock(move || {
+            let domain = if addr.is_ipv4() {
+                Domain::IPV4
+            } else {
+                Domain::IPV6
+            };
+            let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+            socket.bind(&SockAddr::from(std::net::SocketAddr::new(local, 0)))?;
+            socket.connect(&SockAddr::from(addr))?;
+            socket.set_nodelay(true)?;
+            Ok::<std::net::TcpStream, io::Error>(socket.into())
+        })
+        .await?;
+        std_stream.set_nonblocking(true)?;
+        let smol_stream = smol::net::TcpStream::try_from(std_stream)?;
+        Ok(SmolIo::new(smol_stream))
+    }
 }
 
 // -- SmolSleep --

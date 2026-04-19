@@ -83,6 +83,41 @@ impl Runtime for CompioRuntime {
         let keepalive = socket2::TcpKeepalive::new().with_time(interval);
         sock_ref.set_tcp_keepalive(&keepalive)
     }
+
+    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let async_stream = async_io::Async::new(stream)?;
+        Ok(CompioIo::new(async_stream))
+    }
+
+    fn connect_bound(
+        addr: SocketAddr,
+        local: std::net::IpAddr,
+    ) -> impl Future<Output = io::Result<Self::TcpStream>> + Send {
+        AssertSend(async move {
+            use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
+            let std_stream = compio_runtime::spawn_blocking(move || {
+                let domain = if addr.is_ipv4() {
+                    Domain::IPV4
+                } else {
+                    Domain::IPV6
+                };
+                let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+                socket.bind(&SockAddr::from(std::net::SocketAddr::new(local, 0)))?;
+                socket.connect(&SockAddr::from(addr))?;
+                socket.set_nodelay(true)?;
+                Ok::<std::net::TcpStream, io::Error>(socket.into())
+            })
+            .await
+            .map_err(|e| io::Error::other(format!("{e:?}")))?;
+            let std_stream = std_stream?;
+            std_stream.set_nonblocking(true)?;
+            let async_stream = async_io::Async::new(std_stream)?;
+            Ok(CompioIo::new(async_stream))
+        })
+    }
 }
 
 /// Compio-backed sleep future.
