@@ -42,6 +42,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "isahc",
+ "js-sys",
  "mime",
  "percent-encoding",
  "pin-project-lite",
@@ -59,6 +60,9 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "webpki-roots",
  "zstd",
 ]

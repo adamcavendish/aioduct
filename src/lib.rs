@@ -3,8 +3,8 @@
 //! aioduct is runtime-agnostic: enable `tokio`, `smol`, or `compio` via feature flags.
 //! For HTTPS, enable the `rustls` feature.
 
-#[cfg(not(any(feature = "tokio", feature = "smol", feature = "compio")))]
-compile_error!("aioduct: enable at least one runtime feature: tokio, smol, or compio");
+#[cfg(not(any(feature = "tokio", feature = "smol", feature = "compio", feature = "wasm")))]
+compile_error!("aioduct: enable at least one runtime feature: tokio, smol, compio, or wasm");
 
 pub mod body;
 #[cfg(feature = "blocking")]
@@ -37,6 +37,9 @@ mod socks4;
 mod socks5;
 pub mod throttle;
 pub mod upgrade;
+
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 #[cfg(feature = "http3")]
 mod alt_svc;

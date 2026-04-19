@@ -28,6 +28,7 @@ brotli = ["dep:brotli"]
 zstd = ["dep:zstd"]
 deflate = ["dep:flate2"]
 tower = ["dep:tower-service", "dep:tower-layer"]
+wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
 [dependencies]
 # Core — always required
@@ -87,6 +88,16 @@ zstd = { version = "0.13", optional = true, default-features = false }
 # Tower integration
 tower-service = { version = "0.3", optional = true }
 tower-layer = { version = "0.3", optional = true }
+
+# WASM/browser
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Headers", "Request", "RequestInit", "RequestMode",
+    "Response", "Window", "ReadableStream", "ReadableStreamDefaultReader",
+    "AbortController", "AbortSignal",
+] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
