@@ -716,11 +716,11 @@ impl<R: Runtime> Client<R> {
         is_https: bool,
     ) -> Result<PooledConnection<R>> {
         let proxy_authority = proxy.authority()?;
-        let default_port = 80;
+        let default_port = proxy.default_port();
         let proxy_addr = self
             .resolve_authority(proxy_authority, default_port)
             .await?;
-        let tcp_stream = if let Some(local_addr) = self.local_address {
+        let mut tcp_stream = if let Some(local_addr) = self.local_address {
             R::connect_bound(proxy_addr, local_addr)
                 .await
                 .map_err(Error::Io)?
@@ -731,7 +731,20 @@ impl<R: Runtime> Client<R> {
             R::set_tcp_keepalive(&tcp_stream, interval)?;
         }
 
-        if is_https {
+        if proxy.scheme == crate::proxy::ProxyScheme::Socks5 {
+            let host = target_authority.host();
+            let port = target_authority
+                .port_u16()
+                .unwrap_or(if is_https { 443 } else { 80 });
+            crate::socks5::socks5_handshake(&mut tcp_stream, host, port, proxy.auth.as_ref())
+                .await
+                .map_err(Error::Io)?;
+            if is_https {
+                self.connect_tls(tcp_stream, host).await
+            } else {
+                self.connect_h1(tcp_stream).await
+            }
+        } else if is_https {
             self.connect_tunnel(tcp_stream, proxy, target_authority)
                 .await
         } else {

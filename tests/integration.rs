@@ -2109,3 +2109,147 @@ async fn test_http2_config_accepted() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
+
+#[tokio::test]
+async fn test_socks5_proxy() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let target_addr = start_server().await;
+
+    // Minimal SOCKS5 proxy server
+    let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socks_addr = socks_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut client, _) = socks_listener.accept().await.unwrap();
+
+            tokio::spawn(async move {
+                // Read greeting
+                let mut buf = [0u8; 256];
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 3);
+                assert_eq!(buf[0], 0x05); // SOCKS5
+
+                // Reply: no auth
+                client.write_all(&[0x05, 0x00]).await.unwrap();
+
+                // Read connect request
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 7);
+                assert_eq!(buf[0], 0x05); // SOCKS5
+                assert_eq!(buf[1], 0x01); // CONNECT
+                assert_eq!(buf[3], 0x03); // Domain
+
+                let domain_len = buf[4] as usize;
+                let port_offset = 5 + domain_len;
+                let port = ((buf[port_offset] as u16) << 8) | (buf[port_offset + 1] as u16);
+
+                // Connect to target
+                let target = format!("127.0.0.1:{port}");
+                let mut upstream = tokio::net::TcpStream::connect(target).await.unwrap();
+
+                // Reply: success, bound to 0.0.0.0:0
+                client
+                    .write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                    .await
+                    .unwrap();
+
+                // Bidirectional relay
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
+
+    let client = Client::<TokioRuntime>::builder()
+        .proxy(aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}")).unwrap())
+        .build();
+
+    let resp = client
+        .get(&format!("http://localhost:{}/", target_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}
+
+#[tokio::test]
+async fn test_socks5_proxy_with_auth() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let target_addr = start_server().await;
+
+    let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socks_addr = socks_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut client, _) = socks_listener.accept().await.unwrap();
+
+            tokio::spawn(async move {
+                let mut buf = [0u8; 256];
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 3);
+                assert_eq!(buf[0], 0x05);
+
+                // Require username/password auth
+                client.write_all(&[0x05, 0x02]).await.unwrap();
+
+                // Read auth sub-negotiation
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 3);
+                assert_eq!(buf[0], 0x01); // sub-version
+                let ulen = buf[1] as usize;
+                let username = String::from_utf8_lossy(&buf[2..2 + ulen]).to_string();
+                let plen = buf[2 + ulen] as usize;
+                let password = String::from_utf8_lossy(&buf[3 + ulen..3 + ulen + plen]).to_string();
+
+                if username == "testuser" && password == "testpass" {
+                    client.write_all(&[0x01, 0x00]).await.unwrap();
+                } else {
+                    client.write_all(&[0x01, 0x01]).await.unwrap();
+                    return;
+                }
+
+                // Read connect request
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 7);
+
+                let domain_len = buf[4] as usize;
+                let port_offset = 5 + domain_len;
+                let port = ((buf[port_offset] as u16) << 8) | (buf[port_offset + 1] as u16);
+
+                let target = format!("127.0.0.1:{port}");
+                let mut upstream = tokio::net::TcpStream::connect(target).await.unwrap();
+
+                client
+                    .write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                    .await
+                    .unwrap();
+
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
+
+    let client = Client::<TokioRuntime>::builder()
+        .proxy(
+            aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}"))
+                .unwrap()
+                .basic_auth("testuser", "testpass"),
+        )
+        .build();
+
+    let resp = client
+        .get(&format!("http://localhost:{}/", target_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}

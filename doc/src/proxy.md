@@ -1,6 +1,6 @@
 # Proxy Support
 
-aioduct supports routing requests through an HTTP proxy. For HTTP targets, the request is sent directly to the proxy. For HTTPS targets, a CONNECT tunnel is established through the proxy before TLS negotiation.
+aioduct supports routing requests through HTTP and SOCKS5 proxies. For HTTP targets via an HTTP proxy, the request is sent directly to the proxy. For HTTPS targets, a CONNECT tunnel is established. SOCKS5 proxies tunnel all traffic regardless of scheme.
 
 ## Basic Usage
 
@@ -8,8 +8,14 @@ aioduct supports routing requests through an HTTP proxy. For HTTP targets, the r
 use aioduct::{Client, ProxyConfig};
 use aioduct::runtime::TokioRuntime;
 
+// HTTP proxy
 let client = Client::<TokioRuntime>::builder()
     .proxy(ProxyConfig::http("http://proxy.example.com:8080").unwrap())
+    .build();
+
+// SOCKS5 proxy
+let client = Client::<TokioRuntime>::builder()
+    .proxy(ProxyConfig::socks5("socks5://socks-proxy.example.com:1080").unwrap())
     .build();
 ```
 
@@ -137,7 +143,33 @@ async fn main() -> Result<(), aioduct::Error> {
 }
 ```
 
+## SOCKS5 Proxy
+
+SOCKS5 proxies tunnel TCP connections at a lower level than HTTP proxies. After the SOCKS5 handshake, the TCP stream is used directly — for HTTP targets, the client sends a normal request; for HTTPS targets, TLS is negotiated over the tunnel.
+
+```rust,no_run
+use aioduct::{Client, ProxyConfig};
+use aioduct::runtime::TokioRuntime;
+
+// Without auth
+let client = Client::<TokioRuntime>::builder()
+    .proxy(ProxyConfig::socks5("socks5://localhost:1080").unwrap())
+    .build();
+
+// With username/password auth
+let client = Client::<TokioRuntime>::builder()
+    .proxy(
+        ProxyConfig::socks5("socks5://localhost:1080")
+            .unwrap()
+            .basic_auth("user", "pass"),
+    )
+    .build();
+```
+
+Environment variables with `socks5://` URLs are automatically detected by `system_proxy()`.
+
 ## Limitations
 
-- Only HTTP proxy protocol is supported (not SOCKS5)
-- The proxy URI must use `http://` scheme
+- SOCKS5 supports no-auth and username/password authentication (RFC 1928/1929)
+- SOCKS4 is not supported
+- The HTTP proxy URI must use `http://` scheme; the SOCKS5 proxy URI must use `socks5://`

@@ -2,10 +2,17 @@ use http::Uri;
 
 use crate::error::{Error, Result};
 
-/// HTTP proxy configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProxyScheme {
+    Http,
+    Socks5,
+}
+
+/// Proxy configuration (HTTP or SOCKS5).
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
     pub(crate) uri: Uri,
+    pub(crate) scheme: ProxyScheme,
     pub(crate) auth: Option<ProxyAuth>,
 }
 
@@ -24,7 +31,26 @@ impl ProxyConfig {
                 "proxy URI must use http:// scheme".into(),
             ));
         }
-        Ok(Self { uri, auth: None })
+        Ok(Self {
+            uri,
+            scheme: ProxyScheme::Http,
+            auth: None,
+        })
+    }
+
+    /// Create a proxy config from a `socks5://` URI.
+    pub fn socks5(uri: &str) -> Result<Self> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        if uri.scheme_str() != Some("socks5") {
+            return Err(Error::InvalidUrl(
+                "SOCKS5 proxy URI must use socks5:// scheme".into(),
+            ));
+        }
+        Ok(Self {
+            uri,
+            scheme: ProxyScheme::Socks5,
+            auth: None,
+        })
     }
 
     /// Set basic authentication credentials for the proxy.
@@ -40,6 +66,13 @@ impl ProxyConfig {
         self.uri
             .authority()
             .ok_or_else(|| Error::InvalidUrl("proxy URI missing authority".into()))
+    }
+
+    pub(crate) fn default_port(&self) -> u16 {
+        match self.scheme {
+            ProxyScheme::Http => 80,
+            ProxyScheme::Socks5 => 1080,
+        }
     }
 
     pub(crate) fn connect_header(&self, _target_authority: &str) -> Option<String> {
@@ -176,5 +209,9 @@ fn env_proxy(upper: &str, lower: &str) -> Option<ProxyConfig> {
     if val.is_empty() {
         return None;
     }
-    ProxyConfig::http(&val).ok()
+    if val.starts_with("socks5://") {
+        ProxyConfig::socks5(&val).ok()
+    } else {
+        ProxyConfig::http(&val).ok()
+    }
 }

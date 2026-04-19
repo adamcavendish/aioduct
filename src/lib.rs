@@ -25,6 +25,7 @@ pub mod tls;
 
 mod decompress;
 pub mod http2;
+mod socks5;
 
 #[cfg(feature = "http3")]
 mod alt_svc;
