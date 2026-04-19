@@ -192,6 +192,21 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    /// Set upgrade headers for a WebSocket handshake.
+    ///
+    /// This sets `Connection: Upgrade`, `Upgrade: websocket`, and forces HTTP/1.1.
+    /// After calling `send()`, check for status 101 and call `response.upgrade()`.
+    pub fn upgrade(mut self) -> Self {
+        self.headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("Upgrade"),
+        );
+        self.headers
+            .insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
+        self.version = Some(Version::HTTP_11);
+        self
+    }
+
     /// Send the request and return the response.
     pub async fn send(self) -> Result<Response> {
         let effective_retry = self.retry.as_ref().or(self.client.default_retry()).cloned();

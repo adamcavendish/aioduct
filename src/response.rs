@@ -127,4 +127,12 @@ impl Response {
     pub fn into_sse_stream(self) -> crate::sse::SseStream {
         crate::sse::SseStream::new(self.inner.into_body())
     }
+
+    /// Perform an HTTP upgrade (e.g., WebSocket) on this response.
+    ///
+    /// This should be called after receiving a `101 Switching Protocols` response.
+    /// Returns an [`Upgraded`](crate::upgrade::Upgraded) bidirectional IO stream.
+    pub async fn upgrade(mut self) -> Result<crate::upgrade::Upgraded> {
+        crate::upgrade::on_upgrade(&mut self.inner).await
+    }
 }

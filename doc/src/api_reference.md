@@ -147,6 +147,10 @@ use std::time::Duration;
 let rb = client.get("http://example.com").unwrap()
     .timeout(Duration::from_secs(5))     // per-request timeout
     .version(http::Version::HTTP_11);    // force HTTP version
+
+// HTTP upgrade (WebSocket)
+let rb = client.get("http://example.com/ws").unwrap()
+    .upgrade();  // sets Connection: Upgrade, Upgrade: websocket, HTTP/1.1
 ```
 
 ### Sending
@@ -217,6 +221,9 @@ let text = client.get("http://example.com")?.send().await?.text().await?;
 
 // Raw hyper body
 let body = client.get("http://example.com")?.send().await?.into_body();
+
+// HTTP upgrade (WebSocket) — after 101 response
+// let upgraded = resp.upgrade().await?;
 # Ok(())
 # }
 ```

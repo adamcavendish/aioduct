@@ -647,7 +647,9 @@ impl<R: Runtime> Client<R> {
 
         if let Some(mut conn) = self.pool.checkout(&pool_key) {
             let resp = Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
-            self.pool.checkin(pool_key, conn);
+            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                self.pool.checkin(pool_key, conn);
+            }
             return Ok(resp);
         }
 
@@ -672,7 +674,9 @@ impl<R: Runtime> Client<R> {
                     let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
                     let resp = Self::send_on_connection(&mut pooled, request, original_uri.clone())
                         .await?;
-                    self.pool.checkin(pool_key, pooled);
+                    if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                        self.pool.checkin(pool_key, pooled);
+                    }
                     return Ok(resp);
                 }
             }
@@ -722,7 +726,9 @@ impl<R: Runtime> Client<R> {
         };
 
         let resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
-        self.pool.checkin(pool_key, pooled);
+        if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+            self.pool.checkin(pool_key, pooled);
+        }
 
         Ok(resp)
     }
@@ -838,7 +844,7 @@ impl<R: Runtime> Client<R> {
     async fn connect_h1(&self, tcp_stream: R::TcpStream) -> Result<PooledConnection<R>> {
         let (sender, conn) = hyper::client::conn::http1::handshake(tcp_stream).await?;
         R::spawn(async move {
-            let _ = conn.await;
+            let _ = conn.with_upgrades().await;
         });
         Ok(PooledConnection::new_h1(sender))
     }

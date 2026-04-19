@@ -27,6 +27,7 @@ mod decompress;
 pub mod http2;
 pub mod middleware;
 mod socks5;
+pub mod upgrade;
 
 #[cfg(feature = "http3")]
 mod alt_svc;
@@ -49,5 +50,6 @@ pub use response::Response;
 pub use retry::RetryConfig;
 pub use runtime::{Resolve, Runtime};
 pub use sse::{SseEvent, SseStream};
+pub use upgrade::Upgraded;
 
 pub use http::{HeaderMap, Method, StatusCode, Uri, Version};
