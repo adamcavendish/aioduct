@@ -6,8 +6,10 @@ rust-version = "1.85"
 description = "Async-native HTTP client built directly on hyper 1.x — no hyper-util, no legacy"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/adamcavendish/aioduct"
+readme = "README.md"
 keywords = ["http", "client", "async", "hyper", "rustls"]
 categories = ["network-programming", "web-programming::http-client"]
+exclude = ["doc/", "benches/", "tests/", "target/"]
 
 [features]
 default = []
