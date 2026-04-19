@@ -14,6 +14,7 @@ exclude = ["doc/", "benches/", "tests/", "target/"]
 [features]
 default = []
 json = ["dep:serde", "dep:serde_json", "dep:serde_urlencoded"]
+charset = ["dep:encoding_rs", "dep:mime"]
 rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile"]
 rustls-native-roots = ["rustls", "dep:rustls-native-certs"]
 tokio = ["dep:tokio"]
@@ -37,11 +38,16 @@ thiserror = "2"
 base64 = "0.22"
 percent-encoding = "2"
 socket2 = { version = "0.5", features = ["all"] }
+futures-core = "0.3"
 
 # JSON
 serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
 serde_urlencoded = { version = "0.7", optional = true }
+
+# Charset decoding
+encoding_rs = { version = "0.8", optional = true }
+mime = { version = "0.3", optional = true }
 
 # TLS
 rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "tls12"] }

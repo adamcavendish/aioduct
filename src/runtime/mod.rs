@@ -18,7 +18,12 @@ pub trait Runtime: Send + Sync + 'static {
     where
         F: Future<Output = ()> + Send + 'static;
 
-    fn set_tcp_keepalive(_stream: &Self::TcpStream, _interval: Duration) -> io::Result<()> {
+    fn set_tcp_keepalive(
+        _stream: &Self::TcpStream,
+        _time: Duration,
+        _interval: Option<Duration>,
+        _retries: Option<u32>,
+    ) -> io::Result<()> {
         Ok(())
     }
 

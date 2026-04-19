@@ -9,6 +9,48 @@ use std::pin::Pin;
 
 use crate::runtime::Runtime;
 
+/// TLS protocol version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TlsVersion {
+    /// TLS 1.2
+    Tls1_2,
+    /// TLS 1.3
+    Tls1_3,
+}
+
+#[cfg(feature = "rustls")]
+impl TlsVersion {
+    pub(crate) fn to_rustls(self) -> &'static rustls::SupportedProtocolVersion {
+        match self {
+            TlsVersion::Tls1_2 => &rustls::version::TLS12,
+            TlsVersion::Tls1_3 => &rustls::version::TLS13,
+        }
+    }
+
+    pub(crate) fn filter_versions(
+        min: Option<TlsVersion>,
+        max: Option<TlsVersion>,
+    ) -> Vec<&'static rustls::SupportedProtocolVersion> {
+        let all = [TlsVersion::Tls1_2, TlsVersion::Tls1_3];
+        all.into_iter()
+            .filter(|v| {
+                if let Some(min) = min {
+                    if *v < min {
+                        return false;
+                    }
+                }
+                if let Some(max) = max {
+                    if *v > max {
+                        return false;
+                    }
+                }
+                true
+            })
+            .map(|v| v.to_rustls())
+            .collect()
+    }
+}
+
 /// Async TLS handshake abstraction.
 pub trait TlsConnect<R: Runtime>: Send + Sync + 'static {
     type Stream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
@@ -22,6 +64,7 @@ pub trait TlsConnect<R: Runtime>: Send + Sync + 'static {
 
 #[cfg(feature = "rustls")]
 /// A TLS certificate for use as a trusted root CA.
+#[derive(Clone)]
 pub struct Certificate {
     pub(crate) der: rustls::pki_types::CertificateDer<'static>,
 }

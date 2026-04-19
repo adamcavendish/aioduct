@@ -20,6 +20,14 @@ impl RequestBody {
             RequestBody::Streaming(body) => body,
         }
     }
+
+    /// Clone this body if it is buffered. Returns `None` for streaming bodies.
+    pub fn try_clone(&self) -> Option<Self> {
+        match self {
+            RequestBody::Buffered(b) => Some(RequestBody::Buffered(b.clone())),
+            RequestBody::Streaming(_) => None,
+        }
+    }
 }
 
 impl From<Bytes> for RequestBody {

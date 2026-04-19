@@ -42,7 +42,7 @@ pub use cookie::CookieJar;
 pub use error::{Error, HyperBody};
 pub use http2::Http2Config;
 pub use middleware::Middleware;
-pub use multipart::Multipart;
+pub use multipart::{Multipart, Part};
 pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;
@@ -52,6 +52,7 @@ pub use runtime::{Resolve, Runtime};
 pub use sse::{SseEvent, SseStream};
 pub use upgrade::Upgraded;
 
+pub use tls::TlsVersion;
 #[cfg(feature = "rustls")]
 pub use tls::{Certificate, Identity};
 

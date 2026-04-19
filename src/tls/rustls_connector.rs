@@ -11,6 +11,7 @@ use super::TlsConnect;
 use crate::runtime::Runtime;
 
 /// TLS connector backed by rustls.
+#[derive(Clone)]
 pub struct RustlsConnector {
     config: Arc<rustls::ClientConfig>,
 }
@@ -26,11 +27,23 @@ impl RustlsConnector {
         &self.config
     }
 
+    /// Get a mutable reference to the underlying rustls config (clones if shared).
+    pub fn config_mut(&mut self) -> &mut rustls::ClientConfig {
+        Arc::make_mut(&mut self.config)
+    }
+
     /// Create a connector using WebPKI root certificates.
     pub fn with_webpki_roots() -> Self {
+        Self::with_webpki_roots_versioned(&[&rustls::version::TLS12, &rustls::version::TLS13])
+    }
+
+    /// Create a connector using WebPKI root certificates with specific TLS versions.
+    pub fn with_webpki_roots_versioned(
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> Self {
         let root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let config = rustls::ClientConfig::builder()
+        let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
             .with_no_client_auth();
         Self::new(Arc::new(config))
@@ -38,12 +51,20 @@ impl RustlsConnector {
 
     /// Create a connector with WebPKI roots plus additional trusted CA certificates.
     pub fn with_extra_roots(certs: &[super::Certificate]) -> Self {
+        Self::with_extra_roots_versioned(certs, &[&rustls::version::TLS12, &rustls::version::TLS13])
+    }
+
+    /// Create a connector with extra roots and specific TLS versions.
+    pub fn with_extra_roots_versioned(
+        certs: &[super::Certificate],
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> Self {
         let mut root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         for cert in certs {
             let _ = root_store.add(cert.der.clone());
         }
-        let config = rustls::ClientConfig::builder()
+        let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
             .with_no_client_auth();
         Self::new(Arc::new(config))
@@ -54,12 +75,25 @@ impl RustlsConnector {
         certs: &[super::Certificate],
         identity: super::Identity,
     ) -> std::result::Result<Self, io::Error> {
+        Self::with_identity_versioned(
+            certs,
+            identity,
+            &[&rustls::version::TLS12, &rustls::version::TLS13],
+        )
+    }
+
+    /// Create a connector with identity and specific TLS versions.
+    pub fn with_identity_versioned(
+        certs: &[super::Certificate],
+        identity: super::Identity,
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> std::result::Result<Self, io::Error> {
         let mut root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         for cert in certs {
             let _ = root_store.add(cert.der.clone());
         }
-        let config = rustls::ClientConfig::builder()
+        let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
             .with_client_auth_cert(identity.certs, identity.key)
             .map_err(io::Error::other)?;
@@ -69,12 +103,20 @@ impl RustlsConnector {
     /// Create a connector using the system's native root certificates.
     #[cfg(feature = "rustls-native-roots")]
     pub fn with_native_roots() -> Self {
+        Self::with_native_roots_versioned(&[&rustls::version::TLS12, &rustls::version::TLS13])
+    }
+
+    /// Create a connector using native roots with specific TLS versions.
+    #[cfg(feature = "rustls-native-roots")]
+    pub fn with_native_roots_versioned(
+        versions: &[&'static rustls::SupportedProtocolVersion],
+    ) -> Self {
         let mut root_store = rustls::RootCertStore::empty();
         let native_certs = rustls_native_certs::load_native_certs();
         for cert in native_certs {
             let _ = root_store.add(cert);
         }
-        let config = rustls::ClientConfig::builder()
+        let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
             .with_no_client_auth();
         Self::new(Arc::new(config))

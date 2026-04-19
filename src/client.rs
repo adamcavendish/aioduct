@@ -25,6 +25,7 @@ use crate::request::RequestBuilder;
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::{Resolve, Runtime};
+use crate::tls::TlsVersion;
 
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
@@ -36,6 +37,8 @@ pub struct Client<R: Runtime> {
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     tcp_keepalive: Option<Duration>,
+    tcp_keepalive_interval: Option<Duration>,
+    tcp_keepalive_retries: Option<u32>,
     local_address: Option<IpAddr>,
     https_only: bool,
     referer: bool,
@@ -69,6 +72,8 @@ impl<R: Runtime> Clone for Client<R> {
             connect_timeout: self.connect_timeout,
             read_timeout: self.read_timeout,
             tcp_keepalive: self.tcp_keepalive,
+            tcp_keepalive_interval: self.tcp_keepalive_interval,
+            tcp_keepalive_retries: self.tcp_keepalive_retries,
             local_address: self.local_address,
             https_only: self.https_only,
             referer: self.referer,
@@ -106,6 +111,8 @@ pub struct ClientBuilder<R: Runtime> {
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     tcp_keepalive: Option<Duration>,
+    tcp_keepalive_interval: Option<Duration>,
+    tcp_keepalive_retries: Option<u32>,
     local_address: Option<IpAddr>,
     https_only: bool,
     referer: bool,
@@ -119,6 +126,16 @@ pub struct ClientBuilder<R: Runtime> {
     middleware: MiddlewareStack,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
+    #[cfg(feature = "rustls")]
+    min_tls_version: Option<TlsVersion>,
+    #[cfg(feature = "rustls")]
+    max_tls_version: Option<TlsVersion>,
+    #[cfg(feature = "rustls")]
+    tls_sni: Option<bool>,
+    #[cfg(feature = "rustls")]
+    extra_root_certs: Vec<crate::tls::Certificate>,
+    #[cfg(feature = "rustls")]
+    client_identity: Option<crate::tls::Identity>,
     #[cfg(feature = "http3")]
     h3_endpoint: Option<quinn::Endpoint>,
     #[cfg(feature = "http3")]
@@ -141,6 +158,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             connect_timeout: None,
             read_timeout: None,
             tcp_keepalive: None,
+            tcp_keepalive_interval: None,
+            tcp_keepalive_retries: None,
             local_address: None,
             https_only: false,
             referer: false,
@@ -154,6 +173,16 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             middleware: MiddlewareStack::new(),
             #[cfg(feature = "rustls")]
             tls: None,
+            #[cfg(feature = "rustls")]
+            min_tls_version: None,
+            #[cfg(feature = "rustls")]
+            max_tls_version: None,
+            #[cfg(feature = "rustls")]
+            tls_sni: None,
+            #[cfg(feature = "rustls")]
+            extra_root_certs: Vec::new(),
+            #[cfg(feature = "rustls")]
+            client_identity: None,
             #[cfg(feature = "http3")]
             h3_endpoint: None,
             #[cfg(feature = "http3")]
@@ -206,9 +235,21 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
-    /// Enable TCP keepalive with the given interval.
+    /// Enable TCP keepalive with the given idle time before first probe.
     pub fn tcp_keepalive(mut self, interval: Duration) -> Self {
         self.tcp_keepalive = Some(interval);
+        self
+    }
+
+    /// Set the interval between TCP keepalive probes (platform-specific).
+    pub fn tcp_keepalive_interval(mut self, interval: Duration) -> Self {
+        self.tcp_keepalive_interval = Some(interval);
+        self
+    }
+
+    /// Set the number of TCP keepalive probes before dropping (platform-specific).
+    pub fn tcp_keepalive_retries(mut self, retries: u32) -> Self {
+        self.tcp_keepalive_retries = Some(retries);
         self
     }
 
@@ -324,6 +365,27 @@ impl<R: Runtime> ClientBuilder<R> {
     }
 
     #[cfg(feature = "rustls")]
+    /// Set the minimum TLS version to allow (default: TLS 1.2).
+    pub fn min_tls_version(mut self, version: TlsVersion) -> Self {
+        self.min_tls_version = Some(version);
+        self
+    }
+
+    #[cfg(feature = "rustls")]
+    /// Set the maximum TLS version to allow (default: TLS 1.3).
+    pub fn max_tls_version(mut self, version: TlsVersion) -> Self {
+        self.max_tls_version = Some(version);
+        self
+    }
+
+    #[cfg(feature = "rustls")]
+    /// Control whether to send the SNI extension (default: true).
+    pub fn tls_sni(mut self, enable: bool) -> Self {
+        self.tls_sni = Some(enable);
+        self
+    }
+
+    #[cfg(feature = "rustls")]
     /// Accept invalid TLS certificates (INSECURE — for testing/dev only).
     pub fn danger_accept_invalid_certs(self) -> Self {
         self.tls(crate::tls::RustlsConnector::danger_accept_invalid_certs())
@@ -331,20 +393,20 @@ impl<R: Runtime> ClientBuilder<R> {
 
     #[cfg(feature = "rustls")]
     /// Add custom trusted CA certificates alongside the default WebPKI roots.
-    pub fn add_root_certificates(self, certs: &[crate::tls::Certificate]) -> Self {
-        self.tls(crate::tls::RustlsConnector::with_extra_roots(certs))
+    pub fn add_root_certificates(mut self, certs: &[crate::tls::Certificate]) -> Self {
+        self.extra_root_certs.extend(
+            certs
+                .iter()
+                .map(|c| crate::tls::Certificate { der: c.der.clone() }),
+        );
+        self
     }
 
     #[cfg(feature = "rustls")]
     /// Set a client identity (certificate + key) for mutual TLS authentication.
-    pub fn identity(
-        self,
-        certs: &[crate::tls::Certificate],
-        identity: crate::tls::Identity,
-    ) -> Result<Self> {
-        let connector =
-            crate::tls::RustlsConnector::with_identity(certs, identity).map_err(Error::Io)?;
-        Ok(self.tls(connector))
+    pub fn identity(mut self, identity: crate::tls::Identity) -> Self {
+        self.client_identity = Some(identity);
+        self
     }
 
     #[cfg(feature = "http3")]
@@ -394,6 +456,73 @@ impl<R: Runtime> ClientBuilder<R> {
         } else {
             ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout)
         };
+
+        #[cfg(feature = "rustls")]
+        let tls = {
+            let has_version_constraints =
+                self.min_tls_version.is_some() || self.max_tls_version.is_some();
+            let has_extra_config =
+                !self.extra_root_certs.is_empty() || self.client_identity.is_some();
+            let needs_sni_update = self.tls_sni == Some(false);
+
+            let mut connector =
+                if self.tls.is_some() && !has_version_constraints && !has_extra_config {
+                    self.tls
+                } else if self.tls.is_some() && !has_extra_config {
+                    let versions =
+                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version);
+                    let old = self.tls.unwrap();
+                    let old_config = old.config();
+                    let mut new_config =
+                        rustls::ClientConfig::builder_with_protocol_versions(&versions)
+                            .with_root_certificates(rustls::RootCertStore::empty())
+                            .with_no_client_auth();
+                    new_config.alpn_protocols = old_config.alpn_protocols.clone();
+                    new_config.enable_sni = old_config.enable_sni;
+                    Some(Arc::new(crate::tls::RustlsConnector::new(Arc::new(
+                        new_config,
+                    ))))
+                } else if has_extra_config || has_version_constraints {
+                    let versions: Vec<&'static rustls::SupportedProtocolVersion> =
+                        if has_version_constraints {
+                            TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)
+                        } else {
+                            vec![&rustls::version::TLS12, &rustls::version::TLS13]
+                        };
+                    let connector = if let Some(identity) = self.client_identity {
+                        crate::tls::RustlsConnector::with_identity_versioned(
+                            &self.extra_root_certs,
+                            identity,
+                            &versions,
+                        )
+                        .ok()
+                        .map(Arc::new)
+                    } else if !self.extra_root_certs.is_empty() {
+                        Some(Arc::new(
+                            crate::tls::RustlsConnector::with_extra_roots_versioned(
+                                &self.extra_root_certs,
+                                &versions,
+                            ),
+                        ))
+                    } else {
+                        Some(Arc::new(
+                            crate::tls::RustlsConnector::with_webpki_roots_versioned(&versions),
+                        ))
+                    };
+                    connector.or(self.tls)
+                } else {
+                    self.tls
+                };
+
+            if needs_sni_update {
+                if let Some(ref mut c) = connector {
+                    Arc::make_mut(c).config_mut().enable_sni = false;
+                }
+            }
+
+            connector
+        };
+
         Client {
             pool,
             redirect_policy: self.redirect_policy,
@@ -401,6 +530,8 @@ impl<R: Runtime> ClientBuilder<R> {
             connect_timeout: self.connect_timeout,
             read_timeout: self.read_timeout,
             tcp_keepalive: self.tcp_keepalive,
+            tcp_keepalive_interval: self.tcp_keepalive_interval,
+            tcp_keepalive_retries: self.tcp_keepalive_retries,
             local_address: self.local_address,
             https_only: self.https_only,
             referer: self.referer,
@@ -415,7 +546,7 @@ impl<R: Runtime> ClientBuilder<R> {
             http2: self.http2,
             middleware: self.middleware,
             #[cfg(feature = "rustls")]
-            tls: self.tls,
+            tls,
             #[cfg(feature = "http3")]
             h3_endpoint: self.h3_endpoint,
             #[cfg(feature = "http3")]
@@ -798,6 +929,8 @@ impl<R: Runtime> Client<R> {
             let addr = self.resolve_authority(authority, default_port).await?;
 
             let tcp_keepalive = self.tcp_keepalive;
+            let tcp_keepalive_interval = self.tcp_keepalive_interval;
+            let tcp_keepalive_retries = self.tcp_keepalive_retries;
             let local_address = self.local_address;
             let connect_fut = async {
                 let tcp_stream = if let Some(local_addr) = local_address {
@@ -807,8 +940,13 @@ impl<R: Runtime> Client<R> {
                 } else {
                     R::connect(addr).await?
                 };
-                if let Some(interval) = tcp_keepalive {
-                    R::set_tcp_keepalive(&tcp_stream, interval)?;
+                if let Some(time) = tcp_keepalive {
+                    R::set_tcp_keepalive(
+                        &tcp_stream,
+                        time,
+                        tcp_keepalive_interval,
+                        tcp_keepalive_retries,
+                    )?;
                 }
                 if is_https {
                     self.connect_tls(tcp_stream, authority.host()).await
@@ -858,8 +996,13 @@ impl<R: Runtime> Client<R> {
         } else {
             R::connect(proxy_addr).await?
         };
-        if let Some(interval) = self.tcp_keepalive {
-            R::set_tcp_keepalive(&tcp_stream, interval)?;
+        if let Some(time) = self.tcp_keepalive {
+            R::set_tcp_keepalive(
+                &tcp_stream,
+                time,
+                self.tcp_keepalive_interval,
+                self.tcp_keepalive_retries,
+            )?;
         }
 
         if proxy.scheme == crate::proxy::ProxyScheme::Socks5 {

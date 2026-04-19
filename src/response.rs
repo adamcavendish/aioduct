@@ -149,8 +149,36 @@ impl Response {
 
     /// Consume the response body and return it as a UTF-8 string.
     pub async fn text(self) -> Result<String> {
+        #[cfg(feature = "charset")]
+        {
+            self.text_with_charset("utf-8").await
+        }
+        #[cfg(not(feature = "charset"))]
+        {
+            let bytes = self.bytes().await?;
+            String::from_utf8(bytes.to_vec()).map_err(|e| Error::Other(Box::new(e)))
+        }
+    }
+
+    #[cfg(feature = "charset")]
+    /// Consume the response body and decode it using the charset from Content-Type,
+    /// falling back to the given default encoding.
+    pub async fn text_with_charset(self, default_encoding: &str) -> Result<String> {
+        let content_type = self
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<mime::Mime>().ok());
+        let encoding_name = content_type
+            .as_ref()
+            .and_then(|mime| mime.get_param("charset"))
+            .map(|charset| charset.as_str())
+            .unwrap_or(default_encoding);
+        let encoding = encoding_rs::Encoding::for_label(encoding_name.as_bytes())
+            .unwrap_or(encoding_rs::UTF_8);
         let bytes = self.bytes().await?;
-        String::from_utf8(bytes.to_vec()).map_err(|e| Error::Other(Box::new(e)))
+        let (text, _, _) = encoding.decode(&bytes);
+        Ok(text.into_owned())
     }
 
     /// Consume the response body and deserialize it as JSON.

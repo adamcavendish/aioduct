@@ -44,10 +44,36 @@ impl Runtime for TokioRuntime {
         tokio::spawn(future);
     }
 
-    fn set_tcp_keepalive(stream: &Self::TcpStream, interval: Duration) -> io::Result<()> {
+    fn set_tcp_keepalive(
+        stream: &Self::TcpStream,
+        time: Duration,
+        interval: Option<Duration>,
+        retries: Option<u32>,
+    ) -> io::Result<()> {
         use socket2::SockRef;
         let sock_ref = SockRef::from(stream.inner());
-        let keepalive = socket2::TcpKeepalive::new().with_time(interval);
+        let mut keepalive = socket2::TcpKeepalive::new().with_time(time);
+        if let Some(interval) = interval {
+            keepalive = keepalive.with_interval(interval);
+        }
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+        ))]
+        if let Some(retries) = retries {
+            keepalive = keepalive.with_retries(retries);
+        }
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+        )))]
+        let _ = retries;
         sock_ref.set_tcp_keepalive(&keepalive)
     }
 

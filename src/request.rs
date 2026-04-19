@@ -198,7 +198,11 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         let ct = multipart.content_type();
         let value = HeaderValue::from_str(&ct).expect("valid multipart content-type");
         self.headers.insert(http::header::CONTENT_TYPE, value);
-        self.body = Some(RequestBody::Buffered(multipart.into_bytes()));
+        if multipart.has_streaming_parts() {
+            self.body = Some(RequestBody::Streaming(multipart.into_streaming_body()));
+        } else {
+            self.body = Some(RequestBody::Buffered(multipart.into_bytes()));
+        }
         self
     }
 
@@ -251,6 +255,26 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
             builder = builder.header(name, value);
         }
         builder.body(body).map_err(Error::Http)
+    }
+
+    /// Clone this request builder if the body is cloneable (buffered).
+    /// Returns `None` if the body is a non-cloneable stream.
+    pub fn try_clone(&self) -> Option<Self> {
+        let cloned_body = match &self.body {
+            Some(b) => Some(b.try_clone()?),
+            None => None,
+        };
+        Some(Self {
+            client: self.client,
+            method: self.method.clone(),
+            uri: self.uri.clone(),
+            headers: self.headers.clone(),
+            body: cloned_body,
+            version: self.version,
+            timeout: self.timeout,
+            retry: self.retry.clone(),
+            _runtime: PhantomData,
+        })
     }
 
     /// Send the request and return the response.
