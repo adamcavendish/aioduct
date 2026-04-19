@@ -24,8 +24,11 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping
 - **Timeouts** — per-request, client-level, and connect timeouts
 - **Decompression** — automatic gzip, brotli, zstd, deflate response decompression
-- **Proxy** — HTTP proxy with CONNECT tunneling, system proxy detection (HTTP_PROXY/NO_PROXY)
+- **Proxy** — HTTP proxy with CONNECT tunneling, SOCKS5 proxy, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
 - **Custom DNS** — pluggable resolver via the `Resolve` trait
+- **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
+- **TCP keepalive** — configurable keepalive interval for long-lived connections
+- **Local address binding** — bind outgoing connections to a specific local IP
 - **JSON** — optional `json` feature for request/response serialization
 - **Auth helpers** — bearer token, basic auth
 - **Form data** — URL-encoded form bodies
@@ -146,6 +149,44 @@ let client = Client::<TokioRuntime>::builder()
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))
     .pool_max_idle_per_host(10)
+    .tcp_keepalive(Duration::from_secs(60))
+    .local_address("192.168.1.100".parse().unwrap())
+    .build();
+```
+
+### SOCKS5 Proxy
+
+```rust
+use aioduct::ProxyConfig;
+
+let client = Client::<TokioRuntime>::builder()
+    .proxy(ProxyConfig::socks5("socks5://proxy.example.com:1080").unwrap())
+    .build();
+
+// With authentication
+let client = Client::<TokioRuntime>::builder()
+    .proxy(
+        ProxyConfig::socks5("socks5://proxy.example.com:1080")
+            .unwrap()
+            .basic_auth("user", "pass"),
+    )
+    .build();
+```
+
+### HTTP/2 Tuning
+
+```rust
+use aioduct::Http2Config;
+
+let client = Client::<TokioRuntime>::builder()
+    .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
+    .http2(
+        Http2Config::new()
+            .initial_stream_window_size(2 * 1024 * 1024)
+            .adaptive_window(true)
+            .keep_alive_interval(Duration::from_secs(20))
+            .keep_alive_while_idle(true),
+    )
     .build();
 ```
 
@@ -175,7 +216,7 @@ Client<R: Runtime>
   └── Runtime trait       ← TcpStream, Sleep, spawn, resolve
        ├── TokioRuntime
        ├── SmolRuntime
-       └── CompioRuntime (placeholder)
+       └── CompioRuntime
 ```
 
 The `Runtime` trait abstracts over async runtimes:
