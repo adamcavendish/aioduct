@@ -5,25 +5,28 @@ use http::HeaderMap;
 use http::header::{COOKIE, SET_COOKIE};
 
 #[derive(Clone, Debug)]
-pub struct Cookie {
-    pub name: String,
-    pub value: String,
-    pub domain: Option<String>,
-    pub path: Option<String>,
-    pub secure: bool,
-    pub http_only: bool,
+pub(crate) struct Cookie {
+    pub(crate) name: String,
+    pub(crate) value: String,
+    pub(crate) _domain: Option<String>,
+    pub(crate) _path: Option<String>,
+    pub(crate) secure: bool,
+    pub(crate) _http_only: bool,
 }
 
+/// Thread-safe cookie storage for automatic cookie handling.
 #[derive(Clone, Default)]
 pub struct CookieJar {
     inner: Arc<Mutex<HashMap<String, Vec<Cookie>>>>,
 }
 
 impl CookieJar {
+    /// Create an empty cookie jar.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Extract and store cookies from response `Set-Cookie` headers.
     pub fn store_from_response(&self, domain: &str, headers: &HeaderMap) {
         let mut jar = self.inner.lock().unwrap();
         let cookies = jar.entry(domain.to_owned()).or_default();
@@ -41,6 +44,7 @@ impl CookieJar {
         }
     }
 
+    /// Add stored cookies to outgoing request headers.
     pub fn apply_to_request(&self, domain: &str, is_secure: bool, headers: &mut HeaderMap) {
         let jar = self.inner.lock().unwrap();
 
@@ -64,6 +68,7 @@ impl CookieJar {
         }
     }
 
+    /// Remove all stored cookies.
     pub fn clear(&self) {
         self.inner.lock().unwrap().clear();
     }
@@ -108,9 +113,9 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
     Some(Cookie {
         name,
         value,
-        domain,
-        path,
+        _domain: domain,
+        _path: path,
         secure,
-        http_only,
+        _http_only: http_only,
     })
 }

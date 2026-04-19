@@ -3,8 +3,11 @@ use http_body_util::BodyExt;
 
 use crate::error::{HyperBody, Result};
 
+/// HTTP request body, either buffered in memory or streaming.
 pub enum RequestBody {
+    /// Fully buffered body from bytes.
     Buffered(Bytes),
+    /// Streaming body from a boxed hyper body.
     Streaming(HyperBody),
 }
 
@@ -55,6 +58,7 @@ impl From<HyperBody> for RequestBody {
     }
 }
 
+/// Async iterator over response body data frames.
 pub struct BodyStream {
     body: HyperBody,
     done: bool,
@@ -65,6 +69,7 @@ impl BodyStream {
         Self { body, done: false }
     }
 
+    /// Returns the next chunk of body data, or `None` when complete.
     pub async fn next(&mut self) -> Option<Result<Bytes>> {
         if self.done {
             return None;

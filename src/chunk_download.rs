@@ -9,6 +9,7 @@ use crate::client::Client;
 use crate::error::{Error, Result};
 use crate::runtime::Runtime;
 
+/// Parallel range-request downloader for large files.
 pub struct ChunkDownload<R: Runtime> {
     client: Client<R>,
     url: String,
@@ -16,8 +17,11 @@ pub struct ChunkDownload<R: Runtime> {
     _runtime: PhantomData<R>,
 }
 
+/// Result of a parallel chunk download.
 pub struct ChunkDownloadResult {
+    /// Total size of the downloaded file in bytes.
     pub total_size: u64,
+    /// The reassembled file data.
     pub data: bytes::Bytes,
 }
 
@@ -33,11 +37,13 @@ impl<R: Runtime> ChunkDownload<R> {
         }
     }
 
+    /// Set the number of parallel chunks (default: 4).
     pub fn chunks(mut self, n: usize) -> Self {
         self.chunks = n.max(1);
         self
     }
 
+    /// Execute the download and return the reassembled data.
     pub async fn download(self) -> Result<ChunkDownloadResult> {
         let client = self.client;
         let url = self.url;

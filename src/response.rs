@@ -5,6 +5,7 @@ use http_body_util::BodyExt;
 
 use crate::error::{Error, HyperBody, Result};
 
+/// An HTTP response with status, headers, and a streaming body.
 pub struct Response {
     inner: http::Response<HyperBody>,
 }
@@ -23,18 +24,22 @@ impl Response {
         Self { inner }
     }
 
+    /// Returns the HTTP status code.
     pub fn status(&self) -> StatusCode {
         self.inner.status()
     }
 
+    /// Returns the response headers.
     pub fn headers(&self) -> &HeaderMap {
         self.inner.headers()
     }
 
+    /// Returns the HTTP version.
     pub fn version(&self) -> Version {
         self.inner.version()
     }
 
+    /// Returns the Content-Length header value, if present.
     pub fn content_length(&self) -> Option<u64> {
         self.inner
             .headers()
@@ -45,6 +50,7 @@ impl Response {
             .ok()
     }
 
+    /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes> {
         let body = self.inner.into_body();
         let collected = body
@@ -54,25 +60,30 @@ impl Response {
         Ok(collected.to_bytes())
     }
 
+    /// Consume the response body and return it as a UTF-8 string.
     pub async fn text(self) -> Result<String> {
         let bytes = self.bytes().await?;
         String::from_utf8(bytes.to_vec()).map_err(|e| Error::Other(Box::new(e)))
     }
 
+    /// Consume the response body and deserialize it as JSON.
     #[cfg(feature = "json")]
     pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
         let bytes = self.bytes().await?;
         serde_json::from_slice(&bytes).map_err(|e| Error::Other(Box::new(e)))
     }
 
+    /// Consume the response and return the raw hyper body.
     pub fn into_body(self) -> HyperBody {
         self.inner.into_body()
     }
 
+    /// Convert the response into an async byte stream.
     pub fn into_bytes_stream(self) -> crate::body::BodyStream {
         crate::body::BodyStream::new(self.inner.into_body())
     }
 
+    /// Convert the response into a Server-Sent Events stream.
     pub fn into_sse_stream(self) -> crate::sse::SseStream {
         crate::sse::SseStream::new(self.inner.into_body())
     }

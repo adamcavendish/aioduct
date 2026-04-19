@@ -10,6 +10,7 @@ use pin_project_lite::pin_project;
 
 use super::Runtime;
 
+/// Tokio async runtime implementation.
 pub struct TokioRuntime;
 
 impl Runtime for TokioRuntime {
@@ -47,6 +48,7 @@ impl Runtime for TokioRuntime {
 // -- TokioSleep: bridges hyper::rt::Sleep to tokio::time::Sleep --
 
 pin_project! {
+    /// Tokio-backed sleep future.
     pub struct TokioSleep {
         #[pin]
         inner: tokio::time::Sleep,
@@ -64,6 +66,7 @@ impl Future for TokioSleep {
 // -- TokioIo: bridges tokio::io::{AsyncRead, AsyncWrite} to hyper::rt::{Read, Write} --
 
 pin_project! {
+    /// Adapter bridging tokio's `AsyncRead`/`AsyncWrite` to hyper's `Read`/`Write`.
     pub struct TokioIo<T> {
         #[pin]
         inner: T,
@@ -71,10 +74,12 @@ pin_project! {
 }
 
 impl<T> TokioIo<T> {
+    /// Wrap a tokio I/O type.
     pub fn new(inner: T) -> Self {
         Self { inner }
     }
 
+    /// Get a reference to the inner I/O type.
     pub fn inner(&self) -> &T {
         &self.inner
     }

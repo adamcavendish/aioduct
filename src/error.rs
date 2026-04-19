@@ -1,8 +1,10 @@
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 
+/// Boxed error type for dynamic dispatch.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Errors that can occur during HTTP operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("HTTP error: {0}")]
@@ -30,5 +32,7 @@ pub enum Error {
     Other(BoxError),
 }
 
+/// Result type for aioduct operations.
 pub type Result<T> = std::result::Result<T, Error>;
+/// Boxed HTTP body type used throughout aioduct.
 pub type HyperBody = BoxBody<Bytes, Error>;

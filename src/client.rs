@@ -22,6 +22,7 @@ use crate::runtime::Runtime;
 
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
+/// HTTP client with connection pooling, TLS, and automatic redirect handling.
 pub struct Client<R: Runtime> {
     pool: ConnectionPool<R>,
     redirect_policy: RedirectPolicy,
@@ -64,6 +65,7 @@ impl<R: Runtime> Clone for Client<R> {
     }
 }
 
+/// Builder for configuring a [`Client`].
 pub struct ClientBuilder<R: Runtime> {
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
@@ -108,63 +110,75 @@ impl<R: Runtime> Default for ClientBuilder<R> {
 }
 
 impl<R: Runtime> ClientBuilder<R> {
+    /// Set the idle connection timeout (default: 90s).
     pub fn pool_idle_timeout(mut self, timeout: Duration) -> Self {
         self.pool_idle_timeout = timeout;
         self
     }
 
+    /// Set the max idle connections per host (default: 10).
     pub fn pool_max_idle_per_host(mut self, max: usize) -> Self {
         self.pool_max_idle_per_host = max;
         self
     }
 
+    /// Set the maximum number of redirects to follow (default: 10).
     pub fn max_redirects(mut self, max: usize) -> Self {
         self.redirect_policy = RedirectPolicy::limited(max);
         self
     }
 
+    /// Set a custom redirect policy.
     pub fn redirect_policy(mut self, policy: RedirectPolicy) -> Self {
         self.redirect_policy = policy;
         self
     }
 
+    /// Set a default request timeout.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
+    /// Add headers sent with every request.
     pub fn default_headers(mut self, headers: HeaderMap) -> Self {
         self.default_headers.extend(headers);
         self
     }
 
+    /// Clear all default headers including User-Agent.
     pub fn no_default_headers(mut self) -> Self {
         self.default_headers.clear();
         self
     }
 
+    /// Set a default retry configuration for all requests.
     pub fn retry(mut self, config: RetryConfig) -> Self {
         self.retry = Some(config);
         self
     }
 
+    /// Enable cookie storage with the given jar.
     pub fn cookie_jar(mut self, jar: CookieJar) -> Self {
         self.cookie_jar = Some(jar);
         self
     }
 
+    /// Route requests through an HTTP proxy.
     pub fn proxy(mut self, config: ProxyConfig) -> Self {
         self.proxy = Some(config);
         self
     }
 
     #[cfg(feature = "rustls")]
+    /// Set the TLS connector for HTTPS.
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.tls = Some(Arc::new(connector));
         self
     }
 
     #[cfg(feature = "http3")]
+    /// Enable or disable HTTP/3 for all HTTPS requests.
     pub fn http3(mut self, enable: bool) -> Self {
         if enable {
             self = self.ensure_h3_endpoint();
@@ -177,6 +191,7 @@ impl<R: Runtime> ClientBuilder<R> {
     }
 
     #[cfg(feature = "http3")]
+    /// Enable automatic HTTP/3 upgrade via Alt-Svc headers.
     pub fn alt_svc_h3(mut self, enable: bool) -> Self {
         if enable {
             self = self.ensure_h3_endpoint();
@@ -202,6 +217,7 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Build the configured [`Client`].
     pub fn build(self) -> Client<R> {
         Client {
             pool: ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout),
@@ -231,15 +247,18 @@ impl<R: Runtime> Default for Client<R> {
 }
 
 impl<R: Runtime> Client<R> {
+    /// Create a new [`ClientBuilder`] with default settings.
     pub fn builder() -> ClientBuilder<R> {
         ClientBuilder::default()
     }
 
+    /// Create a new client with default settings.
     pub fn new() -> Self {
         Self::builder().build()
     }
 
     #[cfg(feature = "rustls")]
+    /// Create a client with rustls TLS using WebPKI root certificates.
     pub fn with_rustls() -> Self {
         Self::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
@@ -247,6 +266,7 @@ impl<R: Runtime> Client<R> {
     }
 
     #[cfg(feature = "http3")]
+    /// Create a client configured for HTTP/3 with rustls.
     pub fn with_http3() -> Self {
         Self::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
@@ -255,6 +275,7 @@ impl<R: Runtime> Client<R> {
     }
 
     #[cfg(feature = "http3")]
+    /// Create a client that upgrades to HTTP/3 via Alt-Svc discovery.
     pub fn with_alt_svc_h3() -> Self {
         Self::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
@@ -262,41 +283,49 @@ impl<R: Runtime> Client<R> {
             .build()
     }
 
+    /// Start a GET request to the given URL.
     pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::GET, uri))
     }
 
+    /// Start a HEAD request to the given URL.
     pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::HEAD, uri))
     }
 
+    /// Start a POST request to the given URL.
     pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::POST, uri))
     }
 
+    /// Start a PUT request to the given URL.
     pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::PUT, uri))
     }
 
+    /// Start a PATCH request to the given URL.
     pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::PATCH, uri))
     }
 
+    /// Start a DELETE request to the given URL.
     pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::DELETE, uri))
     }
 
+    /// Start a request with the given method and URL.
     pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R>> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, method, uri))
     }
 
+    /// Start a parallel chunk download for the given URL.
     pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownload<R> {
         crate::chunk_download::ChunkDownload::new(self.clone(), url.to_owned())
     }

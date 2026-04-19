@@ -11,6 +11,7 @@ use http::uri::{Authority, Scheme};
 
 use crate::runtime::Runtime;
 
+/// Connection pool key identifying a (scheme, authority) pair.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct PoolKey {
     pub scheme: Scheme,
@@ -18,6 +19,7 @@ pub struct PoolKey {
 }
 
 impl PoolKey {
+    /// Create a new pool key.
     pub fn new(scheme: Scheme, authority: Authority) -> Self {
         Self { scheme, authority }
     }
@@ -36,6 +38,7 @@ struct PoolInner<R: Runtime> {
     _runtime: PhantomData<R>,
 }
 
+/// Thread-safe pool of idle HTTP connections keyed by origin.
 pub struct ConnectionPool<R: Runtime> {
     inner: Arc<Mutex<PoolInner<R>>>,
 }
@@ -49,6 +52,7 @@ impl<R: Runtime> Clone for ConnectionPool<R> {
 }
 
 impl<R: Runtime> ConnectionPool<R> {
+    /// Create a pool with the given capacity and timeout settings.
     pub fn new(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
         Self {
             inner: Arc::new(Mutex::new(PoolInner::<R> {
@@ -60,6 +64,7 @@ impl<R: Runtime> ConnectionPool<R> {
         }
     }
 
+    /// Retrieve an idle connection for the given key, if available.
     pub fn checkout(&self, key: &PoolKey) -> Option<PooledConnection<R>> {
         let mut inner = self.inner.lock().unwrap();
         let idle_timeout = inner.idle_timeout;
@@ -79,6 +84,7 @@ impl<R: Runtime> ConnectionPool<R> {
         None
     }
 
+    /// Return a connection to the pool for future reuse.
     pub fn checkin(&self, key: PoolKey, connection: PooledConnection<R>) {
         let mut inner = self.inner.lock().unwrap();
         let max = inner.max_idle_per_host;
@@ -91,16 +97,5 @@ impl<R: Runtime> ConnectionPool<R> {
                 _runtime: PhantomData,
             });
         }
-    }
-
-    pub fn evict_expired(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let now = Instant::now();
-        let timeout = inner.idle_timeout;
-
-        inner.idle.retain(|_key, queue| {
-            queue.retain(|entry| now.duration_since(entry.idle_since) < timeout);
-            !queue.is_empty()
-        });
     }
 }

@@ -10,6 +10,7 @@ use pin_project_lite::pin_project;
 
 use super::Runtime;
 
+/// Smol async runtime implementation.
 pub struct SmolRuntime;
 
 impl Runtime for SmolRuntime {
@@ -48,6 +49,7 @@ impl Runtime for SmolRuntime {
 // -- SmolSleep --
 
 pin_project! {
+    /// Smol-backed sleep future.
     pub struct SmolSleep {
         #[pin]
         inner: async_io::Timer,
@@ -68,6 +70,7 @@ impl Future for SmolSleep {
 // -- SmolIo: bridges futures-io AsyncRead/AsyncWrite to hyper::rt::Read/Write --
 
 pin_project! {
+    /// Adapter bridging futures-io `AsyncRead`/`AsyncWrite` to hyper's `Read`/`Write`.
     pub struct SmolIo<T> {
         #[pin]
         inner: T,
@@ -75,10 +78,12 @@ pin_project! {
 }
 
 impl<T> SmolIo<T> {
+    /// Wrap a futures-io type.
     pub fn new(inner: T) -> Self {
         Self { inner }
     }
 
+    /// Get a reference to the inner I/O type.
     pub fn inner(&self) -> &T {
         &self.inner
     }

@@ -2,6 +2,7 @@ use http::Uri;
 
 use crate::error::{Error, Result};
 
+/// HTTP proxy configuration.
 #[derive(Clone, Debug)]
 pub struct ProxyConfig {
     pub(crate) uri: Uri,
@@ -15,6 +16,7 @@ pub(crate) struct ProxyAuth {
 }
 
 impl ProxyConfig {
+    /// Create a proxy config from an `http://` URI.
     pub fn http(uri: &str) -> Result<Self> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         if uri.scheme_str() != Some("http") {
@@ -25,6 +27,7 @@ impl ProxyConfig {
         Ok(Self { uri, auth: None })
     }
 
+    /// Set basic authentication credentials for the proxy.
     pub fn basic_auth(mut self, username: &str, password: &str) -> Self {
         self.auth = Some(ProxyAuth {
             username: username.to_owned(),

@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 
 use crate::runtime::Runtime;
 
+/// An established HTTP connection at a specific protocol version.
 pub enum HttpConnection {
     H1(hyper::client::conn::http1::SendRequest<crate::error::HyperBody>),
     H2(hyper::client::conn::http2::SendRequest<crate::error::HyperBody>),
@@ -9,12 +10,14 @@ pub enum HttpConnection {
     H3(h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>),
 }
 
+/// A pooled HTTP connection wrapper.
 pub struct PooledConnection<R: Runtime> {
     pub(crate) conn: HttpConnection,
     _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> PooledConnection<R> {
+    /// Wrap an HTTP/1.1 connection.
     pub fn new_h1(
         sender: hyper::client::conn::http1::SendRequest<crate::error::HyperBody>,
     ) -> Self {
@@ -24,6 +27,7 @@ impl<R: Runtime> PooledConnection<R> {
         }
     }
 
+    /// Wrap an HTTP/2 connection.
     pub fn new_h2(
         sender: hyper::client::conn::http2::SendRequest<crate::error::HyperBody>,
     ) -> Self {
@@ -33,6 +37,7 @@ impl<R: Runtime> PooledConnection<R> {
         }
     }
 
+    /// Wrap an HTTP/3 connection.
     #[cfg(feature = "http3")]
     pub fn new_h3(sender: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>) -> Self {
         Self {
@@ -41,6 +46,7 @@ impl<R: Runtime> PooledConnection<R> {
         }
     }
 
+    /// Returns true if the connection is ready to send a request.
     pub fn is_ready(&self) -> bool {
         match &self.conn {
             HttpConnection::H1(s) => s.is_ready(),

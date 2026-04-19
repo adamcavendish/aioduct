@@ -3,14 +3,20 @@ use http_body_util::BodyExt;
 
 use crate::error::{HyperBody, Result};
 
+/// A parsed Server-Sent Event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SseEvent {
+    /// Event type.
     pub event: Option<String>,
+    /// Event payload.
     pub data: String,
+    /// Event ID.
     pub id: Option<String>,
+    /// Suggested reconnect delay in milliseconds.
     pub retry: Option<u64>,
 }
 
+/// Async iterator over a `text/event-stream` response body.
 pub struct SseStream {
     body: HyperBody,
     buf: BytesMut,
@@ -26,6 +32,7 @@ impl SseStream {
         }
     }
 
+    /// Returns the next SSE event, or `None` when the stream ends.
     pub async fn next(&mut self) -> Option<Result<SseEvent>> {
         loop {
             if let Some(event) = try_parse_event(&mut self.buf) {

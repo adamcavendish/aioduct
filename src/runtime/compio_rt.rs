@@ -31,6 +31,7 @@ impl<F: Future> Future for AssertSend<F> {
     }
 }
 
+/// Compio async runtime implementation using async-io for TCP I/O.
 pub struct CompioRuntime;
 
 impl Runtime for CompioRuntime {
@@ -77,6 +78,7 @@ impl Runtime for CompioRuntime {
     }
 }
 
+/// Compio-backed sleep future.
 pub struct CompioSleep {
     inner: Pin<Box<dyn Future<Output = ()>>>,
 }
@@ -93,6 +95,7 @@ impl Future for CompioSleep {
 }
 
 pin_project! {
+    /// Adapter bridging futures-io `AsyncRead`/`AsyncWrite` to hyper's `Read`/`Write` for compio.
     pub struct CompioIo<T> {
         #[pin]
         inner: T,
@@ -100,6 +103,7 @@ pin_project! {
 }
 
 impl<T> CompioIo<T> {
+    /// Wrap an async-io type.
     pub fn new(inner: T) -> Self {
         Self { inner }
     }

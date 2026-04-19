@@ -14,6 +14,7 @@ use crate::retry::RetryConfig;
 use crate::runtime::Runtime;
 use crate::timeout::Timeout;
 
+/// Builder for configuring and sending an HTTP request.
 pub struct RequestBuilder<'a, R: Runtime> {
     client: &'a Client<R>,
     method: Method,
@@ -41,16 +42,19 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         }
     }
 
+    /// Add a typed header to the request.
     pub fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
         self.headers.insert(name, value);
         self
     }
 
+    /// Add multiple headers to the request.
     pub fn headers(mut self, headers: HeaderMap) -> Self {
         self.headers.extend(headers);
         self
     }
 
+    /// Add a header from string name and value.
     pub fn header_str(mut self, name: &str, value: &str) -> Result<Self> {
         let name: HeaderName = name.parse().map_err(|e| Error::Other(Box::new(e)))?;
         let value: HeaderValue = value.parse().map_err(|e| Error::Other(Box::new(e)))?;
@@ -58,12 +62,14 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         Ok(self)
     }
 
+    /// Set a Bearer token Authorization header.
     pub fn bearer_auth(mut self, token: &str) -> Self {
         let value = HeaderValue::from_str(&format!("Bearer {token}")).expect("valid bearer token");
         self.headers.insert(AUTHORIZATION, value);
         self
     }
 
+    /// Set a Basic Authorization header.
     pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         use base64::engine::{Engine, general_purpose::STANDARD};
         let credentials = match password {
@@ -77,6 +83,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    /// Append URL query parameters.
     pub fn query(mut self, params: &[(&str, &str)]) -> Self {
         use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
         const QUERY_ENCODE: &AsciiSet = &CONTROLS
@@ -103,17 +110,20 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    /// Set a buffered request body.
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {
         self.body = Some(RequestBody::Buffered(body.into()));
         self
     }
 
+    /// Set a streaming request body.
     pub fn body_stream(mut self, body: HyperBody) -> Self {
         self.body = Some(RequestBody::Streaming(body));
         self
     }
 
     #[cfg(feature = "json")]
+    /// Serialize a value as JSON and set it as the request body.
     pub fn json(mut self, value: &impl serde::Serialize) -> Result<Self> {
         let bytes = serde_json::to_vec(value).map_err(|e| Error::Other(Box::new(e)))?;
         self.headers.insert(
@@ -124,6 +134,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         Ok(self)
     }
 
+    /// Set a URL-encoded form body.
     pub fn form(mut self, params: &[(&str, &str)]) -> Self {
         use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
         const FORM_ENCODE: &AsciiSet = &CONTROLS
@@ -154,6 +165,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    /// Set a multipart/form-data body.
     pub fn multipart(mut self, multipart: crate::multipart::Multipart) -> Self {
         let ct = multipart.content_type();
         let value = HeaderValue::from_str(&ct).expect("valid multipart content-type");
@@ -162,21 +174,25 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    /// Force a specific HTTP version.
     pub fn version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self
     }
 
+    /// Set a timeout for this request, overriding the client default.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
 
+    /// Set a retry configuration for this request.
     pub fn retry(mut self, config: RetryConfig) -> Self {
         self.retry = Some(config);
         self
     }
 
+    /// Send the request and return the response.
     pub async fn send(self) -> Result<Response> {
         let effective_retry = self.retry.as_ref().or(self.client.default_retry()).cloned();
 

@@ -1,5 +1,6 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
+/// Builder for multipart/form-data request bodies.
 pub struct Multipart {
     boundary: String,
     parts: Vec<Part>,
@@ -19,6 +20,7 @@ impl Default for Multipart {
 }
 
 impl Multipart {
+    /// Create an empty multipart body.
     pub fn new() -> Self {
         Self {
             boundary: generate_boundary(),
@@ -26,6 +28,7 @@ impl Multipart {
         }
     }
 
+    /// Add a text field.
     pub fn text(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.parts.push(Part {
             name: name.into(),
@@ -36,6 +39,7 @@ impl Multipart {
         self
     }
 
+    /// Add a file part with name, filename, content type, and data.
     pub fn file(
         mut self,
         name: impl Into<String>,

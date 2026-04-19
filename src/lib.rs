@@ -1,3 +1,8 @@
+//! Async-native HTTP client built directly on hyper 1.x.
+//!
+//! aioduct is runtime-agnostic: enable `tokio`, `smol`, or `compio` via feature flags.
+//! For HTTPS, enable the `rustls` feature.
+
 #[cfg(not(any(feature = "tokio", feature = "smol", feature = "compio")))]
 compile_error!("aioduct: enable at least one runtime feature: tokio, smol, or compio");
 

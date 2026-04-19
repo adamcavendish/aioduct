@@ -41,6 +41,7 @@ jobs:
         features:
           - tokio
           - smol
+          - compio
           - tokio,rustls
           - smol,rustls
           - tokio,json
@@ -93,6 +94,7 @@ jobs:
         features:
           - tokio
           - smol
+          - compio,tokio
           - tokio,json
           - tokio,rustls
           - smol,rustls

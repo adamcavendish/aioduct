@@ -9,6 +9,7 @@ use std::pin::Pin;
 
 use crate::runtime::Runtime;
 
+/// Async TLS handshake abstraction.
 pub trait TlsConnect<R: Runtime>: Send + Sync + 'static {
     type Stream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
 

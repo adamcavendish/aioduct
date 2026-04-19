@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+/// Abstraction over async runtimes (tokio, smol, compio).
 #[allow(async_fn_in_trait)]
 pub trait Runtime: Send + Sync + 'static {
     type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
@@ -17,6 +18,7 @@ pub trait Runtime: Send + Sync + 'static {
         F: Future<Output = ()> + Send + 'static;
 }
 
+/// Executor adapter that delegates to `R::spawn` for hyper's HTTP/2 handshake.
 pub struct HyperExecutor<R>(PhantomData<fn() -> R>);
 
 impl<R> Clone for HyperExecutor<R> {
@@ -37,6 +39,7 @@ where
     }
 }
 
+/// Create a [`HyperExecutor`] for the given runtime.
 pub fn hyper_executor<R: Runtime>() -> HyperExecutor<R> {
     HyperExecutor(PhantomData)
 }

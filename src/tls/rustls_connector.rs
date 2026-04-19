@@ -10,19 +10,23 @@ use rustls::pki_types::ServerName;
 use super::TlsConnect;
 use crate::runtime::Runtime;
 
+/// TLS connector backed by rustls.
 pub struct RustlsConnector {
     config: Arc<rustls::ClientConfig>,
 }
 
 impl RustlsConnector {
+    /// Create a connector from a rustls client config.
     pub fn new(config: Arc<rustls::ClientConfig>) -> Self {
         Self { config }
     }
 
+    /// Get a reference to the underlying rustls config.
     pub fn config(&self) -> &Arc<rustls::ClientConfig> {
         &self.config
     }
 
+    /// Create a connector using WebPKI root certificates.
     pub fn with_webpki_roots() -> Self {
         let root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -32,6 +36,7 @@ impl RustlsConnector {
         Self::new(Arc::new(config))
     }
 
+    /// Get the ALPN protocol negotiated during the TLS handshake.
     pub fn negotiated_protocol(tls_conn: &rustls::ClientConnection) -> Option<AlpnProtocol> {
         tls_conn.alpn_protocol().and_then(|proto| {
             if proto == b"h2" {
@@ -45,9 +50,12 @@ impl RustlsConnector {
     }
 }
 
+/// ALPN protocol negotiated during TLS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlpnProtocol {
+    /// HTTP/1.1.
     H1,
+    /// HTTP/2.
     H2,
 }
 
@@ -71,16 +79,19 @@ impl<R: Runtime> TlsConnect<R> for RustlsConnector {
     }
 }
 
+/// A TLS-wrapped stream implementing hyper's `Read` and `Write`.
 pub struct TlsStream<S> {
     inner: S,
     tls: rustls::ClientConnection,
 }
 
 impl<S> TlsStream<S> {
+    /// Create a TLS stream wrapping the given transport and connection.
     pub fn new(inner: S, tls: rustls::ClientConnection) -> Self {
         Self { inner, tls }
     }
 
+    /// Get a reference to the underlying rustls connection.
     pub fn tls_connection(&self) -> &rustls::ClientConnection {
         &self.tls
     }
