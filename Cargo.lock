@@ -57,6 +57,8 @@ dependencies = [
  "socket2 0.5.10",
  "thiserror",
  "tokio",
+ "tower-layer",
+ "tower-service",
  "webpki-roots",
  "zstd",
 ]

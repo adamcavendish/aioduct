@@ -27,6 +27,7 @@ gzip = ["dep:flate2"]
 brotli = ["dep:brotli"]
 zstd = ["dep:zstd"]
 deflate = ["dep:flate2"]
+tower = ["dep:tower-service", "dep:tower-layer"]
 
 [dependencies]
 # Core — always required
@@ -82,6 +83,10 @@ futures-util = { version = "0.3", optional = true }
 flate2 = { version = "1", optional = true }
 brotli = { version = "8", optional = true, default-features = false, features = ["std"] }
 zstd = { version = "0.13", optional = true, default-features = false }
+
+# Tower integration
+tower-service = { version = "0.3", optional = true }
+tower-layer = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

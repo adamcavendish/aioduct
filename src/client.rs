@@ -62,6 +62,8 @@ pub struct Client<R: Runtime> {
     middleware: MiddlewareStack,
     rate_limiter: Option<crate::throttle::RateLimiter>,
     cache: Option<HttpCache>,
+    #[cfg(feature = "tower")]
+    connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -103,6 +105,8 @@ impl<R: Runtime> Clone for Client<R> {
             middleware: self.middleware.clone(),
             rate_limiter: self.rate_limiter.clone(),
             cache: self.cache.clone(),
+            #[cfg(feature = "tower")]
+            connector: self.connector.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(feature = "http3")]
@@ -146,6 +150,8 @@ pub struct ClientBuilder<R: Runtime> {
     middleware: MiddlewareStack,
     rate_limiter: Option<crate::throttle::RateLimiter>,
     cache: Option<HttpCache>,
+    #[cfg(feature = "tower")]
+    connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "rustls")]
@@ -203,6 +209,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             middleware: MiddlewareStack::new(),
             rate_limiter: None,
             cache: None,
+            #[cfg(feature = "tower")]
+            connector: None,
             #[cfg(feature = "rustls")]
             tls: None,
             #[cfg(feature = "rustls")]
@@ -419,6 +427,30 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Enable HTTP response caching with the given cache instance.
     pub fn cache(mut self, cache: HttpCache) -> Self {
         self.cache = Some(cache);
+        self
+    }
+
+    #[cfg(feature = "tower")]
+    /// Wrap the TCP connector with a tower `Layer`.
+    ///
+    /// The layer wraps the default runtime connector, which connects to a
+    /// resolved `SocketAddr`. Use this to add cross-cutting transport concerns
+    /// like metrics, tracing, or connection-level rate limiting.
+    pub fn connector_layer<L>(mut self, layer: L) -> Self
+    where
+        L: tower_layer::Layer<crate::connector::RuntimeConnector<R>>,
+        L::Service: tower_service::Service<
+                crate::connector::ConnectInfo,
+                Response = R::TcpStream,
+                Error = std::io::Error,
+            > + Send
+            + Sync
+            + Clone
+            + 'static,
+        <L::Service as tower_service::Service<crate::connector::ConnectInfo>>::Future:
+            Send + 'static,
+    {
+        self.connector = Some(crate::connector::apply_layer(layer));
         self
     }
 
@@ -648,6 +680,8 @@ impl<R: Runtime> ClientBuilder<R> {
             middleware: self.middleware,
             rate_limiter: self.rate_limiter,
             cache: self.cache,
+            #[cfg(feature = "tower")]
+            connector: self.connector,
             #[cfg(feature = "rustls")]
             tls,
             #[cfg(feature = "http3")]
@@ -1135,6 +1169,17 @@ impl<R: Runtime> Client<R> {
                         .await
                         .map_err(Error::Io)?
                 } else {
+                    #[cfg(feature = "tower")]
+                    if let Some(ref connector) = self.connector {
+                        let info = crate::connector::ConnectInfo {
+                            uri: original_uri.clone(),
+                            addr,
+                        };
+                        connector.connect(info).await.map_err(Error::Io)?
+                    } else {
+                        R::connect(addr).await?
+                    }
+                    #[cfg(not(feature = "tower"))]
                     R::connect(addr).await?
                 };
                 #[cfg(target_os = "linux")]

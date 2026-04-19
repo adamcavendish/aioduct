@@ -12,6 +12,8 @@ pub mod blocking;
 pub mod cache;
 pub mod chunk_download;
 pub mod client;
+#[cfg(feature = "tower")]
+pub mod connector;
 pub mod cookie;
 pub mod error;
 pub mod multipart;
