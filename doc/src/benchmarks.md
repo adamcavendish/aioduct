@@ -44,10 +44,10 @@ Simple GET, read entire response as `Bytes`.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **42.7 µs** | — |
-| hyper-util | 46.0 µs | +7.7% |
-| reqwest | 47.8 µs | +11.9% |
-| isahc | 71.8 µs | +68.1% |
+| **aioduct** | **43.0 µs** | — |
+| hyper-util | 44.8 µs | +4.2% |
+| reqwest | 48.6 µs | +13.0% |
+| isahc | 91.3 µs | +112.3% |
 
 ### HTTP/1.1 GET Request (text)
 
@@ -55,8 +55,8 @@ GET, read response as UTF-8 `String`.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **35.4 µs** | — |
-| reqwest | 51.2 µs | +44.6% |
+| **aioduct** | **44.7 µs** | — |
+| reqwest | 47.5 µs | +6.3% |
 
 ### JSON Deserialization
 
@@ -64,8 +64,8 @@ GET + deserialize a small JSON object (`{"message":"hello","count":42}`).
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **45.4 µs** | — |
-| reqwest | 49.4 µs | +8.8% |
+| **aioduct** | **43.6 µs** | — |
+| reqwest | 47.4 µs | +8.7% |
 
 ### POST with 4 KB Body
 
@@ -73,9 +73,9 @@ POST a 4 KB string, read response bytes.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **50.9 µs** | — |
-| reqwest | 52.8 µs | +3.7% |
-| isahc | 79.7 µs | +56.6% |
+| **aioduct** | **53.3 µs** | — |
+| reqwest | 59.8 µs | +12.2% |
+| isahc | 76.2 µs | +43.0% |
 
 ### Large Body Download (64 KB, HTTP/1.1)
 
@@ -83,9 +83,9 @@ GET a 64 KB response, read as bytes.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| hyper-util | **48.9 µs** | -20.6% |
-| reqwest | 50.5 µs | -18.0% |
-| **aioduct** | 61.6 µs | — |
+| hyper-util | **60.1 µs** | -4.0% |
+| **aioduct** | 62.6 µs | — |
+| reqwest | 64.5 µs | +3.0% |
 
 ### Large Body Download (1 MB, HTTP/1.1)
 
@@ -93,8 +93,8 @@ GET a 1 MB response, read as bytes.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **335.3 µs** | — |
-| reqwest | 408.5 µs | +21.8% |
+| **aioduct** | **465.8 µs** | — |
+| reqwest | 481.4 µs | +3.3% |
 
 ### 10 Concurrent Requests (HTTP/1.1)
 
@@ -102,8 +102,8 @@ GET a 1 MB response, read as bytes.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **123.8 µs** | — |
-| reqwest | 140.3 µs | +13.3% |
+| **aioduct** | **124.3 µs** | — |
+| reqwest | 140.9 µs | +13.4% |
 
 ### 50 Concurrent Requests (HTTP/1.1)
 
@@ -111,8 +111,8 @@ GET a 1 MB response, read as bytes.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **383.2 µs** | — |
-| reqwest | 476.8 µs | +24.4% |
+| **aioduct** | **361.5 µs** | — |
+| reqwest | 425.0 µs | +17.6% |
 
 ### HTTP/2 GET Request
 
@@ -120,8 +120,8 @@ GET via h2c (HTTP/2 over cleartext).
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **74.6 µs** | — |
-| hyper-util | 78.1 µs | +4.7% |
+| **aioduct** | **61.5 µs** | — |
+| hyper-util | 84.7 µs | +37.7% |
 
 ### HTTP/2 Download (64 KB)
 
@@ -129,8 +129,8 @@ GET a 64 KB response via h2c.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **102.1 µs** | — |
-| hyper-util | 2,068 µs | +1926% |
+| **aioduct** | **105.1 µs** | — |
+| hyper-util | 2,068 µs | +1868% |
 
 *(hyper-util h2 uses default 64 KB window sizes, hitting flow-control bottlenecks on larger payloads. aioduct configures 2 MB stream / 4 MB connection windows.)*
 
@@ -140,7 +140,7 @@ GET a 1 MB response via h2c (aioduct only).
 
 | Client | Mean |
 |--------|------|
-| **aioduct** | **781.7 µs** |
+| **aioduct** | **734.0 µs** |
 
 ### HTTP/2 10 Concurrent Requests
 
@@ -148,7 +148,7 @@ GET a 1 MB response via h2c (aioduct only).
 
 | Client | Mean |
 |--------|------|
-| **aioduct** | **157.3 µs** |
+| **aioduct** | **162.1 µs** |
 
 ### HTTP/2 POST with 4 KB Body
 
@@ -156,7 +156,7 @@ POST a 4 KB payload via h2c (aioduct only).
 
 | Client | Mean |
 |--------|------|
-| **aioduct** | **100.0 µs** |
+| **aioduct** | **87.7 µs** |
 
 ### Connection Pool Overhead
 
@@ -164,8 +164,8 @@ Comparison of pooled vs no-pool (fresh connection per request).
 
 | Protocol | With Pool | No Pool | Speedup |
 |----------|-----------|---------|---------|
-| HTTP/1.1 | **38.8 µs** | 94.4 µs | 2.4× |
-| HTTP/2   | **78.5 µs** | 167.4 µs | 2.1× |
+| HTTP/1.1 | **44.8 µs** | 95.4 µs | 2.1× |
+| HTTP/2   | **80.6 µs** | 191.4 µs | 2.4× |
 
 ### SSE: Consume 100 Events
 
@@ -173,7 +173,7 @@ Parse 100 Server-Sent Events from a single response (aioduct only).
 
 | Client | Mean |
 |--------|------|
-| **aioduct** | **76.9 µs** |
+| **aioduct** | **65.4 µs** |
 
 ### Multipart Upload (small)
 
@@ -181,8 +181,8 @@ Multipart form with two text fields.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **52.9 µs** | — |
-| reqwest | 65.2 µs | +23.3% |
+| **aioduct** | **50.8 µs** | — |
+| reqwest | 66.6 µs | +31.1% |
 
 ### Multipart Upload (1 MB file)
 
@@ -190,8 +190,8 @@ Multipart form with a 1 MB file part.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **870.5 µs** | — |
-| reqwest | 874.2 µs | +0.4% |
+| **aioduct** | **846.3 µs** | — |
+| reqwest | 944.9 µs | +11.7% |
 
 ### Streaming Upload (1 MB)
 
@@ -199,8 +199,8 @@ Stream a 1 MB body to an echo server.
 
 | Client | Mean | vs aioduct |
 |--------|------|------------|
-| **aioduct** | **760.7 µs** | — |
-| reqwest | 785.3 µs | +3.2% |
+| reqwest | **750.8 µs** | -2.6% |
+| **aioduct** | 770.9 µs | — |
 
 ### Chunk Download (1 MB)
 
@@ -208,10 +208,10 @@ Parallel range-based download of a 1 MB file.
 
 | Chunks | Mean |
 |--------|------|
-| 1 chunk | 2,267 µs |
-| 4 chunks | 2,294 µs |
-| 8 chunks | 2,316 µs |
-| Single GET (baseline) | **531.6 µs** |
+| 1 chunk | 2,239 µs |
+| 4 chunks | 2,308 µs |
+| 8 chunks | 2,297 µs |
+| Single GET (baseline) | **362.5 µs** |
 
 *(On loopback the overhead of multiple range requests exceeds the parallelism benefit. Chunk download shows gains on real networks with higher latency.)*
 
@@ -221,15 +221,15 @@ Read a 64 KB response frame-by-frame vs collected as bytes (aioduct only).
 
 | Method | Mean |
 |--------|------|
-| bytes collect | 70.6 µs |
-| frame by frame | **63.7 µs** |
+| bytes collect | **56.0 µs** |
+| frame by frame | 69.3 µs |
 
 ## Analysis
 
 - **aioduct** is the fastest or tied for fastest in most benchmarks, sitting close to raw hyper-util while providing a much higher-level API (connection pooling, redirects, cookies, middleware, retry, etc.).
-- **hyper-util** (`legacy::Client`) is close to aioduct in H1 but struggles in H2 64 KB downloads due to default window sizes.
-- **reqwest** is 4–45% slower than aioduct depending on the scenario. The gap widens for text decoding and concurrent workloads.
-- **isahc** is 57–68% slower due to the libcurl FFI boundary and curl's internal buffering.
+- **hyper-util** (`legacy::Client`) is close to aioduct in H1 but struggles in H2 due to default flow-control window sizes.
+- **reqwest** is 3–31% slower than aioduct in most scenarios. The gap widens for concurrent workloads and multipart uploads.
+- **isahc** is 43–112% slower due to the libcurl FFI boundary and curl's internal buffering.
 - **Connection pooling** provides a consistent ~2× speedup over fresh connections for both H1 and H2.
 
 ## Caveats
