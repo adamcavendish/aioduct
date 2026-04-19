@@ -388,6 +388,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono"
+version = "0.4.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -772,6 +781,232 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "example-basic-get"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-blocking-client"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+]
+
+[[package]]
+name = "example-chunk-download"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-cookies"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "http 1.4.0",
+ "tokio",
+]
+
+[[package]]
+name = "example-custom-headers"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "http 1.4.0",
+ "tokio",
+]
+
+[[package]]
+name = "example-decompression"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "http 1.4.0",
+ "tokio",
+]
+
+[[package]]
+name = "example-error-handling"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-http-cache"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-http2-prior"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-https-rustls"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-json-roundtrip"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-middleware"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "http 1.4.0",
+ "tokio",
+]
+
+[[package]]
+name = "example-multipart-upload"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-otel-spans"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "opentelemetry",
+ "opentelemetry-stdout",
+ "opentelemetry_sdk",
+ "tokio",
+]
+
+[[package]]
+name = "example-post-form"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-proxy-socks"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-query-params"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "example-rate-limiter"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-redirects"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-smol-runtime"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "smol",
+]
+
+[[package]]
+name = "example-sse-stream"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "http 1.4.0",
+ "tokio",
+]
+
+[[package]]
+name = "example-streaming-body"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-timeout-and-retry"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-tower-connector"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "example-tracing-logs"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "example-upgrade-websocket"
+version = "0.0.0"
+dependencies = [
+ "aioduct",
+ "http 1.4.0",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "tokio",
 ]
 
 [[package]]
@@ -1549,6 +1784,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1614,6 +1855,15 @@ name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
 
 [[package]]
 name = "memchr"
@@ -1697,6 +1947,15 @@ name = "ndk-context"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "num-traits"
@@ -1797,6 +2056,34 @@ dependencies = [
  "bytes",
  "http 1.4.0",
  "opentelemetry",
+]
+
+[[package]]
+name = "opentelemetry-stdout"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc8887887e169414f637b18751487cce4e095be787d23fad13c454e2fb1b3811"
+dependencies = [
+ "chrono",
+ "opentelemetry",
+ "opentelemetry_sdk",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e14ae4f5991976fd48df6d843de219ca6d31b01daaab2dad5af2badeded372bd"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "opentelemetry",
+ "percent-encoding",
+ "rand 0.9.4",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -2443,6 +2730,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2644,6 +2940,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "tinystr"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2723,6 +3028,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
  "tokio",
 ]
 
@@ -2819,6 +3135,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
 ]
 
 [[package]]
@@ -2829,6 +3146,35 @@ checksum = "97d095ae15e245a057c8e8451bab9b3ee1e1f68e9ba2b4fbc18d0ac5237835f2"
 dependencies = [
  "pin-project",
  "tracing",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "matchers",
+ "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
 ]
 
 [[package]]
@@ -2895,6 +3241,12 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vcpkg"

@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-aioduct = { path = "../..", features = ["tokio", "json"] }
+aioduct = { path = "../aioduct", features = ["tokio", "json"] }
 bytes = "1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 http = "1"

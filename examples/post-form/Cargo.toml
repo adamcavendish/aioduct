@@ -1,0 +1,9 @@
+[package]
+name = "example-post-form"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aioduct = { path = "../../crates/aioduct", features = ["tokio"] }
+tokio = { version = "1", features = ["full"] }

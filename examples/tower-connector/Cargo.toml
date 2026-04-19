@@ -1,0 +1,11 @@
+[package]
+name = "example-tower-connector"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aioduct = { path = "../../crates/aioduct", features = ["tokio", "tower"] }
+tokio = { version = "1", features = ["full"] }
+tower-service = "0.3"
+tower-layer = "0.3"

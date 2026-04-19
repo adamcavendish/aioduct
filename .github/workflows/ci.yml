@@ -52,7 +52,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --features ${{ matrix.features }} --all-targets -- -D warnings
+      - run: cargo clippy -p aioduct --features ${{ matrix.features }} --all-targets -- -D warnings
 
   doc:
     name: Documentation
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --features tokio,rustls,json --no-deps
+      - run: cargo doc -p aioduct --features tokio,rustls,json --no-deps
 
   mdbook:
     name: mdbook
@@ -101,8 +101,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --features ${{ matrix.features }}
-      - run: cargo test --doc --features ${{ matrix.features }}
+      - run: cargo nextest run -p aioduct --features ${{ matrix.features }}
+      - run: cargo test --doc -p aioduct --features ${{ matrix.features }}
 
   coverage:
     name: Coverage
@@ -118,7 +118,7 @@ jobs:
           prefix-key: coverage
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
-      - run: cargo llvm-cov nextest --features tokio,json --lcov --output-path lcov.info
+      - run: cargo llvm-cov nextest -p aioduct --features tokio,json --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v6
         with:
           files: lcov.info
@@ -136,4 +136,4 @@ jobs:
         with:
           toolchain: ${{ env.rust_min }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --features tokio
+      - run: cargo check -p aioduct --features tokio

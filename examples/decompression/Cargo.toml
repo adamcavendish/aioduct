@@ -1,0 +1,10 @@
+[package]
+name = "example-decompression"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aioduct = { path = "../../crates/aioduct", features = ["tokio", "gzip", "brotli", "zstd", "deflate"] }
+tokio = { version = "1", features = ["full"] }
+http = "1"

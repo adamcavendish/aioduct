@@ -1,0 +1,13 @@
+[package]
+name = "example-upgrade-websocket"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aioduct = { path = "../../crates/aioduct", features = ["tokio"] }
+tokio = { version = "1", features = ["full"] }
+http = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["tokio"] }
