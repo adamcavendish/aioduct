@@ -47,7 +47,16 @@ fn bench_multipart_small(c: &mut Criterion) {
             let form = aioduct::Multipart::new()
                 .text("field1", "value1")
                 .text("field2", "value2");
-            aioduct_client.post(&url).unwrap().multipart(form).send().await.unwrap().bytes().await.unwrap()
+            aioduct_client
+                .post(&url)
+                .unwrap()
+                .multipart(form)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.bench_function("reqwest", |b| {
@@ -58,7 +67,15 @@ fn bench_multipart_small(c: &mut Criterion) {
                 let form = reqwest::multipart::Form::new()
                     .text("field1", "value1")
                     .text("field2", "value2");
-                client.post(&url).multipart(form).send().await.unwrap().bytes().await.unwrap()
+                client
+                    .post(&url)
+                    .multipart(form)
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap()
             }
         });
     });
@@ -85,7 +102,16 @@ fn bench_multipart_file_1m(c: &mut Criterion) {
                 let form = aioduct::Multipart::new()
                     .text("description", "large file")
                     .file("upload", "data.bin", "application/octet-stream", data);
-                aioduct_client.post(&url).unwrap().multipart(form).send().await.unwrap().bytes().await.unwrap()
+                aioduct_client
+                    .post(&url)
+                    .unwrap()
+                    .multipart(form)
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap()
             }
         });
     });
@@ -102,7 +128,15 @@ fn bench_multipart_file_1m(c: &mut Criterion) {
                 let form = reqwest::multipart::Form::new()
                     .text("description", "large file")
                     .part("upload", part);
-                client.post(&url).multipart(form).send().await.unwrap().bytes().await.unwrap()
+                client
+                    .post(&url)
+                    .multipart(form)
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap()
             }
         });
     });
@@ -126,7 +160,16 @@ fn bench_upload_1m(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let p = payload.clone();
             async {
-                aioduct_client.post(&url).unwrap().body(p).send().await.unwrap().bytes().await.unwrap()
+                aioduct_client
+                    .post(&url)
+                    .unwrap()
+                    .body(p)
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap()
             }
         });
     });
@@ -135,7 +178,17 @@ fn bench_upload_1m(c: &mut Criterion) {
             let p = payload.clone();
             let url = url.clone();
             let client = reqwest_client.clone();
-            async move { client.post(&url).body(p).send().await.unwrap().bytes().await.unwrap() }
+            async move {
+                client
+                    .post(&url)
+                    .body(p)
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap()
+            }
         });
     });
     group.finish();
@@ -155,25 +208,48 @@ fn bench_chunk_download(c: &mut Criterion) {
     group.sample_size(30);
     group.bench_function("1_chunk", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = aioduct_client.chunk_download(&url).chunks(1).download().await.unwrap();
+            let result = aioduct_client
+                .chunk_download(&url)
+                .chunks(1)
+                .download()
+                .await
+                .unwrap();
             assert_eq!(result.total_size as usize, total_size);
         });
     });
     group.bench_function("4_chunks", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = aioduct_client.chunk_download(&url).chunks(4).download().await.unwrap();
+            let result = aioduct_client
+                .chunk_download(&url)
+                .chunks(4)
+                .download()
+                .await
+                .unwrap();
             assert_eq!(result.total_size as usize, total_size);
         });
     });
     group.bench_function("8_chunks", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = aioduct_client.chunk_download(&url).chunks(8).download().await.unwrap();
+            let result = aioduct_client
+                .chunk_download(&url)
+                .chunks(8)
+                .download()
+                .await
+                .unwrap();
             assert_eq!(result.total_size as usize, total_size);
         });
     });
     group.bench_function("single_get_baseline", |b| {
         b.to_async(&rt).iter(|| async {
-            aioduct_client.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            aioduct_client
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.finish();
@@ -193,7 +269,15 @@ fn bench_body_stream(c: &mut Criterion) {
     group.sample_size(50);
     group.bench_function("bytes_collect", |b| {
         b.to_async(&rt).iter(|| async {
-            aioduct_client.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            aioduct_client
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.bench_function("frame_by_frame", |b| {

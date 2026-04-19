@@ -493,8 +493,8 @@ mod tests {
 
     #[test]
     fn proxy_settings_debug_with_custom() {
-        let settings = ProxySettings::all(ProxyConfig::http("http://p:80").unwrap())
-            .custom(|_: &Uri| None);
+        let settings =
+            ProxySettings::all(ProxyConfig::http("http://p:80").unwrap()).custom(|_: &Uri| None);
         let dbg = format!("{settings:?}");
         assert!(dbg.contains("custom"));
     }
@@ -511,8 +511,7 @@ mod tests {
 
     #[test]
     fn proxy_for_no_host_still_checks_scheme() {
-        let settings = ProxySettings::default()
-            .http(ProxyConfig::http("http://hp:80").unwrap());
+        let settings = ProxySettings::default().http(ProxyConfig::http("http://hp:80").unwrap());
         let uri: Uri = "http://example.com/path".parse().unwrap();
         let proxy = settings.proxy_for(&uri);
         assert!(proxy.is_some());
@@ -607,7 +606,10 @@ mod tests {
                 None
             }
         };
-        assert!(f.proxy_for(&"http://proxied.com/".parse().unwrap()).is_some());
+        assert!(
+            f.proxy_for(&"http://proxied.com/".parse().unwrap())
+                .is_some()
+        );
         assert!(f.proxy_for(&"http://other.com/".parse().unwrap()).is_none());
     }
 }

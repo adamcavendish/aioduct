@@ -28,12 +28,27 @@ fn bench_json_parse(c: &mut Criterion) {
     let mut group = c.benchmark_group("json_parse");
     group.bench_function("aioduct", |b| {
         b.to_async(&rt).iter(|| async {
-            aioduct_client.get(&url).unwrap().send().await.unwrap().json::<Msg>().await.unwrap()
+            aioduct_client
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .json::<Msg>()
+                .await
+                .unwrap()
         });
     });
     group.bench_function("reqwest", |b| {
         b.to_async(&rt).iter(|| async {
-            reqwest_client.get(&url).send().await.unwrap().json::<Msg>().await.unwrap()
+            reqwest_client
+                .get(&url)
+                .send()
+                .await
+                .unwrap()
+                .json::<Msg>()
+                .await
+                .unwrap()
         });
     });
     group.finish();

@@ -29,9 +29,7 @@ pub async fn start_http1_server(body: Bytes) -> SocketAddr {
                         io,
                         service_fn(move |_req: Request<hyper::body::Incoming>| {
                             let body = body.clone();
-                            async move {
-                                Ok::<_, Infallible>(Response::new(Full::new(body)))
-                            }
+                            async move { Ok::<_, Infallible>(Response::new(Full::new(body))) }
                         }),
                     )
                     .await;
@@ -73,9 +71,7 @@ pub async fn start_h2c_server(body: Bytes) -> SocketAddr {
                         io,
                         service_fn(move |_req: Request<hyper::body::Incoming>| {
                             let body = body.clone();
-                            async move {
-                                Ok::<_, Infallible>(Response::new(Full::new(body)))
-                            }
+                            async move { Ok::<_, Infallible>(Response::new(Full::new(body))) }
                         }),
                     )
                     .await;
@@ -162,9 +158,7 @@ pub async fn start_sse_server(event_count: usize) -> SocketAddr {
                         service_fn(move |_req: Request<hyper::body::Incoming>| async move {
                             let mut body = String::new();
                             for i in 0..event_count {
-                                body.push_str(&format!(
-                                    "event: tick\ndata: {{\"n\":{i}}}\n\n"
-                                ));
+                                body.push_str(&format!("event: tick\ndata: {{\"n\":{i}}}\n\n"));
                             }
                             let resp = Response::builder()
                                 .header("content-type", "text/event-stream")

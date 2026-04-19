@@ -513,7 +513,12 @@ mod streaming_tests {
     #[tokio::test]
     async fn streaming_buffered_text_field() {
         let mp = Multipart::new().text("name", "value");
-        let boundary = mp.content_type().split("boundary=").nth(1).unwrap().to_owned();
+        let boundary = mp
+            .content_type()
+            .split("boundary=")
+            .nth(1)
+            .unwrap()
+            .to_owned();
         let body = collect_streaming(mp).await;
 
         assert!(body.contains(&format!("--{boundary}\r\n")));
@@ -580,7 +585,12 @@ mod streaming_tests {
             "text/plain",
             b"3".to_vec(),
         );
-        let boundary = mp.content_type().split("boundary=").nth(1).unwrap().to_owned();
+        let boundary = mp
+            .content_type()
+            .split("boundary=")
+            .nth(1)
+            .unwrap()
+            .to_owned();
         let body = collect_streaming(mp).await;
 
         let boundary_count = body.matches(&format!("--{boundary}\r\n")).count();
@@ -591,10 +601,9 @@ mod streaming_tests {
     #[tokio::test]
     async fn streaming_with_stream_body() {
         let data = bytes::Bytes::from("streamed data");
-        let stream_body: crate::error::HyperBody =
-            http_body_util::Full::new(data)
-                .map_err(|never| match never {})
-                .boxed();
+        let stream_body: crate::error::HyperBody = http_body_util::Full::new(data)
+            .map_err(|never| match never {})
+            .boxed();
 
         let part = Part::stream("file", stream_body)
             .file_name("stream.bin")
@@ -617,7 +626,12 @@ mod streaming_tests {
         let mp = Multipart::new()
             .text("text_field", "text_value")
             .part(Part::stream("stream_field", stream_body).file_name("f.bin"));
-        let boundary = mp.content_type().split("boundary=").nth(1).unwrap().to_owned();
+        let boundary = mp
+            .content_type()
+            .split("boundary=")
+            .nth(1)
+            .unwrap()
+            .to_owned();
         let body = collect_streaming(mp).await;
 
         assert!(body.contains("text_value"));
@@ -628,7 +642,12 @@ mod streaming_tests {
     #[tokio::test]
     async fn streaming_empty_multipart() {
         let mp = Multipart::new();
-        let boundary = mp.content_type().split("boundary=").nth(1).unwrap().to_owned();
+        let boundary = mp
+            .content_type()
+            .split("boundary=")
+            .nth(1)
+            .unwrap()
+            .to_owned();
         let body = collect_streaming(mp).await;
 
         assert_eq!(body, format!("--{boundary}--\r\n"));

@@ -12,9 +12,7 @@ fn bench_h1_pool_vs_no_pool(c: &mut Criterion) {
     let addr = rt.block_on(start_http1_server(body));
     let url = format!("http://{addr}/");
 
-    let pooled = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::new()
-    });
+    let pooled = rt.block_on(async { aioduct::Client::<aioduct::runtime::TokioRuntime>::new() });
     let no_pool = rt.block_on(async {
         aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
             .no_connection_reuse()
@@ -24,12 +22,28 @@ fn bench_h1_pool_vs_no_pool(c: &mut Criterion) {
     let mut group = c.benchmark_group("h1_connection_pool");
     group.bench_function("with_pool", |b| {
         b.to_async(&rt).iter(|| async {
-            pooled.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            pooled
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.bench_function("no_pool", |b| {
         b.to_async(&rt).iter(|| async {
-            no_pool.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            no_pool
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.finish();
@@ -67,12 +81,28 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
     let mut group = c.benchmark_group("h2_connection_pool");
     group.bench_function("with_pool", |b| {
         b.to_async(&rt).iter(|| async {
-            pooled.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            pooled
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.bench_function("no_pool", |b| {
         b.to_async(&rt).iter(|| async {
-            no_pool.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            no_pool
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.finish();
