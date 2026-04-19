@@ -342,3 +342,131 @@ fn generate_boundary() -> String {
         .as_nanos();
     format!("----aioduct{nanos:x}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extract_boundary(ct: &str) -> &str {
+        ct.split("boundary=").nth(1).unwrap()
+    }
+
+    #[test]
+    fn content_type_format() {
+        let mp = Multipart::new();
+        let ct = mp.content_type();
+        assert!(ct.starts_with("multipart/form-data; boundary="));
+    }
+
+    #[test]
+    fn has_streaming_parts_false_for_buffered() {
+        let mp = Multipart::new().text("field", "value");
+        assert!(!mp.has_streaming_parts());
+    }
+
+    #[test]
+    fn has_streaming_parts_true_for_stream() {
+        let body: crate::error::HyperBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mp = Multipart::new().part(Part::stream("f", body));
+        assert!(mp.has_streaming_parts());
+    }
+
+    #[test]
+    fn into_bytes_text_field() {
+        let mp = Multipart::new().text("name", "value");
+        let boundary = extract_boundary(&mp.content_type()).to_owned();
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains(&format!("--{boundary}\r\n")));
+        assert!(body.contains("Content-Disposition: form-data; name=\"name\"\r\n"));
+        assert!(body.contains("\r\nvalue\r\n"));
+        assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+    }
+
+    #[test]
+    fn into_bytes_file_part() {
+        let mp = Multipart::new().file("upload", "test.txt", "text/plain", b"contents".to_vec());
+        let boundary = extract_boundary(&mp.content_type()).to_owned();
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("filename=\"test.txt\""));
+        assert!(body.contains("Content-Type: text/plain\r\n"));
+        assert!(body.contains("contents"));
+        assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+    }
+
+    #[test]
+    fn into_bytes_no_filename_with_content_type() {
+        let part = Part::text("f", "v").mime_str("application/json");
+        let mp = Multipart::new().part(part);
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("name=\"f\""));
+        assert!(!body.contains("filename="));
+        assert!(body.contains("Content-Type: application/json\r\n"));
+    }
+
+    #[test]
+    fn into_bytes_filename_without_content_type() {
+        let part = Part::text("f", "v").file_name("data.bin");
+        let mp = Multipart::new().part(part);
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("filename=\"data.bin\""));
+        assert!(!body.contains("Content-Type:"));
+    }
+
+    #[test]
+    fn into_bytes_no_filename_no_content_type() {
+        let mp = Multipart::new().text("plain", "hi");
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("name=\"plain\""));
+        assert!(!body.contains("filename="));
+        assert!(!body.contains("Content-Type:"));
+    }
+
+    #[test]
+    fn into_bytes_custom_headers() {
+        let part = Part::text("f", "v").header("X-Custom", "test-value");
+        let mp = Multipart::new().part(part);
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.contains("X-Custom: test-value\r\n"));
+    }
+
+    #[test]
+    fn into_bytes_multiple_parts() {
+        let mp = Multipart::new().text("a", "1").text("b", "2").file(
+            "c",
+            "c.txt",
+            "text/plain",
+            b"3".to_vec(),
+        );
+        let boundary = extract_boundary(&mp.content_type()).to_owned();
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        let boundary_count = body.matches(&format!("--{boundary}\r\n")).count();
+        assert_eq!(boundary_count, 3);
+        assert!(body.contains(&format!("--{boundary}--\r\n")));
+    }
+
+    #[test]
+    fn default_creates_empty() {
+        let mp = Multipart::default();
+        assert!(!mp.has_streaming_parts());
+        let bytes = mp.into_bytes();
+        assert!(!bytes.is_empty());
+    }
+
+    use http_body_util::BodyExt;
+}

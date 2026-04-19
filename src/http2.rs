@@ -100,3 +100,64 @@ impl Http2Config {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_all_none() {
+        let config = Http2Config::default();
+        assert!(config.initial_stream_window_size.is_none());
+        assert!(config.initial_connection_window_size.is_none());
+        assert!(config.max_frame_size.is_none());
+        assert!(config.adaptive_window.is_none());
+        assert!(config.keep_alive_interval.is_none());
+        assert!(config.keep_alive_timeout.is_none());
+        assert!(config.keep_alive_while_idle.is_none());
+        assert!(config.max_header_list_size.is_none());
+        assert!(config.max_send_buf_size.is_none());
+        assert!(config.max_concurrent_reset_streams.is_none());
+    }
+
+    #[test]
+    fn builder_chain() {
+        let config = Http2Config::new()
+            .initial_stream_window_size(65535)
+            .initial_connection_window_size(1048576)
+            .max_frame_size(32768)
+            .adaptive_window(true)
+            .keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(20))
+            .keep_alive_while_idle(true)
+            .max_header_list_size(8192)
+            .max_send_buf_size(131072)
+            .max_concurrent_reset_streams(100);
+
+        assert_eq!(config.initial_stream_window_size, Some(65535));
+        assert_eq!(config.initial_connection_window_size, Some(1048576));
+        assert_eq!(config.max_frame_size, Some(32768));
+        assert_eq!(config.adaptive_window, Some(true));
+        assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
+        assert_eq!(config.keep_alive_timeout, Some(Duration::from_secs(20)));
+        assert_eq!(config.keep_alive_while_idle, Some(true));
+        assert_eq!(config.max_header_list_size, Some(8192));
+        assert_eq!(config.max_send_buf_size, Some(131072));
+        assert_eq!(config.max_concurrent_reset_streams, Some(100));
+    }
+
+    #[test]
+    fn debug_format() {
+        let config = Http2Config::new().max_frame_size(16384);
+        let dbg = format!("{config:?}");
+        assert!(dbg.contains("Http2Config"));
+        assert!(dbg.contains("16384"));
+    }
+
+    #[test]
+    fn clone() {
+        let config = Http2Config::new().adaptive_window(false);
+        let cloned = config.clone();
+        assert_eq!(cloned.adaptive_window, Some(false));
+    }
+}

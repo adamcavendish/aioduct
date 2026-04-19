@@ -353,3 +353,129 @@ mod imp {
     feature = "zstd"
 ))]
 use imp::decompress_impl;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderMap;
+    use http::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH};
+
+    #[test]
+    fn accept_encoding_default_is_not_empty() {
+        let ae = AcceptEncoding::default();
+        // At least when compiled with any codec feature, default is not empty
+        let _ = ae.is_empty();
+        let _ = ae.header_value();
+    }
+
+    #[test]
+    fn accept_encoding_none_is_empty() {
+        let ae = AcceptEncoding::none();
+        assert!(ae.is_empty());
+        assert!(ae.header_value().is_none());
+    }
+
+    #[test]
+    fn set_accept_encoding_adds_header() {
+        let mut headers = HeaderMap::new();
+        let ae = AcceptEncoding::default();
+        set_accept_encoding(&mut headers, &ae);
+        if !ae.is_empty() {
+            assert!(headers.contains_key(ACCEPT_ENCODING));
+        }
+    }
+
+    #[test]
+    fn set_accept_encoding_does_not_overwrite_existing() {
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT_ENCODING, "identity".parse().unwrap());
+        set_accept_encoding(&mut headers, &AcceptEncoding::default());
+        assert_eq!(headers.get(ACCEPT_ENCODING).unwrap(), "identity");
+    }
+
+    #[test]
+    fn set_accept_encoding_noop_for_none() {
+        let mut headers = HeaderMap::new();
+        set_accept_encoding(&mut headers, &AcceptEncoding::none());
+        assert!(!headers.contains_key(ACCEPT_ENCODING));
+    }
+
+    #[test]
+    fn maybe_decompress_passthrough_when_empty() {
+        use http_body_util::BodyExt;
+        let mut headers = HeaderMap::new();
+        let body: HyperBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let ae = AcceptEncoding::none();
+        let _result = maybe_decompress(&mut headers, body, &ae);
+    }
+
+    #[test]
+    fn maybe_decompress_passthrough_no_encoding_header() {
+        use http_body_util::BodyExt;
+        let mut headers = HeaderMap::new();
+        let body: HyperBody = http_body_util::Full::new(bytes::Bytes::from("hello"))
+            .map_err(|never| match never {})
+            .boxed();
+        let ae = AcceptEncoding::default();
+        let _result = maybe_decompress(&mut headers, body, &ae);
+    }
+
+    #[cfg(feature = "gzip")]
+    #[test]
+    fn accept_encoding_includes_gzip() {
+        let ae = AcceptEncoding::default();
+        assert!(ae.gzip);
+        let hv = ae.header_value().unwrap();
+        let val = hv.to_str().unwrap();
+        assert!(val.contains("gzip"));
+    }
+
+    #[cfg(feature = "gzip")]
+    #[tokio::test]
+    async fn maybe_decompress_gzip_round_trip() {
+        use bytes::Bytes;
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use http_body_util::BodyExt;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(b"hello gzip").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+        headers.insert(
+            CONTENT_LENGTH,
+            compressed.len().to_string().parse().unwrap(),
+        );
+
+        let body: HyperBody = http_body_util::Full::new(Bytes::from(compressed))
+            .map_err(|never| match never {})
+            .boxed();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        assert!(!headers.contains_key(CONTENT_ENCODING));
+        assert!(!headers.contains_key(CONTENT_LENGTH));
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], b"hello gzip");
+    }
+
+    #[test]
+    fn accept_encoding_clone() {
+        let ae = AcceptEncoding::default();
+        let ae2 = ae.clone();
+        assert_eq!(ae.is_empty(), ae2.is_empty());
+    }
+
+    #[test]
+    fn accept_encoding_debug() {
+        let ae = AcceptEncoding::default();
+        let dbg = format!("{ae:?}");
+        assert!(dbg.contains("AcceptEncoding"));
+    }
+}

@@ -45,7 +45,6 @@ async fn read_exact<T: Read + Unpin>(stream: &mut T, buf: &mut [u8]) -> io::Resu
         }
         buf[filled] = one[0];
         filled += 1;
-        read_buf = hyper::rt::ReadBuf::new(&mut one);
     }
     Ok(())
 }
@@ -187,4 +186,262 @@ pub(crate) async fn socks5_handshake<T: Read + Write + Unpin>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct MockStream {
+        read_data: VecDeque<u8>,
+        written: Vec<u8>,
+    }
+
+    impl MockStream {
+        fn new(read_data: &[u8]) -> Self {
+            Self {
+                read_data: VecDeque::from(read_data.to_vec()),
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl hyper::rt::Read for MockStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            mut buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(byte) = self.read_data.pop_front() {
+                unsafe {
+                    let dst = buf.as_mut();
+                    if !dst.is_empty() {
+                        dst[0].write(byte);
+                        buf.advance(1);
+                    }
+                }
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hyper::rt::Write for MockStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.written.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn ipv4_reply() -> Vec<u8> {
+        let mut v = vec![SOCKS5_VERSION, REPLY_SUCCESS, 0x00, 0x01];
+        v.extend_from_slice(&[127, 0, 0, 1]);
+        v.extend_from_slice(&[0x00, 0x50]);
+        v
+    }
+
+    fn domain_reply(domain: &str) -> Vec<u8> {
+        let mut v = vec![SOCKS5_VERSION, REPLY_SUCCESS, 0x00, 0x03];
+        v.push(domain.len() as u8);
+        v.extend_from_slice(domain.as_bytes());
+        v.extend_from_slice(&[0x00, 0x50]);
+        v
+    }
+
+    fn ipv6_reply() -> Vec<u8> {
+        let mut v = vec![SOCKS5_VERSION, REPLY_SUCCESS, 0x00, 0x04];
+        v.extend_from_slice(&[0u8; 16]);
+        v.extend_from_slice(&[0x00, 0x50]);
+        v
+    }
+
+    #[tokio::test]
+    async fn handshake_no_auth_ipv4() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&ipv4_reply());
+        let mut stream = MockStream::new(&reply);
+        let result = socks5_handshake(&mut stream, "example.com", 80, None).await;
+        assert!(result.is_ok());
+        assert_eq!(stream.written[0], SOCKS5_VERSION);
+        assert_eq!(stream.written[1], 1);
+        assert_eq!(stream.written[2], AUTH_NONE);
+    }
+
+    #[tokio::test]
+    async fn handshake_with_auth_success() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_USERNAME_PASSWORD];
+        reply.extend_from_slice(&[0x01, 0x00]);
+        reply.extend_from_slice(&ipv4_reply());
+        let mut stream = MockStream::new(&reply);
+        let auth = ProxyAuth {
+            username: "user".into(),
+            password: "pass".into(),
+        };
+        let result = socks5_handshake(&mut stream, "example.com", 80, Some(&auth)).await;
+        assert!(result.is_ok());
+        assert_eq!(stream.written[0], SOCKS5_VERSION);
+        assert_eq!(stream.written[1], 2);
+    }
+
+    #[tokio::test]
+    async fn handshake_auth_failed() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_USERNAME_PASSWORD];
+        reply.extend_from_slice(&[0x01, 0x01]);
+        let mut stream = MockStream::new(&reply);
+        let auth = ProxyAuth {
+            username: "user".into(),
+            password: "wrong".into(),
+        };
+        let err = socks5_handshake(&mut stream, "example.com", 80, Some(&auth))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("authentication failed"));
+    }
+
+    #[tokio::test]
+    async fn handshake_no_acceptable_method() {
+        let reply = vec![SOCKS5_VERSION, AUTH_NO_ACCEPTABLE];
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no acceptable authentication method")
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_unsupported_auth_method() {
+        let reply = vec![SOCKS5_VERSION, 0x03];
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unsupported auth method"));
+    }
+
+    #[tokio::test]
+    async fn handshake_unexpected_version() {
+        let reply = vec![0x04, AUTH_NONE];
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unexpected version"));
+    }
+
+    #[tokio::test]
+    async fn handshake_unexpected_reply_version() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[0x04, REPLY_SUCCESS, 0x00, 0x01]);
+        reply.extend_from_slice(&[127, 0, 0, 1, 0x00, 0x50]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unexpected reply version"));
+    }
+
+    #[tokio::test]
+    async fn handshake_reply_general_failure() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x01, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("general failure"));
+    }
+
+    #[tokio::test]
+    async fn handshake_reply_connection_refused() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x05, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn handshake_reply_unknown_error() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x09, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown error"));
+    }
+
+    #[tokio::test]
+    async fn handshake_domain_reply() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&domain_reply("bound.host"));
+        let mut stream = MockStream::new(&reply);
+        let result = socks5_handshake(&mut stream, "example.com", 80, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn handshake_ipv6_reply() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&ipv6_reply());
+        let mut stream = MockStream::new(&reply);
+        let result = socks5_handshake(&mut stream, "example.com", 80, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn handshake_unknown_address_type() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, REPLY_SUCCESS, 0x00, 0x05]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown address type"));
+    }
+
+    #[tokio::test]
+    async fn handshake_hostname_too_long() {
+        let long_host = "a".repeat(256);
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&ipv4_reply());
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, &long_host, 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("hostname too long"));
+    }
+
+    #[tokio::test]
+    async fn handshake_auth_required_but_not_provided() {
+        let reply = vec![SOCKS5_VERSION, AUTH_USERNAME_PASSWORD];
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("server requires auth"));
+    }
 }

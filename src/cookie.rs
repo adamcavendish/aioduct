@@ -119,3 +119,149 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
         _http_only: http_only,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::header::HeaderValue;
+
+    fn headers_with_cookies(cookies: &[&str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for c in cookies {
+            headers.append(SET_COOKIE, HeaderValue::from_str(c).unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn store_and_apply_roundtrip() {
+        let jar = CookieJar::new();
+        let headers = headers_with_cookies(&["foo=bar"]);
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, &mut req_headers);
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "foo=bar");
+    }
+
+    #[test]
+    fn multiple_cookies_joined() {
+        let jar = CookieJar::new();
+        let headers = headers_with_cookies(&["a=1", "b=2"]);
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, &mut req_headers);
+        let cookie_str = req_headers.get(COOKIE).unwrap().to_str().unwrap();
+        assert!(cookie_str.contains("a=1"));
+        assert!(cookie_str.contains("b=2"));
+        assert!(cookie_str.contains("; "));
+    }
+
+    #[test]
+    fn cookie_update_overwrites_existing() {
+        let jar = CookieJar::new();
+        jar.store_from_response("example.com", &headers_with_cookies(&["k=old"]));
+        jar.store_from_response("example.com", &headers_with_cookies(&["k=new"]));
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, &mut req_headers);
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "k=new");
+    }
+
+    #[test]
+    fn secure_cookie_excluded_on_insecure() {
+        let jar = CookieJar::new();
+        let headers = headers_with_cookies(&["s=secret; Secure"]);
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, &mut req_headers);
+        assert!(req_headers.get(COOKIE).is_none());
+    }
+
+    #[test]
+    fn secure_cookie_included_on_secure() {
+        let jar = CookieJar::new();
+        let headers = headers_with_cookies(&["s=secret; Secure"]);
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", true, &mut req_headers);
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "s=secret");
+    }
+
+    #[test]
+    fn clear_empties_jar() {
+        let jar = CookieJar::new();
+        jar.store_from_response("example.com", &headers_with_cookies(&["x=y"]));
+        jar.clear();
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, &mut req_headers);
+        assert!(req_headers.get(COOKIE).is_none());
+    }
+
+    #[test]
+    fn empty_name_ignored() {
+        let jar = CookieJar::new();
+        let headers = headers_with_cookies(&["=value"]);
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, &mut req_headers);
+        assert!(req_headers.get(COOKIE).is_none());
+    }
+
+    #[test]
+    fn domain_attribute_with_leading_dot_stripped() {
+        let cookie = parse_set_cookie("a=b; Domain=.foo.com", "bar.com");
+        let c = cookie.unwrap();
+        assert_eq!(c._domain.as_deref(), Some("foo.com"));
+    }
+
+    #[test]
+    fn domain_defaults_to_request_domain() {
+        let cookie = parse_set_cookie("a=b", "request.com");
+        let c = cookie.unwrap();
+        assert_eq!(c._domain.as_deref(), Some("request.com"));
+    }
+
+    #[test]
+    fn httponly_attribute_parsed() {
+        let cookie = parse_set_cookie("a=b; HttpOnly", "example.com");
+        assert!(cookie.unwrap()._http_only);
+    }
+
+    #[test]
+    fn path_attribute_parsed() {
+        let cookie = parse_set_cookie("a=b; Path=/api", "example.com");
+        assert_eq!(cookie.unwrap()._path.as_deref(), Some("/api"));
+    }
+
+    #[test]
+    fn no_equals_returns_none() {
+        assert!(parse_set_cookie("invalid", "example.com").is_none());
+    }
+
+    #[test]
+    fn different_domain_does_not_apply() {
+        let jar = CookieJar::new();
+        jar.store_from_response("a.com", &headers_with_cookies(&["x=1"]));
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("b.com", false, &mut req_headers);
+        assert!(req_headers.get(COOKIE).is_none());
+    }
+
+    #[test]
+    fn clone_shares_state() {
+        let jar = CookieJar::new();
+        let jar2 = jar.clone();
+        jar.store_from_response("example.com", &headers_with_cookies(&["x=1"]));
+
+        let mut req_headers = HeaderMap::new();
+        jar2.apply_to_request("example.com", false, &mut req_headers);
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "x=1");
+    }
+}

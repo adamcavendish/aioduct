@@ -100,3 +100,161 @@ impl MiddlewareStack {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+    use std::sync::Mutex;
+
+    fn empty_body() -> HyperBody {
+        http_body_util::Full::new(bytes::Bytes::new())
+            .map_err(|never| match never {})
+            .boxed()
+    }
+
+    fn test_uri() -> Uri {
+        "http://example.com/test".parse().unwrap()
+    }
+
+    struct RecordingMiddleware {
+        id: i32,
+        log: Arc<Mutex<Vec<(i32, &'static str)>>>,
+    }
+
+    impl Middleware for RecordingMiddleware {
+        fn on_request(&self, _req: &mut http::Request<HyperBody>, _uri: &Uri) {
+            self.log.lock().unwrap().push((self.id, "request"));
+        }
+        fn on_response(&self, _resp: &mut http::Response<HyperBody>, _uri: &Uri) {
+            self.log.lock().unwrap().push((self.id, "response"));
+        }
+        fn on_error(&self, _err: &Error, _uri: &Uri, _method: &Method) {
+            self.log.lock().unwrap().push((self.id, "error"));
+        }
+        fn on_redirect(&self, _status: StatusCode, _from: &Uri, _to: &Uri) {
+            self.log.lock().unwrap().push((self.id, "redirect"));
+        }
+        fn on_retry(&self, _err: &Error, _uri: &Uri, _method: &Method, _attempt: u32) {
+            self.log.lock().unwrap().push((self.id, "retry"));
+        }
+    }
+
+    fn make_stack(log: &Arc<Mutex<Vec<(i32, &'static str)>>>) -> MiddlewareStack {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(RecordingMiddleware {
+            id: 1,
+            log: Arc::clone(log),
+        }));
+        stack.push(Arc::new(RecordingMiddleware {
+            id: 2,
+            log: Arc::clone(log),
+        }));
+        stack
+    }
+
+    #[test]
+    fn new_stack_is_empty() {
+        let stack = MiddlewareStack::new();
+        assert!(stack.is_empty());
+    }
+
+    #[test]
+    fn push_makes_non_empty() {
+        let mut stack = MiddlewareStack::new();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        stack.push(Arc::new(RecordingMiddleware {
+            id: 1,
+            log: Arc::clone(&log),
+        }));
+        assert!(!stack.is_empty());
+    }
+
+    #[test]
+    fn apply_request_runs_first_to_last() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stack = make_stack(&log);
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        stack.apply_request(&mut req, &uri);
+        let entries = log.lock().unwrap();
+        assert_eq!(entries[0], (1, "request"));
+        assert_eq!(entries[1], (2, "request"));
+    }
+
+    #[test]
+    fn apply_response_runs_last_to_first() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stack = make_stack(&log);
+        let uri = test_uri();
+        let mut resp = http::Response::builder()
+            .status(200)
+            .body(empty_body())
+            .unwrap();
+        stack.apply_response(&mut resp, &uri);
+        let entries = log.lock().unwrap();
+        assert_eq!(entries[0], (2, "response"));
+        assert_eq!(entries[1], (1, "response"));
+    }
+
+    #[test]
+    fn apply_error_invokes_all() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stack = make_stack(&log);
+        let uri = test_uri();
+        stack.apply_error(&Error::Timeout, &uri, &Method::GET);
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|(_, kind)| *kind == "error"));
+    }
+
+    #[test]
+    fn apply_redirect_invokes_all() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stack = make_stack(&log);
+        let from: Uri = "http://a.com".parse().unwrap();
+        let to: Uri = "http://b.com".parse().unwrap();
+        stack.apply_redirect(StatusCode::MOVED_PERMANENTLY, &from, &to);
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|(_, kind)| *kind == "redirect"));
+    }
+
+    #[test]
+    fn apply_retry_invokes_all() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stack = make_stack(&log);
+        let uri = test_uri();
+        stack.apply_retry(&Error::Timeout, &uri, &Method::POST, 1);
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|(_, kind)| *kind == "retry"));
+    }
+
+    #[test]
+    fn closure_as_middleware() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<HyperBody>, _uri: &Uri| {
+                req.headers_mut()
+                    .insert("x-test", http::header::HeaderValue::from_static("added"));
+            },
+        ));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        stack.apply_request(&mut req, &uri);
+        assert_eq!(req.headers().get("x-test").unwrap(), "added");
+    }
+
+    #[test]
+    fn clone_preserves_layers() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stack = make_stack(&log);
+        let cloned = stack.clone();
+        assert!(!cloned.is_empty());
+    }
+}

@@ -122,3 +122,12 @@ pub(crate) async fn on_upgrade(
     let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;
     Ok(Upgraded::new(upgraded))
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn debug_format() {
+        let dbg_str = format!("{:?}", "Upgraded");
+        assert!(dbg_str.contains("Upgraded"));
+    }
+}

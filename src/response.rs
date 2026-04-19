@@ -224,3 +224,138 @@ impl Response {
         crate::upgrade::on_upgrade(&mut self.inner).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    fn empty_body() -> HyperBody {
+        http_body_util::Full::new(bytes::Bytes::new())
+            .map_err(|never| match never {})
+            .boxed()
+    }
+
+    fn make_response(status: u16) -> Response {
+        let inner = http::Response::builder()
+            .status(status)
+            .body(empty_body())
+            .unwrap();
+        Response::new(inner, "http://example.com".parse().unwrap())
+    }
+
+    #[test]
+    fn status_returns_correct_code() {
+        let resp = make_response(200);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn url_returns_request_uri() {
+        let resp = make_response(200);
+        assert_eq!(resp.url().to_string(), "http://example.com/");
+    }
+
+    #[test]
+    fn error_for_status_ok_on_2xx() {
+        let resp = make_response(200);
+        assert!(resp.error_for_status().is_ok());
+    }
+
+    #[test]
+    fn error_for_status_err_on_4xx() {
+        let resp = make_response(404);
+        let err = resp.error_for_status().unwrap_err();
+        match err {
+            Error::Status(s) => assert_eq!(s, StatusCode::NOT_FOUND),
+            _ => panic!("expected Error::Status"),
+        }
+    }
+
+    #[test]
+    fn error_for_status_err_on_5xx() {
+        let resp = make_response(500);
+        assert!(resp.error_for_status().is_err());
+    }
+
+    #[test]
+    fn error_for_status_ref_ok_on_2xx() {
+        let resp = make_response(200);
+        assert!(resp.error_for_status_ref().is_ok());
+    }
+
+    #[test]
+    fn error_for_status_ref_err_on_4xx() {
+        let resp = make_response(403);
+        assert!(resp.error_for_status_ref().is_err());
+    }
+
+    #[test]
+    fn content_length_present() {
+        let inner = http::Response::builder()
+            .header("Content-Length", "42")
+            .body(empty_body())
+            .unwrap();
+        let resp = Response::new(inner, "http://example.com".parse().unwrap());
+        assert_eq!(resp.content_length(), Some(42));
+    }
+
+    #[test]
+    fn content_length_missing() {
+        let resp = make_response(200);
+        assert_eq!(resp.content_length(), None);
+    }
+
+    #[test]
+    fn content_length_non_numeric() {
+        let inner = http::Response::builder()
+            .header("Content-Length", "abc")
+            .body(empty_body())
+            .unwrap();
+        let resp = Response::new(inner, "http://example.com".parse().unwrap());
+        assert_eq!(resp.content_length(), None);
+    }
+
+    #[test]
+    fn remote_addr_initially_none() {
+        let resp = make_response(200);
+        assert!(resp.remote_addr().is_none());
+    }
+
+    #[test]
+    fn remote_addr_set_and_get() {
+        let mut resp = make_response(200);
+        let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        resp.set_remote_addr(Some(addr));
+        assert_eq!(resp.remote_addr(), Some(addr));
+    }
+
+    #[test]
+    fn version_returns_http_version() {
+        let resp = make_response(200);
+        assert_eq!(resp.version(), Version::HTTP_11);
+    }
+
+    #[test]
+    fn headers_mut_allows_modification() {
+        let mut resp = make_response(200);
+        resp.headers_mut()
+            .insert("x-test", "value".parse().unwrap());
+        assert_eq!(resp.headers().get("x-test").unwrap(), "value");
+    }
+
+    #[test]
+    fn extensions_insert_and_read() {
+        let mut resp = make_response(200);
+        resp.extensions_mut().insert(42u32);
+        assert_eq!(resp.extensions().get::<u32>(), Some(&42));
+    }
+
+    #[test]
+    fn debug_format() {
+        let resp = make_response(200);
+        let dbg = format!("{resp:?}");
+        assert!(dbg.contains("Response"));
+        assert!(dbg.contains("200"));
+    }
+}

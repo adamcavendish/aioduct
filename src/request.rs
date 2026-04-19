@@ -420,3 +420,268 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         Err(err)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::tokio_rt::TokioRuntime;
+
+    fn test_client() -> Client<TokioRuntime> {
+        Client::new()
+    }
+
+    #[tokio::test]
+    async fn header_sets_value() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let rb = rb.header(http::header::ACCEPT, HeaderValue::from_static("text/html"));
+        let req = rb.build().unwrap();
+        assert_eq!(req.headers().get("accept").unwrap(), "text/html");
+    }
+
+    #[tokio::test]
+    async fn headers_extends() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let mut hm = HeaderMap::new();
+        hm.insert(
+            http::header::ACCEPT,
+            HeaderValue::from_static("application/json"),
+        );
+        hm.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        );
+        let rb = rb.headers(hm);
+        let req = rb.build().unwrap();
+        assert!(req.headers().contains_key("accept"));
+        assert!(req.headers().contains_key("cache-control"));
+    }
+
+    #[tokio::test]
+    async fn header_str_valid() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let rb = rb.header_str("x-custom", "value").unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(req.headers().get("x-custom").unwrap(), "value");
+    }
+
+    #[tokio::test]
+    async fn bearer_auth_sets_authorization() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let rb = rb.bearer_auth("mytoken");
+        let req = rb.build().unwrap();
+        let auth = req
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth.starts_with("Bearer "));
+        assert!(auth.contains("mytoken"));
+    }
+
+    #[tokio::test]
+    async fn basic_auth_with_password() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let rb = rb.basic_auth("user", Some("pass"));
+        let req = rb.build().unwrap();
+        let auth = req
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth.starts_with("Basic "));
+    }
+
+    #[tokio::test]
+    async fn basic_auth_without_password() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let rb = rb.basic_auth("user", None);
+        let req = rb.build().unwrap();
+        assert!(req.headers().contains_key("authorization"));
+    }
+
+    #[tokio::test]
+    async fn query_appends_params() {
+        let client = test_client();
+        let rb = client.get("http://example.com/path").unwrap();
+        let rb = rb.query(&[("key", "value"), ("a", "b")]);
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(uri.contains("key=value"));
+        assert!(uri.contains("a=b"));
+    }
+
+    #[tokio::test]
+    async fn query_appends_to_existing() {
+        let client = test_client();
+        let rb = client.get("http://example.com/path?existing=1").unwrap();
+        let rb = rb.query(&[("new", "2")]);
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(uri.contains("existing=1"));
+        assert!(uri.contains("new=2"));
+    }
+
+    #[tokio::test]
+    async fn body_sets_buffered() {
+        let client = test_client();
+        let rb = client.post("http://example.com").unwrap();
+        let rb = rb.body("hello");
+        let req = rb.build().unwrap();
+        match req.into_body() {
+            RequestBody::Buffered(b) => assert_eq!(b, "hello"),
+            _ => panic!("expected buffered"),
+        }
+    }
+
+    #[cfg(feature = "json")]
+    #[tokio::test]
+    async fn json_sets_content_type_and_body() {
+        let client = test_client();
+        let rb = client.post("http://example.com").unwrap();
+        let rb = rb.json(&serde_json::json!({"key": "value"})).unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(
+            req.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+    }
+
+    #[tokio::test]
+    async fn form_sets_content_type_and_body() {
+        let client = test_client();
+        let rb = client.post("http://example.com").unwrap();
+        let rb = rb.form(&[("a", "1"), ("b", "2")]);
+        let req = rb.build().unwrap();
+        assert_eq!(
+            req.headers().get("content-type").unwrap(),
+            "application/x-www-form-urlencoded"
+        );
+        match req.into_body() {
+            RequestBody::Buffered(b) => {
+                let s = String::from_utf8(b.to_vec()).unwrap();
+                assert!(s.contains("a=1"));
+                assert!(s.contains("b=2"));
+            }
+            _ => panic!("expected buffered"),
+        }
+    }
+
+    #[cfg(feature = "json")]
+    #[tokio::test]
+    async fn query_serde_appends_params() {
+        #[derive(serde::Serialize)]
+        struct Params {
+            key: String,
+            num: i32,
+        }
+        let client = test_client();
+        let rb = client.get("http://example.com/").unwrap();
+        let rb = rb
+            .query_serde(&Params {
+                key: "val".into(),
+                num: 42,
+            })
+            .unwrap();
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(uri.contains("key=val"));
+        assert!(uri.contains("num=42"));
+    }
+
+    #[cfg(feature = "json")]
+    #[tokio::test]
+    async fn form_serde_sets_body() {
+        #[derive(serde::Serialize)]
+        struct FormData {
+            name: String,
+        }
+        let client = test_client();
+        let rb = client.post("http://example.com").unwrap();
+        let rb = rb
+            .form_serde(&FormData {
+                name: "test".into(),
+            })
+            .unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(
+            req.headers().get("content-type").unwrap(),
+            "application/x-www-form-urlencoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn version_sets_http_version() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let rb = rb.version(Version::HTTP_11);
+        let req = rb.build().unwrap();
+        assert_eq!(req.version(), Version::HTTP_11);
+    }
+
+    #[tokio::test]
+    async fn build_default_body() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(*req.method(), Method::GET);
+    }
+
+    #[tokio::test]
+    async fn try_clone_buffered() {
+        let client = test_client();
+        let rb = client.post("http://example.com").unwrap().body("data");
+        let cloned = rb.try_clone();
+        assert!(cloned.is_some());
+    }
+
+    #[tokio::test]
+    async fn try_clone_no_body() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let cloned = rb.try_clone();
+        assert!(cloned.is_some());
+    }
+
+    #[tokio::test]
+    async fn try_clone_streaming_returns_none() {
+        use http_body_util::BodyExt;
+        let client = test_client();
+        let rb = client.post("http://example.com").unwrap();
+        let stream_body: crate::error::HyperBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let rb = rb.body_stream(stream_body);
+        let cloned = rb.try_clone();
+        assert!(cloned.is_none());
+    }
+
+    #[tokio::test]
+    async fn upgrade_sets_headers() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let rb = rb.upgrade();
+        let req = rb.build().unwrap();
+        assert_eq!(req.headers().get("connection").unwrap(), "Upgrade");
+        assert_eq!(req.headers().get("upgrade").unwrap(), "websocket");
+        assert_eq!(req.version(), Version::HTTP_11);
+    }
+
+    #[tokio::test]
+    async fn multipart_sets_content_type() {
+        let mp = crate::multipart::Multipart::new().text("field", "value");
+        let client = test_client();
+        let rb = client.post("http://example.com").unwrap();
+        let rb = rb.multipart(mp);
+        let req = rb.build().unwrap();
+        let ct = req.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.starts_with("multipart/form-data; boundary="));
+    }
+}

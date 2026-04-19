@@ -204,6 +204,7 @@ impl ClientBuilder {
             .enable_all()
             .build()
             .expect("failed to create tokio runtime for blocking client");
+        let _guard = rt.enter();
         Client {
             inner: self.inner.build(),
             rt: Arc::new(rt),
@@ -341,5 +342,141 @@ impl Response {
     #[cfg(feature = "json")]
     pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
         self.rt.block_on(self.inner.json())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_creates_client() {
+        let client = Client::new();
+        let _clone = client.clone();
+    }
+
+    #[test]
+    fn default_creates_client() {
+        let _client = Client::default();
+    }
+
+    #[test]
+    fn builder_pool_idle_timeout() {
+        let _client = Client::builder()
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build();
+    }
+
+    #[test]
+    fn builder_pool_max_idle_per_host() {
+        let _client = Client::builder().pool_max_idle_per_host(5).build();
+    }
+
+    #[test]
+    fn builder_max_redirects() {
+        let _client = Client::builder().max_redirects(3).build();
+    }
+
+    #[test]
+    fn builder_redirect_policy() {
+        let _client = Client::builder()
+            .redirect_policy(crate::RedirectPolicy::none())
+            .build();
+    }
+
+    #[test]
+    fn builder_timeout() {
+        let _client = Client::builder().timeout(Duration::from_secs(5)).build();
+    }
+
+    #[test]
+    fn builder_connect_timeout() {
+        let _client = Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .build();
+    }
+
+    #[test]
+    fn builder_user_agent() {
+        let _client = Client::builder().user_agent("test-agent/1.0").build();
+    }
+
+    #[test]
+    fn builder_https_only() {
+        let _client = Client::builder().https_only(true).build();
+    }
+
+    #[test]
+    fn builder_default_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::ACCEPT,
+            http::header::HeaderValue::from_static("application/json"),
+        );
+        let _client = Client::builder().default_headers(headers).build();
+    }
+
+    #[test]
+    fn builder_retry() {
+        let _client = Client::builder()
+            .retry(crate::RetryConfig::default())
+            .build();
+    }
+
+    #[test]
+    fn builder_no_connection_reuse() {
+        let _client = Client::builder().no_connection_reuse().build();
+    }
+
+    #[test]
+    fn builder_no_decompression() {
+        let _client = Client::builder().no_decompression().build();
+    }
+
+    #[test]
+    fn builder_cache() {
+        let _client = Client::builder()
+            .cache(crate::cache::HttpCache::new())
+            .build();
+    }
+
+    #[test]
+    fn builder_cookie_jar() {
+        let _client = Client::builder()
+            .cookie_jar(crate::CookieJar::new())
+            .build();
+    }
+
+    #[test]
+    fn builder_system_proxy() {
+        let _client = Client::builder().system_proxy().build();
+    }
+
+    #[test]
+    fn client_method_helpers() {
+        let client = Client::new();
+        assert!(client.get("http://example.com").is_ok());
+        assert!(client.head("http://example.com").is_ok());
+        assert!(client.post("http://example.com").is_ok());
+        assert!(client.put("http://example.com").is_ok());
+        assert!(client.patch("http://example.com").is_ok());
+        assert!(client.delete("http://example.com").is_ok());
+        assert!(
+            client
+                .request(Method::OPTIONS, "http://example.com")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn client_invalid_url() {
+        let client = Client::new();
+        assert!(client.get("not a url").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn builder_unix_socket() {
+        let _client = Client::builder().unix_socket("/tmp/test.sock").build();
     }
 }

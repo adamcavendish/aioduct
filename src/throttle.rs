@@ -110,3 +110,77 @@ impl std::fmt::Debug for RateLimiter {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_starts_with_full_tokens() {
+        let limiter = RateLimiter::new(5, Duration::from_secs(1));
+        for _ in 0..5 {
+            assert!(limiter.try_acquire());
+        }
+        assert!(!limiter.try_acquire());
+    }
+
+    #[test]
+    fn try_acquire_returns_false_when_exhausted() {
+        let limiter = RateLimiter::new(2, Duration::from_secs(1));
+        assert!(limiter.try_acquire());
+        assert!(limiter.try_acquire());
+        assert!(!limiter.try_acquire());
+        assert!(!limiter.try_acquire());
+    }
+
+    #[test]
+    fn zero_tokens_always_denies() {
+        let limiter = RateLimiter::new(0, Duration::from_secs(1));
+        assert!(!limiter.try_acquire());
+    }
+
+    #[test]
+    fn wait_duration_zero_when_tokens_available() {
+        let limiter = RateLimiter::new(5, Duration::from_secs(1));
+        assert_eq!(limiter.wait_duration(), Duration::ZERO);
+    }
+
+    #[test]
+    fn wait_duration_nonzero_when_exhausted() {
+        let limiter = RateLimiter::new(10, Duration::from_secs(1));
+        for _ in 0..10 {
+            limiter.try_acquire();
+        }
+        let wait = limiter.wait_duration();
+        assert!(wait > Duration::ZERO);
+        assert_eq!(wait, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn refill_replenishes_after_interval() {
+        let limiter = RateLimiter::new(1, Duration::from_millis(50));
+        assert!(limiter.try_acquire());
+        assert!(!limiter.try_acquire());
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(limiter.try_acquire());
+    }
+
+    #[test]
+    fn clone_shares_state() {
+        let a = RateLimiter::new(2, Duration::from_secs(10));
+        let b = a.clone();
+        assert!(a.try_acquire());
+        assert!(b.try_acquire());
+        assert!(!a.try_acquire());
+        assert!(!b.try_acquire());
+    }
+
+    #[test]
+    fn debug_format() {
+        let limiter = RateLimiter::new(5, Duration::from_secs(1));
+        let dbg = format!("{limiter:?}");
+        assert!(dbg.contains("RateLimiter"));
+        assert!(dbg.contains("max_tokens"));
+        assert!(dbg.contains("5"));
+    }
+}

@@ -102,3 +102,90 @@ impl BodyStream {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buffered(data: &[u8]) -> RequestBody {
+        RequestBody::Buffered(Bytes::from(data.to_vec()))
+    }
+
+    fn streaming() -> RequestBody {
+        let body: HyperBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        RequestBody::Streaming(body)
+    }
+
+    #[test]
+    fn try_clone_buffered_returns_some() {
+        let body = buffered(b"hello");
+        let cloned = body.try_clone();
+        assert!(cloned.is_some());
+        match cloned.unwrap() {
+            RequestBody::Buffered(b) => assert_eq!(&b[..], b"hello"),
+            _ => panic!("expected Buffered"),
+        }
+    }
+
+    #[test]
+    fn try_clone_streaming_returns_none() {
+        let body = streaming();
+        assert!(body.try_clone().is_none());
+    }
+
+    #[test]
+    fn from_bytes() {
+        let body: RequestBody = Bytes::from_static(b"data").into();
+        match body {
+            RequestBody::Buffered(b) => assert_eq!(&b[..], b"data"),
+            _ => panic!("expected Buffered"),
+        }
+    }
+
+    #[test]
+    fn from_vec() {
+        let body: RequestBody = vec![1u8, 2, 3].into();
+        match body {
+            RequestBody::Buffered(b) => assert_eq!(&b[..], &[1, 2, 3]),
+            _ => panic!("expected Buffered"),
+        }
+    }
+
+    #[test]
+    fn from_string() {
+        let body: RequestBody = String::from("text").into();
+        match body {
+            RequestBody::Buffered(b) => assert_eq!(&b[..], b"text"),
+            _ => panic!("expected Buffered"),
+        }
+    }
+
+    #[test]
+    fn from_static_str() {
+        let body: RequestBody = "static".into();
+        match body {
+            RequestBody::Buffered(b) => assert_eq!(&b[..], b"static"),
+            _ => panic!("expected Buffered"),
+        }
+    }
+
+    #[test]
+    fn from_static_bytes() {
+        let body: RequestBody = (b"bytes" as &'static [u8]).into();
+        match body {
+            RequestBody::Buffered(b) => assert_eq!(&b[..], b"bytes"),
+            _ => panic!("expected Buffered"),
+        }
+    }
+
+    #[test]
+    fn from_hyper_body_is_streaming() {
+        let hyper_body: HyperBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let body: RequestBody = hyper_body.into();
+        assert!(body.try_clone().is_none());
+    }
+}

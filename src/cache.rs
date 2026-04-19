@@ -538,4 +538,258 @@ mod tests {
         let result = httpdate_parse("Sun, 06 Nov 1994 08:49:37 GMT");
         assert!(result.is_some());
     }
+
+    #[test]
+    fn test_httpdate_parse_invalid() {
+        assert!(httpdate_parse("not a date").is_none());
+        assert!(httpdate_parse("").is_none());
+    }
+
+    #[test]
+    fn test_httpdate_parse_invalid_month() {
+        assert!(httpdate_parse("Sun, 06 Foo 1994 08:49:37 GMT").is_none());
+    }
+
+    #[test]
+    fn test_httpdate_parse_invalid_time() {
+        assert!(httpdate_parse("Sun, 06 Nov 1994 08:49 GMT").is_none());
+    }
+
+    #[test]
+    fn test_is_cacheable_status() {
+        assert!(is_cacheable_status(StatusCode::OK));
+        assert!(is_cacheable_status(StatusCode::NOT_FOUND));
+        assert!(is_cacheable_status(StatusCode::MOVED_PERMANENTLY));
+        assert!(!is_cacheable_status(StatusCode::UNAUTHORIZED));
+        assert!(!is_cacheable_status(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[test]
+    fn test_is_cacheable_method() {
+        assert!(is_cacheable_method(&Method::GET));
+        assert!(is_cacheable_method(&Method::HEAD));
+        assert!(!is_cacheable_method(&Method::POST));
+        assert!(!is_cacheable_method(&Method::PUT));
+        assert!(!is_cacheable_method(&Method::DELETE));
+    }
+
+    #[test]
+    fn test_is_unsafe_method() {
+        assert!(!is_unsafe_method(&Method::GET));
+        assert!(!is_unsafe_method(&Method::HEAD));
+        assert!(!is_unsafe_method(&Method::OPTIONS));
+        assert!(!is_unsafe_method(&Method::TRACE));
+        assert!(is_unsafe_method(&Method::POST));
+        assert!(is_unsafe_method(&Method::PUT));
+        assert!(is_unsafe_method(&Method::DELETE));
+        assert!(is_unsafe_method(&Method::PATCH));
+    }
+
+    #[test]
+    fn test_is_response_cacheable() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=60".parse().unwrap());
+        assert!(is_response_cacheable(StatusCode::OK, &headers));
+
+        let mut headers_ns = HeaderMap::new();
+        headers_ns.insert(CACHE_CONTROL, "no-store".parse().unwrap());
+        assert!(!is_response_cacheable(StatusCode::OK, &headers_ns));
+
+        let mut headers_private = HeaderMap::new();
+        headers_private.insert(CACHE_CONTROL, "private".parse().unwrap());
+        assert!(!is_response_cacheable(StatusCode::OK, &headers_private));
+
+        let empty_headers = HeaderMap::new();
+        assert!(!is_response_cacheable(StatusCode::OK, &empty_headers));
+    }
+
+    #[test]
+    fn test_is_response_cacheable_with_etag() {
+        let mut headers = HeaderMap::new();
+        headers.insert(ETAG, "\"abc\"".parse().unwrap());
+        assert!(is_response_cacheable(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn test_is_response_cacheable_with_last_modified() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            LAST_MODIFIED,
+            "Sun, 06 Nov 1994 08:49:37 GMT".parse().unwrap(),
+        );
+        assert!(is_response_cacheable(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn test_cache_clear() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+        assert!(!cache.is_empty());
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_config_default() {
+        let config = CacheConfig::default();
+        assert_eq!(config.max_entries, 256);
+    }
+
+    #[test]
+    fn test_cache_private_not_stored() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/private".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "private, max-age=60".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_must_revalidate() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/reval".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            "max-age=3600, must-revalidate".parse().unwrap(),
+        );
+        headers.insert(ETAG, "\"v1\"".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Stale { validators, .. } => {
+                assert_eq!(validators.etag.as_deref(), Some("\"v1\""));
+            }
+            _ => panic!("expected stale due to must-revalidate"),
+        }
+    }
+
+    #[test]
+    fn test_cache_no_cache_forces_revalidation() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/nc".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "no-cache".parse().unwrap());
+        headers.insert(ETAG, "\"v2\"".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Stale { .. } => {}
+            _ => panic!("expected stale due to no-cache"),
+        }
+    }
+
+    #[test]
+    fn test_cache_head_method() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/head".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(&Method::HEAD, &uri, StatusCode::OK, &headers, &Bytes::new());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_delete() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/resource".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+        assert_eq!(cache.len(), 1);
+        cache.invalidate(&Method::DELETE, &uri);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_get_does_not_invalidate() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/safe".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+        cache.invalidate(&Method::GET, &uri);
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_cache_s_maxage() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/smaxage".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "s-maxage=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(_) => {}
+            _ => panic!("expected fresh from s-maxage"),
+        }
+    }
+
+    #[test]
+    fn test_validators_apply_to_request() {
+        let validators = Validators {
+            etag: Some("\"abc\"".to_string()),
+            last_modified: Some("Sun, 06 Nov 1994 08:49:37 GMT".to_string()),
+        };
+        let mut headers = HeaderMap::new();
+        validators.apply_to_request(&mut headers);
+        assert!(headers.contains_key(IF_NONE_MATCH));
+        assert!(headers.contains_key(IF_MODIFIED_SINCE));
+    }
+
+    #[test]
+    fn test_cache_lookup_post_is_miss() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        match cache.lookup(&Method::POST, &uri) {
+            CacheLookup::Miss => {}
+            _ => panic!("expected miss for POST"),
+        }
+    }
 }

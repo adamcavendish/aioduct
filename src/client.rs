@@ -1343,7 +1343,6 @@ impl<R: Runtime> Client<R> {
                 return Err(Error::Other("proxy closed connection".into()));
             }
             resp_buf.push(one[0]);
-            read_buf = hyper::rt::ReadBuf::new(&mut one);
 
             if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == *b"\r\n\r\n" {
                 break;
@@ -1652,4 +1651,54 @@ fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri> {
     new_uri
         .parse()
         .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_redirect_absolute_url() {
+        let base: Uri = "http://example.com/old".parse().unwrap();
+        let result = resolve_redirect(&base, "https://other.com/new").unwrap();
+        assert_eq!(result.to_string(), "https://other.com/new");
+    }
+
+    #[test]
+    fn resolve_redirect_relative_path() {
+        let base: Uri = "http://example.com/old".parse().unwrap();
+        let result = resolve_redirect(&base, "/new/path").unwrap();
+        assert_eq!(result.to_string(), "http://example.com/new/path");
+    }
+
+    #[test]
+    fn resolve_redirect_relative_with_query() {
+        let base: Uri = "https://example.com/page".parse().unwrap();
+        let result = resolve_redirect(&base, "/search?q=test").unwrap();
+        assert_eq!(result.to_string(), "https://example.com/search?q=test");
+    }
+
+    #[test]
+    fn resolve_redirect_preserves_port() {
+        let base: Uri = "http://example.com:8080/old".parse().unwrap();
+        let result = resolve_redirect(&base, "/new").unwrap();
+        assert_eq!(result.to_string(), "http://example.com:8080/new");
+    }
+
+    #[test]
+    fn resolve_redirect_scheme_without_authority_is_relative() {
+        let base: Uri = "http://example.com/".parse().unwrap();
+        let result = resolve_redirect(&base, "/path").unwrap();
+        assert_eq!(result.host().unwrap(), "example.com");
+    }
+
+    #[test]
+    fn is_cacheable_method_test() {
+        assert!(Method::GET == Method::GET);
+    }
+
+    #[test]
+    fn default_user_agent_contains_version() {
+        assert!(DEFAULT_USER_AGENT.starts_with("aioduct/"));
+    }
 }

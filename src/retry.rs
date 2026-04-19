@@ -142,3 +142,118 @@ impl RetryBudget {
         self.inner.tokens.load(Ordering::Relaxed)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_values() {
+        let cfg = RetryConfig::default();
+        assert_eq!(cfg.max_retries, 3);
+        assert_eq!(cfg.initial_backoff, Duration::from_millis(100));
+        assert_eq!(cfg.max_backoff, Duration::from_secs(30));
+        assert!((cfg.backoff_multiplier - 2.0).abs() < f64::EPSILON);
+        assert!(cfg.retry_on_status);
+        assert!(cfg.budget.is_none());
+    }
+
+    #[test]
+    fn builder_chain() {
+        let cfg = RetryConfig::default()
+            .max_retries(5)
+            .initial_backoff(Duration::from_millis(200))
+            .max_backoff(Duration::from_secs(60))
+            .backoff_multiplier(3.0)
+            .retry_on_status(false);
+        assert_eq!(cfg.max_retries, 5);
+        assert_eq!(cfg.initial_backoff, Duration::from_millis(200));
+        assert_eq!(cfg.max_backoff, Duration::from_secs(60));
+        assert!((cfg.backoff_multiplier - 3.0).abs() < f64::EPSILON);
+        assert!(!cfg.retry_on_status);
+    }
+
+    #[test]
+    fn delay_for_attempt_exponential() {
+        let cfg = RetryConfig::default();
+        assert_eq!(cfg.delay_for_attempt(0), Duration::from_millis(100));
+        assert_eq!(cfg.delay_for_attempt(1), Duration::from_millis(200));
+        assert_eq!(cfg.delay_for_attempt(2), Duration::from_millis(400));
+        assert_eq!(cfg.delay_for_attempt(3), Duration::from_millis(800));
+    }
+
+    #[test]
+    fn delay_capped_at_max_backoff() {
+        let cfg = RetryConfig::default().max_backoff(Duration::from_millis(300));
+        assert_eq!(cfg.delay_for_attempt(0), Duration::from_millis(100));
+        assert_eq!(cfg.delay_for_attempt(1), Duration::from_millis(200));
+        assert_eq!(cfg.delay_for_attempt(2), Duration::from_millis(300));
+        assert_eq!(cfg.delay_for_attempt(10), Duration::from_millis(300));
+    }
+
+    #[test]
+    fn is_retryable_for_io_hyper_timeout() {
+        assert!(is_retryable_error(&Error::Timeout));
+        assert!(is_retryable_error(&Error::Io(std::io::Error::other(
+            "test"
+        ))));
+    }
+
+    #[test]
+    fn not_retryable_for_status_and_invalid_url() {
+        assert!(!is_retryable_error(&Error::Status(
+            http::StatusCode::NOT_FOUND
+        )));
+        assert!(!is_retryable_error(&Error::InvalidUrl("bad".into())));
+        assert!(!is_retryable_error(&Error::Other("misc".into())));
+    }
+
+    #[test]
+    fn budget_starts_full() {
+        let budget = RetryBudget::new(10, 1);
+        assert_eq!(budget.available(), 10);
+    }
+
+    #[test]
+    fn budget_withdraw_exhaustion() {
+        let budget = RetryBudget::new(3, 1);
+        assert!(budget.try_withdraw());
+        assert!(budget.try_withdraw());
+        assert!(budget.try_withdraw());
+        assert!(!budget.try_withdraw());
+        assert_eq!(budget.available(), 0);
+    }
+
+    #[test]
+    fn budget_deposit_adds_tokens() {
+        let budget = RetryBudget::new(5, 2);
+        budget.try_withdraw();
+        budget.try_withdraw();
+        assert_eq!(budget.available(), 3);
+        budget.deposit();
+        assert_eq!(budget.available(), 5);
+    }
+
+    #[test]
+    fn budget_deposit_capped_at_max() {
+        let budget = RetryBudget::new(3, 5);
+        budget.deposit();
+        assert_eq!(budget.available(), 3);
+    }
+
+    #[test]
+    fn budget_clone_shares_state() {
+        let a = RetryBudget::new(2, 1);
+        let b = a.clone();
+        assert!(a.try_withdraw());
+        assert!(b.try_withdraw());
+        assert!(!a.try_withdraw());
+    }
+
+    #[test]
+    fn config_with_budget() {
+        let budget = RetryBudget::new(10, 1);
+        let cfg = RetryConfig::default().budget(budget);
+        assert!(cfg.budget.is_some());
+    }
+}

@@ -41,7 +41,6 @@ async fn read_exact<T: Read + Unpin>(stream: &mut T, buf: &mut [u8]) -> io::Resu
         }
         buf[filled] = one[0];
         filled += 1;
-        read_buf = hyper::rt::ReadBuf::new(&mut one);
     }
     Ok(())
 }
@@ -87,4 +86,158 @@ pub(crate) async fn socks4a_handshake<T: Read + Write + Unpin>(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct MockStream {
+        read_data: VecDeque<u8>,
+        written: Vec<u8>,
+    }
+
+    impl MockStream {
+        fn new(read_data: &[u8]) -> Self {
+            Self {
+                read_data: VecDeque::from(read_data.to_vec()),
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl hyper::rt::Read for MockStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            mut buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(byte) = self.read_data.pop_front() {
+                unsafe {
+                    let dst = buf.as_mut();
+                    if !dst.is_empty() {
+                        dst[0].write(byte);
+                        buf.advance(1);
+                    }
+                }
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hyper::rt::Write for MockStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.written.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn make_reply(code: u8) -> [u8; 8] {
+        [0x00, code, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    }
+
+    #[tokio::test]
+    async fn handshake_success() {
+        let reply = make_reply(0x5A);
+        let mut stream = MockStream::new(&reply);
+        let result = socks4a_handshake(&mut stream, "example.com", 80, None).await;
+        assert!(result.is_ok());
+        assert_eq!(stream.written[0], SOCKS4_VERSION);
+        assert_eq!(stream.written[1], CMD_CONNECT);
+        assert_eq!(stream.written[2], 0x00);
+        assert_eq!(stream.written[3], 80);
+    }
+
+    #[tokio::test]
+    async fn handshake_success_with_auth() {
+        let reply = make_reply(0x5A);
+        let mut stream = MockStream::new(&reply);
+        let auth = ProxyAuth {
+            username: "user".into(),
+            password: "pass".into(),
+        };
+        let result = socks4a_handshake(&mut stream, "example.com", 443, Some(&auth)).await;
+        assert!(result.is_ok());
+        let msg = &stream.written;
+        assert_eq!(&msg[8..12], b"user");
+        assert_eq!(msg[12], 0x00);
+        assert_eq!(&msg[13..24], b"example.com");
+        assert_eq!(msg[24], 0x00);
+    }
+
+    #[tokio::test]
+    async fn handshake_rejected() {
+        let reply = make_reply(0x5B);
+        let mut stream = MockStream::new(&reply);
+        let err = socks4a_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("request rejected or failed"));
+    }
+
+    #[tokio::test]
+    async fn handshake_identd_error() {
+        let reply = make_reply(0x5C);
+        let mut stream = MockStream::new(&reply);
+        let err = socks4a_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("identd"));
+    }
+
+    #[tokio::test]
+    async fn handshake_different_userid() {
+        let reply = make_reply(0x5D);
+        let mut stream = MockStream::new(&reply);
+        let err = socks4a_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("different user-id"));
+    }
+
+    #[tokio::test]
+    async fn handshake_unknown_error_code() {
+        let reply = make_reply(0xFF);
+        let mut stream = MockStream::new(&reply);
+        let err = socks4a_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown error"));
+    }
+
+    #[tokio::test]
+    async fn handshake_port_encoding() {
+        let reply = make_reply(0x5A);
+        let mut stream = MockStream::new(&reply);
+        socks4a_handshake(&mut stream, "host.test", 8080, None)
+            .await
+            .unwrap();
+        assert_eq!(stream.written[2], 0x1F);
+        assert_eq!(stream.written[3], 0x90);
+    }
+
+    #[tokio::test]
+    async fn handshake_eof_during_reply() {
+        let mut stream = MockStream::new(&[0x00, 0x5A, 0x00, 0x00]);
+        let err = socks4a_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
 }

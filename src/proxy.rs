@@ -284,3 +284,185 @@ where
         (self)(uri)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_proxy_wildcard_matches_everything() {
+        let np = NoProxy::new("*");
+        assert!(np.matches("anything.example.com"));
+        assert!(np.matches("127.0.0.1"));
+    }
+
+    #[test]
+    fn no_proxy_exact_match() {
+        let np = NoProxy::new("example.com");
+        assert!(np.matches("example.com"));
+        assert!(!np.matches("other.com"));
+    }
+
+    #[test]
+    fn no_proxy_suffix_with_leading_dot() {
+        let np = NoProxy::new(".example.com");
+        assert!(np.matches("sub.example.com"));
+        assert!(np.matches("deep.sub.example.com"));
+        assert!(!np.matches("example.com"));
+    }
+
+    #[test]
+    fn no_proxy_suffix_without_leading_dot() {
+        let np = NoProxy::new("example.com");
+        assert!(np.matches("sub.example.com"));
+        assert!(np.matches("example.com"));
+    }
+
+    #[test]
+    fn no_proxy_case_insensitive() {
+        let np = NoProxy::new("Example.COM");
+        assert!(np.matches("EXAMPLE.com"));
+        assert!(np.matches("example.com"));
+    }
+
+    #[test]
+    fn no_proxy_multiple_rules() {
+        let np = NoProxy::new("a.com, b.com, .c.com");
+        assert!(np.matches("a.com"));
+        assert!(np.matches("b.com"));
+        assert!(np.matches("sub.c.com"));
+        assert!(!np.matches("d.com"));
+    }
+
+    #[test]
+    fn no_proxy_ip_address() {
+        let np = NoProxy::new("127.0.0.1");
+        assert!(np.matches("127.0.0.1"));
+        assert!(!np.matches("127.0.0.2"));
+    }
+
+    #[test]
+    fn no_proxy_empty_matches_nothing() {
+        let np = NoProxy::new("");
+        assert!(!np.matches("anything"));
+    }
+
+    #[test]
+    fn proxy_config_http_valid() {
+        let cfg = ProxyConfig::http("http://proxy:8080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Http);
+        assert_eq!(cfg.default_port(), 80);
+    }
+
+    #[test]
+    fn proxy_config_http_wrong_scheme() {
+        assert!(ProxyConfig::http("https://proxy:8080").is_err());
+    }
+
+    #[test]
+    fn proxy_config_socks5_valid() {
+        let cfg = ProxyConfig::socks5("socks5://proxy:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks5);
+        assert_eq!(cfg.default_port(), 1080);
+    }
+
+    #[test]
+    fn proxy_config_socks5_wrong_scheme() {
+        assert!(ProxyConfig::socks5("http://proxy:1080").is_err());
+    }
+
+    #[test]
+    fn proxy_config_socks4_valid() {
+        let cfg = ProxyConfig::socks4("socks4://proxy:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks4);
+        assert_eq!(cfg.default_port(), 1080);
+    }
+
+    #[test]
+    fn proxy_config_socks4a_valid() {
+        let cfg = ProxyConfig::socks4("socks4a://proxy:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks4);
+    }
+
+    #[test]
+    fn proxy_config_socks4_wrong_scheme() {
+        assert!(ProxyConfig::socks4("http://proxy").is_err());
+    }
+
+    #[test]
+    fn proxy_config_basic_auth() {
+        let cfg = ProxyConfig::http("http://proxy:8080")
+            .unwrap()
+            .basic_auth("user", "pass");
+        let header = cfg.connect_header("target:443");
+        assert!(header.is_some());
+        assert!(header.unwrap().starts_with("Basic "));
+    }
+
+    #[test]
+    fn proxy_config_no_auth_connect_header() {
+        let cfg = ProxyConfig::http("http://proxy:8080").unwrap();
+        assert!(cfg.connect_header("target:443").is_none());
+    }
+
+    #[test]
+    fn proxy_config_authority() {
+        let cfg = ProxyConfig::http("http://proxy:8080").unwrap();
+        let auth = cfg.authority().unwrap();
+        assert_eq!(auth.to_string(), "proxy:8080");
+    }
+
+    #[test]
+    fn proxy_settings_all() {
+        let proxy = ProxyConfig::http("http://proxy:8080").unwrap();
+        let settings = ProxySettings::all(proxy);
+        assert!(settings.http_proxy.is_some());
+        assert!(settings.https_proxy.is_some());
+    }
+
+    #[test]
+    fn proxy_settings_builder() {
+        let settings = ProxySettings::default()
+            .http(ProxyConfig::http("http://h:80").unwrap())
+            .https(ProxyConfig::http("http://s:80").unwrap())
+            .no_proxy(NoProxy::new("localhost"));
+        assert!(settings.http_proxy.is_some());
+        assert!(settings.https_proxy.is_some());
+        assert!(settings.no_proxy.matches("localhost"));
+    }
+
+    #[test]
+    fn proxy_for_no_proxy_bypass() {
+        let settings = ProxySettings::all(ProxyConfig::http("http://p:80").unwrap())
+            .no_proxy(NoProxy::new("localhost"));
+        let uri: Uri = "http://localhost/path".parse().unwrap();
+        assert!(settings.proxy_for(&uri).is_none());
+
+        let uri: Uri = "http://other.com/path".parse().unwrap();
+        assert!(settings.proxy_for(&uri).is_some());
+    }
+
+    #[test]
+    fn proxy_for_scheme_dispatch() {
+        let settings = ProxySettings::default()
+            .http(ProxyConfig::http("http://http-proxy:80").unwrap())
+            .https(ProxyConfig::http("http://https-proxy:80").unwrap());
+
+        let http_uri: Uri = "http://example.com/".parse().unwrap();
+        let https_uri: Uri = "https://example.com/".parse().unwrap();
+
+        let http_proxy = settings.proxy_for(&http_uri).unwrap();
+        assert!(http_proxy.uri.to_string().contains("http-proxy"));
+
+        let https_proxy = settings.proxy_for(&https_uri).unwrap();
+        assert!(https_proxy.uri.to_string().contains("https-proxy"));
+    }
+
+    #[test]
+    fn proxy_for_custom_takes_priority() {
+        let settings =
+            ProxySettings::all(ProxyConfig::http("http://p:80").unwrap()).custom(|_uri: &Uri| None);
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        assert!(settings.proxy_for(&uri).is_none());
+    }
+}
