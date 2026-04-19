@@ -99,7 +99,7 @@ impl<S: crate::runtime::Runtime> http_body::Body for ReadTimeoutBody<S> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
     use std::task::{Context, Poll};

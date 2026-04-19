@@ -188,7 +188,7 @@ pub(crate) async fn socks5_handshake<T: Read + Write + Unpin>(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
     use std::collections::VecDeque;

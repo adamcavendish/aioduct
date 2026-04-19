@@ -358,7 +358,7 @@ use imp::decompress_impl;
 mod tests {
     use super::*;
     use http::HeaderMap;
-    use http::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_LENGTH};
+    use http::header::ACCEPT_ENCODING;
 
     #[test]
     fn accept_encoding_default_is_not_empty() {
@@ -432,12 +432,13 @@ mod tests {
         assert!(val.contains("gzip"));
     }
 
-    #[cfg(feature = "gzip")]
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
     #[tokio::test]
     async fn maybe_decompress_gzip_round_trip() {
         use bytes::Bytes;
         use flate2::Compression;
         use flate2::write::GzEncoder;
+        use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
         use http_body_util::BodyExt;
         use std::io::Write;
 

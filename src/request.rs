@@ -421,7 +421,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
     use crate::runtime::tokio_rt::TokioRuntime;
