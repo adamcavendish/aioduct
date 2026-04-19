@@ -19,6 +19,8 @@ mod timeout;
 pub mod tls;
 
 #[cfg(feature = "http3")]
+mod alt_svc;
+#[cfg(feature = "http3")]
 #[path = "h3/mod.rs"]
 pub mod h3_transport;
 

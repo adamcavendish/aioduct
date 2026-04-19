@@ -15,30 +15,21 @@ The `http3` feature automatically enables `rustls` since QUIC requires TLS 1.3.
 
 ## Usage
 
-### Quick Start
+There are two modes for HTTP/3:
+
+### Always-H3 Mode
+
+Force all HTTPS requests through QUIC/HTTP/3:
 
 ```rust,no_run
 use aioduct::Client;
 use aioduct::runtime::TokioRuntime;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::<TokioRuntime>::with_http3();
-
-    let resp = client
-        .get("https://httpbin.org/get")?
-        .send()
-        .await?;
-
-    println!("status: {}", resp.status());
-    println!("{}", resp.text().await?);
-    Ok(())
-}
+// All HTTPS requests will use HTTP/3
+let client = Client::<TokioRuntime>::with_http3();
 ```
 
-### Builder API
-
-For more control, use the builder to configure TLS before enabling HTTP/3:
+Or via the builder:
 
 ```rust,no_run
 use aioduct::Client;
@@ -51,12 +42,48 @@ let client = Client::<TokioRuntime>::builder()
     .build();
 ```
 
-> **Important:** `.tls()` must be called before `.http3(true)` because HTTP/3
-> reuses the rustls configuration to build the QUIC endpoint.
+### Alt-Svc Auto-Upgrade Mode
+
+Start with HTTP/1.1 or HTTP/2 over TCP, and automatically upgrade to HTTP/3 when the server advertises it via the `Alt-Svc` header:
+
+```rust,no_run
+use aioduct::Client;
+use aioduct::runtime::TokioRuntime;
+
+// First request uses TCP; upgrades to QUIC when Alt-Svc is seen
+let client = Client::<TokioRuntime>::with_alt_svc_h3();
+```
+
+Or via the builder:
+
+```rust,no_run
+use aioduct::Client;
+use aioduct::tls::RustlsConnector;
+use aioduct::runtime::TokioRuntime;
+
+let client = Client::<TokioRuntime>::builder()
+    .tls(RustlsConnector::with_webpki_roots())
+    .alt_svc_h3(true)
+    .build();
+```
+
+> **Important:** `.tls()` must be called before `.http3(true)` or `.alt_svc_h3(true)` because HTTP/3 reuses the rustls configuration to build the QUIC endpoint.
+
+## Alt-Svc Protocol Upgrade
+
+When Alt-Svc auto-upgrade is enabled (`.alt_svc_h3(true)` or `with_alt_svc_h3()`):
+
+1. The first request to a new origin goes over TCP (HTTP/1.1 or HTTP/2 via ALPN).
+2. If the response includes an `Alt-Svc` header advertising `h3` (e.g., `Alt-Svc: h3=":443"; ma=86400`), the client caches this.
+3. Subsequent requests to the same origin use QUIC/HTTP/3 instead of TCP.
+4. The cache respects `ma` (max-age) — entries expire after the specified duration (default 24 hours).
+5. `Alt-Svc: clear` removes cached entries, reverting to TCP for that origin.
+
+The Alt-Svc cache supports alternate hosts and ports. For example, `h3="alt.example.com:8443"` routes QUIC traffic to a different endpoint while keeping the original host for SNI.
 
 ## How It Works
 
-When HTTP/3 is enabled:
+When HTTP/3 is enabled (either mode):
 
 1. **HTTPS requests** are sent over QUIC using the quinn transport. The client opens a QUIC connection, performs the TLS 1.3 handshake, and sends the request via the h3 protocol.
 2. **HTTP requests** (plain) continue to use TCP-based HTTP/1.1 or HTTP/2 as usual.
@@ -67,6 +94,5 @@ When HTTP/3 is **not** enabled (default), the client uses TCP with HTTP/1.1 or H
 ## Limitations
 
 - **Experimental** — the h3 ecosystem (h3 0.0.8, h3-quinn 0.0.10) is pre-1.0.
-- **No Alt-Svc upgrade** — the client does not automatically discover HTTP/3 support via `Alt-Svc` headers. You must explicitly opt in.
-- **No fallback** — if the server doesn't support QUIC, the request fails rather than falling back to TCP. Use the default (non-h3) client for servers where QUIC support is uncertain.
+- **No fallback** — in always-h3 mode, if the server doesn't support QUIC, the request fails rather than falling back to TCP. Use Alt-Svc mode or the default (non-h3) client for servers where QUIC support is uncertain.
 - **Tokio only** — quinn requires tokio, so HTTP/3 is only available with the `tokio` runtime feature.

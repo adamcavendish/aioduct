@@ -34,6 +34,10 @@ pub struct Client<R: Runtime> {
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
     h3_endpoint: Option<quinn::Endpoint>,
+    #[cfg(feature = "http3")]
+    prefer_h3: bool,
+    #[cfg(feature = "http3")]
+    alt_svc_cache: crate::alt_svc::AltSvcCache,
     _runtime: PhantomData<R>,
 }
 
@@ -51,6 +55,10 @@ impl<R: Runtime> Clone for Client<R> {
             tls: self.tls.clone(),
             #[cfg(feature = "http3")]
             h3_endpoint: self.h3_endpoint.clone(),
+            #[cfg(feature = "http3")]
+            prefer_h3: self.prefer_h3,
+            #[cfg(feature = "http3")]
+            alt_svc_cache: self.alt_svc_cache.clone(),
             _runtime: PhantomData,
         }
     }
@@ -69,6 +77,8 @@ pub struct ClientBuilder<R: Runtime> {
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
     h3_endpoint: Option<quinn::Endpoint>,
+    #[cfg(feature = "http3")]
+    prefer_h3: bool,
     _runtime: PhantomData<R>,
 }
 
@@ -90,6 +100,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             tls: None,
             #[cfg(feature = "http3")]
             h3_endpoint: None,
+            #[cfg(feature = "http3")]
+            prefer_h3: false,
             _runtime: PhantomData,
         }
     }
@@ -155,6 +167,28 @@ impl<R: Runtime> ClientBuilder<R> {
     #[cfg(feature = "http3")]
     pub fn http3(mut self, enable: bool) -> Self {
         if enable {
+            self = self.ensure_h3_endpoint();
+            self.prefer_h3 = true;
+        } else {
+            self.h3_endpoint = None;
+            self.prefer_h3 = false;
+        }
+        self
+    }
+
+    #[cfg(feature = "http3")]
+    pub fn alt_svc_h3(mut self, enable: bool) -> Self {
+        if enable {
+            self = self.ensure_h3_endpoint();
+        } else if !self.prefer_h3 {
+            self.h3_endpoint = None;
+        }
+        self
+    }
+
+    #[cfg(feature = "http3")]
+    fn ensure_h3_endpoint(mut self) -> Self {
+        if self.h3_endpoint.is_none() {
             let tls_config = self
                 .tls
                 .as_ref()
@@ -164,8 +198,6 @@ impl<R: Runtime> ClientBuilder<R> {
             let endpoint = crate::h3_transport::build_quinn_endpoint(tls_config)
                 .expect("failed to build QUIC endpoint");
             self.h3_endpoint = Some(endpoint);
-        } else {
-            self.h3_endpoint = None;
         }
         self
     }
@@ -183,6 +215,10 @@ impl<R: Runtime> ClientBuilder<R> {
             tls: self.tls,
             #[cfg(feature = "http3")]
             h3_endpoint: self.h3_endpoint,
+            #[cfg(feature = "http3")]
+            prefer_h3: self.prefer_h3,
+            #[cfg(feature = "http3")]
+            alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             _runtime: PhantomData,
         }
     }
@@ -215,6 +251,14 @@ impl<R: Runtime> Client<R> {
         Self::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .http3(true)
+            .build()
+    }
+
+    #[cfg(feature = "http3")]
+    pub fn with_alt_svc_h3() -> Self {
+        Self::builder()
+            .tls(crate::tls::RustlsConnector::with_webpki_roots())
+            .alt_svc_h3(true)
             .build()
     }
 
@@ -347,6 +391,10 @@ impl<R: Runtime> Client<R> {
             if !resp.status().is_redirection()
                 || matches!(self.redirect_policy, RedirectPolicy::None)
             {
+                #[cfg(feature = "http3")]
+                if self.h3_endpoint.is_some() {
+                    self.cache_alt_svc(&current_uri, resp.headers());
+                }
                 return Ok(resp);
             }
 
@@ -438,18 +486,26 @@ impl<R: Runtime> Client<R> {
         #[cfg(feature = "http3")]
         if is_https {
             if let Some(endpoint) = &self.h3_endpoint {
-                let default_port = 443u16;
-                let addr = Self::resolve_authority(authority, default_port).await?;
-                let host = authority.host().to_owned();
-                let quinn_conn = endpoint
-                    .connect(addr, &host)
-                    .map_err(|e| Error::Other(Box::new(e)))?
-                    .await
-                    .map_err(|e| Error::Other(Box::new(e)))?;
-                let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
-                let resp = Self::send_on_connection(&mut pooled, request).await?;
-                self.pool.checkin(pool_key, pooled);
-                return Ok(resp);
+                let use_h3 = self.prefer_h3 || self.alt_svc_cache.lookup_h3(authority).is_some();
+                if use_h3 {
+                    let default_port = 443u16;
+                    let (h3_host, h3_port) = self
+                        .alt_svc_cache
+                        .lookup_h3(authority)
+                        .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
+                    let connect_host = h3_host.as_deref().unwrap_or(authority.host());
+                    let addr = Self::resolve_authority_raw(connect_host, h3_port).await?;
+                    let sni_host = authority.host().to_owned();
+                    let quinn_conn = endpoint
+                        .connect(addr, &sni_host)
+                        .map_err(|e| Error::Other(Box::new(e)))?
+                        .await
+                        .map_err(|e| Error::Other(Box::new(e)))?;
+                    let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
+                    let resp = Self::send_on_connection(&mut pooled, request).await?;
+                    self.pool.checkin(pool_key, pooled);
+                    return Ok(resp);
+                }
             }
         }
 
@@ -645,7 +701,10 @@ impl<R: Runtime> Client<R> {
     ) -> Result<std::net::SocketAddr> {
         let host = authority.host();
         let port = authority.port_u16().unwrap_or(default_port);
+        Self::resolve_authority_raw(host, port).await
+    }
 
+    async fn resolve_authority_raw(host: &str, port: u16) -> Result<std::net::SocketAddr> {
         if let Ok(addr) = format!("{host}:{port}").parse() {
             return Ok(addr);
         }
@@ -653,6 +712,19 @@ impl<R: Runtime> Client<R> {
         R::resolve(host, port)
             .await
             .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
+    }
+
+    #[cfg(feature = "http3")]
+    fn cache_alt_svc(&self, uri: &Uri, headers: &HeaderMap) {
+        use http::header::ALT_SVC;
+        if let Some(authority) = uri.authority() {
+            if let Some(alt_svc_value) = headers.get(ALT_SVC) {
+                if let Ok(value_str) = alt_svc_value.to_str() {
+                    let entries = crate::alt_svc::parse_alt_svc(value_str);
+                    self.alt_svc_cache.insert(authority.clone(), entries);
+                }
+            }
+        }
     }
 }
 
