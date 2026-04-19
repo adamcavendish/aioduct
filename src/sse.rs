@@ -1,7 +1,7 @@
 use bytes::{Buf, BytesMut};
 use http_body_util::BodyExt;
 
-use crate::error::{HyperBody, Result};
+use crate::error::{Error, HyperBody};
 
 /// A parsed Server-Sent Event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +33,7 @@ impl SseStream {
     }
 
     /// Returns the next SSE event, or `None` when the stream ends.
-    pub async fn next(&mut self) -> Option<Result<SseEvent>> {
+    pub async fn next(&mut self) -> Option<Result<SseEvent, Error>> {
         loop {
             if let Some(event) = try_parse_event(&mut self.buf) {
                 return Some(Ok(event));

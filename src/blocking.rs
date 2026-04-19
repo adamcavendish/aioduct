@@ -5,7 +5,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode, Uri, Version};
 
-use crate::error::Result;
+use crate::error::Error;
 use crate::runtime::tokio_rt::TokioRuntime;
 
 /// A blocking HTTP client that wraps the async [`Client`](crate::Client).
@@ -42,37 +42,37 @@ impl Client {
     }
 
     /// Start a GET request.
-    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_>> {
+    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
         Ok(self.request_builder(self.inner.get(uri)?))
     }
 
     /// Start a HEAD request.
-    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_>> {
+    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
         Ok(self.request_builder(self.inner.head(uri)?))
     }
 
     /// Start a POST request.
-    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_>> {
+    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
         Ok(self.request_builder(self.inner.post(uri)?))
     }
 
     /// Start a PUT request.
-    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_>> {
+    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
         Ok(self.request_builder(self.inner.put(uri)?))
     }
 
     /// Start a PATCH request.
-    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_>> {
+    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
         Ok(self.request_builder(self.inner.patch(uri)?))
     }
 
     /// Start a DELETE request.
-    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_>> {
+    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
         Ok(self.request_builder(self.inner.delete(uri)?))
     }
 
     /// Start a request with a custom method.
-    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_>> {
+    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_>, Error> {
         Ok(self.request_builder(self.inner.request(method, uri)?))
     }
 }
@@ -249,7 +249,7 @@ impl RequestBuilder<'_> {
     }
 
     #[cfg(feature = "json")]
-    pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self> {
+    pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self, Error> {
         self.inner = self.inner.json(value)?;
         Ok(self)
     }
@@ -270,7 +270,7 @@ impl RequestBuilder<'_> {
     }
 
     /// Send the request and block until the response is received.
-    pub fn send(self) -> Result<Response> {
+    pub fn send(self) -> Result<Response, Error> {
         let resp = self.rt.block_on(self.inner.send())?;
         Ok(Response {
             inner: resp,
@@ -320,27 +320,27 @@ impl Response {
         self.inner.tls_info()
     }
 
-    pub fn error_for_status(self) -> Result<Self> {
+    pub fn error_for_status(self) -> Result<Self, Error> {
         let rt = self.rt;
         let inner = self.inner.error_for_status()?;
         Ok(Self { inner, rt })
     }
 
-    pub fn error_for_status_ref(&self) -> Result<&Self> {
+    pub fn error_for_status_ref(&self) -> Result<&Self, Error> {
         self.inner.error_for_status_ref()?;
         Ok(self)
     }
 
-    pub fn bytes(self) -> Result<Bytes> {
+    pub fn bytes(self) -> Result<Bytes, Error> {
         self.rt.block_on(self.inner.bytes())
     }
 
-    pub fn text(self) -> Result<String> {
+    pub fn text(self) -> Result<String, Error> {
         self.rt.block_on(self.inner.text())
     }
 
     #[cfg(feature = "json")]
-    pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
+    pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
         self.rt.block_on(self.inner.json())
     }
 }

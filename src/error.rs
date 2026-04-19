@@ -35,7 +35,5 @@ pub enum Error {
     Other(BoxError),
 }
 
-/// Result type for aioduct operations.
-pub type Result<T> = std::result::Result<T, Error>;
 /// Boxed HTTP body type used throughout aioduct.
 pub type HyperBody = BoxBody<Bytes, Error>;

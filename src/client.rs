@@ -18,7 +18,7 @@ use http_body_util::BodyExt;
 use crate::body::RequestBody;
 use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
-use crate::error::{Error, HyperBody, Result};
+use crate::error::{Error, HyperBody};
 use crate::http2::Http2Config;
 use crate::middleware::{Middleware, MiddlewareStack};
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
@@ -746,43 +746,43 @@ impl<R: Runtime> Client<R> {
     }
 
     /// Start a GET request to the given URL.
-    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
+    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::GET, uri))
     }
 
     /// Start a HEAD request to the given URL.
-    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
+    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::HEAD, uri))
     }
 
     /// Start a POST request to the given URL.
-    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
+    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::POST, uri))
     }
 
     /// Start a PUT request to the given URL.
-    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
+    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::PUT, uri))
     }
 
     /// Start a PATCH request to the given URL.
-    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
+    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::PATCH, uri))
     }
 
     /// Start a DELETE request to the given URL.
-    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_, R>> {
+    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::DELETE, uri))
     }
 
     /// Start a request with the given method and URL.
-    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R>> {
+    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, method, uri))
     }
@@ -811,7 +811,7 @@ impl<R: Runtime> Client<R> {
         headers: http::HeaderMap,
         body: Option<RequestBody>,
         version: Option<http::Version>,
-    ) -> Result<Response> {
+    ) -> Result<Response, Error> {
         if self.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::Other(
                 format!(
@@ -1060,7 +1060,7 @@ impl<R: Runtime> Client<R> {
         &self,
         request: http::Request<HyperBody>,
         original_uri: &Uri,
-    ) -> Result<Response> {
+    ) -> Result<Response, Error> {
         if let Some(ref limiter) = self.rate_limiter {
             while !limiter.try_acquire() {
                 let wait = limiter.wait_duration();
@@ -1244,7 +1244,7 @@ impl<R: Runtime> Client<R> {
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
-    ) -> Result<PooledConnection<R>> {
+    ) -> Result<PooledConnection<R>, Error> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
         let proxy_addr = self
@@ -1309,7 +1309,7 @@ impl<R: Runtime> Client<R> {
         mut tcp_stream: R::TcpStream,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
-    ) -> Result<PooledConnection<R>> {
+    ) -> Result<PooledConnection<R>, Error> {
         use hyper::rt::{Read, Write};
 
         let target = target_authority.as_str();
@@ -1371,7 +1371,7 @@ impl<R: Runtime> Client<R> {
     fn connect_plaintext<S>(
         &self,
         stream: S,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<R>>> + Send + '_>>
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<R>, Error>> + Send + '_>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -1382,7 +1382,7 @@ impl<R: Runtime> Client<R> {
         }
     }
 
-    async fn connect_h1<S>(&self, stream: S) -> Result<PooledConnection<R>>
+    async fn connect_h1<S>(&self, stream: S) -> Result<PooledConnection<R>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -1393,7 +1393,7 @@ impl<R: Runtime> Client<R> {
         Ok(PooledConnection::new_h1(sender))
     }
 
-    async fn connect_h2_prior_knowledge<S>(&self, stream: S) -> Result<PooledConnection<R>>
+    async fn connect_h2_prior_knowledge<S>(&self, stream: S) -> Result<PooledConnection<R>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -1443,7 +1443,7 @@ impl<R: Runtime> Client<R> {
         &self,
         tcp_stream: R::TcpStream,
         host: &str,
-    ) -> Result<PooledConnection<R>> {
+    ) -> Result<PooledConnection<R>, Error> {
         use crate::tls::TlsConnect;
 
         #[cfg(feature = "tracing")]
@@ -1537,7 +1537,7 @@ impl<R: Runtime> Client<R> {
         &self,
         _tcp_stream: R::TcpStream,
         _host: &str,
-    ) -> Result<PooledConnection<R>> {
+    ) -> Result<PooledConnection<R>, Error> {
         Err(Error::Tls("HTTPS requires the `rustls` feature".into()))
     }
 
@@ -1545,7 +1545,7 @@ impl<R: Runtime> Client<R> {
         conn: &mut PooledConnection<R>,
         request: http::Request<HyperBody>,
         url: Uri,
-    ) -> Result<Response> {
+    ) -> Result<Response, Error> {
         #[cfg(feature = "tracing")]
         let proto = match &conn.conn {
             HttpConnection::H1(_) => "h1",
@@ -1585,13 +1585,17 @@ impl<R: Runtime> Client<R> {
         &self,
         authority: &http::uri::Authority,
         default_port: u16,
-    ) -> Result<std::net::SocketAddr> {
+    ) -> Result<std::net::SocketAddr, Error> {
         let host = authority.host();
         let port = authority.port_u16().unwrap_or(default_port);
         self.resolve_authority_raw(host, port).await
     }
 
-    async fn resolve_authority_raw(&self, host: &str, port: u16) -> Result<std::net::SocketAddr> {
+    async fn resolve_authority_raw(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<std::net::SocketAddr, Error> {
         if let Ok(addr) = format!("{host}:{port}").parse() {
             return Ok(addr);
         }
@@ -1633,7 +1637,7 @@ impl<R: Runtime> Client<R> {
     }
 }
 
-fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri> {
+fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
     if let Ok(absolute) = location.parse::<Uri>() {
         if absolute.scheme().is_some() {
             return Ok(absolute);

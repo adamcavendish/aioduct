@@ -5,7 +5,7 @@ use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::error::{Error, Result};
+use crate::error::Error;
 
 /// A browser-based HTTP client using the Fetch API.
 ///
@@ -41,43 +41,43 @@ impl WasmClient {
     }
 
     /// Start a GET request.
-    pub fn get(&self, uri: &str) -> Result<WasmRequestBuilder<'_>> {
+    pub fn get(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::GET, uri))
     }
 
     /// Start a HEAD request.
-    pub fn head(&self, uri: &str) -> Result<WasmRequestBuilder<'_>> {
+    pub fn head(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::HEAD, uri))
     }
 
     /// Start a POST request.
-    pub fn post(&self, uri: &str) -> Result<WasmRequestBuilder<'_>> {
+    pub fn post(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::POST, uri))
     }
 
     /// Start a PUT request.
-    pub fn put(&self, uri: &str) -> Result<WasmRequestBuilder<'_>> {
+    pub fn put(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::PUT, uri))
     }
 
     /// Start a PATCH request.
-    pub fn patch(&self, uri: &str) -> Result<WasmRequestBuilder<'_>> {
+    pub fn patch(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::PATCH, uri))
     }
 
     /// Start a DELETE request.
-    pub fn delete(&self, uri: &str) -> Result<WasmRequestBuilder<'_>> {
+    pub fn delete(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::DELETE, uri))
     }
 
     /// Start a request with a custom method.
-    pub fn request(&self, method: Method, uri: &str) -> Result<WasmRequestBuilder<'_>> {
+    pub fn request(&self, method: Method, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, method, uri))
     }
@@ -181,7 +181,7 @@ impl<'a> WasmRequestBuilder<'a> {
 
     /// Set the body as JSON.
     #[cfg(feature = "json")]
-    pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self> {
+    pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self, Error> {
         let json_bytes = serde_json::to_vec(value).map_err(|e| Error::Other(Box::new(e)))?;
         self.body = Some(Bytes::from(json_bytes));
         self.headers.insert(
@@ -192,7 +192,7 @@ impl<'a> WasmRequestBuilder<'a> {
     }
 
     /// Send the request using the browser's Fetch API.
-    pub async fn send(self) -> Result<WasmResponse> {
+    pub async fn send(self) -> Result<WasmResponse, Error> {
         let url = self.uri.to_string();
 
         let opts = web_sys::RequestInit::new();
@@ -351,19 +351,19 @@ impl WasmResponse {
     }
 
     /// Consume the response and return the body as a string.
-    pub fn text(self) -> Result<String> {
+    pub fn text(self) -> Result<String, Error> {
         String::from_utf8(self.body.to_vec())
             .map_err(|e| Error::Other(format!("invalid UTF-8 in response body: {e}").into()))
     }
 
     /// Deserialize the response body from JSON.
     #[cfg(feature = "json")]
-    pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
+    pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
         serde_json::from_slice(&self.body).map_err(|e| Error::Other(Box::new(e)))
     }
 
     /// Return an error if the status code indicates failure (4xx or 5xx).
-    pub fn error_for_status(self) -> Result<Self> {
+    pub fn error_for_status(self) -> Result<Self, Error> {
         let status = self.status;
         if status.is_client_error() || status.is_server_error() {
             Err(Error::Status(status))

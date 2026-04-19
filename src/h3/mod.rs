@@ -4,14 +4,14 @@ use bytes::{Buf, Bytes};
 use http::{Request, Uri};
 use http_body_util::BodyExt;
 
-use crate::error::{Error, HyperBody, Result};
+use crate::error::{Error, HyperBody};
 use crate::pool::PooledConnection;
 use crate::response::Response;
 use crate::runtime::Runtime;
 
 pub(crate) async fn connect_h3<R: Runtime>(
     quinn_conn: quinn::Connection,
-) -> Result<PooledConnection<R>> {
+) -> Result<PooledConnection<R>, Error> {
     let h3_conn = h3_quinn::Connection::new(quinn_conn);
     let (mut driver, send_request) = h3::client::new(h3_conn)
         .await
@@ -28,7 +28,7 @@ pub(crate) async fn send_on_h3(
     send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
     request: Request<HyperBody>,
     url: Uri,
-) -> Result<Response> {
+) -> Result<Response, Error> {
     let (parts, body) = request.into_parts();
     let head_req = Request::from_parts(parts, ());
 
@@ -81,7 +81,7 @@ pub(crate) async fn send_on_h3(
 
 pub(crate) fn build_quinn_endpoint(
     tls_config: Arc<rustls::ClientConfig>,
-) -> Result<quinn::Endpoint> {
+) -> Result<quinn::Endpoint, Error> {
     let mut transport_config = quinn::TransportConfig::default();
     transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
 

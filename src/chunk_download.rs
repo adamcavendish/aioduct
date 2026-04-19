@@ -6,7 +6,7 @@ use http::HeaderValue;
 use http::header::{ACCEPT_RANGES, CONTENT_LENGTH, RANGE};
 
 use crate::client::Client;
-use crate::error::{Error, Result};
+use crate::error::Error;
 use crate::runtime::Runtime;
 
 /// Parallel range-request downloader for large files.
@@ -44,7 +44,7 @@ impl<R: Runtime> ChunkDownload<R> {
     }
 
     /// Execute the download and return the reassembled data.
-    pub async fn download(self) -> Result<ChunkDownloadResult> {
+    pub async fn download(self) -> Result<ChunkDownloadResult, Error> {
         let client = self.client;
         let url = self.url;
 

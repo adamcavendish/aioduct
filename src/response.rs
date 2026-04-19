@@ -5,7 +5,7 @@ use http::header::{CONTENT_LENGTH, HeaderMap};
 use http::{StatusCode, Uri, Version};
 use http_body_util::BodyExt;
 
-use crate::error::{Error, HyperBody, Result};
+use crate::error::{Error, HyperBody};
 
 /// An HTTP response with status, headers, and a streaming body.
 pub struct Response {
@@ -120,7 +120,7 @@ impl Response {
     }
 
     /// Returns an error if the response status is a client (4xx) or server (5xx) error.
-    pub fn error_for_status(self) -> Result<Self> {
+    pub fn error_for_status(self) -> Result<Self, Error> {
         let status = self.inner.status();
         if status.is_client_error() || status.is_server_error() {
             Err(Error::Status(status))
@@ -130,7 +130,7 @@ impl Response {
     }
 
     /// Returns an error reference if the status is 4xx or 5xx, without consuming the response.
-    pub fn error_for_status_ref(&self) -> Result<&Self> {
+    pub fn error_for_status_ref(&self) -> Result<&Self, Error> {
         let status = self.inner.status();
         if status.is_client_error() || status.is_server_error() {
             Err(Error::Status(status))
@@ -151,7 +151,7 @@ impl Response {
     }
 
     /// Consume the response body and return it as bytes.
-    pub async fn bytes(self) -> Result<Bytes> {
+    pub async fn bytes(self) -> Result<Bytes, Error> {
         let body = self.inner.into_body();
         let collected = body
             .collect()
@@ -161,7 +161,7 @@ impl Response {
     }
 
     /// Consume the response body and return it as a UTF-8 string.
-    pub async fn text(self) -> Result<String> {
+    pub async fn text(self) -> Result<String, Error> {
         #[cfg(feature = "charset")]
         {
             self.text_with_charset("utf-8").await
@@ -176,7 +176,7 @@ impl Response {
     #[cfg(feature = "charset")]
     /// Consume the response body and decode it using the charset from Content-Type,
     /// falling back to the given default encoding.
-    pub async fn text_with_charset(self, default_encoding: &str) -> Result<String> {
+    pub async fn text_with_charset(self, default_encoding: &str) -> Result<String, Error> {
         let content_type = self
             .headers()
             .get(http::header::CONTENT_TYPE)
@@ -196,7 +196,7 @@ impl Response {
 
     /// Consume the response body and deserialize it as JSON.
     #[cfg(feature = "json")]
-    pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T> {
+    pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
         let bytes = self.bytes().await?;
         serde_json::from_slice(&bytes).map_err(|e| Error::Other(Box::new(e)))
     }
@@ -220,7 +220,7 @@ impl Response {
     ///
     /// This should be called after receiving a `101 Switching Protocols` response.
     /// Returns an [`Upgraded`](crate::upgrade::Upgraded) bidirectional IO stream.
-    pub async fn upgrade(mut self) -> Result<crate::upgrade::Upgraded> {
+    pub async fn upgrade(mut self) -> Result<crate::upgrade::Upgraded, Error> {
         crate::upgrade::on_upgrade(&mut self.inner).await
     }
 }

@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::error::Error;
 
 /// A bidirectional IO stream from an HTTP upgrade (e.g., WebSocket).
 ///
@@ -117,7 +117,7 @@ impl tokio::io::AsyncWrite for Upgraded {
 
 pub(crate) async fn on_upgrade(
     response: &mut http::Response<crate::error::HyperBody>,
-) -> Result<Upgraded> {
+) -> Result<Upgraded, Error> {
     let on_upgrade = hyper::upgrade::on(response);
     let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;
     Ok(Upgraded::new(upgraded))

@@ -8,7 +8,7 @@ use http::{Method, Uri, Version};
 
 use crate::body::RequestBody;
 use crate::client::Client;
-use crate::error::{Error, HyperBody, Result};
+use crate::error::{Error, HyperBody};
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::Runtime;
@@ -55,7 +55,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     }
 
     /// Add a header from string name and value.
-    pub fn header_str(mut self, name: &str, value: &str) -> Result<Self> {
+    pub fn header_str(mut self, name: &str, value: &str) -> Result<Self, Error> {
         let name: HeaderName = name.parse().map_err(|e| Error::Other(Box::new(e)))?;
         let value: HeaderValue = value.parse().map_err(|e| Error::Other(Box::new(e)))?;
         self.headers.insert(name, value);
@@ -112,7 +112,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
 
     #[cfg(feature = "json")]
     /// Append URL query parameters from a serializable value.
-    pub fn query_serde(mut self, params: &impl serde::Serialize) -> Result<Self> {
+    pub fn query_serde(mut self, params: &impl serde::Serialize) -> Result<Self, Error> {
         let query_string =
             serde_urlencoded::to_string(params).map_err(|e| Error::Other(Box::new(e)))?;
         if !query_string.is_empty() {
@@ -140,7 +140,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
 
     #[cfg(feature = "json")]
     /// Serialize a value as JSON and set it as the request body.
-    pub fn json(mut self, value: &impl serde::Serialize) -> Result<Self> {
+    pub fn json(mut self, value: &impl serde::Serialize) -> Result<Self, Error> {
         let bytes = serde_json::to_vec(value).map_err(|e| Error::Other(Box::new(e)))?;
         self.headers.insert(
             http::header::CONTENT_TYPE,
@@ -183,7 +183,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
 
     #[cfg(feature = "json")]
     /// Set a URL-encoded form body from a serializable value.
-    pub fn form_serde(mut self, value: &impl serde::Serialize) -> Result<Self> {
+    pub fn form_serde(mut self, value: &impl serde::Serialize) -> Result<Self, Error> {
         let encoded = serde_urlencoded::to_string(value).map_err(|e| Error::Other(Box::new(e)))?;
         self.headers.insert(
             http::header::CONTENT_TYPE,
@@ -242,7 +242,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     /// Build the request without sending it.
     ///
     /// Returns the configured `http::Request` for inspection or manual sending.
-    pub fn build(mut self) -> Result<http::Request<RequestBody>> {
+    pub fn build(mut self) -> Result<http::Request<RequestBody>, Error> {
         let body = self
             .body
             .take()
@@ -278,7 +278,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     }
 
     /// Send the request and return the response.
-    pub async fn send(self) -> Result<Response> {
+    pub async fn send(self) -> Result<Response, Error> {
         let effective_retry = self.retry.as_ref().or(self.client.default_retry()).cloned();
 
         match effective_retry {
@@ -287,7 +287,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         }
     }
 
-    async fn send_once(self) -> Result<Response> {
+    async fn send_once(self) -> Result<Response, Error> {
         let effective_timeout = self.timeout.or(self.client.default_timeout());
         let method = self.method.clone();
         let uri = self.uri.clone();
@@ -320,7 +320,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         result
     }
 
-    async fn send_with_retry(self, config: RetryConfig) -> Result<Response> {
+    async fn send_with_retry(self, config: RetryConfig) -> Result<Response, Error> {
         let effective_timeout = self.timeout.or(self.client.default_timeout());
         let mut last_error = None;
         let mut body = self.body;

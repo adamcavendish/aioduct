@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use http_body_util::BodyExt;
 
-use crate::error::{HyperBody, Result};
+use crate::error::{Error, HyperBody};
 
 /// HTTP request body, either buffered in memory or streaming.
 pub enum RequestBody {
@@ -78,7 +78,7 @@ impl BodyStream {
     }
 
     /// Returns the next chunk of body data, or `None` when complete.
-    pub async fn next(&mut self) -> Option<Result<Bytes>> {
+    pub async fn next(&mut self) -> Option<Result<Bytes, Error>> {
         if self.done {
             return None;
         }

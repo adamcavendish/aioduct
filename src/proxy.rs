@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use http::Uri;
 
-use crate::error::{Error, Result};
+use crate::error::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProxyScheme {
@@ -27,7 +27,7 @@ pub(crate) struct ProxyAuth {
 
 impl ProxyConfig {
     /// Create a proxy config from an `http://` URI.
-    pub fn http(uri: &str) -> Result<Self> {
+    pub fn http(uri: &str) -> Result<Self, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         if uri.scheme_str() != Some("http") {
             return Err(Error::InvalidUrl(
@@ -42,7 +42,7 @@ impl ProxyConfig {
     }
 
     /// Create a proxy config from a `socks5://` URI.
-    pub fn socks5(uri: &str) -> Result<Self> {
+    pub fn socks5(uri: &str) -> Result<Self, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         if uri.scheme_str() != Some("socks5") {
             return Err(Error::InvalidUrl(
@@ -57,7 +57,7 @@ impl ProxyConfig {
     }
 
     /// Create a proxy config from a `socks4://` or `socks4a://` URI.
-    pub fn socks4(uri: &str) -> Result<Self> {
+    pub fn socks4(uri: &str) -> Result<Self, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         match uri.scheme_str() {
             Some("socks4") | Some("socks4a") => {}
@@ -83,7 +83,7 @@ impl ProxyConfig {
         self
     }
 
-    pub(crate) fn authority(&self) -> Result<&http::uri::Authority> {
+    pub(crate) fn authority(&self) -> Result<&http::uri::Authority, Error> {
         self.uri
             .authority()
             .ok_or_else(|| Error::InvalidUrl("proxy URI missing authority".into()))
