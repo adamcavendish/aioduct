@@ -2562,8 +2562,14 @@ async fn test_redirect_removes_sensitive_headers_cross_origin() {
     let resp = client
         .get(&format!("http://{redirect_addr}/sensitive"))
         .unwrap()
-        .header(http::header::COOKIE, http::header::HeaderValue::from_static("foo=bar"))
-        .header(http::header::AUTHORIZATION, http::header::HeaderValue::from_static("Bearer token"))
+        .header(
+            http::header::COOKIE,
+            http::header::HeaderValue::from_static("foo=bar"),
+        )
+        .header(
+            http::header::AUTHORIZATION,
+            http::header::HeaderValue::from_static("Bearer token"),
+        )
         .send()
         .await
         .unwrap();
@@ -2614,7 +2620,10 @@ async fn test_redirect_301_302_303_strips_content_headers() {
             .post(&url)
             .unwrap()
             .body("Hello")
-            .header(http::header::CONTENT_TYPE, http::header::HeaderValue::from_static("text/plain"))
+            .header(
+                http::header::CONTENT_TYPE,
+                http::header::HeaderValue::from_static("text/plain"),
+            )
             .send()
             .await
             .unwrap();
@@ -2644,7 +2653,10 @@ async fn test_redirect_invalid_location_stops() {
         .send()
         .await;
 
-    assert!(result.is_err(), "invalid Location URL should cause an error");
+    assert!(
+        result.is_err(),
+        "invalid Location URL should cause an error"
+    );
 }
 
 #[tokio::test]
@@ -2724,7 +2736,10 @@ async fn test_redirect_302_with_set_cookies() {
             )
         } else {
             assert_eq!(req.uri().path(), "/dst");
-            let cookie = req.headers().get("cookie").map(|v| v.to_str().unwrap().to_owned());
+            let cookie = req
+                .headers()
+                .get("cookie")
+                .map(|v| v.to_str().unwrap().to_owned());
             let body = format!("cookie={}", cookie.unwrap_or_else(|| "none".into()));
             Ok(Response::new(Full::new(Bytes::from(body))))
         }
@@ -3092,8 +3107,18 @@ async fn test_cookie_store_overwrite() {
     let jar = aioduct::CookieJar::new();
     let client = Client::<TokioRuntime>::builder().cookie_jar(jar).build();
 
-    client.get(&format!("http://{addr}/set1")).unwrap().send().await.unwrap();
-    client.get(&format!("http://{addr}/set2")).unwrap().send().await.unwrap();
+    client
+        .get(&format!("http://{addr}/set1"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    client
+        .get(&format!("http://{addr}/set2"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/check"))
@@ -3145,9 +3170,7 @@ async fn test_read_timeout_applies_to_body() {
         let _ = stream.read(&mut buf).await;
 
         stream
-            .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello",
-            )
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello")
             .await
             .unwrap();
         stream.flush().await.unwrap();

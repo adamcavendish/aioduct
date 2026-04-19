@@ -169,7 +169,10 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
                     expired = true;
                 }
             }
-        } else if let Some(val) = attr.strip_prefix("Expires=").or_else(|| attr.strip_prefix("expires=")) {
+        } else if let Some(val) = attr
+            .strip_prefix("Expires=")
+            .or_else(|| attr.strip_prefix("expires="))
+        {
             if let Some(expires_time) = parse_http_date(val.trim()) {
                 if expires_time < SystemTime::now() {
                     expired = true;

@@ -21,9 +21,10 @@ fn make_aioduct_h2_client(rt: &Runtime) -> aioduct::Client<aioduct::runtime::Tok
     })
 }
 
-fn make_hyper_util_h2_client(
-) -> hyper_util::client::legacy::Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>
-{
+fn make_hyper_util_h2_client() -> hyper_util::client::legacy::Client<
+    hyper_util::client::legacy::connect::HttpConnector,
+    Full<Bytes>,
+> {
     hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
         .http2_only(true)
         .pool_idle_timeout(Duration::from_secs(90))
@@ -45,7 +46,15 @@ fn bench_h2_get(c: &mut Criterion) {
     let mut group = c.benchmark_group("h2_get");
     group.bench_function("aioduct", |b| {
         b.to_async(&rt).iter(|| async {
-            aioduct_client.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            aioduct_client
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.bench_function("hyper_util", |b| {
@@ -55,7 +64,10 @@ fn bench_h2_get(c: &mut Criterion) {
             let u = url.clone();
             async move {
                 let resp = c.get(u).await.unwrap();
-                http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes()
+                http_body_util::BodyExt::collect(resp.into_body())
+                    .await
+                    .unwrap()
+                    .to_bytes()
             }
         });
     });
@@ -75,7 +87,15 @@ fn bench_h2_download_64k(c: &mut Criterion) {
     group.sample_size(50);
     group.bench_function("aioduct", |b| {
         b.to_async(&rt).iter(|| async {
-            aioduct_client.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            aioduct_client
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.bench_function("hyper_util", |b| {
@@ -85,7 +105,10 @@ fn bench_h2_download_64k(c: &mut Criterion) {
             let u = url.clone();
             async move {
                 let resp = c.get(u).await.unwrap();
-                http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes()
+                http_body_util::BodyExt::collect(resp.into_body())
+                    .await
+                    .unwrap()
+                    .to_bytes()
             }
         });
     });
@@ -104,7 +127,15 @@ fn bench_h2_download_1m(c: &mut Criterion) {
     group.sample_size(30);
     group.bench_function("aioduct", |b| {
         b.to_async(&rt).iter(|| async {
-            aioduct_client.get(&url).unwrap().send().await.unwrap().bytes().await.unwrap()
+            aioduct_client
+                .get(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
         });
     });
     group.finish();
@@ -125,12 +156,25 @@ fn bench_h2_concurrent_10(c: &mut Criterion) {
             let client = aioduct_client.clone();
             let url = url.clone();
             async move {
-                let futs: Vec<_> = (0..10).map(|_| {
-                    let c = client.clone();
-                    let u = url.clone();
-                    tokio::spawn(async move { c.get(&u).unwrap().send().await.unwrap().bytes().await.unwrap() })
-                }).collect();
-                for f in futs { f.await.unwrap(); }
+                let futs: Vec<_> = (0..10)
+                    .map(|_| {
+                        let c = client.clone();
+                        let u = url.clone();
+                        tokio::spawn(async move {
+                            c.get(&u)
+                                .unwrap()
+                                .send()
+                                .await
+                                .unwrap()
+                                .bytes()
+                                .await
+                                .unwrap()
+                        })
+                    })
+                    .collect();
+                for f in futs {
+                    f.await.unwrap();
+                }
             }
         });
     });
@@ -150,7 +194,16 @@ fn bench_h2_post_4k(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let p = payload.clone();
             async {
-                aioduct_client.post(&url).unwrap().body(p).send().await.unwrap().bytes().await.unwrap()
+                aioduct_client
+                    .post(&url)
+                    .unwrap()
+                    .body(p)
+                    .send()
+                    .await
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap()
             }
         });
     });

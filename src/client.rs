@@ -1759,9 +1759,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_tcp_keepalive_retries() {
-        let _client = TokioClient::builder()
-            .tcp_keepalive_retries(3)
-            .build();
+        let _client = TokioClient::builder().tcp_keepalive_retries(3).build();
     }
 
     #[tokio::test]
@@ -1774,72 +1772,53 @@ mod builder_tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn builder_interface() {
-        let _client = TokioClient::builder()
-            .interface("eth0")
-            .build();
+        let _client = TokioClient::builder().interface("eth0").build();
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn builder_unix_socket() {
-        let _client = TokioClient::builder()
-            .unix_socket("/tmp/test.sock")
-            .build();
+        let _client = TokioClient::builder().unix_socket("/tmp/test.sock").build();
     }
 
     #[tokio::test]
     async fn builder_referer() {
-        let _client = TokioClient::builder()
-            .referer(true)
-            .build();
+        let _client = TokioClient::builder().referer(true).build();
     }
 
     #[tokio::test]
     async fn builder_http2_prior_knowledge() {
-        let _client = TokioClient::builder()
-            .http2_prior_knowledge()
-            .build();
+        let _client = TokioClient::builder().http2_prior_knowledge().build();
     }
 
     #[tokio::test]
     async fn builder_no_default_headers() {
-        let client = TokioClient::builder()
-            .no_default_headers()
-            .build();
+        let client = TokioClient::builder().no_default_headers().build();
         assert!(client.default_headers.is_empty());
     }
 
     #[tokio::test]
     async fn builder_user_agent_with_invalid_value() {
-        let client = TokioClient::builder()
-            .user_agent("valid-agent/1.0")
-            .build();
+        let client = TokioClient::builder().user_agent("valid-agent/1.0").build();
         assert!(client.default_headers.get(USER_AGENT).is_some());
     }
 
     #[tokio::test]
     async fn builder_proxy_settings() {
-        let settings = ProxySettings::default()
-            .http(ProxyConfig::http("http://proxy:80").unwrap());
-        let _client = TokioClient::builder()
-            .proxy_settings(settings)
-            .build();
+        let settings = ProxySettings::default().http(ProxyConfig::http("http://proxy:80").unwrap());
+        let _client = TokioClient::builder().proxy_settings(settings).build();
     }
 
     #[tokio::test]
     async fn builder_http2_config() {
         let config = crate::http2::Http2Config::default();
-        let _client = TokioClient::builder()
-            .http2(config)
-            .build();
+        let _client = TokioClient::builder().http2(config).build();
     }
 
     #[tokio::test]
     async fn builder_rate_limiter() {
         let limiter = crate::throttle::RateLimiter::new(10, Duration::from_secs(1));
-        let _client = TokioClient::builder()
-            .rate_limiter(limiter)
-            .build();
+        let _client = TokioClient::builder().rate_limiter(limiter).build();
     }
 
     #[tokio::test]
@@ -1856,7 +1835,11 @@ mod builder_tests {
         assert!(client.put("http://example.com").is_ok());
         assert!(client.patch("http://example.com").is_ok());
         assert!(client.delete("http://example.com").is_ok());
-        assert!(client.request(Method::OPTIONS, "http://example.com").is_ok());
+        assert!(
+            client
+                .request(Method::OPTIONS, "http://example.com")
+                .is_ok()
+        );
     }
 
     #[tokio::test]
