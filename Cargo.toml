@@ -28,6 +28,8 @@ brotli = ["dep:brotli"]
 zstd = ["dep:zstd"]
 deflate = ["dep:flate2"]
 tower = ["dep:tower-service", "dep:tower-layer"]
+tracing = ["dep:tracing"]
+otel = ["dep:opentelemetry", "dep:opentelemetry-http"]
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
 [dependencies]
@@ -88,6 +90,13 @@ zstd = { version = "0.13", optional = true, default-features = false }
 # Tower integration
 tower-service = { version = "0.3", optional = true }
 tower-layer = { version = "0.3", optional = true }
+
+# Tracing
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
+
+# OpenTelemetry
+opentelemetry = { version = "0.31", optional = true, default-features = false, features = ["trace"] }
+opentelemetry-http = { version = "0.31", optional = true }
 
 # WASM/browser
 wasm-bindgen = { version = "0.2", optional = true }

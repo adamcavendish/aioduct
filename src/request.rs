@@ -289,11 +289,13 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
 
     async fn send_once(self) -> Result<Response> {
         let effective_timeout = self.timeout.or(self.client.default_timeout());
+        let method = self.method.clone();
+        let uri = self.uri.clone();
         let execute_fut =
             self.client
                 .execute(self.method, self.uri, self.headers, self.body, self.version);
 
-        match effective_timeout {
+        let result = match effective_timeout {
             Some(duration) => {
                 Timeout::WithTimeout {
                     future: execute_fut,
@@ -307,7 +309,15 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                 }
                 .await
             }
+        };
+
+        if let Err(ref e) = result {
+            let mw = self.client.middleware();
+            if !mw.is_empty() {
+                mw.apply_error(e, &uri, &method);
+            }
         }
+        result
     }
 
     async fn send_with_retry(self, config: RetryConfig) -> Result<Response> {
@@ -362,9 +372,14 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                                 return Ok(resp);
                             }
                         }
-                        last_error = Some(Error::Other(
+                        let err = Error::Other(
                             format!("server error: {}", resp.status()).into(),
-                        ));
+                        );
+                        let mw = self.client.middleware();
+                        if !mw.is_empty() {
+                            mw.apply_retry(&err, &self.uri, &self.method, attempt + 1);
+                        }
+                        last_error = Some(err);
                         continue;
                     }
                     if let Some(ref budget) = config.budget {
@@ -376,17 +391,34 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                     if attempt < config.max_retries && crate::retry::is_retryable_error(&e) {
                         if let Some(ref budget) = config.budget {
                             if !budget.try_withdraw() {
+                                let mw = self.client.middleware();
+                                if !mw.is_empty() {
+                                    mw.apply_error(&e, &self.uri, &self.method);
+                                }
                                 return Err(e);
                             }
                         }
+                        let mw = self.client.middleware();
+                        if !mw.is_empty() {
+                            mw.apply_retry(&e, &self.uri, &self.method, attempt + 1);
+                        }
                         last_error = Some(e);
                         continue;
+                    }
+                    let mw = self.client.middleware();
+                    if !mw.is_empty() {
+                        mw.apply_error(&e, &self.uri, &self.method);
                     }
                     return Err(e);
                 }
             }
         }
 
-        Err(last_error.unwrap_or(Error::Other("retry exhausted".into())))
+        let err = last_error.unwrap_or(Error::Other("retry exhausted".into()));
+        let mw = self.client.middleware();
+        if !mw.is_empty() {
+            mw.apply_error(&err, &self.uri, &self.method);
+        }
+        Err(err)
     }
 }

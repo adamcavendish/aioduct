@@ -801,6 +801,10 @@ impl<R: Runtime> Client<R> {
         self.retry.as_ref()
     }
 
+    pub(crate) fn middleware(&self) -> &crate::middleware::MiddlewareStack {
+        &self.middleware
+    }
+
     pub(crate) async fn execute(
         &self,
         method: Method,
@@ -1004,6 +1008,10 @@ impl<R: Runtime> Client<R> {
 
             let _ = resp.bytes().await;
 
+            if !self.middleware.is_empty() {
+                self.middleware.apply_redirect(status, &current_uri, &next_uri);
+            }
+
             match status {
                 StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND | StatusCode::SEE_OTHER => {
                     current_method = Method::GET;
@@ -1164,6 +1172,9 @@ impl<R: Runtime> Client<R> {
             #[cfg(target_os = "linux")]
             let interface = self.interface.as_deref();
             let connect_fut = async {
+                #[cfg(feature = "tracing")]
+                tracing::trace!(addr = %addr, "tcp.connect.start");
+
                 let tcp_stream = if let Some(local_addr) = local_address {
                     R::connect_bound(addr, local_addr)
                         .await
@@ -1194,6 +1205,9 @@ impl<R: Runtime> Client<R> {
                         tcp_keepalive_retries,
                     )?;
                 }
+                #[cfg(feature = "tracing")]
+                tracing::trace!(addr = %addr, "tcp.connect.done");
+
                 if is_https {
                     self.connect_tls(tcp_stream, authority.host()).await
                 } else {
@@ -1436,6 +1450,9 @@ impl<R: Runtime> Client<R> {
     ) -> Result<PooledConnection<R>> {
         use crate::tls::TlsConnect;
 
+        #[cfg(feature = "tracing")]
+        tracing::trace!(host = host, "tls.handshake.start");
+
         let tls_connector = self
             .tls
             .as_ref()
@@ -1447,9 +1464,20 @@ impl<R: Runtime> Client<R> {
             tcp_stream,
         )
         .await
-        .map_err(|e| Error::Tls(Box::new(e)))?;
+        .map_err(|e| {
+            #[cfg(feature = "tracing")]
+            tracing::trace!(host = host, error = %e, "tls.handshake.error");
+            Error::Tls(Box::new(e))
+        })?;
 
         let alpn = crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
+
+        #[cfg(feature = "tracing")]
+        tracing::trace!(
+            host = host,
+            alpn = ?alpn,
+            "tls.handshake.done",
+        );
         let tls_info = tls_stream.tls_info();
 
         match alpn {
@@ -1522,7 +1550,17 @@ impl<R: Runtime> Client<R> {
         request: http::Request<HyperBody>,
         url: Uri,
     ) -> Result<Response> {
-        match &mut conn.conn {
+        #[cfg(feature = "tracing")]
+        let proto = match &conn.conn {
+            HttpConnection::H1(_) => "h1",
+            HttpConnection::H2(_) => "h2",
+            #[cfg(feature = "http3")]
+            HttpConnection::H3(_) => "h3",
+        };
+        #[cfg(feature = "tracing")]
+        tracing::trace!(protocol = proto, uri = %url, "http.send.start");
+
+        let result = match &mut conn.conn {
             HttpConnection::H1(sender) => {
                 let resp = sender.send_request(request).await?;
                 let resp = resp.map(|body| body.map_err(Error::Hyper).boxed());
@@ -1537,7 +1575,14 @@ impl<R: Runtime> Client<R> {
             HttpConnection::H3(sender) => {
                 crate::h3_transport::send_on_h3(sender, request, url).await
             }
+        };
+
+        #[cfg(feature = "tracing")]
+        if let Ok(ref resp) = result {
+            tracing::trace!(status = resp.status().as_u16(), "http.send.done");
         }
+
+        result
     }
 
     async fn resolve_authority(
@@ -1555,16 +1600,27 @@ impl<R: Runtime> Client<R> {
             return Ok(addr);
         }
 
-        if let Some(resolver) = &self.resolver {
-            return resolver
+        #[cfg(feature = "tracing")]
+        tracing::trace!(host = host, port = port, "dns.resolve.start");
+
+        let result = if let Some(resolver) = &self.resolver {
+            resolver
                 .resolve(host, port)
                 .await
-                .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")));
+                .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
+        } else {
+            R::resolve(host, port)
+                .await
+                .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
+        };
+
+        #[cfg(feature = "tracing")]
+        match &result {
+            Ok(addr) => tracing::trace!(host = host, addr = %addr, "dns.resolve.done"),
+            Err(e) => tracing::trace!(host = host, error = %e, "dns.resolve.error"),
         }
 
-        R::resolve(host, port)
-            .await
-            .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
+        result
     }
 
     #[cfg(feature = "http3")]

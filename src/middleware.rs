@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use http::Uri;
+use http::{Method, StatusCode, Uri};
 
-use crate::error::HyperBody;
+use crate::error::{Error, HyperBody};
 
 /// Middleware that can inspect or modify requests and responses.
 ///
@@ -18,6 +18,21 @@ pub trait Middleware: Send + Sync + 'static {
     /// Called after the response is received. May modify the response in place.
     fn on_response(&self, response: &mut http::Response<HyperBody>, uri: &Uri) {
         let _ = (response, uri);
+    }
+
+    /// Called when a request fails with an error.
+    fn on_error(&self, error: &Error, uri: &Uri, method: &Method) {
+        let _ = (error, uri, method);
+    }
+
+    /// Called when a redirect is followed.
+    fn on_redirect(&self, status: StatusCode, from: &Uri, to: &Uri) {
+        let _ = (status, from, to);
+    }
+
+    /// Called before a retry attempt.
+    fn on_retry(&self, error: &Error, uri: &Uri, method: &Method, attempt: u32) {
+        let _ = (error, uri, method, attempt);
     }
 }
 
@@ -64,6 +79,24 @@ impl MiddlewareStack {
     pub fn apply_response(&self, response: &mut http::Response<HyperBody>, uri: &Uri) {
         for layer in self.layers.iter().rev() {
             layer.on_response(response, uri);
+        }
+    }
+
+    pub fn apply_error(&self, error: &Error, uri: &Uri, method: &Method) {
+        for layer in &self.layers {
+            layer.on_error(error, uri, method);
+        }
+    }
+
+    pub fn apply_redirect(&self, status: StatusCode, from: &Uri, to: &Uri) {
+        for layer in &self.layers {
+            layer.on_redirect(status, from, to);
+        }
+    }
+
+    pub fn apply_retry(&self, error: &Error, uri: &Uri, method: &Method, attempt: u32) {
+        for layer in &self.layers {
+            layer.on_retry(error, uri, method, attempt);
         }
     }
 }

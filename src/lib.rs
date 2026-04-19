@@ -41,6 +41,16 @@ pub mod upgrade;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
+#[cfg(feature = "tracing")]
+mod tracing_middleware;
+#[cfg(feature = "tracing")]
+pub use tracing_middleware::TracingMiddleware;
+
+#[cfg(feature = "otel")]
+mod otel_middleware;
+#[cfg(feature = "otel")]
+pub use otel_middleware::OtelMiddleware;
+
 #[cfg(feature = "http3")]
 mod alt_svc;
 #[cfg(feature = "http3")]
