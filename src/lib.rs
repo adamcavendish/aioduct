@@ -7,6 +7,8 @@
 compile_error!("aioduct: enable at least one runtime feature: tokio, smol, or compio");
 
 pub mod body;
+#[cfg(feature = "blocking")]
+pub mod blocking;
 pub mod chunk_download;
 pub mod client;
 pub mod cookie;
