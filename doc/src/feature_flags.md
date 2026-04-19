@@ -11,6 +11,10 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 | `compio` | compio-runtime, async-io          | Experimental | Compio runtime (io_uring / IOCP)     |
 | `rustls` | rustls, webpki-roots, rustls-pemfile | Stable    | TLS via rustls (required for HTTPS)  |
 | `json`   | serde, serde_json                 | Stable       | JSON request/response helpers        |
+| `gzip`   | flate2                            | Stable       | Gzip response decompression          |
+| `deflate`| flate2                            | Stable       | Deflate response decompression       |
+| `brotli` | brotli                            | Stable       | Brotli response decompression        |
+| `zstd`   | zstd                              | Stable       | Zstd response decompression          |
 | `http3`  | h3, h3-quinn, quinn (+ rustls)    | Experimental | HTTP/3 transport                     |
 
 ## Compile Error Without Runtime
@@ -38,6 +42,9 @@ aioduct = { version = "0.1", features = ["smol", "rustls"] }
 
 # HTTP only, compio runtime (experimental)
 aioduct = { version = "0.1", features = ["compio"] }
+
+# HTTPS + JSON + compression, tokio runtime
+aioduct = { version = "0.1", features = ["tokio", "rustls", "json", "gzip", "brotli", "zstd", "deflate"] }
 ```
 
 ## Core Dependencies (Always Included)

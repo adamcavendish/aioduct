@@ -17,11 +17,16 @@ tokio = ["dep:tokio"]
 smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
 compio = ["dep:compio-runtime", "dep:compio-driver", "dep:async-io", "dep:futures-io"]
 http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:futures-util", "rustls"]
+gzip = ["dep:flate2"]
+brotli = ["dep:brotli"]
+zstd = ["dep:zstd"]
+deflate = ["dep:flate2"]
 
 [dependencies]
 # Core — always required
 hyper = { version = "1", features = ["client", "http1", "http2"] }
 http = "1"
+http-body = "1"
 http-body-util = "0.1"
 bytes = "1"
 pin-project-lite = "0.2"
@@ -56,6 +61,11 @@ h3-quinn = { version = "0.0.10", optional = true }
 quinn = { version = "0.11", optional = true, default-features = false, features = ["rustls-ring"] }
 futures-util = { version = "0.3", optional = true }
 
+# Decompression
+flate2 = { version = "1", optional = true }
+brotli = { version = "8", optional = true, default-features = false, features = ["std"] }
+zstd = { version = "0.13", optional = true, default-features = false }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["server", "http1"] }
@@ -66,3 +76,4 @@ futures-io = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-util = "0.3"
+flate2 = "1"

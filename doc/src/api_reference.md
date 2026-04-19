@@ -55,6 +55,7 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 | `no_default_headers()`  | —           | Remove all default headers           |
 | `tls(RustlsConnector)`  | None        | Custom TLS configuration             |
 | `danger_accept_invalid_certs()` | —  | Accept any TLS certificate (INSECURE) |
+| `no_decompression()`    | —           | Disable automatic response decompression |
 
 ## RequestBuilder
 

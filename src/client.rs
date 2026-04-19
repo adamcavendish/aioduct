@@ -31,6 +31,7 @@ pub struct Client<R: Runtime> {
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
     https_only: bool,
+    accept_encoding: crate::decompress::AcceptEncoding,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
@@ -54,6 +55,7 @@ impl<R: Runtime> Clone for Client<R> {
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
             https_only: self.https_only,
+            accept_encoding: self.accept_encoding.clone(),
             default_headers: self.default_headers.clone(),
             retry: self.retry.clone(),
             cookie_jar: self.cookie_jar.clone(),
@@ -79,6 +81,7 @@ pub struct ClientBuilder<R: Runtime> {
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
     https_only: bool,
+    accept_encoding: crate::decompress::AcceptEncoding,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
@@ -104,6 +107,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             timeout: None,
             connect_timeout: None,
             https_only: false,
+            accept_encoding: crate::decompress::AcceptEncoding::default(),
             default_headers,
             retry: None,
             cookie_jar: None,
@@ -159,6 +163,12 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Only allow HTTPS URLs; reject plain HTTP requests with an error.
     pub fn https_only(mut self, enable: bool) -> Self {
         self.https_only = enable;
+        self
+    }
+
+    /// Disable automatic response body decompression.
+    pub fn no_decompression(mut self) -> Self {
+        self.accept_encoding = crate::decompress::AcceptEncoding::none();
         self
     }
 
@@ -253,6 +263,7 @@ impl<R: Runtime> ClientBuilder<R> {
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
             https_only: self.https_only,
+            accept_encoding: self.accept_encoding,
             default_headers: self.default_headers,
             retry: self.retry,
             cookie_jar: self.cookie_jar,
@@ -397,6 +408,8 @@ impl<R: Runtime> Client<R> {
             }
         }
 
+        crate::decompress::set_accept_encoding(&mut current_headers, &self.accept_encoding);
+
         for _ in 0..=self.redirect_policy.max_redirects() {
             if let Some(jar) = &self.cookie_jar {
                 if let Some(authority) = current_uri.authority() {
@@ -464,7 +477,7 @@ impl<R: Runtime> Client<R> {
                 if self.h3_endpoint.is_some() {
                     self.cache_alt_svc(&current_uri, resp.headers());
                 }
-                return Ok(resp);
+                return Ok(resp.decompress(&self.accept_encoding));
             }
 
             let status = resp.status();

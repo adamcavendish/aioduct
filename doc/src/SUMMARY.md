@@ -16,5 +16,6 @@
 - [Parallel Chunk Download](chunk_download.md)
 - [HTTP/3](http3.md)
 - [Cookie Jar](cookies.md)
+- [Response Decompression](decompression.md)
 - [Proxy Support](proxy.md)
 - [API Reference](api_reference.md)

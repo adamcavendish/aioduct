@@ -26,6 +26,15 @@ impl Response {
         Self { inner, url }
     }
 
+    pub(crate) fn decompress(self, accept: &crate::decompress::AcceptEncoding) -> Self {
+        let (mut parts, body) = self.inner.into_parts();
+        let body = crate::decompress::maybe_decompress(&mut parts.headers, body, accept);
+        Self {
+            inner: http::Response::from_parts(parts, body),
+            url: self.url,
+        }
+    }
+
     /// Returns the final URL of this response, after any redirects.
     pub fn url(&self) -> &Uri {
         &self.url

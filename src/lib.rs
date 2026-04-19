@@ -23,6 +23,8 @@ pub mod sse;
 mod timeout;
 pub mod tls;
 
+mod decompress;
+
 #[cfg(feature = "http3")]
 mod alt_svc;
 #[cfg(feature = "http3")]
