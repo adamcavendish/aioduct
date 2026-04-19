@@ -1,0 +1,38 @@
+[package]
+name = "aioduct-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aioduct = { path = "../..", features = ["tokio", "json"] }
+bytes = "1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
+isahc = "1"
+reqwest = { version = "0.12", features = ["json", "gzip", "multipart"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+
+[[bench]]
+name = "h1"
+harness = false
+
+[[bench]]
+name = "h2"
+harness = false
+
+[[bench]]
+name = "pooling"
+harness = false
+
+[[bench]]
+name = "features"
+harness = false
+
+[[bench]]
+name = "json"
+harness = false

@@ -469,4 +469,195 @@ mod tests {
     }
 
     use http_body_util::BodyExt;
+
+    #[test]
+    fn part_bytes_creates_buffered() {
+        let part = Part::bytes("data", b"hello".to_vec());
+        assert!(!part.is_streaming());
+        assert_eq!(part.name, "data");
+    }
+
+    #[test]
+    fn part_stream_creates_streaming() {
+        let body: crate::error::HyperBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let part = Part::stream("s", body);
+        assert!(part.is_streaming());
+        assert_eq!(part.name, "s");
+    }
+
+    #[test]
+    fn part_builder_methods() {
+        let part = Part::text("f", "v")
+            .file_name("name.txt")
+            .mime_str("text/plain")
+            .header("X-A", "1");
+        assert_eq!(part.filename.as_deref(), Some("name.txt"));
+        assert_eq!(part.content_type.as_deref(), Some("text/plain"));
+        assert_eq!(part.headers.len(), 1);
+    }
+}
+
+#[cfg(all(test, feature = "tokio"))]
+mod streaming_tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    async fn collect_streaming(mp: Multipart) -> String {
+        let body = mp.into_streaming_body();
+        let collected = body.collect().await.unwrap().to_bytes();
+        String::from_utf8(collected.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn streaming_buffered_text_field() {
+        let mp = Multipart::new().text("name", "value");
+        let boundary = mp.content_type().split("boundary=").nth(1).unwrap().to_owned();
+        let body = collect_streaming(mp).await;
+
+        assert!(body.contains(&format!("--{boundary}\r\n")));
+        assert!(body.contains("Content-Disposition: form-data; name=\"name\"\r\n"));
+        assert!(body.contains("value\r\n"));
+        assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+    }
+
+    #[tokio::test]
+    async fn streaming_file_part_with_filename_and_content_type() {
+        let mp = Multipart::new().file("upload", "test.txt", "text/plain", b"contents".to_vec());
+        let body = collect_streaming(mp).await;
+
+        assert!(body.contains("filename=\"test.txt\""));
+        assert!(body.contains("Content-Type: text/plain\r\n"));
+        assert!(body.contains("contents"));
+    }
+
+    #[tokio::test]
+    async fn streaming_filename_without_content_type() {
+        let part = Part::text("f", "v").file_name("data.bin");
+        let mp = Multipart::new().part(part);
+        let body = collect_streaming(mp).await;
+
+        assert!(body.contains("filename=\"data.bin\""));
+        assert!(!body.contains("Content-Type:"));
+    }
+
+    #[tokio::test]
+    async fn streaming_content_type_without_filename() {
+        let part = Part::text("f", "v").mime_str("application/json");
+        let mp = Multipart::new().part(part);
+        let body = collect_streaming(mp).await;
+
+        assert!(body.contains("name=\"f\""));
+        assert!(!body.contains("filename="));
+        assert!(body.contains("Content-Type: application/json\r\n"));
+    }
+
+    #[tokio::test]
+    async fn streaming_no_filename_no_content_type() {
+        let mp = Multipart::new().text("plain", "hi");
+        let body = collect_streaming(mp).await;
+
+        assert!(body.contains("name=\"plain\""));
+        assert!(!body.contains("filename="));
+        assert!(!body.contains("Content-Type:"));
+    }
+
+    #[tokio::test]
+    async fn streaming_custom_headers() {
+        let part = Part::text("f", "v").header("X-Custom", "test-value");
+        let mp = Multipart::new().part(part);
+        let body = collect_streaming(mp).await;
+
+        assert!(body.contains("X-Custom: test-value\r\n"));
+    }
+
+    #[tokio::test]
+    async fn streaming_multiple_buffered_parts() {
+        let mp = Multipart::new().text("a", "1").text("b", "2").file(
+            "c",
+            "c.txt",
+            "text/plain",
+            b"3".to_vec(),
+        );
+        let boundary = mp.content_type().split("boundary=").nth(1).unwrap().to_owned();
+        let body = collect_streaming(mp).await;
+
+        let boundary_count = body.matches(&format!("--{boundary}\r\n")).count();
+        assert_eq!(boundary_count, 3);
+        assert!(body.contains(&format!("--{boundary}--\r\n")));
+    }
+
+    #[tokio::test]
+    async fn streaming_with_stream_body() {
+        let data = bytes::Bytes::from("streamed data");
+        let stream_body: crate::error::HyperBody =
+            http_body_util::Full::new(data)
+                .map_err(|never| match never {})
+                .boxed();
+
+        let part = Part::stream("file", stream_body)
+            .file_name("stream.bin")
+            .mime_str("application/octet-stream");
+        let mp = Multipart::new().part(part);
+        let body = collect_streaming(mp).await;
+
+        assert!(body.contains("filename=\"stream.bin\""));
+        assert!(body.contains("Content-Type: application/octet-stream\r\n"));
+        assert!(body.contains("streamed data"));
+    }
+
+    #[tokio::test]
+    async fn streaming_mixed_buffered_and_stream() {
+        let stream_body: crate::error::HyperBody =
+            http_body_util::Full::new(bytes::Bytes::from("stream content"))
+                .map_err(|never| match never {})
+                .boxed();
+
+        let mp = Multipart::new()
+            .text("text_field", "text_value")
+            .part(Part::stream("stream_field", stream_body).file_name("f.bin"));
+        let boundary = mp.content_type().split("boundary=").nth(1).unwrap().to_owned();
+        let body = collect_streaming(mp).await;
+
+        assert!(body.contains("text_value"));
+        assert!(body.contains("stream content"));
+        assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+    }
+
+    #[tokio::test]
+    async fn streaming_empty_multipart() {
+        let mp = Multipart::new();
+        let boundary = mp.content_type().split("boundary=").nth(1).unwrap().to_owned();
+        let body = collect_streaming(mp).await;
+
+        assert_eq!(body, format!("--{boundary}--\r\n"));
+    }
+
+    #[tokio::test]
+    async fn streaming_error_propagation() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct ErrorBody;
+        impl http_body::Body for ErrorBody {
+            type Data = bytes::Bytes;
+            type Error = crate::error::Error;
+
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+                Poll::Ready(Some(Err(crate::error::Error::Other("test error".into()))))
+            }
+        }
+
+        let error_body: crate::error::HyperBody = ErrorBody.boxed();
+        let part = Part::stream("err", error_body);
+        let mp = Multipart::new().part(part);
+        let body = mp.into_streaming_body();
+
+        let result = body.collect().await;
+        assert!(result.is_err());
+    }
 }

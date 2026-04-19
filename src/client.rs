@@ -1705,4 +1705,171 @@ mod tests {
     fn default_user_agent_contains_version() {
         assert!(DEFAULT_USER_AGENT.starts_with("aioduct/"));
     }
+
+    #[test]
+    fn resolve_redirect_missing_scheme() {
+        let base: Uri = "/relative".parse().unwrap();
+        let result = resolve_redirect(&base, "/new");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::InvalidUrl(msg) => assert!(msg.contains("scheme")),
+            other => panic!("expected InvalidUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_redirect_missing_authority() {
+        let base = Uri::from_static("http:");
+        let result = resolve_redirect(&base, "/new");
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(all(test, feature = "tokio"))]
+mod builder_tests {
+    use super::*;
+    use crate::runtime::tokio_rt::TokioRuntime;
+
+    type TokioClient = Client<TokioRuntime>;
+
+    #[tokio::test]
+    async fn builder_read_timeout() {
+        let _client = TokioClient::builder()
+            .read_timeout(Duration::from_secs(5))
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_tcp_keepalive() {
+        let _client = TokioClient::builder()
+            .tcp_keepalive(Duration::from_secs(60))
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_tcp_keepalive_interval() {
+        let _client = TokioClient::builder()
+            .tcp_keepalive_interval(Duration::from_secs(10))
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_tcp_keepalive_retries() {
+        let _client = TokioClient::builder()
+            .tcp_keepalive_retries(3)
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_local_address() {
+        let _client = TokioClient::builder()
+            .local_address("127.0.0.1".parse().unwrap())
+            .build();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn builder_interface() {
+        let _client = TokioClient::builder()
+            .interface("eth0")
+            .build();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn builder_unix_socket() {
+        let _client = TokioClient::builder()
+            .unix_socket("/tmp/test.sock")
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_referer() {
+        let _client = TokioClient::builder()
+            .referer(true)
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_http2_prior_knowledge() {
+        let _client = TokioClient::builder()
+            .http2_prior_knowledge()
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_no_default_headers() {
+        let client = TokioClient::builder()
+            .no_default_headers()
+            .build();
+        assert!(client.default_headers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn builder_user_agent_with_invalid_value() {
+        let client = TokioClient::builder()
+            .user_agent("valid-agent/1.0")
+            .build();
+        assert!(client.default_headers.get(USER_AGENT).is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_proxy_settings() {
+        let settings = ProxySettings::default()
+            .http(ProxyConfig::http("http://proxy:80").unwrap());
+        let _client = TokioClient::builder()
+            .proxy_settings(settings)
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_http2_config() {
+        let config = crate::http2::Http2Config::default();
+        let _client = TokioClient::builder()
+            .http2(config)
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_rate_limiter() {
+        let limiter = crate::throttle::RateLimiter::new(10, Duration::from_secs(1));
+        let _client = TokioClient::builder()
+            .rate_limiter(limiter)
+            .build();
+    }
+
+    #[tokio::test]
+    async fn client_default_creates_same_as_new() {
+        let _client: TokioClient = Default::default();
+    }
+
+    #[tokio::test]
+    async fn client_method_helpers() {
+        let client = TokioClient::new();
+        assert!(client.get("http://example.com").is_ok());
+        assert!(client.head("http://example.com").is_ok());
+        assert!(client.post("http://example.com").is_ok());
+        assert!(client.put("http://example.com").is_ok());
+        assert!(client.patch("http://example.com").is_ok());
+        assert!(client.delete("http://example.com").is_ok());
+        assert!(client.request(Method::OPTIONS, "http://example.com").is_ok());
+    }
+
+    #[tokio::test]
+    async fn client_invalid_url() {
+        let client = TokioClient::new();
+        assert!(client.get("not a url").is_err());
+    }
+
+    #[tokio::test]
+    async fn client_https_only_rejects_http() {
+        let client = TokioClient::builder().https_only(true).build();
+        assert!(client.https_only);
+    }
+
+    #[tokio::test]
+    async fn client_no_connection_reuse_sets_flag() {
+        let client = TokioClient::builder().no_connection_reuse().build();
+        assert!(client.no_connection_reuse);
+    }
 }

@@ -479,4 +479,127 @@ mod tests {
     fn builder_unix_socket() {
         let _client = Client::builder().unix_socket("/tmp/test.sock").build();
     }
+
+    fn make_blocking_response(status: u16, body: &[u8]) -> Response {
+        use http_body_util::BodyExt;
+        let hyper_body: crate::error::HyperBody =
+            http_body_util::Full::new(Bytes::from(body.to_vec()))
+                .map_err(|never| match never {})
+                .boxed();
+        let inner_http = http::Response::builder()
+            .status(status)
+            .header("Content-Length", body.len().to_string())
+            .header("X-Test", "value")
+            .body(hyper_body)
+            .unwrap();
+        let inner = crate::Response::new(inner_http, "http://example.com/path".parse().unwrap());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        Response {
+            inner,
+            rt: Arc::new(rt),
+        }
+    }
+
+    #[test]
+    fn response_status() {
+        let resp = make_blocking_response(200, b"");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn response_status_404() {
+        let resp = make_blocking_response(404, b"");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn response_headers() {
+        let resp = make_blocking_response(200, b"");
+        assert_eq!(resp.headers().get("X-Test").unwrap(), "value");
+    }
+
+    #[test]
+    fn response_version() {
+        let resp = make_blocking_response(200, b"");
+        assert_eq!(resp.version(), Version::HTTP_11);
+    }
+
+    #[test]
+    fn response_url() {
+        let resp = make_blocking_response(200, b"");
+        assert_eq!(resp.url().to_string(), "http://example.com/path");
+    }
+
+    #[test]
+    fn response_remote_addr_none() {
+        let resp = make_blocking_response(200, b"");
+        assert!(resp.remote_addr().is_none());
+    }
+
+    #[test]
+    fn response_content_length() {
+        let resp = make_blocking_response(200, b"hello");
+        assert_eq!(resp.content_length(), Some(5));
+    }
+
+    #[test]
+    fn response_tls_info_none() {
+        let resp = make_blocking_response(200, b"");
+        assert!(resp.tls_info().is_none());
+    }
+
+    #[test]
+    fn response_error_for_status_ok() {
+        let resp = make_blocking_response(200, b"");
+        assert!(resp.error_for_status().is_ok());
+    }
+
+    #[test]
+    fn response_error_for_status_4xx() {
+        let resp = make_blocking_response(400, b"");
+        assert!(resp.error_for_status().is_err());
+    }
+
+    #[test]
+    fn response_error_for_status_5xx() {
+        let resp = make_blocking_response(503, b"");
+        assert!(resp.error_for_status().is_err());
+    }
+
+    #[test]
+    fn response_error_for_status_ref_ok() {
+        let resp = make_blocking_response(200, b"");
+        assert!(resp.error_for_status_ref().is_ok());
+    }
+
+    #[test]
+    fn response_error_for_status_ref_err() {
+        let resp = make_blocking_response(500, b"");
+        assert!(resp.error_for_status_ref().is_err());
+    }
+
+    #[test]
+    fn response_bytes() {
+        let resp = make_blocking_response(200, b"hello world");
+        let body = resp.bytes().unwrap();
+        assert_eq!(&body[..], b"hello world");
+    }
+
+    #[test]
+    fn response_text() {
+        let resp = make_blocking_response(200, b"hello text");
+        let text = resp.text().unwrap();
+        assert_eq!(text, "hello text");
+    }
+
+    #[test]
+    fn response_debug() {
+        let resp = make_blocking_response(200, b"");
+        let dbg = format!("{resp:?}");
+        assert!(dbg.contains("Response"));
+        assert!(dbg.contains("200"));
+    }
 }

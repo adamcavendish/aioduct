@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/aioduct-bench"]
+resolver = "3"
+
 [package]
 name = "aioduct"
 version = "0.1.0"
@@ -9,7 +13,7 @@ repository = "https://github.com/adamcavendish/aioduct"
 readme = "README.md"
 keywords = ["http", "client", "async", "hyper", "rustls"]
 categories = ["network-programming", "web-programming::http-client"]
-exclude = ["doc/", "benches/", "tests/", "target/"]
+exclude = ["doc/", "crates/", "tests/", "target/"]
 
 [features]
 default = []
@@ -110,7 +114,7 @@ web-sys = { version = "0.3", optional = true, features = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-hyper = { version = "1", features = ["server", "http1"] }
+hyper = { version = "1", features = ["server", "http1", "http2"] }
 http = "1"
 smol = "2"
 async-io = "2"
@@ -119,12 +123,3 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-util = "0.3"
 flate2 = "1"
-criterion = { version = "0.5", features = ["async_tokio"] }
-reqwest = { version = "0.12", features = ["json", "gzip"] }
-isahc = "1"
-hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
-
-[[bench]]
-name = "comparison"
-harness = false
-required-features = ["tokio"]

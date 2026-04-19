@@ -465,4 +465,149 @@ mod tests {
         let uri: Uri = "http://example.com/".parse().unwrap();
         assert!(settings.proxy_for(&uri).is_none());
     }
+
+    #[test]
+    fn proxy_config_http_invalid_uri() {
+        assert!(ProxyConfig::http("://bad").is_err());
+    }
+
+    #[test]
+    fn proxy_config_socks5_invalid_uri() {
+        assert!(ProxyConfig::socks5("://bad").is_err());
+    }
+
+    #[test]
+    fn proxy_config_socks4_invalid_uri() {
+        assert!(ProxyConfig::socks4("://bad").is_err());
+    }
+
+    #[test]
+    fn proxy_settings_debug() {
+        let settings = ProxySettings::all(ProxyConfig::http("http://p:80").unwrap());
+        let dbg = format!("{settings:?}");
+        assert!(dbg.contains("ProxySettings"));
+        assert!(dbg.contains("http_proxy"));
+        assert!(dbg.contains("https_proxy"));
+        assert!(dbg.contains("no_proxy"));
+    }
+
+    #[test]
+    fn proxy_settings_debug_with_custom() {
+        let settings = ProxySettings::all(ProxyConfig::http("http://p:80").unwrap())
+            .custom(|_: &Uri| None);
+        let dbg = format!("{settings:?}");
+        assert!(dbg.contains("custom"));
+    }
+
+    #[test]
+    fn proxy_for_unknown_scheme_uses_http_proxy() {
+        let settings = ProxySettings::default()
+            .http(ProxyConfig::http("http://http-proxy:80").unwrap())
+            .https(ProxyConfig::http("http://https-proxy:80").unwrap());
+        let uri: Uri = "ftp://example.com/".parse().unwrap();
+        let proxy = settings.proxy_for(&uri).unwrap();
+        assert!(proxy.uri.to_string().contains("http-proxy"));
+    }
+
+    #[test]
+    fn proxy_for_no_host_still_checks_scheme() {
+        let settings = ProxySettings::default()
+            .http(ProxyConfig::http("http://hp:80").unwrap());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let proxy = settings.proxy_for(&uri);
+        assert!(proxy.is_some());
+    }
+
+    #[test]
+    fn env_proxy_socks5() {
+        unsafe { std::env::set_var("TEST_SOCKS5_UPPER", "socks5://proxy:1080") };
+        let result = env_proxy("TEST_SOCKS5_UPPER", "test_socks5_lower");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().scheme, ProxyScheme::Socks5);
+        unsafe { std::env::remove_var("TEST_SOCKS5_UPPER") };
+    }
+
+    #[test]
+    fn env_proxy_socks4() {
+        unsafe { std::env::set_var("TEST_SOCKS4_UPPER", "socks4://proxy:1080") };
+        let result = env_proxy("TEST_SOCKS4_UPPER", "test_socks4_lower");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().scheme, ProxyScheme::Socks4);
+        unsafe { std::env::remove_var("TEST_SOCKS4_UPPER") };
+    }
+
+    #[test]
+    fn env_proxy_socks4a() {
+        unsafe { std::env::set_var("TEST_SOCKS4A_UPPER", "socks4a://proxy:1080") };
+        let result = env_proxy("TEST_SOCKS4A_UPPER", "test_socks4a_lower");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().scheme, ProxyScheme::Socks4);
+        unsafe { std::env::remove_var("TEST_SOCKS4A_UPPER") };
+    }
+
+    #[test]
+    fn env_proxy_http() {
+        unsafe { std::env::set_var("TEST_HTTP_PROXY_UPPER", "http://proxy:8080") };
+        let result = env_proxy("TEST_HTTP_PROXY_UPPER", "test_http_proxy_lower");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().scheme, ProxyScheme::Http);
+        unsafe { std::env::remove_var("TEST_HTTP_PROXY_UPPER") };
+    }
+
+    #[test]
+    fn env_proxy_empty_value() {
+        unsafe { std::env::set_var("TEST_EMPTY_PROXY", "") };
+        let result = env_proxy("TEST_EMPTY_PROXY", "test_empty_proxy_lower");
+        assert!(result.is_none());
+        unsafe { std::env::remove_var("TEST_EMPTY_PROXY") };
+    }
+
+    #[test]
+    fn env_proxy_missing() {
+        unsafe { std::env::remove_var("TEST_MISSING_UPPER") };
+        unsafe { std::env::remove_var("test_missing_lower") };
+        let result = env_proxy("TEST_MISSING_UPPER", "test_missing_lower");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn env_proxy_lowercase_fallback() {
+        unsafe { std::env::remove_var("TEST_LOWER_UPPER") };
+        unsafe { std::env::set_var("test_lower_lower", "http://proxy:80") };
+        let result = env_proxy("TEST_LOWER_UPPER", "test_lower_lower");
+        assert!(result.is_some());
+        unsafe { std::env::remove_var("test_lower_lower") };
+    }
+
+    #[test]
+    fn proxy_config_authority_missing() {
+        let cfg = ProxyConfig {
+            uri: "/just-a-path".parse().unwrap(),
+            scheme: ProxyScheme::Http,
+            auth: None,
+        };
+        assert!(cfg.authority().is_err());
+    }
+
+    #[test]
+    fn proxy_settings_default_is_empty() {
+        let settings = ProxySettings::default();
+        assert!(settings.http_proxy.is_none());
+        assert!(settings.https_proxy.is_none());
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        assert!(settings.proxy_for(&uri).is_none());
+    }
+
+    #[test]
+    fn custom_proxy_trait_with_closure() {
+        let f = |uri: &Uri| -> Option<ProxyConfig> {
+            if uri.host() == Some("proxied.com") {
+                Some(ProxyConfig::http("http://p:80").unwrap())
+            } else {
+                None
+            }
+        };
+        assert!(f.proxy_for(&"http://proxied.com/".parse().unwrap()).is_some());
+        assert!(f.proxy_for(&"http://other.com/".parse().unwrap()).is_none());
+    }
 }

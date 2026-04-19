@@ -89,6 +89,28 @@ coverage-nextest:
     mkdir -p coverage
     cargo llvm-cov nextest --features tokio,json --lcov --output-path coverage/lcov.info
 
+# ---------- Bench ----------
+
+# Run all benchmarks
+bench:
+    cargo bench -p aioduct-bench
+
+# Run a specific benchmark binary (h1, h2, pooling, features, json)
+bench-bin name:
+    cargo bench -p aioduct-bench --bench {{ name }}
+
+# Run a specific benchmark group by name filter
+bench-group group:
+    cargo bench -p aioduct-bench -- {{ group }}
+
+# Run benchmarks and save baseline
+bench-save name:
+    cargo bench -p aioduct-bench -- --save-baseline {{ name }}
+
+# Compare against a saved baseline
+bench-compare baseline:
+    cargo bench -p aioduct-bench -- --baseline {{ baseline }}
+
 # ---------- Docs ----------
 
 # Build and open rustdoc
