@@ -173,11 +173,7 @@ mod tests {
     }
 
     impl TextMapPropagator for TestPropagator {
-        fn inject_context(
-            &self,
-            _cx: &opentelemetry::Context,
-            injector: &mut dyn Injector,
-        ) {
+        fn inject_context(&self, _cx: &opentelemetry::Context, injector: &mut dyn Injector) {
             injector.set(self.header_name, self.header_value.to_string());
         }
 
@@ -279,17 +275,11 @@ mod tests {
     #[test]
     fn error_type_mapping() {
         assert_eq!(error_type(&Error::Timeout), "timeout");
-        assert_eq!(
-            error_type(&Error::Io(std::io::Error::other("test"))),
-            "io"
-        );
+        assert_eq!(error_type(&Error::Io(std::io::Error::other("test"))), "io");
         assert_eq!(error_type(&Error::InvalidUrl("bad".into())), "invalid_url");
         assert_eq!(error_type(&Error::Status(StatusCode::NOT_FOUND)), "status");
         assert_eq!(error_type(&Error::Tls("tls fail".into())), "tls");
-        assert_eq!(
-            error_type(&Error::Other("something else".into())),
-            "other"
-        );
+        assert_eq!(error_type(&Error::Other("something else".into())), "other");
     }
 
     #[test]
