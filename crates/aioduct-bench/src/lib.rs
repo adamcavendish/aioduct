@@ -20,6 +20,7 @@ pub async fn start_http1_server(body: Bytes) -> SocketAddr {
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
             let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
             let body = body.clone();
             tokio::spawn(async move {
@@ -59,10 +60,15 @@ pub async fn start_h2c_server(body: Bytes) -> SocketAddr {
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
             let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
             let body = body.clone();
             tokio::spawn(async move {
-                let _ = server_http2::Builder::new(TokioExec)
+                let mut builder = server_http2::Builder::new(TokioExec);
+                builder
+                    .initial_stream_window_size(2 * 1024 * 1024)
+                    .initial_connection_window_size(4 * 1024 * 1024);
+                let _ = builder
                     .serve_connection(
                         io,
                         service_fn(move |_req: Request<hyper::body::Incoming>| {
@@ -79,12 +85,46 @@ pub async fn start_h2c_server(body: Bytes) -> SocketAddr {
     addr
 }
 
+pub async fn start_h2c_echo_server() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
+            let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+            tokio::spawn(async move {
+                let mut builder = server_http2::Builder::new(TokioExec);
+                builder
+                    .initial_stream_window_size(2 * 1024 * 1024)
+                    .initial_connection_window_size(4 * 1024 * 1024);
+                let _ = builder
+                    .serve_connection(
+                        io,
+                        service_fn(|req: Request<hyper::body::Incoming>| async move {
+                            use http_body_util::BodyExt;
+                            let body = req.into_body().collect().await.unwrap().to_bytes();
+                            let resp = Response::builder()
+                                .header("content-length", body.len())
+                                .body(Full::new(body))
+                                .unwrap();
+                            Ok::<_, Infallible>(resp)
+                        }),
+                    )
+                    .await;
+            });
+        }
+    });
+    addr
+}
+
 pub async fn start_echo_server() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
             let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
             tokio::spawn(async move {
                 let _ = server_http1::Builder::new()
@@ -113,6 +153,7 @@ pub async fn start_sse_server(event_count: usize) -> SocketAddr {
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
             let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
             tokio::spawn(async move {
                 let _ = server_http1::Builder::new()
@@ -147,6 +188,7 @@ pub async fn start_range_server(total_size: usize) -> SocketAddr {
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).unwrap();
             let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
             let data = data.clone();
             tokio::spawn(async move {

@@ -7,21 +7,40 @@ use tokio::runtime::Runtime;
 
 use aioduct_bench::*;
 
+fn make_aioduct_h2_client(rt: &Runtime) -> aioduct::Client<aioduct::runtime::TokioRuntime> {
+    rt.block_on(async {
+        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
+            .http2_prior_knowledge()
+            .http2(
+                aioduct::Http2Config::new()
+                    .initial_stream_window_size(2 * 1024 * 1024)
+                    .initial_connection_window_size(4 * 1024 * 1024)
+                    .max_concurrent_reset_streams(1024),
+            )
+            .build()
+    })
+}
+
+fn make_hyper_util_h2_client(
+) -> hyper_util::client::legacy::Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>
+{
+    hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .http2_only(true)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .http2_initial_stream_window_size(2 * 1024 * 1024)
+        .http2_initial_connection_window_size(4 * 1024 * 1024)
+        .http2_max_concurrent_reset_streams(1024)
+        .build_http::<Full<Bytes>>()
+}
+
 fn bench_h2_get(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let body = Bytes::from(JSON_BODY);
     let addr = rt.block_on(start_h2c_server(body));
     let url = format!("http://{addr}/");
 
-    let aioduct_client = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .http2_prior_knowledge()
-            .build()
-    });
-    let hyper_util_client =
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .http2_only(true)
-            .build_http::<Full<Bytes>>();
+    let aioduct_client = make_aioduct_h2_client(&rt);
+    let hyper_util_client = make_hyper_util_h2_client();
 
     let mut group = c.benchmark_group("h2_get");
     group.bench_function("aioduct", |b| {
@@ -49,15 +68,8 @@ fn bench_h2_download_64k(c: &mut Criterion) {
     let addr = rt.block_on(start_h2c_server(body));
     let url = format!("http://{addr}/");
 
-    let aioduct_client = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .http2_prior_knowledge()
-            .build()
-    });
-    let hyper_util_client =
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .http2_only(true)
-            .build_http::<Full<Bytes>>();
+    let aioduct_client = make_aioduct_h2_client(&rt);
+    let hyper_util_client = make_hyper_util_h2_client();
 
     let mut group = c.benchmark_group("h2_download_64k");
     group.sample_size(50);
@@ -86,11 +98,7 @@ fn bench_h2_download_1m(c: &mut Criterion) {
     let addr = rt.block_on(start_h2c_server(body));
     let url = format!("http://{addr}/");
 
-    let aioduct_client = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .http2_prior_knowledge()
-            .build()
-    });
+    let aioduct_client = make_aioduct_h2_client(&rt);
 
     let mut group = c.benchmark_group("h2_download_1m");
     group.sample_size(30);
@@ -108,11 +116,7 @@ fn bench_h2_concurrent_10(c: &mut Criterion) {
     let addr = rt.block_on(start_h2c_server(body));
     let url = format!("http://{addr}/");
 
-    let aioduct_client = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .http2_prior_knowledge()
-            .build()
-    });
+    let aioduct_client = make_aioduct_h2_client(&rt);
 
     let mut group = c.benchmark_group("h2_concurrent_10");
     group.sample_size(50);
@@ -135,15 +139,10 @@ fn bench_h2_concurrent_10(c: &mut Criterion) {
 
 fn bench_h2_post_4k(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let body = Bytes::from(JSON_BODY);
-    let addr = rt.block_on(start_h2c_server(body));
+    let addr = rt.block_on(start_h2c_echo_server());
     let url = format!("http://{addr}/");
 
-    let aioduct_client = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .http2_prior_knowledge()
-            .build()
-    });
+    let aioduct_client = make_aioduct_h2_client(&rt);
     let payload = Bytes::from(vec![b'x'; 4096]);
 
     let mut group = c.benchmark_group("h2_post_4k");

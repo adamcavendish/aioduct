@@ -41,14 +41,25 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
     let addr = rt.block_on(start_h2c_server(body));
     let url = format!("http://{addr}/");
 
+    let h2_config = aioduct::Http2Config::new()
+        .initial_stream_window_size(2 * 1024 * 1024)
+        .initial_connection_window_size(4 * 1024 * 1024)
+        .max_concurrent_reset_streams(1024);
     let pooled = rt.block_on(async {
         aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
             .http2_prior_knowledge()
+            .http2(h2_config.clone())
             .build()
     });
     let no_pool = rt.block_on(async {
         aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
             .http2_prior_knowledge()
+            .http2(
+                aioduct::Http2Config::new()
+                    .initial_stream_window_size(2 * 1024 * 1024)
+                    .initial_connection_window_size(4 * 1024 * 1024)
+                    .max_concurrent_reset_streams(1024),
+            )
             .no_connection_reuse()
             .build()
     });

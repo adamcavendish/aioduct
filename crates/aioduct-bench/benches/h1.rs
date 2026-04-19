@@ -240,7 +240,9 @@ fn bench_h1_concurrent_50(c: &mut Criterion) {
     let body = Bytes::from(JSON_BODY);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::new();
+        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
+            .pool_max_idle_per_host(100)
+            .build();
         (addr, client)
     });
     let url = format!("http://{addr}/");
