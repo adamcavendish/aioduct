@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http::header::{
-    AUTHORIZATION, COOKIE, HOST, HeaderMap, HeaderValue, LOCATION, PROXY_AUTHORIZATION, REFERER,
-    USER_AGENT,
+    AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, HeaderMap,
+    HeaderValue, LOCATION, PROXY_AUTHORIZATION, REFERER, USER_AGENT,
 };
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
@@ -839,7 +839,8 @@ impl<R: Runtime> Client<R> {
             if let Some(jar) = &self.cookie_jar {
                 if let Some(authority) = current_uri.authority() {
                     let is_secure = current_uri.scheme() == Some(&http::uri::Scheme::HTTPS);
-                    jar.apply_to_request(authority.host(), is_secure, &mut current_headers);
+                    let path = current_uri.path();
+                    jar.apply_to_request(authority.host(), is_secure, path, &mut current_headers);
                 }
             }
 
@@ -1015,6 +1016,9 @@ impl<R: Runtime> Client<R> {
                 StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND | StatusCode::SEE_OTHER => {
                     current_method = Method::GET;
                     current_body = None;
+                    current_headers.remove(CONTENT_TYPE);
+                    current_headers.remove(CONTENT_LENGTH);
+                    current_headers.remove(CONTENT_ENCODING);
                 }
                 StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
                     current_body = body_for_redirect;

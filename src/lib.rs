@@ -66,7 +66,7 @@ pub use body::{BodyStream, RequestBody};
 pub use cache::{CacheConfig, HttpCache};
 pub use chunk_download::ChunkDownload;
 pub use client::Client;
-pub use cookie::CookieJar;
+pub use cookie::{Cookie, CookieJar};
 pub use error::{Error, HyperBody};
 #[cfg(feature = "hickory-dns")]
 pub use hickory::HickoryResolver;

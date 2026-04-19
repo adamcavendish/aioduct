@@ -246,6 +246,7 @@ mod imp {
         body: HyperBody,
         decoder: Option<StreamDecoder>,
         finished: bool,
+        has_data: bool,
     }
 
     impl http_body::Body for DecompressBody {
@@ -263,7 +264,9 @@ mod imp {
             match Pin::new(&mut self.body).poll_frame(cx) {
                 Poll::Ready(Some(Ok(frame))) => {
                     if let Ok(data) = frame.into_data() {
-                        if let Some(decoder) = &mut self.decoder {
+                        if self.decoder.is_some() {
+                            self.has_data = true;
+                            let decoder = self.decoder.as_mut().unwrap();
                             if let Err(e) = decoder.write_chunk(&data) {
                                 self.finished = true;
                                 return Poll::Ready(Some(Err(e)));
@@ -289,6 +292,9 @@ mod imp {
                 Poll::Ready(None) => {
                     self.finished = true;
                     if let Some(decoder) = self.decoder.take() {
+                        if !self.has_data {
+                            return Poll::Ready(None);
+                        }
                         match decoder.finish() {
                             Ok(remaining) if !remaining.is_empty() => Poll::Ready(Some(Ok(
                                 hyper::body::Frame::data(Bytes::from(remaining)),
@@ -338,6 +344,7 @@ mod imp {
                     body,
                     decoder: Some(decoder),
                     finished: false,
+                    has_data: false,
                 };
                 decompress.boxed()
             }
