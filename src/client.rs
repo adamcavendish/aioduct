@@ -54,6 +54,7 @@ pub struct Client<R: Runtime> {
     resolver: Option<Arc<dyn Resolve>>,
     http2: Option<Http2Config>,
     middleware: MiddlewareStack,
+    rate_limiter: Option<crate::throttle::RateLimiter>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -91,6 +92,7 @@ impl<R: Runtime> Clone for Client<R> {
             resolver: self.resolver.clone(),
             http2: self.http2.clone(),
             middleware: self.middleware.clone(),
+            rate_limiter: self.rate_limiter.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(feature = "http3")]
@@ -130,6 +132,7 @@ pub struct ClientBuilder<R: Runtime> {
     resolver: Option<Arc<dyn Resolve>>,
     http2: Option<Http2Config>,
     middleware: MiddlewareStack,
+    rate_limiter: Option<crate::throttle::RateLimiter>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "rustls")]
@@ -183,6 +186,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             resolver: None,
             http2: None,
             middleware: MiddlewareStack::new(),
+            rate_limiter: None,
             #[cfg(feature = "rustls")]
             tls: None,
             #[cfg(feature = "rustls")]
@@ -377,6 +381,12 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Add a middleware layer that can inspect or modify requests and responses.
     pub fn middleware(mut self, middleware: impl Middleware) -> Self {
         self.middleware.push(Arc::new(middleware));
+        self
+    }
+
+    /// Set a rate limiter to throttle outgoing requests.
+    pub fn rate_limiter(mut self, limiter: crate::throttle::RateLimiter) -> Self {
+        self.rate_limiter = Some(limiter);
         self
     }
 
@@ -602,6 +612,7 @@ impl<R: Runtime> ClientBuilder<R> {
             resolver: self.resolver,
             http2: self.http2,
             middleware: self.middleware,
+            rate_limiter: self.rate_limiter,
             #[cfg(feature = "rustls")]
             tls,
             #[cfg(feature = "http3")]
@@ -919,6 +930,13 @@ impl<R: Runtime> Client<R> {
         request: http::Request<HyperBody>,
         original_uri: &Uri,
     ) -> Result<Response> {
+        if let Some(ref limiter) = self.rate_limiter {
+            while !limiter.try_acquire() {
+                let wait = limiter.wait_duration();
+                R::sleep(wait).await;
+            }
+        }
+
         let scheme = original_uri
             .scheme()
             .ok_or_else(|| Error::InvalidUrl("missing scheme".into()))?;
@@ -1081,6 +1099,19 @@ impl<R: Runtime> Client<R> {
                 .port_u16()
                 .unwrap_or(if is_https { 443 } else { 80 });
             crate::socks5::socks5_handshake(&mut tcp_stream, host, port, proxy.auth.as_ref())
+                .await
+                .map_err(Error::Io)?;
+            if is_https {
+                self.connect_tls(tcp_stream, host).await
+            } else {
+                self.connect_h1(tcp_stream).await
+            }
+        } else if proxy.scheme == crate::proxy::ProxyScheme::Socks4 {
+            let host = target_authority.host();
+            let port = target_authority
+                .port_u16()
+                .unwrap_or(if is_https { 443 } else { 80 });
+            crate::socks4::socks4a_handshake(&mut tcp_stream, host, port, proxy.auth.as_ref())
                 .await
                 .map_err(Error::Io)?;
             if is_https {

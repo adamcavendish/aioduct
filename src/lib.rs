@@ -26,7 +26,9 @@ pub mod tls;
 mod decompress;
 pub mod http2;
 pub mod middleware;
+mod socks4;
 mod socks5;
+pub mod throttle;
 pub mod upgrade;
 
 #[cfg(feature = "http3")]
@@ -48,6 +50,7 @@ pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;
 pub use response::Response;
 pub use retry::{RetryBudget, RetryConfig};
+pub use throttle::RateLimiter;
 pub use runtime::{Resolve, Runtime};
 pub use sse::{SseEvent, SseStream};
 pub use upgrade::Upgraded;

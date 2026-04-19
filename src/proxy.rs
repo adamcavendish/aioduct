@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProxyScheme {
     Http,
+    Socks4,
     Socks5,
 }
 
@@ -55,6 +56,24 @@ impl ProxyConfig {
         })
     }
 
+    /// Create a proxy config from a `socks4://` or `socks4a://` URI.
+    pub fn socks4(uri: &str) -> Result<Self> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        match uri.scheme_str() {
+            Some("socks4") | Some("socks4a") => {}
+            _ => {
+                return Err(Error::InvalidUrl(
+                    "SOCKS4 proxy URI must use socks4:// or socks4a:// scheme".into(),
+                ));
+            }
+        }
+        Ok(Self {
+            uri,
+            scheme: ProxyScheme::Socks4,
+            auth: None,
+        })
+    }
+
     /// Set basic authentication credentials for the proxy.
     pub fn basic_auth(mut self, username: &str, password: &str) -> Self {
         self.auth = Some(ProxyAuth {
@@ -73,6 +92,7 @@ impl ProxyConfig {
     pub(crate) fn default_port(&self) -> u16 {
         match self.scheme {
             ProxyScheme::Http => 80,
+            ProxyScheme::Socks4 => 1080,
             ProxyScheme::Socks5 => 1080,
         }
     }
@@ -240,6 +260,8 @@ fn env_proxy(upper: &str, lower: &str) -> Option<ProxyConfig> {
     }
     if val.starts_with("socks5://") {
         ProxyConfig::socks5(&val).ok()
+    } else if val.starts_with("socks4://") || val.starts_with("socks4a://") {
+        ProxyConfig::socks4(&val).ok()
     } else {
         ProxyConfig::http(&val).ok()
     }
