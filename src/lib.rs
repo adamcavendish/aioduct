@@ -24,6 +24,8 @@ mod timeout;
 pub mod tls;
 
 mod decompress;
+#[cfg(feature = "hickory-dns")]
+pub mod hickory;
 pub mod http2;
 pub mod middleware;
 mod socks4;
@@ -52,6 +54,8 @@ pub use response::Response;
 pub use retry::{RetryBudget, RetryConfig};
 pub use throttle::RateLimiter;
 pub use runtime::{Resolve, Runtime};
+#[cfg(feature = "hickory-dns")]
+pub use hickory::HickoryResolver;
 pub use sse::{SseEvent, SseStream};
 pub use upgrade::Upgraded;
 
