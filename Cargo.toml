@@ -33,6 +33,7 @@ pin-project-lite = "0.2"
 thiserror = "2"
 base64 = "0.22"
 percent-encoding = "2"
+socket2 = { version = "0.5", features = ["all"] }
 
 # JSON
 serde = { version = "1", optional = true }

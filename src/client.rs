@@ -30,6 +30,7 @@ pub struct Client<R: Runtime> {
     redirect_policy: RedirectPolicy,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    tcp_keepalive: Option<Duration>,
     https_only: bool,
     accept_encoding: crate::decompress::AcceptEncoding,
     default_headers: HeaderMap,
@@ -55,6 +56,7 @@ impl<R: Runtime> Clone for Client<R> {
             redirect_policy: self.redirect_policy.clone(),
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            tcp_keepalive: self.tcp_keepalive,
             https_only: self.https_only,
             accept_encoding: self.accept_encoding.clone(),
             default_headers: self.default_headers.clone(),
@@ -82,6 +84,7 @@ pub struct ClientBuilder<R: Runtime> {
     redirect_policy: RedirectPolicy,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    tcp_keepalive: Option<Duration>,
     https_only: bool,
     accept_encoding: crate::decompress::AcceptEncoding,
     default_headers: HeaderMap,
@@ -109,6 +112,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             redirect_policy: RedirectPolicy::default(),
             timeout: None,
             connect_timeout: None,
+            tcp_keepalive: None,
             https_only: false,
             accept_encoding: crate::decompress::AcceptEncoding::default(),
             default_headers,
@@ -161,6 +165,12 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Set a timeout for establishing connections (TCP + TLS handshake).
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = Some(timeout);
+        self
+    }
+
+    /// Enable TCP keepalive with the given interval.
+    pub fn tcp_keepalive(mut self, interval: Duration) -> Self {
+        self.tcp_keepalive = Some(interval);
         self
     }
 
@@ -284,6 +294,7 @@ impl<R: Runtime> ClientBuilder<R> {
             redirect_policy: self.redirect_policy,
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            tcp_keepalive: self.tcp_keepalive,
             https_only: self.https_only,
             accept_encoding: self.accept_encoding,
             default_headers: self.default_headers,
@@ -637,8 +648,12 @@ impl<R: Runtime> Client<R> {
             let default_port = if is_https { 443 } else { 80 };
             let addr = self.resolve_authority(authority, default_port).await?;
 
+            let tcp_keepalive = self.tcp_keepalive;
             let connect_fut = async {
                 let tcp_stream = R::connect(addr).await?;
+                if let Some(interval) = tcp_keepalive {
+                    R::set_tcp_keepalive(&tcp_stream, interval)?;
+                }
                 if is_https {
                     self.connect_tls(tcp_stream, authority.host()).await
                 } else {
@@ -676,6 +691,9 @@ impl<R: Runtime> Client<R> {
             .resolve_authority(proxy_authority, default_port)
             .await?;
         let tcp_stream = R::connect(proxy_addr).await?;
+        if let Some(interval) = self.tcp_keepalive {
+            R::set_tcp_keepalive(&tcp_stream, interval)?;
+        }
 
         if is_https {
             self.connect_tunnel(tcp_stream, proxy, target_authority)

@@ -2042,3 +2042,21 @@ async fn test_custom_resolver() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
+
+#[tokio::test]
+async fn test_tcp_keepalive() {
+    let addr = start_server().await;
+    let client = Client::<TokioRuntime>::builder()
+        .tcp_keepalive(Duration::from_secs(60))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}

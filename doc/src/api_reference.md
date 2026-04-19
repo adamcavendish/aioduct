@@ -47,6 +47,7 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 |-------------------------|-------------|--------------------------------------|
 | `timeout(Duration)`     | None        | Default timeout for all requests     |
 | `connect_timeout(Duration)` | None   | Timeout for TCP connect + TLS handshake |
+| `tcp_keepalive(Duration)` | None     | Enable TCP keepalive with given interval |
 | `max_redirects(usize)`  | 10          | Maximum redirect hops (0 = disabled) |
 | `https_only(bool)`      | false       | Reject non-HTTPS URLs                |
 | `pool_idle_timeout(Duration)` | 90s  | Idle connection lifetime             |

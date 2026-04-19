@@ -17,6 +17,10 @@ pub trait Runtime: Send + Sync + 'static {
     fn spawn<F>(future: F)
     where
         F: Future<Output = ()> + Send + 'static;
+
+    fn set_tcp_keepalive(_stream: &Self::TcpStream, _interval: Duration) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Custom DNS resolver trait.
