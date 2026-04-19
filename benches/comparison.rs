@@ -243,9 +243,7 @@ fn bench_json_parse(c: &mut Criterion) {
             let url = url.clone();
             async move {
                 let mut resp = client.get_async(&url).await.unwrap();
-                let bytes = isahc::AsyncReadResponseExt::bytes(&mut resp)
-                    .await
-                    .unwrap();
+                let bytes = isahc::AsyncReadResponseExt::bytes(&mut resp).await.unwrap();
                 serde_json::from_slice::<Msg>(&bytes).unwrap()
             }
         });
