@@ -78,7 +78,12 @@ impl Runtime for SmolRuntime {
         sock_ref.set_tcp_keepalive(&keepalive)
     }
 
-    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
+    #[cfg(target_os = "linux")]
+    fn bind_device(stream: &Self::TcpStream, interface: &str) -> io::Result<()> {
+        use socket2::SockRef;
+        let sock_ref = SockRef::from(stream.inner());
+        sock_ref.bind_device(Some(interface.as_bytes()))
+    }(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
         stream.set_nonblocking(true)?;
         stream.set_nodelay(true)?;
         let async_stream = smol::net::TcpStream::try_from(stream)?;

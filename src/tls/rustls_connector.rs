@@ -131,6 +131,59 @@ impl RustlsConnector {
         Self::new(Arc::new(config))
     }
 
+    /// Build a connector with full configuration options including CRLs and hostname override.
+    pub(crate) fn build_configured(
+        root_store: rustls::RootCertStore,
+        versions: &[&'static rustls::SupportedProtocolVersion],
+        crls: Vec<rustls::pki_types::CertificateRevocationListDer<'static>>,
+        skip_hostname_verification: bool,
+        identity: Option<(
+            Vec<rustls::pki_types::CertificateDer<'static>>,
+            rustls::pki_types::PrivateKeyDer<'static>,
+        )>,
+    ) -> std::result::Result<Self, io::Error> {
+        if !crls.is_empty() || skip_hostname_verification {
+            let mut server_verifier_builder =
+                rustls::client::WebPkiServerVerifier::builder(Arc::new(root_store));
+            if !crls.is_empty() {
+                server_verifier_builder = server_verifier_builder.with_crls(crls);
+            }
+            let verifier = server_verifier_builder
+                .build()
+                .map_err(io::Error::other)?;
+
+            let verifier: Arc<dyn rustls::client::danger::ServerCertVerifier> =
+                if skip_hostname_verification {
+                    Arc::new(NoHostnameVerifier { inner: verifier })
+                } else {
+                    verifier
+                };
+
+            let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+                .dangerous()
+                .with_custom_certificate_verifier(verifier);
+
+            let config = match identity {
+                Some((certs, key)) => config
+                    .with_client_auth_cert(certs, key)
+                    .map_err(io::Error::other)?,
+                None => config.with_no_client_auth(),
+            };
+            Ok(Self::new(Arc::new(config)))
+        } else {
+            let builder = rustls::ClientConfig::builder_with_protocol_versions(versions)
+                .with_root_certificates(root_store);
+
+            let config = match identity {
+                Some((certs, key)) => builder
+                    .with_client_auth_cert(certs, key)
+                    .map_err(io::Error::other)?,
+                None => builder.with_no_client_auth(),
+            };
+            Ok(Self::new(Arc::new(config)))
+        }
+    }
+
     /// Get the ALPN protocol negotiated during the TLS handshake.
     pub fn negotiated_protocol(tls_conn: &rustls::ClientConnection) -> Option<AlpnProtocol> {
         tls_conn.alpn_protocol().and_then(|proto| {
@@ -189,6 +242,11 @@ impl<S> TlsStream<S> {
     /// Get a reference to the underlying rustls connection.
     pub fn tls_connection(&self) -> &rustls::ClientConnection {
         &self.tls
+    }
+
+    /// Extract TLS handshake info (peer certificate, etc.).
+    pub fn tls_info(&self) -> super::TlsInfo {
+        super::TlsInfo::from_rustls(&self.tls)
     }
 }
 
@@ -398,5 +456,54 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
         rustls::crypto::CryptoProvider::get_default()
             .map(|p| p.signature_verification_algorithms.supported_schemes())
             .unwrap_or_default()
+    }
+}
+
+#[derive(Debug)]
+struct NoHostnameVerifier {
+    inner: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        match self
+            .inner
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+        {
+            Ok(v) => Ok(v),
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName,
+            )) => Ok(rustls::client::danger::ServerCertVerified::assertion()),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
     }
 }

@@ -77,6 +77,13 @@ impl Runtime for TokioRuntime {
         sock_ref.set_tcp_keepalive(&keepalive)
     }
 
+    #[cfg(target_os = "linux")]
+    fn bind_device(stream: &Self::TcpStream, interface: &str) -> io::Result<()> {
+        use socket2::SockRef;
+        let sock_ref = SockRef::from(stream.inner());
+        sock_ref.bind_device(Some(interface.as_bytes()))
+    }
+
     fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
         stream.set_nonblocking(true)?;
         stream.set_nodelay(true)?;

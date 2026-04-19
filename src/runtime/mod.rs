@@ -27,6 +27,14 @@ pub trait Runtime: Send + Sync + 'static {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    fn bind_device(_stream: &Self::TcpStream, _interface: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "interface binding not supported by this runtime",
+        ))
+    }
+
     fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream>;
 
     fn connect_bound(

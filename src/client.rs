@@ -40,6 +40,8 @@ pub struct Client<R: Runtime> {
     tcp_keepalive_interval: Option<Duration>,
     tcp_keepalive_retries: Option<u32>,
     local_address: Option<IpAddr>,
+    #[cfg(target_os = "linux")]
+    interface: Option<String>,
     https_only: bool,
     referer: bool,
     no_connection_reuse: bool,
@@ -75,6 +77,8 @@ impl<R: Runtime> Clone for Client<R> {
             tcp_keepalive_interval: self.tcp_keepalive_interval,
             tcp_keepalive_retries: self.tcp_keepalive_retries,
             local_address: self.local_address,
+            #[cfg(target_os = "linux")]
+            interface: self.interface.clone(),
             https_only: self.https_only,
             referer: self.referer,
             no_connection_reuse: self.no_connection_reuse,
@@ -114,6 +118,8 @@ pub struct ClientBuilder<R: Runtime> {
     tcp_keepalive_interval: Option<Duration>,
     tcp_keepalive_retries: Option<u32>,
     local_address: Option<IpAddr>,
+    #[cfg(target_os = "linux")]
+    interface: Option<String>,
     https_only: bool,
     referer: bool,
     accept_encoding: crate::decompress::AcceptEncoding,
@@ -136,6 +142,10 @@ pub struct ClientBuilder<R: Runtime> {
     extra_root_certs: Vec<crate::tls::Certificate>,
     #[cfg(feature = "rustls")]
     client_identity: Option<crate::tls::Identity>,
+    #[cfg(feature = "rustls")]
+    crls: Vec<crate::tls::CertificateRevocationList>,
+    #[cfg(feature = "rustls")]
+    danger_accept_invalid_hostnames: bool,
     #[cfg(feature = "http3")]
     h3_endpoint: Option<quinn::Endpoint>,
     #[cfg(feature = "http3")]
@@ -161,6 +171,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             tcp_keepalive_interval: None,
             tcp_keepalive_retries: None,
             local_address: None,
+            #[cfg(target_os = "linux")]
+            interface: None,
             https_only: false,
             referer: false,
             accept_encoding: crate::decompress::AcceptEncoding::default(),
@@ -183,6 +195,10 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             extra_root_certs: Vec::new(),
             #[cfg(feature = "rustls")]
             client_identity: None,
+            #[cfg(feature = "rustls")]
+            crls: Vec::new(),
+            #[cfg(feature = "rustls")]
+            danger_accept_invalid_hostnames: false,
             #[cfg(feature = "http3")]
             h3_endpoint: None,
             #[cfg(feature = "http3")]
@@ -256,6 +272,13 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Bind outgoing connections to a specific local IP address.
     pub fn local_address(mut self, addr: IpAddr) -> Self {
         self.local_address = Some(addr);
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    /// Bind outgoing connections to a specific network interface (Linux only).
+    pub fn interface(mut self, name: impl Into<String>) -> Self {
+        self.interface = Some(name.into());
         self
     }
 
@@ -409,6 +432,26 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    #[cfg(feature = "rustls")]
+    /// Add certificate revocation lists for TLS revocation checking.
+    pub fn add_crls(
+        mut self,
+        crls: impl IntoIterator<Item = crate::tls::CertificateRevocationList>,
+    ) -> Self {
+        self.crls.extend(crls);
+        self
+    }
+
+    #[cfg(feature = "rustls")]
+    /// Accept TLS certificates with mismatched hostnames (INSECURE — testing only).
+    ///
+    /// This is separate from `danger_accept_invalid_certs`: the certificate chain
+    /// is still validated, but hostname verification is skipped.
+    pub fn danger_accept_invalid_hostnames(mut self, accept: bool) -> Self {
+        self.danger_accept_invalid_hostnames = accept;
+        self
+    }
+
     #[cfg(feature = "http3")]
     /// Enable or disable HTTP/3 for all HTTPS requests.
     pub fn http3(mut self, enable: bool) -> Self {
@@ -463,56 +506,68 @@ impl<R: Runtime> ClientBuilder<R> {
                 self.min_tls_version.is_some() || self.max_tls_version.is_some();
             let has_extra_config =
                 !self.extra_root_certs.is_empty() || self.client_identity.is_some();
+            let has_crls = !self.crls.is_empty();
+            let needs_configured =
+                has_crls || self.danger_accept_invalid_hostnames;
             let needs_sni_update = self.tls_sni == Some(false);
 
-            let mut connector =
-                if self.tls.is_some() && !has_version_constraints && !has_extra_config {
-                    self.tls
-                } else if self.tls.is_some() && !has_extra_config {
-                    let versions =
-                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version);
-                    let old = self.tls.unwrap();
-                    let old_config = old.config();
-                    let mut new_config =
-                        rustls::ClientConfig::builder_with_protocol_versions(&versions)
-                            .with_root_certificates(rustls::RootCertStore::empty())
-                            .with_no_client_auth();
-                    new_config.alpn_protocols = old_config.alpn_protocols.clone();
-                    new_config.enable_sni = old_config.enable_sni;
-                    Some(Arc::new(crate::tls::RustlsConnector::new(Arc::new(
-                        new_config,
-                    ))))
-                } else if has_extra_config || has_version_constraints {
-                    let versions: Vec<&'static rustls::SupportedProtocolVersion> =
-                        if has_version_constraints {
-                            TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)
-                        } else {
-                            vec![&rustls::version::TLS12, &rustls::version::TLS13]
-                        };
-                    let connector = if let Some(identity) = self.client_identity {
-                        crate::tls::RustlsConnector::with_identity_versioned(
-                            &self.extra_root_certs,
-                            identity,
-                            &versions,
-                        )
-                        .ok()
-                        .map(Arc::new)
-                    } else if !self.extra_root_certs.is_empty() {
-                        Some(Arc::new(
-                            crate::tls::RustlsConnector::with_extra_roots_versioned(
-                                &self.extra_root_certs,
-                                &versions,
-                            ),
-                        ))
+            let mut connector = if self.tls.is_some()
+                && !has_version_constraints
+                && !has_extra_config
+                && !needs_configured
+            {
+                self.tls
+            } else if needs_configured || has_extra_config || has_version_constraints {
+                let versions: Vec<&'static rustls::SupportedProtocolVersion> =
+                    if has_version_constraints {
+                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)
                     } else {
-                        Some(Arc::new(
-                            crate::tls::RustlsConnector::with_webpki_roots_versioned(&versions),
-                        ))
+                        vec![&rustls::version::TLS12, &rustls::version::TLS13]
                     };
-                    connector.or(self.tls)
+
+                if needs_configured {
+                    let mut root_store = rustls::RootCertStore::from_iter(
+                        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+                    );
+                    for cert in &self.extra_root_certs {
+                        let _ = root_store.add(cert.der.clone());
+                    }
+                    let crls: Vec<_> = self.crls.into_iter().map(|c| c.der).collect();
+                    let identity = self.client_identity.map(|id| (id.certs, id.key));
+                    crate::tls::RustlsConnector::build_configured(
+                        root_store,
+                        &versions,
+                        crls,
+                        self.danger_accept_invalid_hostnames,
+                        identity,
+                    )
+                    .ok()
+                    .map(Arc::new)
+                    .or(self.tls)
+                } else if let Some(identity) = self.client_identity {
+                    crate::tls::RustlsConnector::with_identity_versioned(
+                        &self.extra_root_certs,
+                        identity,
+                        &versions,
+                    )
+                    .ok()
+                    .map(Arc::new)
+                    .or(self.tls)
+                } else if !self.extra_root_certs.is_empty() {
+                    Some(Arc::new(
+                        crate::tls::RustlsConnector::with_extra_roots_versioned(
+                            &self.extra_root_certs,
+                            &versions,
+                        ),
+                    ))
                 } else {
-                    self.tls
-                };
+                    Some(Arc::new(
+                        crate::tls::RustlsConnector::with_webpki_roots_versioned(&versions),
+                    ))
+                }
+            } else {
+                self.tls
+            };
 
             if needs_sni_update {
                 if let Some(ref mut c) = connector {
@@ -533,6 +588,8 @@ impl<R: Runtime> ClientBuilder<R> {
             tcp_keepalive_interval: self.tcp_keepalive_interval,
             tcp_keepalive_retries: self.tcp_keepalive_retries,
             local_address: self.local_address,
+            #[cfg(target_os = "linux")]
+            interface: self.interface,
             https_only: self.https_only,
             referer: self.referer,
             no_connection_reuse: self.no_connection_reuse,
@@ -878,6 +935,7 @@ impl<R: Runtime> Client<R> {
                 let mut resp =
                     Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
                 resp.set_remote_addr(conn.remote_addr);
+                resp.set_tls_info(conn.tls_info.clone());
                 if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                     self.pool.checkin(pool_key, conn);
                 }
@@ -909,6 +967,7 @@ impl<R: Runtime> Client<R> {
                         Self::send_on_connection(&mut pooled, request, original_uri.clone())
                             .await?;
                     resp.set_remote_addr(pooled.remote_addr);
+                    resp.set_tls_info(pooled.tls_info.clone());
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                         self.pool.checkin(pool_key, pooled);
                     }
@@ -922,7 +981,7 @@ impl<R: Runtime> Client<R> {
             .as_ref()
             .and_then(|settings| settings.proxy_for(original_uri));
 
-        let mut pooled = if let Some(proxy) = proxy {
+        let mut pooled = if let Some(ref proxy) = proxy {
             self.connect_via_proxy(proxy, authority, is_https).await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
@@ -932,6 +991,8 @@ impl<R: Runtime> Client<R> {
             let tcp_keepalive_interval = self.tcp_keepalive_interval;
             let tcp_keepalive_retries = self.tcp_keepalive_retries;
             let local_address = self.local_address;
+            #[cfg(target_os = "linux")]
+            let interface = self.interface.as_deref();
             let connect_fut = async {
                 let tcp_stream = if let Some(local_addr) = local_address {
                     R::connect_bound(addr, local_addr)
@@ -940,6 +1001,10 @@ impl<R: Runtime> Client<R> {
                 } else {
                     R::connect(addr).await?
                 };
+                #[cfg(target_os = "linux")]
+                if let Some(iface) = interface {
+                    R::bind_device(&tcp_stream, iface)?;
+                }
                 if let Some(time) = tcp_keepalive {
                     R::set_tcp_keepalive(
                         &tcp_stream,
@@ -971,6 +1036,7 @@ impl<R: Runtime> Client<R> {
 
         let mut resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
         resp.set_remote_addr(pooled.remote_addr);
+        resp.set_tls_info(pooled.tls_info.clone());
         if !self.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
             self.pool.checkin(pool_key, pooled);
         }
@@ -996,6 +1062,10 @@ impl<R: Runtime> Client<R> {
         } else {
             R::connect(proxy_addr).await?
         };
+        #[cfg(target_os = "linux")]
+        if let Some(ref iface) = self.interface {
+            R::bind_device(&tcp_stream, iface)?;
+        }
         if let Some(time) = self.tcp_keepalive {
             R::set_tcp_keepalive(
                 &tcp_stream,
@@ -1177,6 +1247,7 @@ impl<R: Runtime> Client<R> {
         .map_err(|e| Error::Tls(Box::new(e)))?;
 
         let alpn = crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
+        let tls_info = tls_stream.tls_info();
 
         match alpn {
             Some(crate::tls::AlpnProtocol::H2) => {
@@ -1218,14 +1289,18 @@ impl<R: Runtime> Client<R> {
                 R::spawn(async move {
                     let _ = conn.await;
                 });
-                Ok(PooledConnection::new_h2(sender))
+                let mut pooled = PooledConnection::new_h2(sender);
+                pooled.tls_info = Some(tls_info);
+                Ok(pooled)
             }
             _ => {
                 let (sender, conn) = hyper::client::conn::http1::handshake(tls_stream).await?;
                 R::spawn(async move {
                     let _ = conn.await;
                 });
-                Ok(PooledConnection::new_h1(sender))
+                let mut pooled = PooledConnection::new_h1(sender);
+                pooled.tls_info = Some(tls_info);
+                Ok(pooled)
             }
         }
     }

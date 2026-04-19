@@ -51,6 +51,30 @@ impl TlsVersion {
     }
 }
 
+/// Information about the TLS connection, available after handshake.
+#[derive(Debug, Clone)]
+pub struct TlsInfo {
+    peer_certificate: Option<Vec<u8>>,
+}
+
+impl TlsInfo {
+    /// DER-encoded peer (server) certificate, if available.
+    pub fn peer_certificate(&self) -> Option<&[u8]> {
+        self.peer_certificate.as_deref()
+    }
+}
+
+#[cfg(feature = "rustls")]
+impl TlsInfo {
+    pub(crate) fn from_rustls(conn: &rustls::ClientConnection) -> Self {
+        let peer_certificate = conn
+            .peer_certificates()
+            .and_then(|certs| certs.first())
+            .map(|c| c.as_ref().to_vec());
+        Self { peer_certificate }
+    }
+}
+
 /// Async TLS handshake abstraction.
 pub trait TlsConnect<R: Runtime>: Send + Sync + 'static {
     type Stream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
@@ -106,5 +130,30 @@ impl Identity {
             io::Error::new(io::ErrorKind::InvalidData, "no private key found in PEM")
         })?;
         Ok(Self { certs, key })
+    }
+}
+
+#[cfg(feature = "rustls")]
+/// A certificate revocation list (CRL) for revocation checking.
+#[derive(Clone)]
+pub struct CertificateRevocationList {
+    pub(crate) der: rustls::pki_types::CertificateRevocationListDer<'static>,
+}
+
+#[cfg(feature = "rustls")]
+impl CertificateRevocationList {
+    /// Create a CRL from DER-encoded bytes.
+    pub fn from_der(der: Vec<u8>) -> Self {
+        Self {
+            der: rustls::pki_types::CertificateRevocationListDer::from(der),
+        }
+    }
+
+    /// Create one or more CRLs from PEM-encoded bytes.
+    pub fn from_pem(pem: &[u8]) -> io::Result<Vec<Self>> {
+        let mut reader = io::BufReader::new(pem);
+        let crls =
+            rustls_pemfile::crls(&mut reader).collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(crls.into_iter().map(|der| Self { der }).collect())
     }
 }

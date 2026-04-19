@@ -12,6 +12,7 @@ pub struct Response {
     inner: http::Response<HyperBody>,
     url: Uri,
     remote_addr: Option<SocketAddr>,
+    tls_info: Option<crate::tls::TlsInfo>,
 }
 
 impl std::fmt::Debug for Response {
@@ -30,11 +31,16 @@ impl Response {
             inner,
             url,
             remote_addr: None,
+            tls_info: None,
         }
     }
 
     pub(crate) fn set_remote_addr(&mut self, addr: Option<SocketAddr>) {
         self.remote_addr = addr;
+    }
+
+    pub(crate) fn set_tls_info(&mut self, info: Option<crate::tls::TlsInfo>) {
+        self.tls_info = info;
     }
 
     pub(crate) fn inner_mut(&mut self) -> &mut http::Response<HyperBody> {
@@ -48,6 +54,7 @@ impl Response {
             inner: http::Response::from_parts(parts, body),
             url: self.url,
             remote_addr: self.remote_addr,
+            tls_info: self.tls_info,
         }
     }
 
@@ -63,6 +70,7 @@ impl Response {
             inner: http::Response::from_parts(parts, boxed),
             url: self.url,
             remote_addr: self.remote_addr,
+            tls_info: self.tls_info,
         }
     }
 
@@ -74,6 +82,11 @@ impl Response {
     /// Returns the remote socket address of the server.
     pub fn remote_addr(&self) -> Option<SocketAddr> {
         self.remote_addr
+    }
+
+    /// Returns TLS handshake info (peer certificate), if the connection used TLS.
+    pub fn tls_info(&self) -> Option<&crate::tls::TlsInfo> {
+        self.tls_info.as_ref()
     }
 
     /// Returns the HTTP status code.

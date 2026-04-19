@@ -47,12 +47,13 @@ pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;
 pub use response::Response;
-pub use retry::RetryConfig;
+pub use retry::{RetryBudget, RetryConfig};
 pub use runtime::{Resolve, Runtime};
 pub use sse::{SseEvent, SseStream};
 pub use upgrade::Upgraded;
 
 pub use tls::TlsVersion;
+pub use tls::TlsInfo;
 #[cfg(feature = "rustls")]
 pub use tls::{Certificate, Identity};
 

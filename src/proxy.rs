@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use http::Uri;
 
 use crate::error::{Error, Result};
@@ -86,11 +88,23 @@ impl ProxyConfig {
 }
 
 /// Proxy settings with separate HTTP/HTTPS proxies and bypass rules.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct ProxySettings {
     pub(crate) http_proxy: Option<ProxyConfig>,
     pub(crate) https_proxy: Option<ProxyConfig>,
     pub(crate) no_proxy: NoProxy,
+    pub(crate) custom: Option<Arc<dyn CustomProxy>>,
+}
+
+impl std::fmt::Debug for ProxySettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxySettings")
+            .field("http_proxy", &self.http_proxy)
+            .field("https_proxy", &self.https_proxy)
+            .field("no_proxy", &self.no_proxy)
+            .field("custom", &self.custom.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl ProxySettings {
@@ -106,6 +120,7 @@ impl ProxySettings {
             http_proxy,
             https_proxy,
             no_proxy,
+            custom: None,
         }
     }
 
@@ -115,6 +130,7 @@ impl ProxySettings {
             http_proxy: Some(proxy.clone()),
             https_proxy: Some(proxy),
             no_proxy: NoProxy::default(),
+            custom: None,
         }
     }
 
@@ -136,15 +152,28 @@ impl ProxySettings {
         self
     }
 
-    pub(crate) fn proxy_for(&self, uri: &Uri) -> Option<&ProxyConfig> {
+    /// Set a custom proxy selection function.
+    ///
+    /// The closure receives the request URI and returns `Some(ProxyConfig)` to
+    /// proxy through the given server, or `None` for a direct connection.
+    /// This takes priority over `http`/`https` proxy settings.
+    pub fn custom(mut self, f: impl Fn(&Uri) -> Option<ProxyConfig> + Send + Sync + 'static) -> Self {
+        self.custom = Some(Arc::new(f));
+        self
+    }
+
+    pub(crate) fn proxy_for(&self, uri: &Uri) -> Option<ProxyConfig> {
+        if let Some(ref custom) = self.custom {
+            return custom.proxy_for(uri);
+        }
         if let Some(host) = uri.host() {
             if self.no_proxy.matches(host) {
                 return None;
             }
         }
         match uri.scheme_str() {
-            Some("https") => self.https_proxy.as_ref(),
-            _ => self.http_proxy.as_ref(),
+            Some("https") => self.https_proxy.clone(),
+            _ => self.http_proxy.clone(),
         }
     }
 }
@@ -213,5 +242,20 @@ fn env_proxy(upper: &str, lower: &str) -> Option<ProxyConfig> {
         ProxyConfig::socks5(&val).ok()
     } else {
         ProxyConfig::http(&val).ok()
+    }
+}
+
+/// Trait for custom proxy selection logic.
+pub trait CustomProxy: Send + Sync + 'static {
+    /// Given a request URI, return a proxy config or `None` for direct connection.
+    fn proxy_for(&self, uri: &Uri) -> Option<ProxyConfig>;
+}
+
+impl<F> CustomProxy for F
+where
+    F: Fn(&Uri) -> Option<ProxyConfig> + Send + Sync + 'static,
+{
+    fn proxy_for(&self, uri: &Uri) -> Option<ProxyConfig> {
+        (self)(uri)
     }
 }

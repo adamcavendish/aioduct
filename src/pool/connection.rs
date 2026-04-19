@@ -15,6 +15,7 @@ pub enum HttpConnection {
 pub struct PooledConnection<R: Runtime> {
     pub(crate) conn: HttpConnection,
     pub(crate) remote_addr: Option<SocketAddr>,
+    pub(crate) tls_info: Option<crate::tls::TlsInfo>,
     _runtime: PhantomData<R>,
 }
 
@@ -26,6 +27,7 @@ impl<R: Runtime> PooledConnection<R> {
         Self {
             conn: HttpConnection::H1(sender),
             remote_addr: None,
+            tls_info: None,
             _runtime: PhantomData,
         }
     }
@@ -37,6 +39,7 @@ impl<R: Runtime> PooledConnection<R> {
         Self {
             conn: HttpConnection::H2(sender),
             remote_addr: None,
+            tls_info: None,
             _runtime: PhantomData,
         }
     }
@@ -47,6 +50,7 @@ impl<R: Runtime> PooledConnection<R> {
         Self {
             conn: HttpConnection::H3(sender),
             remote_addr: None,
+            tls_info: None,
             _runtime: PhantomData,
         }
     }

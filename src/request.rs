@@ -357,15 +357,28 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                         && resp.status().is_server_error()
                         && attempt < config.max_retries
                     {
+                        if let Some(ref budget) = config.budget {
+                            if !budget.try_withdraw() {
+                                return Ok(resp);
+                            }
+                        }
                         last_error = Some(Error::Other(
                             format!("server error: {}", resp.status()).into(),
                         ));
                         continue;
                     }
+                    if let Some(ref budget) = config.budget {
+                        budget.deposit();
+                    }
                     return Ok(resp);
                 }
                 Err(e) => {
                     if attempt < config.max_retries && crate::retry::is_retryable_error(&e) {
+                        if let Some(ref budget) = config.budget {
+                            if !budget.try_withdraw() {
+                                return Err(e);
+                            }
+                        }
                         last_error = Some(e);
                         continue;
                     }
