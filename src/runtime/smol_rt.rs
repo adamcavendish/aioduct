@@ -47,7 +47,7 @@ impl Runtime for SmolRuntime {
 
     fn set_tcp_keepalive(stream: &Self::TcpStream, interval: Duration) -> io::Result<()> {
         use socket2::SockRef;
-        let sock_ref = SockRef::from(stream.inner().get_ref());
+        let sock_ref = SockRef::from(stream.inner());
         let keepalive = socket2::TcpKeepalive::new().with_time(interval);
         sock_ref.set_tcp_keepalive(&keepalive)
     }
