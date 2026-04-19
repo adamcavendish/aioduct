@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use bytes::Bytes;
 use http::header::{CONTENT_LENGTH, HeaderMap};
 use http::{StatusCode, Uri, Version};
@@ -9,6 +11,7 @@ use crate::error::{Error, HyperBody, Result};
 pub struct Response {
     inner: http::Response<HyperBody>,
     url: Uri,
+    remote_addr: Option<SocketAddr>,
 }
 
 impl std::fmt::Debug for Response {
@@ -23,7 +26,15 @@ impl std::fmt::Debug for Response {
 
 impl Response {
     pub(crate) fn new(inner: http::Response<HyperBody>, url: Uri) -> Self {
-        Self { inner, url }
+        Self {
+            inner,
+            url,
+            remote_addr: None,
+        }
+    }
+
+    pub(crate) fn set_remote_addr(&mut self, addr: Option<SocketAddr>) {
+        self.remote_addr = addr;
     }
 
     pub(crate) fn inner_mut(&mut self) -> &mut http::Response<HyperBody> {
@@ -36,12 +47,33 @@ impl Response {
         Self {
             inner: http::Response::from_parts(parts, body),
             url: self.url,
+            remote_addr: self.remote_addr,
+        }
+    }
+
+    pub(crate) fn apply_read_timeout<R: crate::runtime::Runtime>(
+        self,
+        duration: std::time::Duration,
+    ) -> Self {
+        use http_body_util::BodyExt;
+        let (parts, body) = self.inner.into_parts();
+        let timeout_body = crate::timeout::ReadTimeoutBody::<R>::new(body, duration);
+        let boxed: HyperBody = timeout_body.map_err(|e| e).boxed();
+        Self {
+            inner: http::Response::from_parts(parts, boxed),
+            url: self.url,
+            remote_addr: self.remote_addr,
         }
     }
 
     /// Returns the final URL of this response, after any redirects.
     pub fn url(&self) -> &Uri {
         &self.url
+    }
+
+    /// Returns the remote socket address of the server.
+    pub fn remote_addr(&self) -> Option<SocketAddr> {
+        self.remote_addr
     }
 
     /// Returns the HTTP status code.
@@ -52,6 +84,21 @@ impl Response {
     /// Returns the response headers.
     pub fn headers(&self) -> &HeaderMap {
         self.inner.headers()
+    }
+
+    /// Returns a mutable reference to the response headers.
+    pub fn headers_mut(&mut self) -> &mut HeaderMap {
+        self.inner.headers_mut()
+    }
+
+    /// Returns a reference to the response extensions.
+    pub fn extensions(&self) -> &http::Extensions {
+        self.inner.extensions()
+    }
+
+    /// Returns a mutable reference to the response extensions.
+    pub fn extensions_mut(&mut self) -> &mut http::Extensions {
+        self.inner.extensions_mut()
     }
 
     /// Returns the HTTP version.

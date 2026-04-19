@@ -9,7 +9,7 @@ use std::time::Duration;
 #[allow(async_fn_in_trait)]
 pub trait Runtime: Send + Sync + 'static {
     type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
-    type Sleep: Future<Output = ()> + Send;
+    type Sleep: Future<Output = ()> + Send + Sync;
 
     fn connect(addr: SocketAddr) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
     fn resolve(host: &str, port: u16) -> impl Future<Output = io::Result<SocketAddr>> + Send;

@@ -36,6 +36,50 @@ impl RustlsConnector {
         Self::new(Arc::new(config))
     }
 
+    /// Create a connector with WebPKI roots plus additional trusted CA certificates.
+    pub fn with_extra_roots(certs: &[super::Certificate]) -> Self {
+        let mut root_store =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        for cert in certs {
+            let _ = root_store.add(cert.der.clone());
+        }
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        Self::new(Arc::new(config))
+    }
+
+    /// Create a connector with WebPKI roots, extra CAs, and a client identity for mutual TLS.
+    pub fn with_identity(
+        certs: &[super::Certificate],
+        identity: super::Identity,
+    ) -> std::result::Result<Self, io::Error> {
+        let mut root_store =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        for cert in certs {
+            let _ = root_store.add(cert.der.clone());
+        }
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_client_auth_cert(identity.certs, identity.key)
+            .map_err(io::Error::other)?;
+        Ok(Self::new(Arc::new(config)))
+    }
+
+    /// Create a connector using the system's native root certificates.
+    #[cfg(feature = "rustls-native-roots")]
+    pub fn with_native_roots() -> Self {
+        let mut root_store = rustls::RootCertStore::empty();
+        let native_certs = rustls_native_certs::load_native_certs();
+        for cert in native_certs {
+            let _ = root_store.add(cert);
+        }
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        Self::new(Arc::new(config))
+    }
+
     /// Create a connector that accepts any server certificate (INSECURE — testing only).
     pub fn danger_accept_invalid_certs() -> Self {
         let config = rustls::ClientConfig::builder()

@@ -144,6 +144,7 @@ pub(crate) fn maybe_decompress(
     feature = "zstd"
 ))]
 mod imp {
+    use std::io::Write;
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
@@ -156,55 +157,94 @@ mod imp {
 
     use super::AcceptEncoding;
 
-    enum Encoding {
+    enum StreamDecoder {
         #[cfg(feature = "gzip")]
-        Gzip,
+        Gzip(flate2::write::GzDecoder<Vec<u8>>),
         #[cfg(feature = "deflate")]
-        Deflate,
+        Deflate(flate2::write::ZlibDecoder<Vec<u8>>),
         #[cfg(feature = "brotli")]
-        Brotli,
+        Brotli(Box<brotli::DecompressorWriter<Vec<u8>>>),
         #[cfg(feature = "zstd")]
-        Zstd,
+        Zstd(zstd::stream::write::Decoder<'static, Vec<u8>>),
     }
 
-    fn decompress_buf(encoding: &Encoding, buf: &[u8]) -> Result<Vec<u8>, Error> {
-        match encoding {
-            #[cfg(feature = "gzip")]
-            Encoding::Gzip => {
-                use std::io::Read;
-                let mut decoder = flate2::read::GzDecoder::new(buf);
-                let mut out = Vec::new();
-                decoder
-                    .read_to_end(&mut out)
-                    .map_err(|e| Error::Other(Box::new(e)))?;
-                Ok(out)
+    impl StreamDecoder {
+        fn write_chunk(&mut self, data: &[u8]) -> Result<(), Error> {
+            match self {
+                #[cfg(feature = "gzip")]
+                StreamDecoder::Gzip(d) => d.write_all(data).map_err(|e| Error::Other(Box::new(e))),
+                #[cfg(feature = "deflate")]
+                StreamDecoder::Deflate(d) => {
+                    d.write_all(data).map_err(|e| Error::Other(Box::new(e)))
+                }
+                #[cfg(feature = "brotli")]
+                StreamDecoder::Brotli(d) => {
+                    d.write_all(data).map_err(|e| Error::Other(Box::new(e)))
+                }
+                #[cfg(feature = "zstd")]
+                StreamDecoder::Zstd(d) => d.write_all(data).map_err(|e| Error::Other(Box::new(e))),
             }
-            #[cfg(feature = "deflate")]
-            Encoding::Deflate => {
-                use std::io::Read;
-                let mut decoder = flate2::read::ZlibDecoder::new(buf);
-                let mut out = Vec::new();
-                decoder
-                    .read_to_end(&mut out)
-                    .map_err(|e| Error::Other(Box::new(e)))?;
-                Ok(out)
+        }
+
+        fn take_output(&mut self) -> Vec<u8> {
+            match self {
+                #[cfg(feature = "gzip")]
+                StreamDecoder::Gzip(d) => std::mem::take(d.get_mut()),
+                #[cfg(feature = "deflate")]
+                StreamDecoder::Deflate(d) => std::mem::take(d.get_mut()),
+                #[cfg(feature = "brotli")]
+                StreamDecoder::Brotli(d) => std::mem::take(d.get_mut()),
+                #[cfg(feature = "zstd")]
+                StreamDecoder::Zstd(d) => std::mem::take(d.get_mut()),
             }
-            #[cfg(feature = "brotli")]
-            Encoding::Brotli => {
-                let mut out = Vec::new();
-                brotli::BrotliDecompress(&mut &buf[..], &mut out)
-                    .map_err(|e| Error::Other(format!("brotli: {e}").into()))?;
-                Ok(out)
+        }
+
+        fn finish(self) -> Result<Vec<u8>, Error> {
+            match self {
+                #[cfg(feature = "gzip")]
+                StreamDecoder::Gzip(d) => d.finish().map_err(|e| Error::Other(Box::new(e))),
+                #[cfg(feature = "deflate")]
+                StreamDecoder::Deflate(d) => d.finish().map_err(|e| Error::Other(Box::new(e))),
+                #[cfg(feature = "brotli")]
+                StreamDecoder::Brotli(mut d) => {
+                    d.flush().map_err(|e| Error::Other(Box::new(e)))?;
+                    Ok(std::mem::take(d.get_mut()))
+                }
+                #[cfg(feature = "zstd")]
+                StreamDecoder::Zstd(mut d) => {
+                    d.flush().map_err(|e| Error::Other(Box::new(e)))?;
+                    Ok(std::mem::take(d.get_mut()))
+                }
             }
-            #[cfg(feature = "zstd")]
-            Encoding::Zstd => zstd::stream::decode_all(buf).map_err(|e| Error::Other(Box::new(e))),
+        }
+
+        #[cfg(feature = "gzip")]
+        fn new_gzip() -> Self {
+            StreamDecoder::Gzip(flate2::write::GzDecoder::new(Vec::new()))
+        }
+
+        #[cfg(feature = "deflate")]
+        fn new_deflate() -> Self {
+            StreamDecoder::Deflate(flate2::write::ZlibDecoder::new(Vec::new()))
+        }
+
+        #[cfg(feature = "brotli")]
+        fn new_brotli() -> Self {
+            StreamDecoder::Brotli(Box::new(brotli::DecompressorWriter::new(Vec::new(), 4096)))
+        }
+
+        #[cfg(feature = "zstd")]
+        fn new_zstd() -> Result<Self, Error> {
+            Ok(StreamDecoder::Zstd(
+                zstd::stream::write::Decoder::new(Vec::new())
+                    .map_err(|e| Error::Other(Box::new(e)))?,
+            ))
         }
     }
 
     struct DecompressBody {
         body: HyperBody,
-        encoding: Encoding,
-        accumulated: Vec<u8>,
+        decoder: Option<StreamDecoder>,
         finished: bool,
     }
 
@@ -220,31 +260,47 @@ mod imp {
                 return Poll::Ready(None);
             }
 
-            loop {
-                match Pin::new(&mut self.body).poll_frame(cx) {
-                    Poll::Ready(Some(Ok(frame))) => {
-                        if let Ok(data) = frame.into_data() {
-                            self.accumulated.extend_from_slice(&data);
-                        }
-                    }
-                    Poll::Ready(Some(Err(e))) => {
-                        self.finished = true;
-                        return Poll::Ready(Some(Err(e)));
-                    }
-                    Poll::Ready(None) => {
-                        self.finished = true;
-                        if self.accumulated.is_empty() {
-                            return Poll::Ready(None);
-                        }
-                        return match decompress_buf(&self.encoding, &self.accumulated) {
-                            Ok(out) => {
-                                Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(out)))))
+            match Pin::new(&mut self.body).poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => {
+                    if let Ok(data) = frame.into_data() {
+                        if let Some(decoder) = &mut self.decoder {
+                            if let Err(e) = decoder.write_chunk(&data) {
+                                self.finished = true;
+                                return Poll::Ready(Some(Err(e)));
                             }
-                            Err(e) => Poll::Ready(Some(Err(e))),
-                        };
+                            let output = decoder.take_output();
+                            if output.is_empty() {
+                                cx.waker().wake_by_ref();
+                                return Poll::Pending;
+                            }
+                            Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(output)))))
+                        } else {
+                            Poll::Ready(Some(Ok(hyper::body::Frame::data(data))))
+                        }
+                    } else {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
                     }
-                    Poll::Pending => return Poll::Pending,
                 }
+                Poll::Ready(Some(Err(e))) => {
+                    self.finished = true;
+                    Poll::Ready(Some(Err(e)))
+                }
+                Poll::Ready(None) => {
+                    self.finished = true;
+                    if let Some(decoder) = self.decoder.take() {
+                        match decoder.finish() {
+                            Ok(remaining) if !remaining.is_empty() => Poll::Ready(Some(Ok(
+                                hyper::body::Frame::data(Bytes::from(remaining)),
+                            ))),
+                            Ok(_) => Poll::Ready(None),
+                            Err(e) => Poll::Ready(Some(Err(e))),
+                        }
+                    } else {
+                        Poll::Ready(None)
+                    }
+                }
+                Poll::Pending => Poll::Pending,
             }
         }
     }
@@ -259,26 +315,28 @@ mod imp {
             None => return body,
         };
 
-        let enc = match encoding {
+        let decoder = match encoding {
             #[cfg(feature = "gzip")]
-            b"gzip" if accept.gzip => Some(Encoding::Gzip),
+            b"gzip" if accept.gzip => Some(StreamDecoder::new_gzip()),
             #[cfg(feature = "deflate")]
-            b"deflate" if accept.deflate => Some(Encoding::Deflate),
+            b"deflate" if accept.deflate => Some(StreamDecoder::new_deflate()),
             #[cfg(feature = "brotli")]
-            b"br" if accept.brotli => Some(Encoding::Brotli),
+            b"br" if accept.brotli => Some(StreamDecoder::new_brotli()),
             #[cfg(feature = "zstd")]
-            b"zstd" if accept.zstd => Some(Encoding::Zstd),
+            b"zstd" if accept.zstd => match StreamDecoder::new_zstd() {
+                Ok(d) => Some(d),
+                Err(_) => return body,
+            },
             _ => None,
         };
 
-        match enc {
-            Some(encoding) => {
+        match decoder {
+            Some(decoder) => {
                 headers.remove(CONTENT_ENCODING);
                 headers.remove(CONTENT_LENGTH);
                 let decompress = DecompressBody {
                     body,
-                    encoding,
-                    accumulated: Vec::new(),
+                    decoder: Some(decoder),
                     finished: false,
                 };
                 decompress.boxed()

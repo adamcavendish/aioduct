@@ -13,8 +13,9 @@ exclude = ["doc/", "benches/", "tests/", "target/"]
 
 [features]
 default = []
-json = ["dep:serde", "dep:serde_json"]
+json = ["dep:serde", "dep:serde_json", "dep:serde_urlencoded"]
 rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile"]
+rustls-native-roots = ["rustls", "dep:rustls-native-certs"]
 tokio = ["dep:tokio"]
 smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
 compio = ["dep:compio-runtime", "dep:compio-driver", "dep:async-io", "dep:futures-io"]
@@ -40,11 +41,13 @@ socket2 = { version = "0.5", features = ["all"] }
 # JSON
 serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
+serde_urlencoded = { version = "0.7", optional = true }
 
 # TLS
 rustls = { version = "0.23", optional = true, default-features = false, features = ["std", "tls12"] }
 webpki-roots = { version = "1", optional = true }
 rustls-pemfile = { version = "2", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 
 # Runtime: tokio
 tokio = { version = "1", optional = true, features = ["net", "rt", "time"] }

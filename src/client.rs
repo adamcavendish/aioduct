@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -6,7 +7,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http::header::{
-    AUTHORIZATION, COOKIE, HOST, HeaderMap, HeaderValue, LOCATION, PROXY_AUTHORIZATION, USER_AGENT,
+    AUTHORIZATION, COOKIE, HOST, HeaderMap, HeaderValue, LOCATION, PROXY_AUTHORIZATION, REFERER,
+    USER_AGENT,
 };
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
@@ -32,9 +34,13 @@ pub struct Client<R: Runtime> {
     redirect_policy: RedirectPolicy,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
     tcp_keepalive: Option<Duration>,
     local_address: Option<IpAddr>,
     https_only: bool,
+    referer: bool,
+    no_connection_reuse: bool,
+    http2_prior_knowledge: bool,
     accept_encoding: crate::decompress::AcceptEncoding,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
@@ -61,9 +67,13 @@ impl<R: Runtime> Clone for Client<R> {
             redirect_policy: self.redirect_policy.clone(),
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            read_timeout: self.read_timeout,
             tcp_keepalive: self.tcp_keepalive,
             local_address: self.local_address,
             https_only: self.https_only,
+            referer: self.referer,
+            no_connection_reuse: self.no_connection_reuse,
+            http2_prior_knowledge: self.http2_prior_knowledge,
             accept_encoding: self.accept_encoding.clone(),
             default_headers: self.default_headers.clone(),
             retry: self.retry.clone(),
@@ -89,12 +99,16 @@ impl<R: Runtime> Clone for Client<R> {
 pub struct ClientBuilder<R: Runtime> {
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,
+    no_connection_reuse: bool,
+    http2_prior_knowledge: bool,
     redirect_policy: RedirectPolicy,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
     tcp_keepalive: Option<Duration>,
     local_address: Option<IpAddr>,
     https_only: bool,
+    referer: bool,
     accept_encoding: crate::decompress::AcceptEncoding,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
@@ -120,12 +134,16 @@ impl<R: Runtime> Default for ClientBuilder<R> {
         Self {
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_idle_per_host: 10,
+            no_connection_reuse: false,
+            http2_prior_knowledge: false,
             redirect_policy: RedirectPolicy::default(),
             timeout: None,
             connect_timeout: None,
+            read_timeout: None,
             tcp_keepalive: None,
             local_address: None,
             https_only: false,
+            referer: false,
             accept_encoding: crate::decompress::AcceptEncoding::default(),
             default_headers,
             retry: None,
@@ -182,6 +200,12 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Set a timeout between body data chunks (read timeout).
+    pub fn read_timeout(mut self, timeout: Duration) -> Self {
+        self.read_timeout = Some(timeout);
+        self
+    }
+
     /// Enable TCP keepalive with the given interval.
     pub fn tcp_keepalive(mut self, interval: Duration) -> Self {
         self.tcp_keepalive = Some(interval);
@@ -197,6 +221,32 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Only allow HTTPS URLs; reject plain HTTP requests with an error.
     pub fn https_only(mut self, enable: bool) -> Self {
         self.https_only = enable;
+        self
+    }
+
+    /// Set the User-Agent header for all requests.
+    pub fn user_agent(mut self, value: impl AsRef<str>) -> Self {
+        if let Ok(val) = HeaderValue::from_str(value.as_ref()) {
+            self.default_headers.insert(USER_AGENT, val);
+        }
+        self
+    }
+
+    /// Automatically set the `Referer` header on redirects (default: false).
+    pub fn referer(mut self, enable: bool) -> Self {
+        self.referer = enable;
+        self
+    }
+
+    /// Disable connection pooling — each request opens a new connection.
+    pub fn no_connection_reuse(mut self) -> Self {
+        self.no_connection_reuse = true;
+        self
+    }
+
+    /// Use HTTP/2 prior knowledge (h2c) — send HTTP/2 over plaintext without upgrade.
+    pub fn http2_prior_knowledge(mut self) -> Self {
+        self.http2_prior_knowledge = true;
         self
     }
 
@@ -279,6 +329,24 @@ impl<R: Runtime> ClientBuilder<R> {
         self.tls(crate::tls::RustlsConnector::danger_accept_invalid_certs())
     }
 
+    #[cfg(feature = "rustls")]
+    /// Add custom trusted CA certificates alongside the default WebPKI roots.
+    pub fn add_root_certificates(self, certs: &[crate::tls::Certificate]) -> Self {
+        self.tls(crate::tls::RustlsConnector::with_extra_roots(certs))
+    }
+
+    #[cfg(feature = "rustls")]
+    /// Set a client identity (certificate + key) for mutual TLS authentication.
+    pub fn identity(
+        self,
+        certs: &[crate::tls::Certificate],
+        identity: crate::tls::Identity,
+    ) -> Result<Self> {
+        let connector =
+            crate::tls::RustlsConnector::with_identity(certs, identity).map_err(Error::Io)?;
+        Ok(self.tls(connector))
+    }
+
     #[cfg(feature = "http3")]
     /// Enable or disable HTTP/3 for all HTTPS requests.
     pub fn http3(mut self, enable: bool) -> Self {
@@ -321,14 +389,23 @@ impl<R: Runtime> ClientBuilder<R> {
 
     /// Build the configured [`Client`].
     pub fn build(self) -> Client<R> {
+        let pool = if self.no_connection_reuse {
+            ConnectionPool::new(0, Duration::from_secs(0))
+        } else {
+            ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout)
+        };
         Client {
-            pool: ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout),
+            pool,
             redirect_policy: self.redirect_policy,
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            read_timeout: self.read_timeout,
             tcp_keepalive: self.tcp_keepalive,
             local_address: self.local_address,
             https_only: self.https_only,
+            referer: self.referer,
+            no_connection_reuse: self.no_connection_reuse,
+            http2_prior_knowledge: self.http2_prior_knowledge,
             accept_encoding: self.accept_encoding,
             default_headers: self.default_headers,
             retry: self.retry,
@@ -372,6 +449,14 @@ impl<R: Runtime> Client<R> {
     pub fn with_rustls() -> Self {
         Self::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
+            .build()
+    }
+
+    #[cfg(feature = "rustls-native-roots")]
+    /// Create a client with rustls TLS using the system's native root certificates.
+    pub fn with_native_roots() -> Self {
+        Self::builder()
+            .tls(crate::tls::RustlsConnector::with_native_roots())
             .build()
     }
 
@@ -555,7 +640,13 @@ impl<R: Runtime> Client<R> {
                     self.middleware
                         .apply_response(resp.inner_mut(), &current_uri);
                 }
-                return Ok(resp.decompress(&self.accept_encoding));
+                let resp = resp.decompress(&self.accept_encoding);
+                let resp = if let Some(read_timeout) = self.read_timeout {
+                    resp.apply_read_timeout::<R>(read_timeout)
+                } else {
+                    resp
+                };
+                return Ok(resp);
             }
 
             let status = resp.status();
@@ -617,6 +708,12 @@ impl<R: Runtime> Client<R> {
                 current_headers.remove(PROXY_AUTHORIZATION);
             }
 
+            if self.referer {
+                if let Ok(val) = HeaderValue::from_str(&current_uri.to_string()) {
+                    current_headers.insert(REFERER, val);
+                }
+            }
+
             current_uri = next_uri;
         }
 
@@ -645,12 +742,16 @@ impl<R: Runtime> Client<R> {
 
         let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
 
-        if let Some(mut conn) = self.pool.checkout(&pool_key) {
-            let resp = Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
-            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                self.pool.checkin(pool_key, conn);
+        if !self.no_connection_reuse {
+            if let Some(mut conn) = self.pool.checkout(&pool_key) {
+                let mut resp =
+                    Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
+                resp.set_remote_addr(conn.remote_addr);
+                if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                    self.pool.checkin(pool_key, conn);
+                }
+                return Ok(resp);
             }
-            return Ok(resp);
         }
 
         #[cfg(feature = "http3")]
@@ -672,8 +773,11 @@ impl<R: Runtime> Client<R> {
                         .await
                         .map_err(|e| Error::Other(Box::new(e)))?;
                     let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
-                    let resp = Self::send_on_connection(&mut pooled, request, original_uri.clone())
-                        .await?;
+                    pooled.remote_addr = Some(addr);
+                    let mut resp =
+                        Self::send_on_connection(&mut pooled, request, original_uri.clone())
+                            .await?;
+                    resp.set_remote_addr(pooled.remote_addr);
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                         self.pool.checkin(pool_key, pooled);
                     }
@@ -709,11 +813,11 @@ impl<R: Runtime> Client<R> {
                 if is_https {
                     self.connect_tls(tcp_stream, authority.host()).await
                 } else {
-                    self.connect_h1(tcp_stream).await
+                    self.connect_plaintext(tcp_stream).await
                 }
             };
 
-            match self.connect_timeout {
+            let mut conn = match self.connect_timeout {
                 Some(duration) => {
                     crate::timeout::Timeout::WithTimeout {
                         future: connect_fut,
@@ -722,11 +826,14 @@ impl<R: Runtime> Client<R> {
                     .await?
                 }
                 None => connect_fut.await?,
-            }
+            };
+            conn.remote_addr = Some(addr);
+            conn
         };
 
-        let resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
-        if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+        let mut resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
+        resp.set_remote_addr(pooled.remote_addr);
+        if !self.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
             self.pool.checkin(pool_key, pooled);
         }
 
@@ -772,7 +879,7 @@ impl<R: Runtime> Client<R> {
             self.connect_tunnel(tcp_stream, proxy, target_authority)
                 .await
         } else {
-            self.connect_h1(tcp_stream).await
+            self.connect_plaintext(tcp_stream).await
         }
     }
 
@@ -841,12 +948,68 @@ impl<R: Runtime> Client<R> {
         self.connect_tls(tcp_stream, target_authority.host()).await
     }
 
+    fn connect_plaintext(
+        &self,
+        tcp_stream: R::TcpStream,
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<R>>> + Send + '_>> {
+        if self.http2_prior_knowledge {
+            Box::pin(self.connect_h2_prior_knowledge(tcp_stream))
+        } else {
+            Box::pin(self.connect_h1(tcp_stream))
+        }
+    }
+
     async fn connect_h1(&self, tcp_stream: R::TcpStream) -> Result<PooledConnection<R>> {
         let (sender, conn) = hyper::client::conn::http1::handshake(tcp_stream).await?;
         R::spawn(async move {
             let _ = conn.with_upgrades().await;
         });
         Ok(PooledConnection::new_h1(sender))
+    }
+
+    async fn connect_h2_prior_knowledge(
+        &self,
+        tcp_stream: R::TcpStream,
+    ) -> Result<PooledConnection<R>> {
+        let mut builder =
+            hyper::client::conn::http2::Builder::new(crate::runtime::hyper_executor::<R>());
+        if let Some(ref h2) = self.http2 {
+            if let Some(v) = h2.initial_stream_window_size {
+                builder.initial_stream_window_size(v);
+            }
+            if let Some(v) = h2.initial_connection_window_size {
+                builder.initial_connection_window_size(v);
+            }
+            if let Some(v) = h2.max_frame_size {
+                builder.max_frame_size(v);
+            }
+            if let Some(v) = h2.adaptive_window {
+                builder.adaptive_window(v);
+            }
+            if let Some(v) = h2.keep_alive_interval {
+                builder.keep_alive_interval(v);
+            }
+            if let Some(v) = h2.keep_alive_timeout {
+                builder.keep_alive_timeout(v);
+            }
+            if let Some(v) = h2.keep_alive_while_idle {
+                builder.keep_alive_while_idle(v);
+            }
+            if let Some(v) = h2.max_header_list_size {
+                builder.max_header_list_size(v);
+            }
+            if let Some(v) = h2.max_send_buf_size {
+                builder.max_send_buf_size(v);
+            }
+            if let Some(v) = h2.max_concurrent_reset_streams {
+                builder.max_concurrent_reset_streams(v);
+            }
+        }
+        let (sender, conn) = builder.handshake(tcp_stream).await?;
+        R::spawn(async move {
+            let _ = conn.await;
+        });
+        Ok(PooledConnection::new_h2(sender))
     }
 
     #[cfg(feature = "rustls")]

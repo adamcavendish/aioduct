@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::net::SocketAddr;
 
 use crate::runtime::Runtime;
 
@@ -13,6 +14,7 @@ pub enum HttpConnection {
 /// A pooled HTTP connection wrapper.
 pub struct PooledConnection<R: Runtime> {
     pub(crate) conn: HttpConnection,
+    pub(crate) remote_addr: Option<SocketAddr>,
     _runtime: PhantomData<R>,
 }
 
@@ -23,6 +25,7 @@ impl<R: Runtime> PooledConnection<R> {
     ) -> Self {
         Self {
             conn: HttpConnection::H1(sender),
+            remote_addr: None,
             _runtime: PhantomData,
         }
     }
@@ -33,6 +36,7 @@ impl<R: Runtime> PooledConnection<R> {
     ) -> Self {
         Self {
             conn: HttpConnection::H2(sender),
+            remote_addr: None,
             _runtime: PhantomData,
         }
     }
@@ -42,8 +46,15 @@ impl<R: Runtime> PooledConnection<R> {
     pub fn new_h3(sender: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>) -> Self {
         Self {
             conn: HttpConnection::H3(sender),
+            remote_addr: None,
             _runtime: PhantomData,
         }
+    }
+
+    /// Set the remote address of this connection.
+    pub fn with_remote_addr(mut self, addr: SocketAddr) -> Self {
+        self.remote_addr = Some(addr);
+        self
     }
 
     /// Returns true if the connection is ready to send a request.

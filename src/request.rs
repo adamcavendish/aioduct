@@ -83,7 +83,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
-    /// Append URL query parameters.
+    /// Append URL query parameters from string pairs.
     pub fn query(mut self, params: &[(&str, &str)]) -> Self {
         use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
         const QUERY_ENCODE: &AsciiSet = &CONTROLS
@@ -110,6 +110,22 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         self
     }
 
+    #[cfg(feature = "json")]
+    /// Append URL query parameters from a serializable value.
+    pub fn query_serde(mut self, params: &impl serde::Serialize) -> Result<Self> {
+        let query_string =
+            serde_urlencoded::to_string(params).map_err(|e| Error::Other(Box::new(e)))?;
+        if !query_string.is_empty() {
+            let mut uri_str = self.uri.to_string();
+            let sep = if self.uri.query().is_some() { '&' } else { '?' };
+            write!(uri_str, "{sep}{query_string}").unwrap();
+            if let Ok(new_uri) = uri_str.parse() {
+                self.uri = new_uri;
+            }
+        }
+        Ok(self)
+    }
+
     /// Set a buffered request body.
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {
         self.body = Some(RequestBody::Buffered(body.into()));
@@ -134,7 +150,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         Ok(self)
     }
 
-    /// Set a URL-encoded form body.
+    /// Set a URL-encoded form body from string pairs.
     pub fn form(mut self, params: &[(&str, &str)]) -> Self {
         use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
         const FORM_ENCODE: &AsciiSet = &CONTROLS
@@ -163,6 +179,18 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         );
         self.body = Some(RequestBody::Buffered(encoded.into()));
         self
+    }
+
+    #[cfg(feature = "json")]
+    /// Set a URL-encoded form body from a serializable value.
+    pub fn form_serde(mut self, value: &impl serde::Serialize) -> Result<Self> {
+        let encoded = serde_urlencoded::to_string(value).map_err(|e| Error::Other(Box::new(e)))?;
+        self.headers.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-www-form-urlencoded"),
+        );
+        self.body = Some(RequestBody::Buffered(encoded.into()));
+        Ok(self)
     }
 
     /// Set a multipart/form-data body.
@@ -205,6 +233,24 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
             .insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
         self.version = Some(Version::HTTP_11);
         self
+    }
+
+    /// Build the request without sending it.
+    ///
+    /// Returns the configured `http::Request` for inspection or manual sending.
+    pub fn build(mut self) -> Result<http::Request<RequestBody>> {
+        let body = self
+            .body
+            .take()
+            .unwrap_or(RequestBody::Buffered(Bytes::new()));
+        let mut builder = http::Request::builder().method(self.method).uri(self.uri);
+        if let Some(ver) = self.version {
+            builder = builder.version(ver);
+        }
+        for (name, value) in &self.headers {
+            builder = builder.header(name, value);
+        }
+        builder.body(body).map_err(Error::Http)
     }
 
     /// Send the request and return the response.

@@ -52,4 +52,7 @@ pub use runtime::{Resolve, Runtime};
 pub use sse::{SseEvent, SseStream};
 pub use upgrade::Upgraded;
 
+#[cfg(feature = "rustls")]
+pub use tls::{Certificate, Identity};
+
 pub use http::{HeaderMap, Method, StatusCode, Uri, Version};
