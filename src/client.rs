@@ -1,7 +1,6 @@
 use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::pin::Pin;
-#[cfg(feature = "rustls")]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +14,7 @@ use http_body_util::BodyExt;
 use crate::body::RequestBody;
 use crate::cookie::CookieJar;
 use crate::error::{Error, HyperBody, Result};
+use crate::http2::Http2Config;
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
 use crate::proxy::{ProxyConfig, ProxySettings};
 use crate::redirect::{RedirectAction, RedirectPolicy};
@@ -40,6 +40,7 @@ pub struct Client<R: Runtime> {
     cookie_jar: Option<CookieJar>,
     proxy: Option<ProxySettings>,
     resolver: Option<Arc<dyn Resolve>>,
+    http2: Option<Http2Config>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -67,6 +68,7 @@ impl<R: Runtime> Clone for Client<R> {
             cookie_jar: self.cookie_jar.clone(),
             proxy: self.proxy.clone(),
             resolver: self.resolver.clone(),
+            http2: self.http2.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(feature = "http3")]
@@ -96,6 +98,7 @@ pub struct ClientBuilder<R: Runtime> {
     cookie_jar: Option<CookieJar>,
     proxy: Option<ProxySettings>,
     resolver: Option<Arc<dyn Resolve>>,
+    http2: Option<Http2Config>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -125,6 +128,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             cookie_jar: None,
             proxy: None,
             resolver: None,
+            http2: None,
             #[cfg(feature = "rustls")]
             tls: None,
             #[cfg(feature = "http3")]
@@ -245,6 +249,12 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Configure HTTP/2 connection parameters (window sizes, keepalive, frame size).
+    pub fn http2(mut self, config: Http2Config) -> Self {
+        self.http2 = Some(config);
+        self
+    }
+
     #[cfg(feature = "rustls")]
     /// Set the TLS connector for HTTPS.
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
@@ -314,6 +324,7 @@ impl<R: Runtime> ClientBuilder<R> {
             cookie_jar: self.cookie_jar,
             proxy: self.proxy,
             resolver: self.resolver,
+            http2: self.http2,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             #[cfg(feature = "http3")]
@@ -826,11 +837,41 @@ impl<R: Runtime> Client<R> {
 
         match alpn {
             Some(crate::tls::AlpnProtocol::H2) => {
-                let (sender, conn) = hyper::client::conn::http2::handshake(
-                    crate::runtime::hyper_executor::<R>(),
-                    tls_stream,
-                )
-                .await?;
+                let mut builder =
+                    hyper::client::conn::http2::Builder::new(crate::runtime::hyper_executor::<R>());
+                if let Some(ref h2) = self.http2 {
+                    if let Some(v) = h2.initial_stream_window_size {
+                        builder.initial_stream_window_size(v);
+                    }
+                    if let Some(v) = h2.initial_connection_window_size {
+                        builder.initial_connection_window_size(v);
+                    }
+                    if let Some(v) = h2.max_frame_size {
+                        builder.max_frame_size(v);
+                    }
+                    if let Some(v) = h2.adaptive_window {
+                        builder.adaptive_window(v);
+                    }
+                    if let Some(v) = h2.keep_alive_interval {
+                        builder.keep_alive_interval(v);
+                    }
+                    if let Some(v) = h2.keep_alive_timeout {
+                        builder.keep_alive_timeout(v);
+                    }
+                    if let Some(v) = h2.keep_alive_while_idle {
+                        builder.keep_alive_while_idle(v);
+                    }
+                    if let Some(v) = h2.max_header_list_size {
+                        builder.max_header_list_size(v);
+                    }
+                    if let Some(v) = h2.max_send_buf_size {
+                        builder.max_send_buf_size(v);
+                    }
+                    if let Some(v) = h2.max_concurrent_reset_streams {
+                        builder.max_concurrent_reset_streams(v);
+                    }
+                }
+                let (sender, conn) = builder.handshake(tls_stream).await?;
                 R::spawn(async move {
                     let _ = conn.await;
                 });

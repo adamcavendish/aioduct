@@ -61,6 +61,7 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 | `system_proxy()`        | —           | Read proxy from HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars |
 | `proxy_settings(ProxySettings)` | None | Fine-grained HTTP/HTTPS proxy with bypass rules |
 | `resolver(impl Resolve)` | None   | Custom DNS resolver, overrides runtime default |
+| `http2(Http2Config)`    | None   | Configure HTTP/2 parameters (window sizes, keepalive, frame size) |
 
 ## RequestBuilder
 

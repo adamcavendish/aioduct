@@ -24,6 +24,7 @@ mod timeout;
 pub mod tls;
 
 mod decompress;
+pub mod http2;
 
 #[cfg(feature = "http3")]
 mod alt_svc;
@@ -36,6 +37,7 @@ pub use chunk_download::ChunkDownload;
 pub use client::Client;
 pub use cookie::CookieJar;
 pub use error::{Error, HyperBody};
+pub use http2::Http2Config;
 pub use multipart::Multipart;
 pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};

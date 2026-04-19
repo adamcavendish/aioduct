@@ -18,4 +18,5 @@
 - [Cookie Jar](cookies.md)
 - [Response Decompression](decompression.md)
 - [Proxy Support](proxy.md)
+- [HTTP/2 Tuning](http2_tuning.md)
 - [API Reference](api_reference.md)

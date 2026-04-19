@@ -2078,3 +2078,34 @@ async fn test_local_address_binding() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
+
+#[tokio::test]
+async fn test_http2_config_accepted() {
+    let addr = start_server().await;
+    let client = Client::<TokioRuntime>::builder()
+        .http2(
+            aioduct::Http2Config::new()
+                .initial_stream_window_size(1024 * 1024)
+                .initial_connection_window_size(2 * 1024 * 1024)
+                .max_frame_size(32_768)
+                .adaptive_window(true)
+                .keep_alive_interval(Duration::from_secs(30))
+                .keep_alive_timeout(Duration::from_secs(10))
+                .keep_alive_while_idle(true)
+                .max_header_list_size(8192)
+                .max_send_buf_size(1024 * 1024)
+                .max_concurrent_reset_streams(100),
+        )
+        .build();
+
+    // HTTP/1 request still works with h2 config set (config only applies to h2 connections)
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}
