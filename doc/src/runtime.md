@@ -60,7 +60,24 @@ Uses `smol::net::TcpStream`, `async_io::Timer`, and `smol::spawn`. The `SmolIo` 
 
 ### CompioRuntime (Experimental)
 
-Enabled with `features = ["compio"]`. Currently a placeholder — compio uses a completion-based I/O model (io_uring on Linux, IOCP on Windows) that requires a compatibility bridge to hyper's readiness-based polling model.
+Enabled with `features = ["compio"]`.
+
+```rust
+use aioduct::Client;
+use aioduct::runtime::CompioRuntime;
+
+compio_runtime::Runtime::new().unwrap().block_on(async {
+    let client = Client::<CompioRuntime>::new();
+    let resp = client.get("http://httpbin.org/get").unwrap().send().await.unwrap();
+    println!("status: {}", resp.status());
+});
+```
+
+Compio is a completion-based I/O runtime (io_uring on Linux, IOCP on Windows) with a thread-per-core execution model. Since hyper requires readiness-based polling (`poll_read`/`poll_write`), the CompioRuntime uses `async-io` for TCP I/O as a compatibility bridge, while using compio's native runtime for task spawning, timers, and DNS resolution.
+
+The `CompioIo` adapter bridges `futures_io::AsyncRead`/`AsyncWrite` (from `async-io::Async<TcpStream>`) to `hyper::rt::Read`/`hyper::rt::Write`, following the same pattern as the SmolRuntime.
+
+**Important**: compio futures are `!Send` (they cannot be sent between threads). The CompioRuntime uses `unsafe impl Send` wrappers since compio's thread-per-core model guarantees futures never actually cross thread boundaries. This is safe as long as the `Client<CompioRuntime>` is only used within a single compio runtime thread.
 
 ## HyperExecutor
 

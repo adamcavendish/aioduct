@@ -8,7 +8,7 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 |----------|-----------------------------------|--------------|--------------------------------------|
 | `tokio`  | tokio                             | Stable       | Tokio async runtime                  |
 | `smol`   | smol, async-io, futures-io        | Stable       | Smol async runtime                   |
-| `compio` | compio-runtime, compio-net        | Experimental | Compio runtime (io_uring / IOCP)     |
+| `compio` | compio-runtime, async-io          | Experimental | Compio runtime (io_uring / IOCP)     |
 | `rustls` | rustls, webpki-roots, rustls-pemfile | Stable    | TLS via rustls (required for HTTPS)  |
 | `json`   | serde, serde_json                 | Stable       | JSON request/response helpers        |
 | `http3`  | h3, h3-quinn, quinn (+ rustls)    | Experimental | HTTP/3 transport                     |
@@ -35,6 +35,9 @@ aioduct = { version = "0.1", features = ["smol"] }
 
 # HTTPS, smol runtime
 aioduct = { version = "0.1", features = ["smol", "rustls"] }
+
+# HTTP only, compio runtime (experimental)
+aioduct = { version = "0.1", features = ["compio"] }
 ```
 
 ## Core Dependencies (Always Included)

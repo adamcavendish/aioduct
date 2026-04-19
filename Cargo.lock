@@ -9,8 +9,8 @@ dependencies = [
  "async-io",
  "base64",
  "bytes",
- "compio-net",
- "compio-runtime 0.5.1",
+ "compio-driver",
+ "compio-runtime",
  "futures-io",
  "futures-util",
  "h3",
@@ -39,12 +39,6 @@ checksum = "e05c92d086290f52938013f6242ac62bf7d401fab8ad36798a609faa65c3fd2c"
 dependencies = [
  "generic-array",
 ]
-
-[[package]]
-name = "arrayvec"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
 name = "async-channel"
@@ -238,43 +232,11 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "compio-buf"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69e280904a879019a48c3a9b0bbf6e158c097b9c21555be0608602c5b101755b"
-dependencies = [
- "arrayvec",
- "libc",
-]
-
-[[package]]
-name = "compio-buf"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d14413106aad7dd931df3c4724110dabd731c81d52ba18edb4f2d57e7beb611b"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "compio-driver"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ef034f0dafcead1e4738b1a18da070ff26abaf53ec9d9c4ba4b217b5f7a7c4a"
-dependencies = [
- "aligned-array",
- "cfg-if",
- "compio-buf 0.4.0",
- "compio-log",
- "crossbeam-channel",
- "crossbeam-queue",
- "futures-util",
- "libc",
- "once_cell",
- "os_pipe",
- "paste",
- "polling",
- "socket2 0.5.10",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -285,7 +247,7 @@ checksum = "a6be49fe37cd203d925e3850522a47f453b4cb98960846be5e4ebae42e26a64c"
 dependencies = [
  "aligned-array",
  "cfg-if",
- "compio-buf 0.5.1",
+ "compio-buf",
  "compio-log",
  "crossbeam-channel",
  "crossbeam-queue",
@@ -297,17 +259,6 @@ dependencies = [
  "polling",
  "socket2 0.5.10",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "compio-io"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5c6b524ae8226c007c41342a5803381f544f4f4066808d4c4ff146e75869ebb"
-dependencies = [
- "compio-buf 0.4.0",
- "futures-util",
- "paste",
 ]
 
 [[package]]
@@ -320,54 +271,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "compio-net"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04a861ae5202f9633f71fdd99ddeaefec61ef7f984b383dfe6b5d51f647ea75b"
-dependencies = [
- "cfg-if",
- "compio-buf 0.4.0",
- "compio-driver 0.4.0",
- "compio-io",
- "compio-runtime 0.4.0",
- "either",
- "libc",
- "socket2 0.5.10",
- "widestring",
- "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "compio-runtime"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8181cc373318910ccc4610dd54683d63d7933a96d21c6c69e61e750c01cd2016"
-dependencies = [
- "async-task",
- "cfg-if",
- "compio-buf 0.4.0",
- "compio-driver 0.4.0",
- "compio-log",
- "crossbeam-queue",
- "futures-util",
- "libc",
- "once_cell",
- "os_pipe",
- "scoped-tls",
- "smallvec",
- "socket2 0.5.10",
- "windows-sys 0.52.0",
-]
-
-[[package]]
 name = "compio-runtime"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b2d856e9017fdde73918cb1a2f15b6e47fe0aeb93d547201a457b12bb2da74a"
 dependencies = [
  "async-task",
- "compio-buf 0.5.1",
- "compio-driver 0.5.1",
+ "compio-buf",
+ "compio-driver",
  "compio-log",
  "crossbeam-queue",
  "futures-util",
@@ -375,6 +286,7 @@ dependencies = [
  "once_cell",
  "os_pipe",
  "scoped-tls",
+ "slab",
  "smallvec",
  "socket2 0.5.10",
  "windows-sys 0.52.0",
@@ -412,12 +324,6 @@ name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
-
-[[package]]
-name = "either"
-version = "1.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "equivalent"
@@ -1455,12 +1361,6 @@ checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
 dependencies = [
  "rustls-pki-types",
 ]
-
-[[package]]
-name = "widestring"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "windows-link"

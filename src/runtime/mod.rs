@@ -52,6 +52,6 @@ pub mod smol_rt;
 pub use smol_rt::SmolRuntime;
 
 #[cfg(feature = "compio")]
-mod compio_rt;
+pub mod compio_rt;
 #[cfg(feature = "compio")]
 pub use compio_rt::CompioRuntime;

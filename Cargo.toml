@@ -15,7 +15,7 @@ json = ["dep:serde", "dep:serde_json"]
 rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile"]
 tokio = ["dep:tokio"]
 smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
-compio = ["dep:compio-runtime", "dep:compio-net"]
+compio = ["dep:compio-runtime", "dep:compio-driver", "dep:async-io", "dep:futures-io"]
 http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:futures-util", "rustls"]
 
 [dependencies]
@@ -47,8 +47,8 @@ async-io = { version = "2", optional = true }
 futures-io = { version = "0.3", optional = true }
 
 # Runtime: compio
-compio-runtime = { version = "0.5", optional = true }
-compio-net = { version = "0.4", optional = true }
+compio-runtime = { version = "0.5", optional = true, features = ["time"] }
+compio-driver = { version = "0.5", optional = true, default-features = false, features = ["polling"] }
 
 # HTTP/3
 h3 = { version = "0.0.8", optional = true }
