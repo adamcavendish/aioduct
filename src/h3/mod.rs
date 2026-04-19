@@ -5,15 +5,15 @@ use http::Request;
 use http_body_util::BodyExt;
 
 use crate::error::{Error, HyperBody, Result};
+use crate::pool::PooledConnection;
 use crate::response::Response;
 use crate::runtime::Runtime;
 
-pub(crate) async fn send_h3_request<R: Runtime>(
+pub(crate) async fn connect_h3<R: Runtime>(
     quinn_conn: quinn::Connection,
-    request: Request<HyperBody>,
-) -> Result<Response> {
+) -> Result<PooledConnection<R>> {
     let h3_conn = h3_quinn::Connection::new(quinn_conn);
-    let (mut driver, mut send_request) = h3::client::new(h3_conn)
+    let (mut driver, send_request) = h3::client::new(h3_conn)
         .await
         .map_err(|e| Error::Other(Box::new(e)))?;
 
@@ -21,6 +21,13 @@ pub(crate) async fn send_h3_request<R: Runtime>(
         let _ = futures_util::future::poll_fn(|cx| driver.poll_close(cx)).await;
     });
 
+    Ok(PooledConnection::new_h3(send_request))
+}
+
+pub(crate) async fn send_on_h3(
+    send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
+    request: Request<HyperBody>,
+) -> Result<Response> {
     let (parts, body) = request.into_parts();
     let head_req = Request::from_parts(parts, ());
 

@@ -425,6 +425,16 @@ impl<R: Runtime> Client<R> {
 
         let is_https = scheme == &http::uri::Scheme::HTTPS;
 
+        let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
+
+        if let Some(mut conn) = self.pool.checkout(&pool_key) {
+            if conn.is_ready() {
+                let resp = Self::send_on_connection(&mut conn, request).await?;
+                self.pool.checkin(pool_key, conn);
+                return Ok(resp);
+            }
+        }
+
         #[cfg(feature = "http3")]
         if is_https {
             if let Some(endpoint) = &self.h3_endpoint {
@@ -436,16 +446,9 @@ impl<R: Runtime> Client<R> {
                     .map_err(|e| Error::Other(Box::new(e)))?
                     .await
                     .map_err(|e| Error::Other(Box::new(e)))?;
-                return crate::h3_transport::send_h3_request::<R>(quinn_conn, request).await;
-            }
-        }
-
-        let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
-
-        if let Some(mut conn) = self.pool.checkout(&pool_key) {
-            if conn.is_ready() {
-                let resp = Self::send_on_connection(&mut conn, request).await?;
-                self.pool.checkin(pool_key, conn);
+                let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
+                let resp = Self::send_on_connection(&mut pooled, request).await?;
+                self.pool.checkin(pool_key, pooled);
                 return Ok(resp);
             }
         }
@@ -631,6 +634,8 @@ impl<R: Runtime> Client<R> {
                 let resp = resp.map(|body| body.map_err(Error::Hyper).boxed());
                 Ok(Response::new(resp))
             }
+            #[cfg(feature = "http3")]
+            HttpConnection::H3(sender) => crate::h3_transport::send_on_h3(sender, request).await,
         }
     }
 

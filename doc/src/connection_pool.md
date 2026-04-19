@@ -18,6 +18,10 @@ Connections are keyed by `(scheme, authority)` — for example, `(https, api.exa
 
 HTTP/2 connections support multiplexing — multiple concurrent requests share a single connection. The pool tracks the hyper `SendRequest` handle, which naturally supports this. When an h2 connection is checked out, it remains usable by other requests concurrently.
 
+### HTTP/3 (QUIC) Pooling
+
+When the `http3` feature is enabled, QUIC connections are pooled alongside TCP connections. Like HTTP/2, HTTP/3 multiplexes streams over a single connection, so a pooled QUIC connection can serve multiple sequential requests to the same origin without re-establishing the handshake. The pool uses the same `(scheme, authority)` key for both TCP and QUIC connections.
+
 ## Configuration
 
 ```rust,no_run
