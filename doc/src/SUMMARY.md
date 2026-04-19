@@ -20,4 +20,5 @@
 - [Proxy Support](proxy.md)
 - [HTTP/2 Tuning](http2_tuning.md)
 - [Middleware](middleware.md)
+- [Benchmarks](benchmarks.md)
 - [API Reference](api_reference.md)
