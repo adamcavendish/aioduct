@@ -20,7 +20,7 @@ use crate::redirect::{RedirectAction, RedirectPolicy};
 use crate::request::RequestBuilder;
 use crate::response::Response;
 use crate::retry::RetryConfig;
-use crate::runtime::Runtime;
+use crate::runtime::{Resolve, Runtime};
 
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
@@ -36,6 +36,7 @@ pub struct Client<R: Runtime> {
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
     proxy: Option<ProxySettings>,
+    resolver: Option<Arc<dyn Resolve>>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -60,6 +61,7 @@ impl<R: Runtime> Clone for Client<R> {
             retry: self.retry.clone(),
             cookie_jar: self.cookie_jar.clone(),
             proxy: self.proxy.clone(),
+            resolver: self.resolver.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(feature = "http3")]
@@ -86,6 +88,7 @@ pub struct ClientBuilder<R: Runtime> {
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
     proxy: Option<ProxySettings>,
+    resolver: Option<Arc<dyn Resolve>>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -112,6 +115,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             retry: None,
             cookie_jar: None,
             proxy: None,
+            resolver: None,
             #[cfg(feature = "rustls")]
             tls: None,
             #[cfg(feature = "http3")]
@@ -214,6 +218,12 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Set a custom DNS resolver, overriding the runtime's default.
+    pub fn resolver(mut self, resolver: impl Resolve) -> Self {
+        self.resolver = Some(Arc::new(resolver));
+        self
+    }
+
     #[cfg(feature = "rustls")]
     /// Set the TLS connector for HTTPS.
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
@@ -280,6 +290,7 @@ impl<R: Runtime> ClientBuilder<R> {
             retry: self.retry,
             cookie_jar: self.cookie_jar,
             proxy: self.proxy,
+            resolver: self.resolver,
             #[cfg(feature = "rustls")]
             tls: self.tls,
             #[cfg(feature = "http3")]
@@ -599,7 +610,7 @@ impl<R: Runtime> Client<R> {
                         .lookup_h3(authority)
                         .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
                     let connect_host = h3_host.as_deref().unwrap_or(authority.host());
-                    let addr = Self::resolve_authority_raw(connect_host, h3_port).await?;
+                    let addr = self.resolve_authority_raw(connect_host, h3_port).await?;
                     let sni_host = authority.host().to_owned();
                     let quinn_conn = endpoint
                         .connect(addr, &sni_host)
@@ -624,7 +635,7 @@ impl<R: Runtime> Client<R> {
             self.connect_via_proxy(proxy, authority, is_https).await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
-            let addr = Self::resolve_authority(authority, default_port).await?;
+            let addr = self.resolve_authority(authority, default_port).await?;
 
             let connect_fut = async {
                 let tcp_stream = R::connect(addr).await?;
@@ -661,7 +672,9 @@ impl<R: Runtime> Client<R> {
     ) -> Result<PooledConnection<R>> {
         let proxy_authority = proxy.authority()?;
         let default_port = 80;
-        let proxy_addr = Self::resolve_authority(proxy_authority, default_port).await?;
+        let proxy_addr = self
+            .resolve_authority(proxy_authority, default_port)
+            .await?;
         let tcp_stream = R::connect(proxy_addr).await?;
 
         if is_https {
@@ -823,17 +836,25 @@ impl<R: Runtime> Client<R> {
     }
 
     async fn resolve_authority(
+        &self,
         authority: &http::uri::Authority,
         default_port: u16,
     ) -> Result<std::net::SocketAddr> {
         let host = authority.host();
         let port = authority.port_u16().unwrap_or(default_port);
-        Self::resolve_authority_raw(host, port).await
+        self.resolve_authority_raw(host, port).await
     }
 
-    async fn resolve_authority_raw(host: &str, port: u16) -> Result<std::net::SocketAddr> {
+    async fn resolve_authority_raw(&self, host: &str, port: u16) -> Result<std::net::SocketAddr> {
         if let Ok(addr) = format!("{host}:{port}").parse() {
             return Ok(addr);
+        }
+
+        if let Some(resolver) = &self.resolver {
+            return resolver
+                .resolve(host, port)
+                .await
+                .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")));
         }
 
         R::resolve(host, port)

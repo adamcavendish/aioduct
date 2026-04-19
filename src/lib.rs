@@ -42,7 +42,7 @@ pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;
 pub use response::Response;
 pub use retry::RetryConfig;
-pub use runtime::Runtime;
+pub use runtime::{Resolve, Runtime};
 pub use sse::{SseEvent, SseStream};
 
 pub use http::{HeaderMap, Method, StatusCode, Uri, Version};

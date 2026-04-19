@@ -2013,3 +2013,32 @@ async fn test_no_proxy_bare_domain_matches_subdomains() {
     assert!(no_proxy.matches("foo.example.com"));
     assert!(!no_proxy.matches("notexample.com"));
 }
+
+#[tokio::test]
+async fn test_custom_resolver() {
+    use std::pin::Pin;
+
+    let target_addr = start_server().await;
+
+    let resolver_addr = target_addr;
+    let client = Client::<TokioRuntime>::builder()
+        .resolver(
+            move |_host: &str,
+                  _port: u16|
+                  -> Pin<
+                Box<dyn std::future::Future<Output = std::io::Result<std::net::SocketAddr>> + Send>,
+            > { Box::pin(async move { Ok(resolver_addr) }) },
+        )
+        .build();
+
+    // Request to a fake host, but resolver redirects to our test server
+    let resp = client
+        .get("http://fake-host.invalid/")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}

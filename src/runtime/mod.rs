@@ -2,6 +2,7 @@ use std::future::Future;
 use std::io;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::time::Duration;
 
 /// Abstraction over async runtimes (tokio, smol, compio).
@@ -16,6 +17,33 @@ pub trait Runtime: Send + Sync + 'static {
     fn spawn<F>(future: F)
     where
         F: Future<Output = ()> + Send + 'static;
+}
+
+/// Custom DNS resolver trait.
+///
+/// Implement this to override the runtime's default DNS resolution.
+pub trait Resolve: Send + Sync + 'static {
+    fn resolve(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>>;
+}
+
+impl<F> Resolve for F
+where
+    F: Fn(&str, u16) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn resolve(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+        (self)(host, port)
+    }
 }
 
 /// Executor adapter that delegates to `R::spawn` for hyper's HTTP/2 handshake.
