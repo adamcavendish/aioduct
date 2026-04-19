@@ -54,25 +54,33 @@ impl<R: Runtime> Clone for ConnectionPool<R> {
 impl<R: Runtime> ConnectionPool<R> {
     /// Create a pool with the given capacity and timeout settings.
     pub fn new(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
-        Self {
+        let pool = Self {
             inner: Arc::new(Mutex::new(PoolInner::<R> {
                 idle: HashMap::new(),
                 max_idle_per_host,
                 idle_timeout,
                 _runtime: PhantomData,
             })),
-        }
+        };
+        pool.spawn_reaper();
+        pool
     }
 
-    /// Retrieve an idle connection for the given key, if available.
+    /// Retrieve an idle, ready connection for the given key.
+    ///
+    /// Uses LIFO ordering (most recently returned first) and checks readiness
+    /// on each candidate, trying all pooled connections before giving up.
     pub fn checkout(&self, key: &PoolKey) -> Option<PooledConnection<R>> {
         let mut inner = self.inner.lock().unwrap();
         let idle_timeout = inner.idle_timeout;
         let queue = inner.idle.get_mut(key)?;
         let now = Instant::now();
 
-        while let Some(entry) = queue.pop_front() {
-            if now.duration_since(entry.idle_since) < idle_timeout {
+        while let Some(entry) = queue.pop_back() {
+            if now.duration_since(entry.idle_since) >= idle_timeout {
+                continue;
+            }
+            if entry.connection.is_ready() {
                 if queue.is_empty() {
                     inner.idle.remove(key);
                 }
@@ -85,17 +93,41 @@ impl<R: Runtime> ConnectionPool<R> {
     }
 
     /// Return a connection to the pool for future reuse.
+    ///
+    /// When at capacity, evicts the oldest idle connection to make room.
     pub fn checkin(&self, key: PoolKey, connection: PooledConnection<R>) {
         let mut inner = self.inner.lock().unwrap();
         let max = inner.max_idle_per_host;
         let queue = inner.idle.entry(key).or_default();
 
-        if queue.len() < max {
-            queue.push_back(IdleConnection::<R> {
-                connection,
-                idle_since: Instant::now(),
-                _runtime: PhantomData,
-            });
+        if queue.len() >= max {
+            queue.pop_front();
         }
+        queue.push_back(IdleConnection::<R> {
+            connection,
+            idle_since: Instant::now(),
+            _runtime: PhantomData,
+        });
+    }
+
+    fn spawn_reaper(&self) {
+        let inner = Arc::clone(&self.inner);
+        R::spawn(async move {
+            loop {
+                let timeout = {
+                    let guard = inner.lock().unwrap();
+                    guard.idle_timeout
+                };
+                R::sleep(timeout).await;
+
+                let mut guard = inner.lock().unwrap();
+                let now = Instant::now();
+                let idle_timeout = guard.idle_timeout;
+                guard.idle.retain(|_, queue| {
+                    queue.retain(|entry| now.duration_since(entry.idle_since) < idle_timeout);
+                    !queue.is_empty()
+                });
+            }
+        });
     }
 }

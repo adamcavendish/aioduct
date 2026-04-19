@@ -625,12 +625,9 @@ impl<R: Runtime> Client<R> {
         let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
 
         if let Some(mut conn) = self.pool.checkout(&pool_key) {
-            if conn.is_ready() {
-                let resp =
-                    Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
-                self.pool.checkin(pool_key, conn);
-                return Ok(resp);
-            }
+            let resp = Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
+            self.pool.checkin(pool_key, conn);
+            return Ok(resp);
         }
 
         #[cfg(feature = "http3")]

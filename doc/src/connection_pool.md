@@ -10,9 +10,16 @@ Connections are keyed by `(scheme, authority)` — for example, `(https, api.exa
 
 ### Lifecycle
 
-1. **Checkout**: When a request is made, the pool checks for an existing idle connection to the target origin. Expired connections (past idle timeout) are evicted during checkout.
+1. **Checkout**: When a request is made, the pool checks for an existing idle connection to the target origin. It uses LIFO ordering (most recently returned first) to prefer the freshest connections. Each candidate is checked for readiness — if a connection is stale or closed, it's discarded and the next one is tried.
 2. **Send**: The request is sent on the connection (either reused or freshly established).
-3. **Checkin**: After the response headers are received, the connection is returned to the pool for future reuse — provided it's still alive and the pool hasn't reached `max_idle_per_host`.
+3. **Checkin**: After the response headers are received, the connection is returned to the pool. When at capacity, the oldest idle connection is evicted to make room for the new one.
+
+### Idle Eviction
+
+Connections are evicted in three ways:
+- **On checkout**: Expired connections (past idle timeout) are discarded while searching for a ready one.
+- **On checkin**: When the per-host queue is full, the oldest connection is evicted.
+- **Background reaper**: A periodic background task runs at the idle timeout interval and removes all expired connections, preventing memory leaks from unused hosts.
 
 ### HTTP/2 Multiplexing
 
@@ -44,4 +51,4 @@ let client = Client::<TokioRuntime>::builder()
 
 ## Connection Health
 
-On checkout, the pool verifies the connection is still ready using hyper's `SendRequest::is_ready()`. If the connection has been closed by the server (e.g., due to keep-alive timeout), it's discarded and a new connection is established.
+On checkout, the pool verifies each candidate connection is still ready using hyper's `SendRequest::is_ready()`. If a connection has been closed by the server (e.g., due to keep-alive timeout), it's discarded and the next pooled connection is tried. If no ready connection is found, a new one is established.
