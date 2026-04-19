@@ -21,8 +21,11 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Multi-runtime** — tokio, smol, and compio (io_uring) via feature flags
 - **rustls TLS** — async handshake with ALPN-based HTTP/1.1 and HTTP/2 negotiation
 - **Connection pooling** — keyed by (scheme, authority) with idle timeout and per-host limits
-- **Redirect following** — RFC-compliant handling of 301/302/303/307/308
-- **Timeouts** — per-request and client-level defaults
+- **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping
+- **Timeouts** — per-request, client-level, and connect timeouts
+- **Decompression** — automatic gzip, brotli, zstd, deflate response decompression
+- **Proxy** — HTTP proxy with CONNECT tunneling, system proxy detection (HTTP_PROXY/NO_PROXY)
+- **Custom DNS** — pluggable resolver via the `Resolve` trait
 - **JSON** — optional `json` feature for request/response serialization
 - **Auth helpers** — bearer token, basic auth
 - **Form data** — URL-encoded form bodies
@@ -69,14 +72,18 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 
 ## Feature Flags
 
-| Feature  | Description                             | Stability    |
-|----------|-----------------------------------------|--------------|
-| `tokio`  | Tokio async runtime                     | Stable       |
-| `smol`   | Smol async runtime                      | Stable       |
-| `compio` | Compio runtime (io_uring / IOCP)        | Experimental |
-| `rustls` | TLS via rustls (required for HTTPS)     | Stable       |
-| `json`   | JSON request/response with serde        | Stable       |
-| `http3`  | HTTP/3 via h3 + h3-quinn               | Experimental |
+| Feature   | Description                             | Stability    |
+|-----------|----------------------------------------|--------------|
+| `tokio`   | Tokio async runtime                    | Stable       |
+| `smol`    | Smol async runtime                     | Stable       |
+| `compio`  | Compio runtime (io_uring / IOCP)       | Experimental |
+| `rustls`  | TLS via rustls (required for HTTPS)    | Stable       |
+| `json`    | JSON request/response with serde       | Stable       |
+| `gzip`    | Gzip response decompression            | Stable       |
+| `deflate` | Deflate response decompression         | Stable       |
+| `brotli`  | Brotli response decompression          | Stable       |
+| `zstd`    | Zstd response decompression            | Stable       |
+| `http3`   | HTTP/3 via h3 + h3-quinn              | Experimental |
 
 At least one runtime feature must be enabled or compilation will fail.
 
