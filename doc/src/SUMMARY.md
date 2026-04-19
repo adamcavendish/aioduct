@@ -14,6 +14,7 @@
 - [Streaming Downloads](streaming.md)
 - [Streaming Uploads](streaming_upload.md)
 - [Parallel Chunk Download](chunk_download.md)
+- [HTTP/3](http3.md)
 - [Cookie Jar](cookies.md)
 - [Proxy Support](proxy.md)
 - [API Reference](api_reference.md)

@@ -16,7 +16,7 @@ rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile"]
 tokio = ["dep:tokio"]
 smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
 compio = ["dep:compio-runtime", "dep:compio-net"]
-http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "rustls"]
+http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:futures-util", "rustls"]
 
 [dependencies]
 # Core — always required
@@ -54,6 +54,7 @@ compio-net = { version = "0.4", optional = true }
 h3 = { version = "0.0.8", optional = true }
 h3-quinn = { version = "0.0.10", optional = true }
 quinn = { version = "0.11", optional = true, default-features = false, features = ["rustls-ring"] }
+futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

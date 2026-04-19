@@ -19,6 +19,10 @@ impl RustlsConnector {
         Self { config }
     }
 
+    pub fn config(&self) -> &Arc<rustls::ClientConfig> {
+        &self.config
+    }
+
     pub fn with_webpki_roots() -> Self {
         let root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());

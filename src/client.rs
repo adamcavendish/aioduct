@@ -32,6 +32,8 @@ pub struct Client<R: Runtime> {
     proxy: Option<ProxyConfig>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
+    #[cfg(feature = "http3")]
+    h3_endpoint: Option<quinn::Endpoint>,
     _runtime: PhantomData<R>,
 }
 
@@ -47,6 +49,8 @@ impl<R: Runtime> Clone for Client<R> {
             proxy: self.proxy.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
+            #[cfg(feature = "http3")]
+            h3_endpoint: self.h3_endpoint.clone(),
             _runtime: PhantomData,
         }
     }
@@ -63,6 +67,8 @@ pub struct ClientBuilder<R: Runtime> {
     proxy: Option<ProxyConfig>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
+    #[cfg(feature = "http3")]
+    h3_endpoint: Option<quinn::Endpoint>,
     _runtime: PhantomData<R>,
 }
 
@@ -82,6 +88,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             proxy: None,
             #[cfg(feature = "rustls")]
             tls: None,
+            #[cfg(feature = "http3")]
+            h3_endpoint: None,
             _runtime: PhantomData,
         }
     }
@@ -144,6 +152,24 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    #[cfg(feature = "http3")]
+    pub fn http3(mut self, enable: bool) -> Self {
+        if enable {
+            let tls_config = self
+                .tls
+                .as_ref()
+                .expect("HTTP/3 requires a TLS connector — call .tls() before .http3(true)")
+                .config()
+                .clone();
+            let endpoint = crate::h3_transport::build_quinn_endpoint(tls_config)
+                .expect("failed to build QUIC endpoint");
+            self.h3_endpoint = Some(endpoint);
+        } else {
+            self.h3_endpoint = None;
+        }
+        self
+    }
+
     pub fn build(self) -> Client<R> {
         Client {
             pool: ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout),
@@ -155,6 +181,8 @@ impl<R: Runtime> ClientBuilder<R> {
             proxy: self.proxy,
             #[cfg(feature = "rustls")]
             tls: self.tls,
+            #[cfg(feature = "http3")]
+            h3_endpoint: self.h3_endpoint,
             _runtime: PhantomData,
         }
     }
@@ -179,6 +207,14 @@ impl<R: Runtime> Client<R> {
     pub fn with_rustls() -> Self {
         Self::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
+            .build()
+    }
+
+    #[cfg(feature = "http3")]
+    pub fn with_http3() -> Self {
+        Self::builder()
+            .tls(crate::tls::RustlsConnector::with_webpki_roots())
+            .http3(true)
             .build()
     }
 
@@ -387,6 +423,23 @@ impl<R: Runtime> Client<R> {
             .authority()
             .ok_or_else(|| Error::InvalidUrl("missing authority".into()))?;
 
+        let is_https = scheme == &http::uri::Scheme::HTTPS;
+
+        #[cfg(feature = "http3")]
+        if is_https {
+            if let Some(endpoint) = &self.h3_endpoint {
+                let default_port = 443u16;
+                let addr = Self::resolve_authority(authority, default_port).await?;
+                let host = authority.host().to_owned();
+                let quinn_conn = endpoint
+                    .connect(addr, &host)
+                    .map_err(|e| Error::Other(Box::new(e)))?
+                    .await
+                    .map_err(|e| Error::Other(Box::new(e)))?;
+                return crate::h3_transport::send_h3_request::<R>(quinn_conn, request).await;
+            }
+        }
+
         let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
 
         if let Some(mut conn) = self.pool.checkout(&pool_key) {
@@ -396,8 +449,6 @@ impl<R: Runtime> Client<R> {
                 return Ok(resp);
             }
         }
-
-        let is_https = scheme == &http::uri::Scheme::HTTPS;
 
         let mut pooled = if let Some(proxy) = &self.proxy {
             self.connect_via_proxy(proxy, authority, is_https).await?
