@@ -77,8 +77,10 @@ impl TlsInfo {
 
 /// Async TLS handshake abstraction.
 pub trait TlsConnect<R: Runtime>: Send + Sync + 'static {
+    /// The TLS-wrapped stream type returned after handshake.
     type Stream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
 
+    /// Perform a TLS handshake over the given TCP stream.
     fn connect(
         &self,
         server_name: &str,

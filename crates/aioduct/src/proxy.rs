@@ -232,6 +232,7 @@ impl NoProxy {
         Self::new(&val)
     }
 
+    /// Returns `true` if the given host matches any bypass rule.
     pub fn matches(&self, host: &str) -> bool {
         let host = host.to_lowercase();
         for rule in &self.rules {

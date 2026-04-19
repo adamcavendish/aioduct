@@ -13,6 +13,7 @@ use crate::middleware::Middleware;
 pub struct TracingMiddleware;
 
 impl TracingMiddleware {
+    /// Create a new tracing middleware.
     pub fn new() -> Self {
         Self
     }

@@ -1,3 +1,4 @@
+/// Connection pool module with types for managing idle connections.
 pub mod connection;
 
 pub use connection::{HttpConnection, PooledConnection};
@@ -14,7 +15,9 @@ use crate::runtime::Runtime;
 /// Connection pool key identifying a (scheme, authority) pair.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct PoolKey {
+    /// The URI scheme (http or https).
     pub scheme: Scheme,
+    /// The URI authority (host and optional port).
     pub authority: Authority,
 }
 

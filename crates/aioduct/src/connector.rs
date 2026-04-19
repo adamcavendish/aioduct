@@ -14,7 +14,9 @@ use crate::runtime::Runtime;
 /// A connector request containing the target address info.
 #[derive(Debug, Clone)]
 pub struct ConnectInfo {
+    /// The target URI being connected to.
     pub uri: Uri,
+    /// The resolved socket address.
     pub addr: SocketAddr,
 }
 
@@ -24,6 +26,7 @@ pub struct RuntimeConnector<R: Runtime> {
 }
 
 impl<R: Runtime> RuntimeConnector<R> {
+    /// Create a new runtime connector.
     pub fn new() -> Self {
         Self {
             _runtime: std::marker::PhantomData,

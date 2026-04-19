@@ -6,13 +6,13 @@ use crate::error::{Error, HyperBody};
 /// A parsed Server-Sent Event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SseEvent {
-    /// Event type.
+    /// Event type (from the `event:` field).
     pub event: Option<String>,
-    /// Event payload.
+    /// Event payload (from the `data:` field).
     pub data: String,
-    /// Event ID.
+    /// Event ID (from the `id:` field).
     pub id: Option<String>,
-    /// Suggested reconnect delay in milliseconds.
+    /// Suggested reconnect delay in milliseconds (from the `retry:` field).
     pub retry: Option<u64>,
 }
 

@@ -3,6 +3,8 @@
 //! aioduct is runtime-agnostic: enable `tokio`, `smol`, or `compio` via feature flags.
 //! For HTTPS, enable the `rustls` feature.
 
+#![deny(missing_docs)]
+
 #[cfg(not(any(
     feature = "tokio",
     feature = "smol",
@@ -11,38 +13,62 @@
 )))]
 compile_error!("aioduct: enable at least one runtime feature: tokio, smol, compio, or wasm");
 
+/// Blocking (synchronous) HTTP client wrapper.
 #[cfg(feature = "blocking")]
 pub mod blocking;
+/// Request and response body types.
 pub mod body;
+/// HTTP response caching with conditional validation.
 pub mod cache;
+/// Parallel range-request file downloader.
 pub mod chunk_download;
+/// HTTP client with connection pooling and redirect handling.
 pub mod client;
+/// Tower-based connector layer support.
 #[cfg(feature = "tower")]
 pub mod connector;
+/// Cookie storage and automatic cookie handling.
 pub mod cookie;
+/// Error types for HTTP operations.
 pub mod error;
+/// Multipart/form-data request body builder.
 pub mod multipart;
+/// Connection pool for HTTP keep-alive.
 pub mod pool;
+/// HTTP and SOCKS proxy configuration.
 pub mod proxy;
+/// Redirect policy configuration.
 pub mod redirect;
+/// Request builder for configuring and sending HTTP requests.
 pub mod request;
+/// HTTP response type with status, headers, and body.
 pub mod response;
+/// Automatic retry with exponential backoff.
 pub mod retry;
+/// Async runtime abstraction layer.
 pub mod runtime;
+/// Server-Sent Events (SSE) stream parser.
 pub mod sse;
 mod timeout;
+/// TLS configuration and connector types.
 pub mod tls;
 
 mod decompress;
+/// Hickory DNS resolver integration.
 #[cfg(feature = "hickory-dns")]
 pub mod hickory;
+/// HTTP/2 connection configuration.
 pub mod http2;
+/// Request/response middleware trait and stack.
 pub mod middleware;
 mod socks4;
 mod socks5;
+/// Token-bucket rate limiter for throttling requests.
 pub mod throttle;
+/// HTTP upgrade (e.g., WebSocket) support.
 pub mod upgrade;
 
+/// WebAssembly runtime support.
 #[cfg(feature = "wasm")]
 pub mod wasm;
 

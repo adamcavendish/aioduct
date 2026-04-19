@@ -10,16 +10,23 @@ use std::time::Duration;
 /// Abstraction over async runtimes (tokio, smol, compio).
 #[allow(async_fn_in_trait)]
 pub trait Runtime: Send + Sync + 'static {
+    /// The runtime's TCP stream type.
     type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
+    /// A sleep future returned by the runtime.
     type Sleep: Future<Output = ()> + Send + Sync;
 
+    /// Connect to a remote address over TCP.
     fn connect(addr: SocketAddr) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
+    /// Resolve a hostname to a socket address.
     fn resolve(host: &str, port: u16) -> impl Future<Output = io::Result<SocketAddr>> + Send;
+    /// Sleep for the given duration.
     fn sleep(duration: Duration) -> Self::Sleep;
+    /// Spawn a background task.
     fn spawn<F>(future: F)
     where
         F: Future<Output = ()> + Send + 'static;
 
+    /// Configure TCP keepalive on a stream.
     fn set_tcp_keepalive(
         _stream: &Self::TcpStream,
         _time: Duration,
@@ -29,6 +36,7 @@ pub trait Runtime: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Bind a TCP stream to a network interface (Linux only).
     #[cfg(target_os = "linux")]
     fn bind_device(_stream: &Self::TcpStream, _interface: &str) -> io::Result<()> {
         Err(io::Error::new(
@@ -37,16 +45,20 @@ pub trait Runtime: Send + Sync + 'static {
         ))
     }
 
+    /// Convert a `std::net::TcpStream` into the runtime's stream type.
     fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream>;
 
+    /// Connect to a remote address, binding to a specific local IP.
     fn connect_bound(
         addr: SocketAddr,
         local: std::net::IpAddr,
     ) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
 
+    /// The runtime's Unix domain socket stream type.
     #[cfg(unix)]
     type UnixStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
 
+    /// Connect to a Unix domain socket.
     #[cfg(unix)]
     fn connect_unix(path: &Path) -> impl Future<Output = io::Result<Self::UnixStream>> + Send;
 }
@@ -55,6 +67,7 @@ pub trait Runtime: Send + Sync + 'static {
 ///
 /// Implement this to override the runtime's default DNS resolution.
 pub trait Resolve: Send + Sync + 'static {
+    /// Resolve a hostname and port to a socket address.
     fn resolve(
         &self,
         host: &str,
@@ -104,16 +117,19 @@ pub fn hyper_executor<R: Runtime>() -> HyperExecutor<R> {
     HyperExecutor(PhantomData)
 }
 
+/// Tokio runtime implementation.
 #[cfg(feature = "tokio")]
 pub mod tokio_rt;
 #[cfg(feature = "tokio")]
 pub use tokio_rt::TokioRuntime;
 
+/// Smol runtime implementation.
 #[cfg(feature = "smol")]
 pub mod smol_rt;
 #[cfg(feature = "smol")]
 pub use smol_rt::SmolRuntime;
 
+/// Compio runtime implementation.
 #[cfg(feature = "compio")]
 pub mod compio_rt;
 #[cfg(feature = "compio")]

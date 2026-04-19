@@ -89,109 +89,130 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
+    /// Set the idle connection timeout.
     pub fn pool_idle_timeout(mut self, timeout: Duration) -> Self {
         self.inner = self.inner.pool_idle_timeout(timeout);
         self
     }
 
+    /// Set the max idle connections per host.
     pub fn pool_max_idle_per_host(mut self, max: usize) -> Self {
         self.inner = self.inner.pool_max_idle_per_host(max);
         self
     }
 
+    /// Set the maximum number of redirects to follow.
     pub fn max_redirects(mut self, max: usize) -> Self {
         self.inner = self.inner.max_redirects(max);
         self
     }
 
+    /// Set a custom redirect policy.
     pub fn redirect_policy(mut self, policy: crate::RedirectPolicy) -> Self {
         self.inner = self.inner.redirect_policy(policy);
         self
     }
 
+    /// Set a default request timeout.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.inner = self.inner.timeout(timeout);
         self
     }
 
+    /// Set a timeout for establishing connections.
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
         self.inner = self.inner.connect_timeout(timeout);
         self
     }
 
+    /// Set the User-Agent header for all requests.
     pub fn user_agent(mut self, value: impl AsRef<str>) -> Self {
         self.inner = self.inner.user_agent(value);
         self
     }
 
+    /// Only allow HTTPS URLs.
     pub fn https_only(mut self, enable: bool) -> Self {
         self.inner = self.inner.https_only(enable);
         self
     }
 
+    /// Add headers sent with every request.
     pub fn default_headers(mut self, headers: HeaderMap) -> Self {
         self.inner = self.inner.default_headers(headers);
         self
     }
 
+    /// Set a default retry configuration.
     pub fn retry(mut self, config: crate::RetryConfig) -> Self {
         self.inner = self.inner.retry(config);
         self
     }
 
+    /// Enable cookie storage with the given jar.
     pub fn cookie_jar(mut self, jar: crate::CookieJar) -> Self {
         self.inner = self.inner.cookie_jar(jar);
         self
     }
 
+    /// Set a custom DNS resolver.
     pub fn resolver(mut self, resolver: impl crate::Resolve) -> Self {
         self.inner = self.inner.resolver(resolver);
         self
     }
 
+    /// Route requests through an HTTP proxy.
     pub fn proxy(mut self, config: crate::ProxyConfig) -> Self {
         self.inner = self.inner.proxy(config);
         self
     }
 
+    /// Use proxy settings from environment variables.
     pub fn system_proxy(mut self) -> Self {
         self.inner = self.inner.system_proxy();
         self
     }
 
+    /// Disable connection pooling.
     pub fn no_connection_reuse(mut self) -> Self {
         self.inner = self.inner.no_connection_reuse();
         self
     }
 
+    /// Disable automatic response body decompression.
     pub fn no_decompression(mut self) -> Self {
         self.inner = self.inner.no_decompression();
         self
     }
 
+    /// Route all requests through a Unix domain socket.
     #[cfg(unix)]
     pub fn unix_socket(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.inner = self.inner.unix_socket(path);
         self
     }
 
+    /// Enable HTTP response caching.
     pub fn cache(mut self, cache: crate::cache::HttpCache) -> Self {
         self.inner = self.inner.cache(cache);
         self
     }
 
+    /// Set the TLS connector.
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.inner = self.inner.tls(connector);
         self
     }
 
+    /// Accept invalid TLS certificates (INSECURE).
     #[cfg(feature = "rustls")]
     pub fn danger_accept_invalid_certs(mut self) -> Self {
         self.inner = self.inner.danger_accept_invalid_certs();
         self
     }
 
+    /// Add custom trusted CA certificates.
     #[cfg(feature = "rustls")]
     pub fn add_root_certificates(mut self, certs: &[crate::Certificate]) -> Self {
         self.inner = self.inner.add_root_certificates(certs);
@@ -219,6 +240,7 @@ pub struct RequestBuilder<'a> {
 }
 
 impl RequestBuilder<'_> {
+    /// Add a typed header to the request.
     pub fn header(
         mut self,
         name: http::header::HeaderName,
@@ -228,42 +250,50 @@ impl RequestBuilder<'_> {
         self
     }
 
+    /// Add multiple headers to the request.
     pub fn headers(mut self, headers: HeaderMap) -> Self {
         self.inner = self.inner.headers(headers);
         self
     }
 
+    /// Set a Bearer token Authorization header.
     pub fn bearer_auth(mut self, token: &str) -> Self {
         self.inner = self.inner.bearer_auth(token);
         self
     }
 
+    /// Set a Basic Authorization header.
     pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         self.inner = self.inner.basic_auth(username, password);
         self
     }
 
+    /// Set a buffered request body.
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {
         self.inner = self.inner.body(body);
         self
     }
 
+    /// Serialize a value as JSON and set it as the request body.
     #[cfg(feature = "json")]
     pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self, Error> {
         self.inner = self.inner.json(value)?;
         Ok(self)
     }
 
+    /// Set a timeout for this request.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.inner = self.inner.timeout(timeout);
         self
     }
 
+    /// Set a retry configuration for this request.
     pub fn retry(mut self, config: crate::RetryConfig) -> Self {
         self.inner = self.inner.retry(config);
         self
     }
 
+    /// Force a specific HTTP version.
     pub fn version(mut self, version: Version) -> Self {
         self.inner = self.inner.version(version);
         self
@@ -292,53 +322,65 @@ impl std::fmt::Debug for Response {
 }
 
 impl Response {
+    /// Returns the HTTP status code.
     pub fn status(&self) -> StatusCode {
         self.inner.status()
     }
 
+    /// Returns the response headers.
     pub fn headers(&self) -> &HeaderMap {
         self.inner.headers()
     }
 
+    /// Returns the HTTP version.
     pub fn version(&self) -> Version {
         self.inner.version()
     }
 
+    /// Returns the final URL of this response.
     pub fn url(&self) -> &Uri {
         self.inner.url()
     }
 
+    /// Returns the remote socket address.
     pub fn remote_addr(&self) -> Option<SocketAddr> {
         self.inner.remote_addr()
     }
 
+    /// Returns the Content-Length header value, if present.
     pub fn content_length(&self) -> Option<u64> {
         self.inner.content_length()
     }
 
+    /// Returns TLS handshake info, if the connection used TLS.
     pub fn tls_info(&self) -> Option<&crate::tls::TlsInfo> {
         self.inner.tls_info()
     }
 
+    /// Returns an error if the status is 4xx or 5xx, consuming the response.
     pub fn error_for_status(self) -> Result<Self, Error> {
         let rt = self.rt;
         let inner = self.inner.error_for_status()?;
         Ok(Self { inner, rt })
     }
 
+    /// Returns an error if the status is 4xx or 5xx, without consuming the response.
     pub fn error_for_status_ref(&self) -> Result<&Self, Error> {
         self.inner.error_for_status_ref()?;
         Ok(self)
     }
 
+    /// Consume the response body and return it as bytes.
     pub fn bytes(self) -> Result<Bytes, Error> {
         self.rt.block_on(self.inner.bytes())
     }
 
+    /// Consume the response body and return it as a UTF-8 string.
     pub fn text(self) -> Result<String, Error> {
         self.rt.block_on(self.inner.text())
     }
 
+    /// Consume the response body and deserialize it as JSON.
     #[cfg(feature = "json")]
     pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
         self.rt.block_on(self.inner.json())

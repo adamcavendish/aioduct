@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 use http::HeaderMap;
 use http::header::{COOKIE, SET_COOKIE};
 
+/// A parsed HTTP cookie.
 #[derive(Clone, Debug)]
 pub struct Cookie {
     name: String,
@@ -17,26 +18,32 @@ pub struct Cookie {
 }
 
 impl Cookie {
+    /// Returns the cookie name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Returns the cookie value.
     pub fn value(&self) -> &str {
         &self.value
     }
 
+    /// Returns the cookie domain, if set.
     pub fn domain(&self) -> Option<&str> {
         self.domain.as_deref()
     }
 
+    /// Returns the cookie path, if set.
     pub fn path(&self) -> Option<&str> {
         self.path.as_deref()
     }
 
+    /// Returns whether this cookie requires a secure (HTTPS) connection.
     pub fn secure(&self) -> bool {
         self.secure
     }
 
+    /// Returns whether this cookie is HTTP-only (not accessible to scripts).
     pub fn http_only(&self) -> bool {
         self.http_only
     }

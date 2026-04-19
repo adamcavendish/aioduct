@@ -25,6 +25,7 @@ impl Default for Http2Config {
 }
 
 impl Http2Config {
+    /// Create a new HTTP/2 config with all fields set to `None` (use hyper defaults).
     pub fn new() -> Self {
         Self {
             initial_stream_window_size: None,

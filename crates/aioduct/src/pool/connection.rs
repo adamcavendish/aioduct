@@ -5,8 +5,11 @@ use crate::runtime::Runtime;
 
 /// An established HTTP connection at a specific protocol version.
 pub enum HttpConnection {
+    /// An HTTP/1.1 connection.
     H1(hyper::client::conn::http1::SendRequest<crate::error::HyperBody>),
+    /// An HTTP/2 connection.
     H2(hyper::client::conn::http2::SendRequest<crate::error::HyperBody>),
+    /// An HTTP/3 connection.
     #[cfg(feature = "http3")]
     H3(h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>),
 }

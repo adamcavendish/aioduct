@@ -67,6 +67,7 @@ struct CacheInner {
 /// Configuration for the HTTP cache.
 #[derive(Clone, Debug)]
 pub struct CacheConfig {
+    /// Maximum number of entries the cache can hold.
     pub max_entries: usize,
 }
 
