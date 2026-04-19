@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
-use http::Request;
+use http::{Request, Uri};
 use http_body_util::BodyExt;
 
 use crate::error::{Error, HyperBody, Result};
@@ -27,6 +27,7 @@ pub(crate) async fn connect_h3<R: Runtime>(
 pub(crate) async fn send_on_h3(
     send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
     request: Request<HyperBody>,
+    url: Uri,
 ) -> Result<Response> {
     let (parts, body) = request.into_parts();
     let head_req = Request::from_parts(parts, ());
@@ -75,7 +76,7 @@ pub(crate) async fn send_on_h3(
     let hyper_body: HyperBody = http_body_util::StreamBody::new(body_stream).boxed();
     let http_resp = http::Response::from_parts(resp_parts, hyper_body);
 
-    Ok(Response::new(http_resp))
+    Ok(Response::new(http_resp, url))
 }
 
 pub(crate) fn build_quinn_endpoint(

@@ -69,6 +69,39 @@ let client = Client::<TokioRuntime>::builder()
     .build();
 ```
 
+## Accepting Invalid Certificates
+
+For development and testing, you can disable certificate verification:
+
+```rust,no_run
+use aioduct::Client;
+use aioduct::runtime::TokioRuntime;
+
+let client = Client::<TokioRuntime>::builder()
+    .danger_accept_invalid_certs()
+    .build();
+```
+
+> **Warning**: Never use this in production. It disables all certificate verification, making the connection vulnerable to MITM attacks.
+
+## HTTPS-Only Mode
+
+To enforce that all requests use HTTPS:
+
+```rust,no_run
+use aioduct::Client;
+use aioduct::runtime::TokioRuntime;
+use aioduct::tls::RustlsConnector;
+
+let client = Client::<TokioRuntime>::builder()
+    .tls(RustlsConnector::with_webpki_roots())
+    .https_only(true)
+    .build();
+
+// This will return an error:
+// client.get("http://example.com")?.send().await?;
+```
+
 ## Error Handling
 
 TLS errors surface as `Error::Tls(Box<dyn std::error::Error + Send + Sync>)`. Common failure modes:

@@ -28,6 +28,9 @@ pub enum Error {
     #[error("invalid URL: {0}")]
     InvalidUrl(String),
 
+    #[error("HTTP status error: {0}")]
+    Status(http::StatusCode),
+
     #[error("{0}")]
     Other(BoxError),
 }

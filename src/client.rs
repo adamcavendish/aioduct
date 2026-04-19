@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http::header::{HOST, HeaderMap, HeaderValue, LOCATION, USER_AGENT};
+use http::header::{
+    AUTHORIZATION, COOKIE, HOST, HeaderMap, HeaderValue, LOCATION, PROXY_AUTHORIZATION, USER_AGENT,
+};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
@@ -27,6 +29,8 @@ pub struct Client<R: Runtime> {
     pool: ConnectionPool<R>,
     redirect_policy: RedirectPolicy,
     timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    https_only: bool,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
@@ -48,6 +52,8 @@ impl<R: Runtime> Clone for Client<R> {
             pool: self.pool.clone(),
             redirect_policy: self.redirect_policy.clone(),
             timeout: self.timeout,
+            connect_timeout: self.connect_timeout,
+            https_only: self.https_only,
             default_headers: self.default_headers.clone(),
             retry: self.retry.clone(),
             cookie_jar: self.cookie_jar.clone(),
@@ -71,6 +77,8 @@ pub struct ClientBuilder<R: Runtime> {
     pool_max_idle_per_host: usize,
     redirect_policy: RedirectPolicy,
     timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    https_only: bool,
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
@@ -94,6 +102,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             pool_max_idle_per_host: 10,
             redirect_policy: RedirectPolicy::default(),
             timeout: None,
+            connect_timeout: None,
+            https_only: false,
             default_headers,
             retry: None,
             cookie_jar: None,
@@ -140,6 +150,18 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Set a timeout for establishing connections (TCP + TLS handshake).
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = Some(timeout);
+        self
+    }
+
+    /// Only allow HTTPS URLs; reject plain HTTP requests with an error.
+    pub fn https_only(mut self, enable: bool) -> Self {
+        self.https_only = enable;
+        self
+    }
+
     /// Add headers sent with every request.
     pub fn default_headers(mut self, headers: HeaderMap) -> Self {
         self.default_headers.extend(headers);
@@ -175,6 +197,12 @@ impl<R: Runtime> ClientBuilder<R> {
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.tls = Some(Arc::new(connector));
         self
+    }
+
+    #[cfg(feature = "rustls")]
+    /// Accept invalid TLS certificates (INSECURE — for testing/dev only).
+    pub fn danger_accept_invalid_certs(self) -> Self {
+        self.tls(crate::tls::RustlsConnector::danger_accept_invalid_certs())
     }
 
     #[cfg(feature = "http3")]
@@ -223,6 +251,8 @@ impl<R: Runtime> ClientBuilder<R> {
             pool: ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout),
             redirect_policy: self.redirect_policy,
             timeout: self.timeout,
+            connect_timeout: self.connect_timeout,
+            https_only: self.https_only,
             default_headers: self.default_headers,
             retry: self.retry,
             cookie_jar: self.cookie_jar,
@@ -346,6 +376,16 @@ impl<R: Runtime> Client<R> {
         body: Option<RequestBody>,
         version: Option<http::Version>,
     ) -> Result<Response> {
+        if self.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+            return Err(Error::Other(
+                format!(
+                    "https_only is enabled but URL scheme is {:?}",
+                    original_uri.scheme_str().unwrap_or("none")
+                )
+                .into(),
+            ));
+        }
+
         let mut current_uri = original_uri;
         let mut current_method = method;
         let mut current_body = body;
@@ -453,6 +493,7 @@ impl<R: Runtime> Client<R> {
                                 .map_err(|never| match never {})
                                 .boxed(),
                         )?,
+                    current_uri.clone(),
                 ));
             }
 
@@ -474,6 +515,15 @@ impl<R: Runtime> Client<R> {
                 if let Ok(host_value) = authority.as_str().parse() {
                     current_headers.insert(HOST, host_value);
                 }
+            }
+
+            // Strip sensitive headers on cross-origin redirect
+            let same_origin = current_uri.authority() == next_uri.authority()
+                && current_uri.scheme() == next_uri.scheme();
+            if !same_origin {
+                current_headers.remove(AUTHORIZATION);
+                current_headers.remove(COOKIE);
+                current_headers.remove(PROXY_AUTHORIZATION);
             }
 
             current_uri = next_uri;
@@ -506,7 +556,8 @@ impl<R: Runtime> Client<R> {
 
         if let Some(mut conn) = self.pool.checkout(&pool_key) {
             if conn.is_ready() {
-                let resp = Self::send_on_connection(&mut conn, request).await?;
+                let resp =
+                    Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
                 self.pool.checkin(pool_key, conn);
                 return Ok(resp);
             }
@@ -531,7 +582,8 @@ impl<R: Runtime> Client<R> {
                         .await
                         .map_err(|e| Error::Other(Box::new(e)))?;
                     let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
-                    let resp = Self::send_on_connection(&mut pooled, request).await?;
+                    let resp = Self::send_on_connection(&mut pooled, request, original_uri.clone())
+                        .await?;
                     self.pool.checkin(pool_key, pooled);
                     return Ok(resp);
                 }
@@ -543,16 +595,29 @@ impl<R: Runtime> Client<R> {
         } else {
             let default_port = if is_https { 443 } else { 80 };
             let addr = Self::resolve_authority(authority, default_port).await?;
-            let tcp_stream = R::connect(addr).await?;
 
-            if is_https {
-                self.connect_tls(tcp_stream, authority.host()).await?
-            } else {
-                self.connect_h1(tcp_stream).await?
+            let connect_fut = async {
+                let tcp_stream = R::connect(addr).await?;
+                if is_https {
+                    self.connect_tls(tcp_stream, authority.host()).await
+                } else {
+                    self.connect_h1(tcp_stream).await
+                }
+            };
+
+            match self.connect_timeout {
+                Some(duration) => {
+                    crate::timeout::Timeout::WithTimeout {
+                        future: connect_fut,
+                        sleep: R::sleep(duration),
+                    }
+                    .await?
+                }
+                None => connect_fut.await?,
             }
         };
 
-        let resp = Self::send_on_connection(&mut pooled, request).await?;
+        let resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
         self.pool.checkin(pool_key, pooled);
 
         Ok(resp)
@@ -707,20 +772,23 @@ impl<R: Runtime> Client<R> {
     async fn send_on_connection(
         conn: &mut PooledConnection<R>,
         request: http::Request<HyperBody>,
+        url: Uri,
     ) -> Result<Response> {
         match &mut conn.conn {
             HttpConnection::H1(sender) => {
                 let resp = sender.send_request(request).await?;
                 let resp = resp.map(|body| body.map_err(Error::Hyper).boxed());
-                Ok(Response::new(resp))
+                Ok(Response::new(resp, url))
             }
             HttpConnection::H2(sender) => {
                 let resp = sender.send_request(request).await?;
                 let resp = resp.map(|body| body.map_err(Error::Hyper).boxed());
-                Ok(Response::new(resp))
+                Ok(Response::new(resp, url))
             }
             #[cfg(feature = "http3")]
-            HttpConnection::H3(sender) => crate::h3_transport::send_on_h3(sender, request).await,
+            HttpConnection::H3(sender) => {
+                crate::h3_transport::send_on_h3(sender, request, url).await
+            }
         }
     }
 

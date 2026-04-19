@@ -43,4 +43,4 @@ pub use retry::RetryConfig;
 pub use runtime::Runtime;
 pub use sse::{SseEvent, SseStream};
 
-pub use http::{HeaderMap, Method, StatusCode, Version};
+pub use http::{HeaderMap, Method, StatusCode, Uri, Version};

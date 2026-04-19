@@ -46,12 +46,15 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 | Method                  | Default      | Description                          |
 |-------------------------|-------------|--------------------------------------|
 | `timeout(Duration)`     | None        | Default timeout for all requests     |
+| `connect_timeout(Duration)` | None   | Timeout for TCP connect + TLS handshake |
 | `max_redirects(usize)`  | 10          | Maximum redirect hops (0 = disabled) |
+| `https_only(bool)`      | false       | Reject non-HTTPS URLs                |
 | `pool_idle_timeout(Duration)` | 90s  | Idle connection lifetime             |
 | `pool_max_idle_per_host(usize)` | 10 | Max idle connections per origin      |
 | `default_headers(HeaderMap)` | User-Agent | Headers applied to every request |
 | `no_default_headers()`  | —           | Remove all default headers           |
 | `tls(RustlsConnector)`  | None        | Custom TLS configuration             |
+| `danger_accept_invalid_certs()` | —  | Accept any TLS certificate (INSECURE) |
 
 ## RequestBuilder
 
@@ -164,6 +167,26 @@ let status = resp.status();           // StatusCode
 let headers = resp.headers();         // &HeaderMap
 let version = resp.version();         // Version
 let length = resp.content_length();   // Option<u64>
+let url = resp.url();                 // &Uri — final URL after redirects
+# Ok(())
+# }
+```
+
+### Error on Status
+
+```rust,no_run
+# use aioduct::Client;
+# use aioduct::runtime::TokioRuntime;
+# async fn example() -> Result<(), aioduct::Error> {
+# let client = Client::<TokioRuntime>::new();
+// Consume the response, returning Err for 4xx/5xx
+let resp = client.get("http://example.com")?.send().await?
+    .error_for_status()?;
+
+// Non-consuming variant
+let resp = client.get("http://example.com")?.send().await?;
+resp.error_for_status_ref()?;
+let text = resp.text().await?;
 # Ok(())
 # }
 ```
@@ -202,6 +225,8 @@ aioduct follows redirects automatically (up to `max_redirects`, default 10):
 | 307    | Follow with original method + body  |
 | 308    | Follow with original method + body  |
 
+Sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are automatically stripped when redirecting to a different origin.
+
 Disable with `.max_redirects(0)` on the builder.
 
 ## Error Types
@@ -217,5 +242,6 @@ use aioduct::Error;
 // Error::Pool(_)         — connection pool errors
 // Error::Timeout         — request timed out
 // Error::InvalidUrl(_)   — URL parse or scheme errors
+// Error::Status(_)       — HTTP 4xx/5xx from error_for_status()
 // Error::Other(_)        — other boxed errors
 ```
