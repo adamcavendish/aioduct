@@ -166,6 +166,12 @@ impl ClientBuilder {
         self
     }
 
+    #[cfg(unix)]
+    pub fn unix_socket(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.inner = self.inner.unix_socket(path);
+        self
+    }
+
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.inner = self.inner.tls(connector);

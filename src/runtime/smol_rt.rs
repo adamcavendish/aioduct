@@ -83,7 +83,9 @@ impl Runtime for SmolRuntime {
         use socket2::SockRef;
         let sock_ref = SockRef::from(stream.inner());
         sock_ref.bind_device(Some(interface.as_bytes()))
-    }(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
+    }
+
+    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
         stream.set_nonblocking(true)?;
         stream.set_nodelay(true)?;
         let async_stream = smol::net::TcpStream::try_from(stream)?;
@@ -112,6 +114,15 @@ impl Runtime for SmolRuntime {
         std_stream.set_nonblocking(true)?;
         let smol_stream = smol::net::TcpStream::try_from(std_stream)?;
         Ok(SmolIo::new(smol_stream))
+    }
+
+    #[cfg(unix)]
+    type UnixStream = SmolIo<smol::net::unix::UnixStream>;
+
+    #[cfg(unix)]
+    async fn connect_unix(path: &std::path::Path) -> io::Result<Self::UnixStream> {
+        let stream = smol::net::unix::UnixStream::connect(path).await?;
+        Ok(SmolIo::new(stream))
     }
 }
 

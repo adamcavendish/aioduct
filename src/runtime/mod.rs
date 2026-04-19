@@ -2,6 +2,8 @@ use std::future::Future;
 use std::io;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::path::Path;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -41,6 +43,14 @@ pub trait Runtime: Send + Sync + 'static {
         addr: SocketAddr,
         local: std::net::IpAddr,
     ) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
+
+    #[cfg(unix)]
+    type UnixStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
+
+    #[cfg(unix)]
+    fn connect_unix(
+        path: &Path,
+    ) -> impl Future<Output = io::Result<Self::UnixStream>> + Send;
 }
 
 /// Custom DNS resolver trait.

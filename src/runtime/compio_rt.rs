@@ -115,7 +115,9 @@ impl Runtime for CompioRuntime {
         use socket2::SockRef;
         let sock_ref = SockRef::from(stream.inner().get_ref());
         sock_ref.bind_device(Some(interface.as_bytes()))
-    }(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
+    }
+
+    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
         stream.set_nonblocking(true)?;
         stream.set_nodelay(true)?;
         let async_stream = async_io::Async::new(stream)?;
@@ -147,6 +149,20 @@ impl Runtime for CompioRuntime {
             std_stream.set_nonblocking(true)?;
             let async_stream = async_io::Async::new(std_stream)?;
             Ok(CompioIo::new(async_stream))
+        })
+    }
+
+    #[cfg(unix)]
+    type UnixStream = CompioIo<async_io::Async<std::os::unix::net::UnixStream>>;
+
+    #[cfg(unix)]
+    fn connect_unix(
+        path: &std::path::Path,
+    ) -> impl Future<Output = io::Result<Self::UnixStream>> + Send {
+        let path = path.to_owned();
+        AssertSend(async move {
+            let stream = async_io::Async::<std::os::unix::net::UnixStream>::connect(&path).await?;
+            Ok(CompioIo::new(stream))
         })
     }
 }

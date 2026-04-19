@@ -1,6 +1,8 @@
 use std::future::Future;
 use std::marker::PhantomData;
 use std::net::IpAddr;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,6 +27,7 @@ use crate::request::RequestBuilder;
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::{Resolve, Runtime};
+#[cfg(feature = "rustls")]
 use crate::tls::TlsVersion;
 
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
@@ -42,6 +45,8 @@ pub struct Client<R: Runtime> {
     local_address: Option<IpAddr>,
     #[cfg(target_os = "linux")]
     interface: Option<String>,
+    #[cfg(unix)]
+    unix_socket: Option<PathBuf>,
     https_only: bool,
     referer: bool,
     no_connection_reuse: bool,
@@ -80,6 +85,8 @@ impl<R: Runtime> Clone for Client<R> {
             local_address: self.local_address,
             #[cfg(target_os = "linux")]
             interface: self.interface.clone(),
+            #[cfg(unix)]
+            unix_socket: self.unix_socket.clone(),
             https_only: self.https_only,
             referer: self.referer,
             no_connection_reuse: self.no_connection_reuse,
@@ -122,6 +129,8 @@ pub struct ClientBuilder<R: Runtime> {
     local_address: Option<IpAddr>,
     #[cfg(target_os = "linux")]
     interface: Option<String>,
+    #[cfg(unix)]
+    unix_socket: Option<PathBuf>,
     https_only: bool,
     referer: bool,
     accept_encoding: crate::decompress::AcceptEncoding,
@@ -176,6 +185,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             local_address: None,
             #[cfg(target_os = "linux")]
             interface: None,
+            #[cfg(unix)]
+            unix_socket: None,
             https_only: false,
             referer: false,
             accept_encoding: crate::decompress::AcceptEncoding::default(),
@@ -283,6 +294,16 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Bind outgoing connections to a specific network interface (Linux only).
     pub fn interface(mut self, name: impl Into<String>) -> Self {
         self.interface = Some(name.into());
+        self
+    }
+
+    #[cfg(unix)]
+    /// Route all requests through a Unix domain socket (e.g. Docker socket).
+    ///
+    /// The URI host is still sent in the `Host` header but the TCP connection
+    /// is replaced by a connection to the given socket path.
+    pub fn unix_socket(mut self, path: impl Into<PathBuf>) -> Self {
+        self.unix_socket = Some(path.into());
         self
     }
 
@@ -600,6 +621,8 @@ impl<R: Runtime> ClientBuilder<R> {
             local_address: self.local_address,
             #[cfg(target_os = "linux")]
             interface: self.interface,
+            #[cfg(unix)]
+            unix_socket: self.unix_socket,
             https_only: self.https_only,
             referer: self.referer,
             no_connection_reuse: self.no_connection_reuse,
@@ -999,7 +1022,35 @@ impl<R: Runtime> Client<R> {
             .as_ref()
             .and_then(|settings| settings.proxy_for(original_uri));
 
-        let mut pooled = if let Some(ref proxy) = proxy {
+        #[cfg(unix)]
+        let unix_socket = self.unix_socket.as_ref();
+        #[cfg(not(unix))]
+        let unix_socket: Option<&std::path::PathBuf> = None;
+
+        let mut pooled = if let Some(unix_path) = unix_socket {
+            let _ = &proxy; // suppress unused warning when unix_socket is set
+            #[cfg(unix)]
+            {
+                let connect_fut = async {
+                    let unix_stream = R::connect_unix(unix_path)
+                        .await
+                        .map_err(Error::Io)?;
+                    self.connect_plaintext(unix_stream).await
+                };
+                match self.connect_timeout {
+                    Some(duration) => {
+                        crate::timeout::Timeout::WithTimeout {
+                            future: connect_fut,
+                            sleep: R::sleep(duration),
+                        }
+                        .await?
+                    }
+                    None => connect_fut.await?,
+                }
+            }
+            #[cfg(not(unix))]
+            unreachable!()
+        } else if let Some(ref proxy) = proxy {
             self.connect_via_proxy(proxy, authority, is_https).await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
@@ -1192,29 +1243,38 @@ impl<R: Runtime> Client<R> {
         self.connect_tls(tcp_stream, target_authority.host()).await
     }
 
-    fn connect_plaintext(
+    fn connect_plaintext<S>(
         &self,
-        tcp_stream: R::TcpStream,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<R>>> + Send + '_>> {
+        stream: S,
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<R>>> + Send + '_>>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
         if self.http2_prior_knowledge {
-            Box::pin(self.connect_h2_prior_knowledge(tcp_stream))
+            Box::pin(self.connect_h2_prior_knowledge(stream))
         } else {
-            Box::pin(self.connect_h1(tcp_stream))
+            Box::pin(self.connect_h1(stream))
         }
     }
 
-    async fn connect_h1(&self, tcp_stream: R::TcpStream) -> Result<PooledConnection<R>> {
-        let (sender, conn) = hyper::client::conn::http1::handshake(tcp_stream).await?;
+    async fn connect_h1<S>(&self, stream: S) -> Result<PooledConnection<R>>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
+        let (sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
         R::spawn(async move {
             let _ = conn.with_upgrades().await;
         });
         Ok(PooledConnection::new_h1(sender))
     }
 
-    async fn connect_h2_prior_knowledge(
+    async fn connect_h2_prior_knowledge<S>(
         &self,
-        tcp_stream: R::TcpStream,
-    ) -> Result<PooledConnection<R>> {
+        stream: S,
+    ) -> Result<PooledConnection<R>>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
         let mut builder =
             hyper::client::conn::http2::Builder::new(crate::runtime::hyper_executor::<R>());
         if let Some(ref h2) = self.http2 {
@@ -1249,7 +1309,7 @@ impl<R: Runtime> Client<R> {
                 builder.max_concurrent_reset_streams(v);
             }
         }
-        let (sender, conn) = builder.handshake(tcp_stream).await?;
+        let (sender, conn) = builder.handshake(stream).await?;
         R::spawn(async move {
             let _ = conn.await;
         });

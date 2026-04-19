@@ -105,6 +105,15 @@ impl Runtime for TokioRuntime {
         stream.set_nodelay(true)?;
         Ok(TokioIo::new(stream))
     }
+
+    #[cfg(unix)]
+    type UnixStream = TokioIo<tokio::net::UnixStream>;
+
+    #[cfg(unix)]
+    async fn connect_unix(path: &std::path::Path) -> io::Result<Self::UnixStream> {
+        let stream = tokio::net::UnixStream::connect(path).await?;
+        Ok(TokioIo::new(stream))
+    }
 }
 
 // -- TokioSleep: bridges hyper::rt::Sleep to tokio::time::Sleep --
