@@ -174,6 +174,7 @@ pub struct CompioSleep {
 
 // Safety: see AssertSend rationale above.
 unsafe impl Send for CompioSleep {}
+unsafe impl Sync for CompioSleep {}
 
 impl Future for CompioSleep {
     type Output = ();

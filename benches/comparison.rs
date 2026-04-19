@@ -182,6 +182,7 @@ fn bench_single_get_text(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "json")]
 fn bench_json_parse(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (addr, aioduct_client) = rt.block_on(async {
@@ -455,9 +456,15 @@ criterion_group!(
     benches,
     bench_single_get,
     bench_single_get_text,
-    bench_json_parse,
     bench_concurrent_requests,
     bench_post_body,
     bench_large_body_download,
 );
+
+#[cfg(feature = "json")]
+criterion_group!(json_benches, bench_json_parse,);
+
+#[cfg(feature = "json")]
+criterion_main!(benches, json_benches);
+#[cfg(not(feature = "json"))]
 criterion_main!(benches);

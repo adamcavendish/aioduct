@@ -105,8 +105,7 @@ impl WasmClientBuilder {
     /// Set a default User-Agent header.
     pub fn user_agent(mut self, value: impl AsRef<str>) -> Self {
         if let Ok(val) = HeaderValue::from_str(value.as_ref()) {
-            self.default_headers
-                .insert(http::header::USER_AGENT, val);
+            self.default_headers.insert(http::header::USER_AGENT, val);
         }
         self
     }
@@ -244,29 +243,31 @@ impl<'a> WasmRequestBuilder<'a> {
         let timeout_handle = if let Some(duration) = timeout {
             let controller = abort_controller.clone().unwrap();
             let ms = duration.as_millis() as i32;
-            Some(window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                &wasm_bindgen::closure::Closure::once_into_js(move || {
-                    controller.abort();
-                })
-                .unchecked_into(),
-                ms,
-            ).map_err(|e| Error::Other(format!("setTimeout failed: {e:?}").into()))?)
+            Some(
+                window
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        &wasm_bindgen::closure::Closure::once_into_js(move || {
+                            controller.abort();
+                        })
+                        .unchecked_into(),
+                        ms,
+                    )
+                    .map_err(|e| Error::Other(format!("setTimeout failed: {e:?}").into()))?,
+            )
         } else {
             None
         };
 
-        let resp_value = JsFuture::from(resp_promise)
-            .await
-            .map_err(|e| {
-                let msg = js_sys::JSON::stringify(&e)
-                    .map(String::from)
-                    .unwrap_or_else(|_| format!("{e:?}"));
-                if msg.contains("abort") {
-                    Error::Timeout
-                } else {
-                    Error::Other(format!("fetch failed: {msg}").into())
-                }
-            })?;
+        let resp_value = JsFuture::from(resp_promise).await.map_err(|e| {
+            let msg = js_sys::JSON::stringify(&e)
+                .map(String::from)
+                .unwrap_or_else(|_| format!("{e:?}"));
+            if msg.contains("abort") {
+                Error::Timeout
+            } else {
+                Error::Other(format!("fetch failed: {msg}").into())
+            }
+        })?;
 
         if let Some(handle) = timeout_handle {
             window.clear_timeout_with_handle(handle);

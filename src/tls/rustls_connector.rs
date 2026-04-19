@@ -148,9 +148,7 @@ impl RustlsConnector {
             if !crls.is_empty() {
                 server_verifier_builder = server_verifier_builder.with_crls(crls);
             }
-            let verifier = server_verifier_builder
-                .build()
-                .map_err(io::Error::other)?;
+            let verifier = server_verifier_builder.build().map_err(io::Error::other)?;
 
             let verifier: Arc<dyn rustls::client::danger::ServerCertVerifier> =
                 if skip_hostname_verification {
@@ -473,14 +471,17 @@ impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
         ocsp_response: &[u8],
         now: rustls::pki_types::UnixTime,
     ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        match self
-            .inner
-            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
-        {
+        match self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        ) {
             Ok(v) => Ok(v),
-            Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::NotValidForName,
-            )) => Ok(rustls::client::danger::ServerCertVerified::assertion()),
+            Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName)) => {
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
             Err(e) => Err(e),
         }
     }

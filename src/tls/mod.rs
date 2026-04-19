@@ -152,8 +152,7 @@ impl CertificateRevocationList {
     /// Create one or more CRLs from PEM-encoded bytes.
     pub fn from_pem(pem: &[u8]) -> io::Result<Vec<Self>> {
         let mut reader = io::BufReader::new(pem);
-        let crls =
-            rustls_pemfile::crls(&mut reader).collect::<std::result::Result<Vec<_>, _>>()?;
+        let crls = rustls_pemfile::crls(&mut reader).collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(crls.into_iter().map(|der| Self { der }).collect())
     }
 }

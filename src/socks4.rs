@@ -53,9 +53,7 @@ pub(crate) async fn socks4a_handshake<T: Read + Write + Unpin>(
     port: u16,
     auth: Option<&ProxyAuth>,
 ) -> io::Result<()> {
-    let userid = auth
-        .map(|a| a.username.as_bytes())
-        .unwrap_or(b"");
+    let userid = auth.map(|a| a.username.as_bytes()).unwrap_or(b"");
 
     // SOCKS4a: set DSTIP to 0.0.0.1 to signal domain-based addressing
     let dstip = Ipv4Addr::new(0, 0, 0, 1);

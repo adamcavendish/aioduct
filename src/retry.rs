@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use crate::error::Error;
@@ -120,11 +120,7 @@ impl RetryBudget {
         self.inner
             .tokens
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                if current > 0 {
-                    Some(current - 1)
-                } else {
-                    None
-                }
+                if current > 0 { Some(current - 1) } else { None }
             })
             .is_ok()
     }

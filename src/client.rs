@@ -581,8 +581,7 @@ impl<R: Runtime> ClientBuilder<R> {
             let has_extra_config =
                 !self.extra_root_certs.is_empty() || self.client_identity.is_some();
             let has_crls = !self.crls.is_empty();
-            let needs_configured =
-                has_crls || self.danger_accept_invalid_hostnames;
+            let needs_configured = has_crls || self.danger_accept_invalid_hostnames;
             let needs_sni_update = self.tls_sni == Some(false);
 
             let mut connector = if self.tls.is_some()
@@ -950,8 +949,7 @@ impl<R: Runtime> Client<R> {
                     if crate::cache::is_response_cacheable(status, &headers) {
                         let body_bytes = resp.bytes().await?;
                         cache.store(&current_method, &current_uri, status, &headers, &body_bytes);
-                        let cached_resp = http::Response::builder()
-                            .status(status);
+                        let cached_resp = http::Response::builder().status(status);
                         let cached_resp = {
                             let mut builder = cached_resp;
                             for (name, value) in &headers {
@@ -1009,7 +1007,8 @@ impl<R: Runtime> Client<R> {
             let _ = resp.bytes().await;
 
             if !self.middleware.is_empty() {
-                self.middleware.apply_redirect(status, &current_uri, &next_uri);
+                self.middleware
+                    .apply_redirect(status, &current_uri, &next_uri);
             }
 
             match status {
@@ -1144,9 +1143,7 @@ impl<R: Runtime> Client<R> {
             #[cfg(unix)]
             {
                 let connect_fut = async {
-                    let unix_stream = R::connect_unix(unix_path)
-                        .await
-                        .map_err(Error::Io)?;
+                    let unix_stream = R::connect_unix(unix_path).await.map_err(Error::Io)?;
                     self.connect_plaintext(unix_stream).await
                 };
                 match self.connect_timeout {
@@ -1397,10 +1394,7 @@ impl<R: Runtime> Client<R> {
         Ok(PooledConnection::new_h1(sender))
     }
 
-    async fn connect_h2_prior_knowledge<S>(
-        &self,
-        stream: S,
-    ) -> Result<PooledConnection<R>>
+    async fn connect_h2_prior_knowledge<S>(&self, stream: S) -> Result<PooledConnection<R>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {

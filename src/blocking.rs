@@ -31,7 +31,10 @@ impl Client {
         }
     }
 
-    fn request_builder<'a>(&'a self, rb: crate::request::RequestBuilder<'a, TokioRuntime>) -> RequestBuilder<'a> {
+    fn request_builder<'a>(
+        &'a self,
+        rb: crate::request::RequestBuilder<'a, TokioRuntime>,
+    ) -> RequestBuilder<'a> {
         RequestBuilder {
             inner: rb,
             rt: Arc::clone(&self.rt),
@@ -215,7 +218,11 @@ pub struct RequestBuilder<'a> {
 }
 
 impl RequestBuilder<'_> {
-    pub fn header(mut self, name: http::header::HeaderName, value: http::header::HeaderValue) -> Self {
+    pub fn header(
+        mut self,
+        name: http::header::HeaderName,
+        value: http::header::HeaderValue,
+    ) -> Self {
         self.inner = self.inner.header(name, value);
         self
     }

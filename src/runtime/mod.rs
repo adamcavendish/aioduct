@@ -48,9 +48,7 @@ pub trait Runtime: Send + Sync + 'static {
     type UnixStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
 
     #[cfg(unix)]
-    fn connect_unix(
-        path: &Path,
-    ) -> impl Future<Output = io::Result<Self::UnixStream>> + Send;
+    fn connect_unix(path: &Path) -> impl Future<Output = io::Result<Self::UnixStream>> + Send;
 }
 
 /// Custom DNS resolver trait.

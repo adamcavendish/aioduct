@@ -107,11 +107,7 @@ impl HttpCache {
         self.len() == 0
     }
 
-    pub(crate) fn lookup(
-        &self,
-        method: &Method,
-        uri: &Uri,
-    ) -> CacheLookup {
+    pub(crate) fn lookup(&self, method: &Method, uri: &Uri) -> CacheLookup {
         if !is_cacheable_method(method) {
             return CacheLookup::Miss;
         }
@@ -380,7 +376,8 @@ fn httpdate_parse(s: &str) -> Option<SystemTime> {
 
     // Convert to duration since UNIX_EPOCH using a simplified calculation
     let days_since_epoch = days_from_civil(year, month, day)?;
-    let secs = days_since_epoch as u64 * 86400 + hour as u64 * 3600 + minute as u64 * 60 + second as u64;
+    let secs =
+        days_since_epoch as u64 * 86400 + hour as u64 * 3600 + minute as u64 * 60 + second as u64;
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
 }
 
@@ -408,7 +405,10 @@ fn is_cacheable_status(status: StatusCode) -> bool {
 }
 
 fn is_unsafe_method(method: &Method) -> bool {
-    !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE)
+    !matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
+    )
 }
 
 pub(crate) fn is_response_cacheable(status: StatusCode, headers: &HeaderMap) -> bool {
@@ -419,7 +419,10 @@ pub(crate) fn is_response_cacheable(status: StatusCode, headers: &HeaderMap) -> 
     if directives.no_store || directives.private {
         return false;
     }
-    directives.max_age.is_some() || headers.contains_key(EXPIRES) || headers.contains_key(ETAG) || headers.contains_key(LAST_MODIFIED)
+    directives.max_age.is_some()
+        || headers.contains_key(EXPIRES)
+        || headers.contains_key(ETAG)
+        || headers.contains_key(LAST_MODIFIED)
 }
 
 fn find_oldest_entry(entries: &HashMap<CacheKey, CacheEntry>) -> Option<CacheKey> {
@@ -518,7 +521,13 @@ mod tests {
 
         for i in 0..3 {
             let uri: Uri = format!("http://example.com/{i}").parse().unwrap();
-            cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &Bytes::from("x"));
+            cache.store(
+                &Method::GET,
+                &uri,
+                StatusCode::OK,
+                &headers,
+                &Bytes::from("x"),
+            );
         }
 
         assert_eq!(cache.len(), 2);

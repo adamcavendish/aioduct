@@ -1,4 +1,4 @@
-#![cfg(feature = "compio")]
+#![cfg(all(feature = "compio", feature = "tokio"))]
 
 use std::convert::Infallible;
 use std::net::SocketAddr;

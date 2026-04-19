@@ -127,3 +127,4 @@ hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 [[bench]]
 name = "comparison"
 harness = false
+required-features = ["tokio"]

@@ -149,3 +149,177 @@ fn error_type(error: &Error) -> &'static str {
         _ => "other",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+    use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
+
+    fn empty_body() -> HyperBody {
+        http_body_util::Full::new(bytes::Bytes::new())
+            .map_err(|never| match never {})
+            .boxed()
+    }
+
+    fn test_uri() -> Uri {
+        "http://example.com/api".parse().unwrap()
+    }
+
+    #[derive(Debug)]
+    struct TestPropagator {
+        header_name: &'static str,
+        header_value: &'static str,
+    }
+
+    impl TextMapPropagator for TestPropagator {
+        fn inject_context(
+            &self,
+            _cx: &opentelemetry::Context,
+            injector: &mut dyn Injector,
+        ) {
+            injector.set(self.header_name, self.header_value.to_string());
+        }
+
+        fn extract_with_context(
+            &self,
+            _cx: &opentelemetry::Context,
+            _extractor: &dyn Extractor,
+        ) -> opentelemetry::Context {
+            opentelemetry::Context::new()
+        }
+
+        fn fields(&self) -> opentelemetry::propagation::text_map_propagator::FieldIter<'_> {
+            opentelemetry::propagation::text_map_propagator::FieldIter::new(&[])
+        }
+    }
+
+    #[test]
+    fn explicit_propagator_injects_headers() {
+        let mw = OtelMiddleware::with_propagator(TestPropagator {
+            header_name: "x-trace-test",
+            header_value: "injected-value",
+        });
+
+        let uri = test_uri();
+        let mut request = http::Request::get("http://example.com/api")
+            .body(empty_body())
+            .unwrap();
+
+        mw.on_request(&mut request, &uri);
+
+        assert_eq!(
+            request.headers().get("x-trace-test").unwrap(),
+            "injected-value"
+        );
+    }
+
+    #[test]
+    fn global_propagator_fallback_does_not_panic() {
+        let mw = OtelMiddleware::new();
+        let uri = test_uri();
+        let mut request = http::Request::get("http://example.com/api")
+            .body(empty_body())
+            .unwrap();
+
+        mw.on_request(&mut request, &uri);
+    }
+
+    #[test]
+    fn on_response_does_not_panic_without_active_span() {
+        let mw = OtelMiddleware::new();
+        let uri = test_uri();
+        let mut response = http::Response::builder()
+            .status(200)
+            .body(empty_body())
+            .unwrap();
+
+        mw.on_response(&mut response, &uri);
+    }
+
+    #[test]
+    fn on_response_server_error_does_not_panic() {
+        let mw = OtelMiddleware::new();
+        let uri = test_uri();
+        let mut response = http::Response::builder()
+            .status(503)
+            .body(empty_body())
+            .unwrap();
+
+        mw.on_response(&mut response, &uri);
+    }
+
+    #[test]
+    fn on_error_records_without_panic() {
+        let mw = OtelMiddleware::new();
+        let uri = test_uri();
+        let error = Error::Timeout;
+
+        mw.on_error(&error, &uri, &Method::GET);
+    }
+
+    #[test]
+    fn on_redirect_records_without_panic() {
+        let from: Uri = "http://old.example.com/a".parse().unwrap();
+        let to: Uri = "http://new.example.com/b".parse().unwrap();
+        let mw = OtelMiddleware::new();
+
+        mw.on_redirect(StatusCode::MOVED_PERMANENTLY, &from, &to);
+    }
+
+    #[test]
+    fn on_retry_records_without_panic() {
+        let mw = OtelMiddleware::new();
+        let uri = test_uri();
+        let error = Error::Timeout;
+
+        mw.on_retry(&error, &uri, &Method::GET, 2);
+    }
+
+    #[test]
+    fn error_type_mapping() {
+        assert_eq!(error_type(&Error::Timeout), "timeout");
+        assert_eq!(
+            error_type(&Error::Io(std::io::Error::other("test"))),
+            "io"
+        );
+        assert_eq!(error_type(&Error::InvalidUrl("bad".into())), "invalid_url");
+        assert_eq!(error_type(&Error::Status(StatusCode::NOT_FOUND)), "status");
+        assert_eq!(error_type(&Error::Tls("tls fail".into())), "tls");
+        assert_eq!(
+            error_type(&Error::Other("something else".into())),
+            "other"
+        );
+    }
+
+    #[test]
+    fn with_propagator_uses_explicit_not_global() {
+        let mw = OtelMiddleware::with_propagator(TestPropagator {
+            header_name: "x-custom-trace",
+            header_value: "from-explicit",
+        });
+
+        opentelemetry::global::set_text_map_propagator(TestPropagator {
+            header_name: "x-global-trace",
+            header_value: "from-global",
+        });
+
+        let uri = test_uri();
+        let mut request = http::Request::get("http://example.com/api")
+            .body(empty_body())
+            .unwrap();
+
+        mw.on_request(&mut request, &uri);
+
+        assert_eq!(
+            request.headers().get("x-custom-trace").unwrap(),
+            "from-explicit",
+        );
+        assert!(request.headers().get("x-global-trace").is_none());
+    }
+
+    #[test]
+    fn default_impl_is_same_as_new() {
+        let _mw: OtelMiddleware = OtelMiddleware::default();
+    }
+}

@@ -372,9 +372,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                                 return Ok(resp);
                             }
                         }
-                        let err = Error::Other(
-                            format!("server error: {}", resp.status()).into(),
-                        );
+                        let err = Error::Other(format!("server error: {}", resp.status()).into());
                         let mw = self.client.middleware();
                         if !mw.is_empty() {
                             mw.apply_retry(&err, &self.uri, &self.method, attempt + 1);

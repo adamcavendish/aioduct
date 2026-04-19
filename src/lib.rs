@@ -3,12 +3,17 @@
 //! aioduct is runtime-agnostic: enable `tokio`, `smol`, or `compio` via feature flags.
 //! For HTTPS, enable the `rustls` feature.
 
-#[cfg(not(any(feature = "tokio", feature = "smol", feature = "compio", feature = "wasm")))]
+#[cfg(not(any(
+    feature = "tokio",
+    feature = "smol",
+    feature = "compio",
+    feature = "wasm"
+)))]
 compile_error!("aioduct: enable at least one runtime feature: tokio, smol, compio, or wasm");
 
-pub mod body;
 #[cfg(feature = "blocking")]
 pub mod blocking;
+pub mod body;
 pub mod cache;
 pub mod chunk_download;
 pub mod client;
@@ -63,6 +68,8 @@ pub use chunk_download::ChunkDownload;
 pub use client::Client;
 pub use cookie::CookieJar;
 pub use error::{Error, HyperBody};
+#[cfg(feature = "hickory-dns")]
+pub use hickory::HickoryResolver;
 pub use http2::Http2Config;
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
@@ -71,15 +78,13 @@ pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;
 pub use response::Response;
 pub use retry::{RetryBudget, RetryConfig};
-pub use throttle::RateLimiter;
 pub use runtime::{Resolve, Runtime};
-#[cfg(feature = "hickory-dns")]
-pub use hickory::HickoryResolver;
 pub use sse::{SseEvent, SseStream};
+pub use throttle::RateLimiter;
 pub use upgrade::Upgraded;
 
-pub use tls::TlsVersion;
 pub use tls::TlsInfo;
+pub use tls::TlsVersion;
 #[cfg(feature = "rustls")]
 pub use tls::{Certificate, Identity};
 

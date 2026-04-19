@@ -177,7 +177,10 @@ impl ProxySettings {
     /// The closure receives the request URI and returns `Some(ProxyConfig)` to
     /// proxy through the given server, or `None` for a direct connection.
     /// This takes priority over `http`/`https` proxy settings.
-    pub fn custom(mut self, f: impl Fn(&Uri) -> Option<ProxyConfig> + Send + Sync + 'static) -> Self {
+    pub fn custom(
+        mut self,
+        f: impl Fn(&Uri) -> Option<ProxyConfig> + Send + Sync + 'static,
+    ) -> Self {
         self.custom = Some(Arc::new(f));
         self
     }
