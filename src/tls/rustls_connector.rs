@@ -113,7 +113,7 @@ impl RustlsConnector {
     ) -> Self {
         let mut root_store = rustls::RootCertStore::empty();
         let native_certs = rustls_native_certs::load_native_certs();
-        for cert in native_certs {
+        for cert in native_certs.certs {
             let _ = root_store.add(cert);
         }
         let config = rustls::ClientConfig::builder_with_protocol_versions(versions)

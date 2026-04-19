@@ -1,4 +1,6 @@
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use http::header::{CONTENT_LENGTH, HeaderMap};
@@ -7,9 +9,65 @@ use http_body_util::BodyExt;
 
 use crate::error::{Error, HyperBody};
 
+pin_project_lite::pin_project! {
+    #[project = ResponseBodyProj]
+    pub(crate) enum ResponseBody {
+        Incoming { #[pin] body: http_body_util::combinators::MapErr<hyper::body::Incoming, fn(hyper::Error) -> Error> },
+        Boxed { #[pin] body: HyperBody },
+    }
+}
+
+impl ResponseBody {
+    pub(crate) fn from_incoming(incoming: hyper::body::Incoming) -> Self {
+        ResponseBody::Incoming {
+            body: incoming.map_err(Error::Hyper as fn(hyper::Error) -> Error),
+        }
+    }
+
+    pub(crate) fn from_boxed(body: HyperBody) -> Self {
+        ResponseBody::Boxed { body }
+    }
+
+    pub(crate) fn into_boxed(self) -> HyperBody {
+        match self {
+            ResponseBody::Incoming { body } => body.boxed(),
+            ResponseBody::Boxed { body } => body,
+        }
+    }
+}
+
+impl http_body::Body for ResponseBody {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        match self.project() {
+            ResponseBodyProj::Incoming { body } => body.poll_frame(cx),
+            ResponseBodyProj::Boxed { body } => body.poll_frame(cx),
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            ResponseBody::Incoming { body } => body.is_end_stream(),
+            ResponseBody::Boxed { body } => body.is_end_stream(),
+        }
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        match self {
+            ResponseBody::Incoming { body } => body.size_hint(),
+            ResponseBody::Boxed { body } => body.size_hint(),
+        }
+    }
+}
+
 /// An HTTP response with status, headers, and a streaming body.
 pub struct Response {
-    inner: http::Response<HyperBody>,
+    inner: http::Response<ResponseBody>,
     url: Uri,
     remote_addr: Option<SocketAddr>,
     tls_info: Option<crate::tls::TlsInfo>,
@@ -26,9 +84,19 @@ impl std::fmt::Debug for Response {
 }
 
 impl Response {
-    pub(crate) fn new(inner: http::Response<HyperBody>, url: Uri) -> Self {
+    pub(crate) fn new(inner: http::Response<ResponseBody>, url: Uri) -> Self {
         Self {
             inner,
+            url,
+            remote_addr: None,
+            tls_info: None,
+        }
+    }
+
+    pub(crate) fn from_boxed(inner: http::Response<HyperBody>, url: Uri) -> Self {
+        let (parts, body) = inner.into_parts();
+        Self {
+            inner: http::Response::from_parts(parts, ResponseBody::from_boxed(body)),
             url,
             remote_addr: None,
             tls_info: None,
@@ -43,15 +111,32 @@ impl Response {
         self.tls_info = info;
     }
 
-    pub(crate) fn inner_mut(&mut self) -> &mut http::Response<HyperBody> {
-        &mut self.inner
+    pub(crate) fn apply_middleware(
+        &mut self,
+        stack: &crate::middleware::MiddlewareStack,
+        uri: &Uri,
+    ) {
+        let (parts, body) = std::mem::replace(
+            &mut self.inner,
+            http::Response::new(ResponseBody::from_boxed(
+                http_body_util::Empty::new()
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )),
+        )
+        .into_parts();
+        let mut boxed_resp = http::Response::from_parts(parts, body.into_boxed());
+        stack.apply_response(&mut boxed_resp, uri);
+        let (parts, boxed_body) = boxed_resp.into_parts();
+        self.inner = http::Response::from_parts(parts, ResponseBody::from_boxed(boxed_body));
     }
 
     pub(crate) fn decompress(self, accept: &crate::decompress::AcceptEncoding) -> Self {
         let (mut parts, body) = self.inner.into_parts();
-        let body = crate::decompress::maybe_decompress(&mut parts.headers, body, accept);
+        let boxed = body.into_boxed();
+        let boxed = crate::decompress::maybe_decompress(&mut parts.headers, boxed, accept);
         Self {
-            inner: http::Response::from_parts(parts, body),
+            inner: http::Response::from_parts(parts, ResponseBody::from_boxed(boxed)),
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
@@ -62,12 +147,12 @@ impl Response {
         self,
         duration: std::time::Duration,
     ) -> Self {
-        use http_body_util::BodyExt;
         let (parts, body) = self.inner.into_parts();
-        let timeout_body = crate::timeout::ReadTimeoutBody::<R>::new(body, duration);
+        let boxed = body.into_boxed();
+        let timeout_body = crate::timeout::ReadTimeoutBody::<R>::new(boxed, duration);
         let boxed: HyperBody = timeout_body.map_err(|e| e).boxed();
         Self {
-            inner: http::Response::from_parts(parts, boxed),
+            inner: http::Response::from_parts(parts, ResponseBody::from_boxed(boxed)),
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
@@ -153,10 +238,7 @@ impl Response {
     /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes, Error> {
         let body = self.inner.into_body();
-        let collected = body
-            .collect()
-            .await
-            .map_err(|e| Error::Other(Box::new(e)))?;
+        let collected = body.collect().await?;
         Ok(collected.to_bytes())
     }
 
@@ -203,23 +285,20 @@ impl Response {
 
     /// Consume the response and return the raw hyper body.
     pub fn into_body(self) -> HyperBody {
-        self.inner.into_body()
+        self.inner.into_body().into_boxed()
     }
 
     /// Convert the response into an async byte stream.
     pub fn into_bytes_stream(self) -> crate::body::BodyStream {
-        crate::body::BodyStream::new(self.inner.into_body())
+        crate::body::BodyStream::new(self.inner.into_body().into_boxed())
     }
 
     /// Convert the response into a Server-Sent Events stream.
     pub fn into_sse_stream(self) -> crate::sse::SseStream {
-        crate::sse::SseStream::new(self.inner.into_body())
+        crate::sse::SseStream::new(self.inner.into_body().into_boxed())
     }
 
     /// Perform an HTTP upgrade (e.g., WebSocket) on this response.
-    ///
-    /// This should be called after receiving a `101 Switching Protocols` response.
-    /// Returns an [`Upgraded`](crate::upgrade::Upgraded) bidirectional IO stream.
     pub async fn upgrade(mut self) -> Result<crate::upgrade::Upgraded, Error> {
         crate::upgrade::on_upgrade(&mut self.inner).await
     }
@@ -230,10 +309,12 @@ mod tests {
     use super::*;
     use http_body_util::BodyExt;
 
-    fn empty_body() -> HyperBody {
-        http_body_util::Full::new(bytes::Bytes::new())
-            .map_err(|never| match never {})
-            .boxed()
+    fn empty_body() -> ResponseBody {
+        ResponseBody::from_boxed(
+            http_body_util::Full::new(bytes::Bytes::new())
+                .map_err(|never| match never {})
+                .boxed(),
+        )
     }
 
     fn make_response(status: u16) -> Response {

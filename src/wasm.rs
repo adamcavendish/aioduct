@@ -240,23 +240,23 @@ impl<'a> WasmRequestBuilder<'a> {
 
         let resp_promise = window.fetch_with_request(&request);
 
-        let timeout_handle = if let Some(duration) = timeout {
-            let controller = abort_controller.clone().unwrap();
-            let ms = duration.as_millis() as i32;
-            Some(
-                window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(
-                        &wasm_bindgen::closure::Closure::once_into_js(move || {
-                            controller.abort();
-                        })
-                        .unchecked_into(),
-                        ms,
-                    )
-                    .map_err(|e| Error::Other(format!("setTimeout failed: {e:?}").into()))?,
-            )
-        } else {
-            None
-        };
+        let timeout_handle =
+            if let (Some(duration), Some(controller)) = (timeout, abort_controller.clone()) {
+                let ms = duration.as_millis() as i32;
+                Some(
+                    window
+                        .set_timeout_with_callback_and_timeout_and_arguments_0(
+                            &wasm_bindgen::closure::Closure::once_into_js(move || {
+                                controller.abort();
+                            })
+                            .unchecked_into(),
+                            ms,
+                        )
+                        .map_err(|e| Error::Other(format!("setTimeout failed: {e:?}").into()))?,
+                )
+            } else {
+                None
+            };
 
         let resp_value = JsFuture::from(resp_promise).await.map_err(|e| {
             let msg = js_sys::JSON::stringify(&e)

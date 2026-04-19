@@ -871,7 +871,7 @@ impl<R: Runtime> Client<R> {
                 match cache.lookup(&current_method, &current_uri) {
                     crate::cache::CacheLookup::Fresh(cached) => {
                         let http_resp = cached.into_http_response();
-                        return Ok(Response::new(http_resp, current_uri));
+                        return Ok(Response::from_boxed(http_resp, current_uri));
                     }
                     crate::cache::CacheLookup::Stale { validators, cached } => {
                         validators.apply_to_request(&mut current_headers);
@@ -915,7 +915,7 @@ impl<R: Runtime> Client<R> {
             if resp.status() == StatusCode::NOT_MODIFIED {
                 if let Some(cached) = cache_state {
                     let http_resp = cached.into_http_response();
-                    return Ok(Response::new(http_resp, current_uri));
+                    return Ok(Response::from_boxed(http_resp, current_uri));
                 }
             }
 
@@ -939,8 +939,7 @@ impl<R: Runtime> Client<R> {
                 }
                 let mut resp = resp;
                 if !self.middleware.is_empty() {
-                    self.middleware
-                        .apply_response(resp.inner_mut(), &current_uri);
+                    resp.apply_middleware(&self.middleware, &current_uri);
                 }
 
                 // Store cacheable responses in the HTTP cache
@@ -962,11 +961,15 @@ impl<R: Runtime> Client<R> {
                                     .boxed(),
                             )?
                         };
-                        return Ok(Response::new(cached_resp, current_uri));
+                        return Ok(Response::from_boxed(cached_resp, current_uri));
                     }
                 }
 
-                let resp = resp.decompress(&self.accept_encoding);
+                let resp = if !self.accept_encoding.is_empty() {
+                    resp.decompress(&self.accept_encoding)
+                } else {
+                    resp
+                };
                 let resp = if let Some(read_timeout) = self.read_timeout {
                     resp.apply_read_timeout::<R>(read_timeout)
                 } else {
@@ -992,7 +995,7 @@ impl<R: Runtime> Client<R> {
                 == RedirectAction::Stop
             {
                 let _ = resp.bytes().await;
-                return Ok(Response::new(
+                return Ok(Response::from_boxed(
                     http::Response::builder()
                         .status(status)
                         .header(LOCATION, location)
@@ -1563,12 +1566,12 @@ impl<R: Runtime> Client<R> {
         let result = match &mut conn.conn {
             HttpConnection::H1(sender) => {
                 let resp = sender.send_request(request).await?;
-                let resp = resp.map(|body| body.map_err(Error::Hyper).boxed());
+                let resp = resp.map(crate::response::ResponseBody::from_incoming);
                 Ok(Response::new(resp, url))
             }
             HttpConnection::H2(sender) => {
                 let resp = sender.send_request(request).await?;
-                let resp = resp.map(|body| body.map_err(Error::Hyper).boxed());
+                let resp = resp.map(crate::response::ResponseBody::from_incoming);
                 Ok(Response::new(resp, url))
             }
             #[cfg(feature = "http3")]

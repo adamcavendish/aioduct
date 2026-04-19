@@ -104,11 +104,9 @@ impl<R: Runtime> ChunkDownload<R> {
 
             R::spawn(async move {
                 let result: std::result::Result<bytes::Bytes, Error> = async {
-                    let resp = client
-                        .get(&url)?
-                        .header(RANGE, HeaderValue::from_str(&range_value).unwrap())
-                        .send()
-                        .await?;
+                    let range_header = HeaderValue::from_str(&range_value)
+                        .map_err(|e| Error::Other(Box::new(e)))?;
+                    let resp = client.get(&url)?.header(RANGE, range_header).send().await?;
 
                     if resp.status() != http::StatusCode::PARTIAL_CONTENT
                         && !resp.status().is_success()
@@ -137,7 +135,7 @@ impl<R: Runtime> ChunkDownload<R> {
         let chunk_data = Arc::try_unwrap(results)
             .map_err(|_| Error::Other("failed to unwrap results".into()))?
             .into_inner()
-            .unwrap();
+            .map_err(|_| Error::Other("chunk result mutex poisoned".into()))?;
 
         let mut buf = BytesMut::with_capacity(total_size as usize);
         for result in chunk_data {
