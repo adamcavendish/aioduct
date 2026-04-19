@@ -172,6 +172,11 @@ impl ClientBuilder {
         self
     }
 
+    pub fn cache(mut self, cache: crate::cache::HttpCache) -> Self {
+        self.inner = self.inner.cache(cache);
+        self
+    }
+
     #[cfg(feature = "rustls")]
     pub fn tls(mut self, connector: crate::tls::RustlsConnector) -> Self {
         self.inner = self.inner.tls(connector);

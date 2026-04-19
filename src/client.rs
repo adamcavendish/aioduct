@@ -16,6 +16,7 @@ use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
 use crate::body::RequestBody;
+use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
 use crate::error::{Error, HyperBody, Result};
 use crate::http2::Http2Config;
@@ -60,6 +61,7 @@ pub struct Client<R: Runtime> {
     http2: Option<Http2Config>,
     middleware: MiddlewareStack,
     rate_limiter: Option<crate::throttle::RateLimiter>,
+    cache: Option<HttpCache>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -100,6 +102,7 @@ impl<R: Runtime> Clone for Client<R> {
             http2: self.http2.clone(),
             middleware: self.middleware.clone(),
             rate_limiter: self.rate_limiter.clone(),
+            cache: self.cache.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(feature = "http3")]
@@ -142,6 +145,7 @@ pub struct ClientBuilder<R: Runtime> {
     http2: Option<Http2Config>,
     middleware: MiddlewareStack,
     rate_limiter: Option<crate::throttle::RateLimiter>,
+    cache: Option<HttpCache>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "rustls")]
@@ -198,6 +202,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             http2: None,
             middleware: MiddlewareStack::new(),
             rate_limiter: None,
+            cache: None,
             #[cfg(feature = "rustls")]
             tls: None,
             #[cfg(feature = "rustls")]
@@ -408,6 +413,12 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Set a rate limiter to throttle outgoing requests.
     pub fn rate_limiter(mut self, limiter: crate::throttle::RateLimiter) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    /// Enable HTTP response caching with the given cache instance.
+    pub fn cache(mut self, cache: HttpCache) -> Self {
+        self.cache = Some(cache);
         self
     }
 
@@ -636,6 +647,7 @@ impl<R: Runtime> ClientBuilder<R> {
             http2: self.http2,
             middleware: self.middleware,
             rate_limiter: self.rate_limiter,
+            cache: self.cache,
             #[cfg(feature = "rustls")]
             tls,
             #[cfg(feature = "http3")]
@@ -816,6 +828,23 @@ impl<R: Runtime> Client<R> {
                 }
             }
 
+            // Cache lookup: return fresh cached response or prepare conditional headers
+            let cache_state = if let Some(ref cache) = self.cache {
+                match cache.lookup(&current_method, &current_uri) {
+                    crate::cache::CacheLookup::Fresh(cached) => {
+                        let http_resp = cached.into_http_response();
+                        return Ok(Response::new(http_resp, current_uri));
+                    }
+                    crate::cache::CacheLookup::Stale { validators, cached } => {
+                        validators.apply_to_request(&mut current_headers);
+                        Some(cached)
+                    }
+                    crate::cache::CacheLookup::Miss => None,
+                }
+            } else {
+                None
+            };
+
             let path_and_query = current_uri
                 .path_and_query()
                 .map(|pq| pq.as_str())
@@ -844,6 +873,19 @@ impl<R: Runtime> Client<R> {
 
             let resp = self.execute_single(request, &current_uri).await?;
 
+            // Handle 304 Not Modified: reuse cached response
+            if resp.status() == StatusCode::NOT_MODIFIED {
+                if let Some(cached) = cache_state {
+                    let http_resp = cached.into_http_response();
+                    return Ok(Response::new(http_resp, current_uri));
+                }
+            }
+
+            // Invalidate cache on unsafe methods
+            if let Some(ref cache) = self.cache {
+                cache.invalidate(&current_method, &current_uri);
+            }
+
             if let Some(jar) = &self.cookie_jar {
                 if let Some(authority) = current_uri.authority() {
                     jar.store_from_response(authority.host(), resp.headers());
@@ -862,6 +904,31 @@ impl<R: Runtime> Client<R> {
                     self.middleware
                         .apply_response(resp.inner_mut(), &current_uri);
                 }
+
+                // Store cacheable responses in the HTTP cache
+                if let Some(ref cache) = self.cache {
+                    let status = resp.status();
+                    let headers = resp.headers().clone();
+                    if crate::cache::is_response_cacheable(status, &headers) {
+                        let body_bytes = resp.bytes().await?;
+                        cache.store(&current_method, &current_uri, status, &headers, &body_bytes);
+                        let cached_resp = http::Response::builder()
+                            .status(status);
+                        let cached_resp = {
+                            let mut builder = cached_resp;
+                            for (name, value) in &headers {
+                                builder = builder.header(name, value);
+                            }
+                            builder.body(
+                                http_body_util::Full::new(body_bytes)
+                                    .map_err(|never| match never {})
+                                    .boxed(),
+                            )?
+                        };
+                        return Ok(Response::new(cached_resp, current_uri));
+                    }
+                }
+
                 let resp = resp.decompress(&self.accept_encoding);
                 let resp = if let Some(read_timeout) = self.read_timeout {
                     resp.apply_read_timeout::<R>(read_timeout)

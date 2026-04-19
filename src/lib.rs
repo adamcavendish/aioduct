@@ -9,6 +9,7 @@ compile_error!("aioduct: enable at least one runtime feature: tokio, smol, or co
 pub mod body;
 #[cfg(feature = "blocking")]
 pub mod blocking;
+pub mod cache;
 pub mod chunk_download;
 pub mod client;
 pub mod cookie;
@@ -42,6 +43,7 @@ mod alt_svc;
 pub mod h3_transport;
 
 pub use body::{BodyStream, RequestBody};
+pub use cache::{CacheConfig, HttpCache};
 pub use chunk_download::ChunkDownload;
 pub use client::Client;
 pub use cookie::CookieJar;
