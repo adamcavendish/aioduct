@@ -56,6 +56,8 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 | `tls(RustlsConnector)`  | None        | Custom TLS configuration             |
 | `danger_accept_invalid_certs()` | —  | Accept any TLS certificate (INSECURE) |
 | `no_decompression()`    | —           | Disable automatic response decompression |
+| `system_proxy()`        | —           | Read proxy from HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars |
+| `proxy_settings(ProxySettings)` | None | Fine-grained HTTP/HTTPS proxy with bypass rules |
 
 ## RequestBuilder
 

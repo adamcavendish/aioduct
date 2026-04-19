@@ -13,6 +13,70 @@ let client = Client::<TokioRuntime>::builder()
     .build();
 ```
 
+## System Proxy (Environment Variables)
+
+Use `system_proxy()` to read proxy settings from environment variables:
+
+```rust,no_run
+use aioduct::Client;
+use aioduct::runtime::TokioRuntime;
+
+let client = Client::<TokioRuntime>::builder()
+    .system_proxy()
+    .build();
+```
+
+This reads:
+- `HTTP_PROXY` / `http_proxy` — proxy for HTTP requests
+- `HTTPS_PROXY` / `https_proxy` — proxy for HTTPS requests
+- `NO_PROXY` / `no_proxy` — comma-separated list of hosts to bypass
+
+The uppercase variant takes precedence over the lowercase variant.
+
+### NO_PROXY Rules
+
+The `NO_PROXY` value is a comma-separated list of patterns:
+
+| Pattern | Matches |
+|---------|---------|
+| `example.com` | `example.com` and `*.example.com` |
+| `.example.com` | `*.example.com` (subdomains only) |
+| `*` | All hosts (disables proxy) |
+| `127.0.0.1` | Exact IP match |
+
+## Advanced: Separate HTTP/HTTPS Proxies
+
+Use `ProxySettings` for fine-grained control:
+
+```rust,no_run
+use aioduct::{Client, ProxyConfig, ProxySettings, NoProxy};
+use aioduct::runtime::TokioRuntime;
+
+let settings = ProxySettings::all(
+    ProxyConfig::http("http://proxy.example.com:8080").unwrap()
+)
+.no_proxy(NoProxy::new("localhost, .internal.corp, 10.0.0.0/8"));
+
+let client = Client::<TokioRuntime>::builder()
+    .proxy_settings(settings)
+    .build();
+```
+
+You can also set different proxies for HTTP and HTTPS:
+
+```rust,no_run
+# use aioduct::{Client, ProxyConfig, ProxySettings, NoProxy};
+# use aioduct::runtime::TokioRuntime;
+let settings = ProxySettings::default()
+    .http(ProxyConfig::http("http://http-proxy:3128").unwrap())
+    .https(ProxyConfig::http("http://https-proxy:3129").unwrap())
+    .no_proxy(NoProxy::new("localhost"));
+
+let client = Client::<TokioRuntime>::builder()
+    .proxy_settings(settings)
+    .build();
+```
+
 ## Proxy Authentication
 
 ```rust,no_run
@@ -77,4 +141,3 @@ async fn main() -> Result<(), aioduct::Error> {
 
 - Only HTTP proxy protocol is supported (not SOCKS5)
 - The proxy URI must use `http://` scheme
-- All requests on the client go through the configured proxy (no per-request proxy or bypass rules yet)

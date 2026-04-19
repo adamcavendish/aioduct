@@ -1920,3 +1920,96 @@ async fn test_deflate_decompression() {
 
     assert_eq!(text, "deflate test payload");
 }
+
+#[tokio::test]
+async fn test_proxy_settings_no_proxy_bypass() {
+    // Set up a "proxy" server that labels responses
+    let proxy_addr = start_server_with(|req| async move {
+        let uri = req.uri().to_string();
+        let body = format!("proxied: {uri}");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    // Set up the actual target server
+    let target_addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
+    })
+    .await;
+
+    let settings = aioduct::ProxySettings::all(
+        aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap(),
+    )
+    .no_proxy(aioduct::NoProxy::new(&format!("{}", target_addr.ip())));
+
+    let client = Client::<TokioRuntime>::builder()
+        .proxy_settings(settings)
+        .build();
+
+    // Request to the bypassed host goes direct
+    let resp = client
+        .get(&format!("http://{target_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "direct");
+
+    // Request to a non-bypassed host goes through proxy
+    let resp = client
+        .get("http://example.com/test")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.starts_with("proxied:"), "expected proxy, got: {body}");
+}
+
+#[tokio::test]
+async fn test_no_proxy_wildcard_bypasses_all() {
+    let target_addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
+    })
+    .await;
+
+    let settings =
+        aioduct::ProxySettings::all(aioduct::ProxyConfig::http("http://127.0.0.1:9999").unwrap())
+            .no_proxy(aioduct::NoProxy::new("*"));
+
+    let client = Client::<TokioRuntime>::builder()
+        .proxy_settings(settings)
+        .build();
+
+    let resp = client
+        .get(&format!("http://{target_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "direct");
+}
+
+#[tokio::test]
+async fn test_no_proxy_domain_suffix_matching() {
+    let no_proxy = aioduct::NoProxy::new(".example.com, localhost");
+
+    // Direct matches
+    assert!(!no_proxy.matches("example.com")); // no leading dot, exact doesn't match
+    assert!(no_proxy.matches("foo.example.com"));
+    assert!(no_proxy.matches("bar.baz.example.com"));
+    assert!(no_proxy.matches("localhost"));
+
+    // Non-matches
+    assert!(!no_proxy.matches("notexample.com"));
+    assert!(!no_proxy.matches("other.com"));
+}
+
+#[tokio::test]
+async fn test_no_proxy_bare_domain_matches_subdomains() {
+    let no_proxy = aioduct::NoProxy::new("example.com");
+
+    assert!(no_proxy.matches("example.com"));
+    assert!(no_proxy.matches("foo.example.com"));
+    assert!(!no_proxy.matches("notexample.com"));
+}

@@ -37,7 +37,7 @@ pub use client::Client;
 pub use cookie::CookieJar;
 pub use error::{Error, HyperBody};
 pub use multipart::Multipart;
-pub use proxy::ProxyConfig;
+pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;
 pub use response::Response;

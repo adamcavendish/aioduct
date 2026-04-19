@@ -15,7 +15,7 @@ use crate::body::RequestBody;
 use crate::cookie::CookieJar;
 use crate::error::{Error, HyperBody, Result};
 use crate::pool::{ConnectionPool, HttpConnection, PooledConnection};
-use crate::proxy::ProxyConfig;
+use crate::proxy::{ProxyConfig, ProxySettings};
 use crate::redirect::{RedirectAction, RedirectPolicy};
 use crate::request::RequestBuilder;
 use crate::response::Response;
@@ -35,7 +35,7 @@ pub struct Client<R: Runtime> {
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
-    proxy: Option<ProxyConfig>,
+    proxy: Option<ProxySettings>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -85,7 +85,7 @@ pub struct ClientBuilder<R: Runtime> {
     default_headers: HeaderMap,
     retry: Option<RetryConfig>,
     cookie_jar: Option<CookieJar>,
-    proxy: Option<ProxyConfig>,
+    proxy: Option<ProxySettings>,
     #[cfg(feature = "rustls")]
     tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "http3")]
@@ -196,9 +196,21 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
-    /// Route requests through an HTTP proxy.
+    /// Route requests through an HTTP proxy (used for both HTTP and HTTPS targets).
     pub fn proxy(mut self, config: ProxyConfig) -> Self {
-        self.proxy = Some(config);
+        self.proxy = Some(ProxySettings::all(config));
+        self
+    }
+
+    /// Use proxy settings from environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY).
+    pub fn system_proxy(mut self) -> Self {
+        self.proxy = Some(ProxySettings::from_env());
+        self
+    }
+
+    /// Set detailed proxy settings with separate HTTP/HTTPS proxies and bypass rules.
+    pub fn proxy_settings(mut self, settings: ProxySettings) -> Self {
+        self.proxy = Some(settings);
         self
     }
 
@@ -603,7 +615,12 @@ impl<R: Runtime> Client<R> {
             }
         }
 
-        let mut pooled = if let Some(proxy) = &self.proxy {
+        let proxy = self
+            .proxy
+            .as_ref()
+            .and_then(|settings| settings.proxy_for(original_uri));
+
+        let mut pooled = if let Some(proxy) = proxy {
             self.connect_via_proxy(proxy, authority, is_https).await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
