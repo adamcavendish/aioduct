@@ -3,18 +3,41 @@ use std::sync::Arc;
 
 use http::{Method, StatusCode, Uri};
 use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
+use opentelemetry::trace::{Status, TraceContextExt};
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_http::HeaderInjector;
 
 use crate::error::{Error, HyperBody};
 use crate::middleware::Middleware;
 
-/// OpenTelemetry middleware that injects W3C trace context into outgoing requests
-/// and records HTTP semantic convention attributes.
+/// OpenTelemetry middleware that propagates trace context and records HTTP
+/// semantic convention attributes on the **current** span.
 ///
-/// By default, uses the global propagator from `opentelemetry::global`. To use
-/// an explicit propagator, call [`OtelMiddleware::with_propagator`].
+/// This middleware does **not** create or end spans — that is the caller's
+/// responsibility. Typical usage:
+///
+/// ```ignore
+/// use opentelemetry::trace::{Tracer, SpanKind};
+///
+/// let tracer = opentelemetry::global::tracer("my-app");
+/// let span = tracer
+///     .span_builder("HTTP GET /api")
+///     .with_kind(SpanKind::Client)
+///     .start(&tracer);
+/// let _guard = opentelemetry::trace::mark_span_as_active(span);
+///
+/// let resp = client.get("https://example.com/api")?.send().await?;
+/// // span is ended when `_guard` drops
+/// ```
+///
+/// The middleware will:
+/// - Inject W3C trace context headers (`traceparent`, `tracestate`) into
+///   outgoing requests from the currently active span.
+/// - Record `http.request.method`, `url.full`, `http.response.status_code`
+///   and error attributes on the current span.
+///
+/// By default, uses the global propagator. Call [`OtelMiddleware::with_propagator`]
+/// to supply an explicit one.
 pub struct OtelMiddleware {
     propagator: Option<Arc<dyn TextMapPropagator + Send + Sync>>,
 }
@@ -52,72 +75,66 @@ impl Default for OtelMiddleware {
 
 impl Middleware for OtelMiddleware {
     fn on_request(&self, request: &mut http::Request<HyperBody>, uri: &Uri) {
-        let tracer = opentelemetry::global::tracer("aioduct");
-        let method = request.method().as_str().to_owned();
-        let url = uri.to_string();
-
-        let span = tracer
-            .span_builder(format!("HTTP {method}"))
-            .with_kind(SpanKind::Client)
-            .with_attributes(vec![
-                KeyValue::new("http.request.method", method),
-                KeyValue::new("url.full", url),
-            ])
-            .start(&tracer);
-
-        let cx = Context::current_with_span(span);
-        let _guard = cx.attach();
-
         self.inject_context(request.headers_mut());
+
+        Context::map_current(|cx| {
+            let span = cx.span();
+            span.set_attribute(KeyValue::new(
+                "http.request.method",
+                request.method().as_str().to_owned(),
+            ));
+            span.set_attribute(KeyValue::new("url.full", uri.to_string()));
+        });
     }
 
     fn on_response(&self, response: &mut http::Response<HyperBody>, _uri: &Uri) {
-        let cx = Context::current();
-        let span = cx.span();
-        let status = response.status().as_u16() as i64;
-        span.set_attribute(KeyValue::new("http.response.status_code", status));
+        Context::map_current(|cx| {
+            let span = cx.span();
+            span.set_attribute(KeyValue::new(
+                "http.response.status_code",
+                response.status().as_u16() as i64,
+            ));
 
-        if response.status().is_server_error() {
-            span.set_status(Status::Error {
-                description: Cow::Owned(response.status().to_string()),
-            });
-        }
-
-        span.end();
+            if response.status().is_server_error() {
+                span.set_status(Status::Error {
+                    description: Cow::Owned(response.status().to_string()),
+                });
+            }
+        });
     }
 
     fn on_error(&self, error: &Error, _uri: &Uri, _method: &Method) {
-        let cx = Context::current();
-        let span = cx.span();
-        span.set_status(Status::Error {
-            description: Cow::Owned(error.to_string()),
+        Context::map_current(|cx| {
+            let span = cx.span();
+            span.set_status(Status::Error {
+                description: Cow::Owned(error.to_string()),
+            });
+            span.set_attribute(KeyValue::new("error.type", error_type(error)));
         });
-        span.set_attribute(KeyValue::new("error.type", error_type(error)));
-        span.end();
     }
 
     fn on_redirect(&self, status: StatusCode, _from: &Uri, to: &Uri) {
-        let cx = Context::current();
-        let span = cx.span();
-        span.add_event(
-            "http.redirect",
-            vec![
-                KeyValue::new("http.response.status_code", status.as_u16() as i64),
-                KeyValue::new("http.redirect.target", to.to_string()),
-            ],
-        );
+        Context::map_current(|cx| {
+            cx.span().add_event(
+                "http.redirect",
+                vec![
+                    KeyValue::new("http.response.status_code", status.as_u16() as i64),
+                    KeyValue::new("http.redirect.target", to.to_string()),
+                ],
+            );
+        });
     }
 
     fn on_retry(&self, error: &Error, _uri: &Uri, _method: &Method, attempt: u32) {
-        let cx = Context::current();
-        let span = cx.span();
-        span.add_event(
-            "http.retry",
-            vec![
-                KeyValue::new("http.retry.attempt", attempt as i64),
-                KeyValue::new("error.type", error_type(error)),
-            ],
-        );
+        Context::map_current(|cx| {
+            cx.span().add_event(
+                "http.retry",
+                vec![
+                    KeyValue::new("http.retry.attempt", attempt as i64),
+                    KeyValue::new("error.type", error_type(error)),
+                ],
+            );
+        });
     }
 }
 

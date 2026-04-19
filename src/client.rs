@@ -1082,6 +1082,9 @@ impl<R: Runtime> Client<R> {
 
         if !self.no_connection_reuse {
             if let Some(mut conn) = self.pool.checkout(&pool_key) {
+                #[cfg(feature = "tracing")]
+                tracing::trace!(authority = %authority, "connection.pool.hit");
+
                 let mut resp =
                     Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
                 resp.set_remote_addr(conn.remote_addr);
