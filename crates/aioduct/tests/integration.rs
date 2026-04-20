@@ -4523,11 +4523,8 @@ async fn test_retry_exhaustion_returns_last_error() {
         .send()
         .await;
 
-    match resp {
-        Ok(r) => {
-            assert!(r.status().is_server_error());
-        }
-        Err(_) => {}
+    if let Ok(r) = resp {
+        assert!(r.status().is_server_error());
     }
     assert_eq!(attempt.load(Ordering::SeqCst), 3);
 }
