@@ -524,7 +524,7 @@ mod tests {
 
     fn make_blocking_response(status: u16, body: &[u8]) -> Response {
         use http_body_util::BodyExt;
-        let hyper_body: crate::error::HyperBody =
+        let hyper_body: crate::error::AioductBody =
             http_body_util::Full::new(Bytes::from(body.to_vec()))
                 .map_err(|never| match never {})
                 .boxed();

@@ -1,7 +1,7 @@
 use http::HeaderMap;
 use http::header::ACCEPT_ENCODING;
 
-use crate::error::HyperBody;
+use crate::error::AioductBody;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AcceptEncoding {
@@ -106,9 +106,9 @@ pub(crate) fn set_accept_encoding(headers: &mut HeaderMap, accept: &AcceptEncodi
 
 pub(crate) fn maybe_decompress(
     headers: &mut HeaderMap,
-    body: HyperBody,
+    body: AioductBody,
     accept: &AcceptEncoding,
-) -> HyperBody {
+) -> AioductBody {
     if accept.is_empty() {
         return body;
     }
@@ -153,7 +153,7 @@ mod imp {
     use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
     use http_body_util::BodyExt;
 
-    use crate::error::{Error, HyperBody};
+    use crate::error::{AioductBody, Error};
 
     use super::AcceptEncoding;
 
@@ -243,7 +243,7 @@ mod imp {
     }
 
     struct DecompressBody {
-        body: HyperBody,
+        body: AioductBody,
         decoder: Option<StreamDecoder>,
         finished: bool,
         has_data: bool,
@@ -313,9 +313,9 @@ mod imp {
 
     pub(super) fn decompress_impl(
         headers: &mut HeaderMap,
-        body: HyperBody,
+        body: AioductBody,
         accept: &AcceptEncoding,
-    ) -> HyperBody {
+    ) -> AioductBody {
         let encoding = match headers.get(CONTENT_ENCODING) {
             Some(v) => v.as_bytes(),
             None => return body,
@@ -411,7 +411,7 @@ mod tests {
     fn maybe_decompress_passthrough_when_empty() {
         use http_body_util::BodyExt;
         let mut headers = HeaderMap::new();
-        let body: HyperBody = http_body_util::Empty::new()
+        let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed();
         let ae = AcceptEncoding::none();
@@ -422,7 +422,7 @@ mod tests {
     fn maybe_decompress_passthrough_no_encoding_header() {
         use http_body_util::BodyExt;
         let mut headers = HeaderMap::new();
-        let body: HyperBody = http_body_util::Full::new(bytes::Bytes::from("hello"))
+        let body: AioductBody = http_body_util::Full::new(bytes::Bytes::from("hello"))
             .map_err(|never| match never {})
             .boxed();
         let ae = AcceptEncoding::default();
@@ -460,7 +460,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: HyperBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed();
         let ae = AcceptEncoding::default();

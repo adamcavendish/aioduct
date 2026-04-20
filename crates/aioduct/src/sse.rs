@@ -1,7 +1,7 @@
 use bytes::{Buf, BytesMut};
 use http_body_util::BodyExt;
 
-use crate::error::{Error, HyperBody};
+use crate::error::{AioductBody, Error};
 
 /// A parsed Server-Sent Event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,13 +18,19 @@ pub struct SseEvent {
 
 /// Async iterator over a `text/event-stream` response body.
 pub struct SseStream {
-    body: HyperBody,
+    body: AioductBody,
     buf: BytesMut,
     done: bool,
 }
 
+impl std::fmt::Debug for SseStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SseStream").finish()
+    }
+}
+
 impl SseStream {
-    pub(crate) fn new(body: HyperBody) -> Self {
+    pub(crate) fn new(body: AioductBody) -> Self {
         Self {
             body,
             buf: BytesMut::new(),

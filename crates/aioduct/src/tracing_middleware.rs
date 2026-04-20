@@ -1,6 +1,6 @@
 use http::{Method, StatusCode, Uri};
 
-use crate::error::{Error, HyperBody};
+use crate::error::{AioductBody, Error};
 use crate::middleware::Middleware;
 
 /// Middleware that emits `tracing` events for HTTP request lifecycle.
@@ -26,7 +26,7 @@ impl Default for TracingMiddleware {
 }
 
 impl Middleware for TracingMiddleware {
-    fn on_request(&self, request: &mut http::Request<HyperBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
         tracing::debug!(
             method = %request.method(),
             uri = %uri,
@@ -34,7 +34,7 @@ impl Middleware for TracingMiddleware {
         );
     }
 
-    fn on_response(&self, response: &mut http::Response<HyperBody>, uri: &Uri) {
+    fn on_response(&self, response: &mut http::Response<AioductBody>, uri: &Uri) {
         tracing::debug!(
             status = response.status().as_u16(),
             uri = %uri,

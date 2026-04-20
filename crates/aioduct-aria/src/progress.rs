@@ -148,3 +148,80 @@ fn format_speed(bytes_per_sec: f64) -> String {
 fn truncate_str(s: &str, max: usize) -> &str {
     if s.len() <= max { s } else { &s[..max] }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- format_size --
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(0), "0B");
+        assert_eq!(format_size(512), "512B");
+        assert_eq!(format_size(1023), "1023B");
+    }
+
+    #[test]
+    fn format_size_kib() {
+        assert_eq!(format_size(1024), "1.0KiB");
+        assert_eq!(format_size(1024 + 512), "1.5KiB");
+    }
+
+    #[test]
+    fn format_size_mib() {
+        assert_eq!(format_size(1024 * 1024), "1.0MiB");
+        assert_eq!(format_size(5 * 1024 * 1024 + 512 * 1024), "5.5MiB");
+    }
+
+    #[test]
+    fn format_size_gib() {
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.0GiB");
+        assert_eq!(
+            format_size(2 * 1024 * 1024 * 1024 + 512 * 1024 * 1024),
+            "2.5GiB"
+        );
+    }
+
+    // -- format_speed --
+
+    #[test]
+    fn format_speed_bytes_per_sec() {
+        assert_eq!(format_speed(100.0), "100B/s");
+        assert_eq!(format_speed(0.0), "0B/s");
+    }
+
+    #[test]
+    fn format_speed_kib_per_sec() {
+        assert_eq!(format_speed(1024.0), "1.0KiB/s");
+        assert_eq!(format_speed(1536.0), "1.5KiB/s");
+    }
+
+    #[test]
+    fn format_speed_mib_per_sec() {
+        assert_eq!(format_speed(1024.0 * 1024.0), "1.0MiB/s");
+        assert_eq!(format_speed(10.0 * 1024.0 * 1024.0), "10.0MiB/s");
+    }
+
+    // -- truncate_str --
+
+    #[test]
+    fn truncate_str_short() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_str_exact() {
+        assert_eq!(truncate_str("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_str_long() {
+        assert_eq!(truncate_str("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_str_empty() {
+        assert_eq!(truncate_str("", 5), "");
+    }
+}

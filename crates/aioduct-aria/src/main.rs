@@ -58,6 +58,7 @@ async fn main() -> ExitCode {
     let mut handles = Vec::new();
 
     for url in &uris {
+        // Semaphore is never closed
         let permit = semaphore.clone().acquire_owned().await.unwrap();
 
         let task = match engine.probe(url).await {
@@ -67,7 +68,6 @@ async fn main() -> ExitCode {
                     eprintln!("[ERROR] {url}: {e}");
                 }
                 results.push(DownloadResult {
-                    url: url.clone(),
                     output: cli.dir.join("unknown"),
                     total_size: 0,
                     error: Some(e.to_string()),

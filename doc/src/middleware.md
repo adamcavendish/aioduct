@@ -6,8 +6,8 @@ aioduct supports a middleware layer that lets you intercept and modify requests 
 
 ```rust,no_run
 pub trait Middleware: Send + Sync + 'static {
-    fn on_request(&self, request: &mut http::Request<HyperBody>, uri: &Uri) { }
-    fn on_response(&self, response: &mut http::Response<HyperBody>, uri: &Uri) { }
+    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) { }
+    fn on_response(&self, response: &mut http::Response<AioductBody>, uri: &Uri) { }
 }
 ```
 
@@ -22,7 +22,7 @@ use aioduct::Client;
 use aioduct::runtime::TokioRuntime;
 
 let client = Client::<TokioRuntime>::builder()
-    .middleware(|req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+    .middleware(|req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
         req.headers_mut().insert(
             http::header::HeaderName::from_static("x-custom"),
             http::header::HeaderValue::from_static("value"),
@@ -38,7 +38,7 @@ For middleware that needs to modify responses or maintain state, implement the t
 ```rust,no_run
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use aioduct::{Client, HyperBody, Middleware};
+use aioduct::{Client, AioductBody, Middleware};
 use aioduct::runtime::TokioRuntime;
 
 struct RequestCounter {
@@ -46,7 +46,7 @@ struct RequestCounter {
 }
 
 impl Middleware for RequestCounter {
-    fn on_request(&self, _req: &mut http::Request<HyperBody>, _uri: &http::Uri) {
+    fn on_request(&self, _req: &mut http::Request<AioductBody>, _uri: &http::Uri) {
         self.count.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -69,14 +69,14 @@ use aioduct::Client;
 use aioduct::runtime::TokioRuntime;
 
 let client = Client::<TokioRuntime>::builder()
-    .middleware(|req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+    .middleware(|req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
         // Runs first on request
         req.headers_mut().insert(
             http::header::HeaderName::from_static("x-trace-id"),
             http::header::HeaderValue::from_static("abc123"),
         );
     })
-    .middleware(|req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+    .middleware(|req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
         // Runs second on request
         req.headers_mut().insert(
             http::header::HeaderName::from_static("x-auth"),

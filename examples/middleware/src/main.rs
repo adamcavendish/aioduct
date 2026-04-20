@@ -7,11 +7,11 @@ use aioduct::{Client, Middleware};
 struct LoggingMiddleware;
 
 impl Middleware for LoggingMiddleware {
-    fn on_request(&self, request: &mut http::Request<aioduct::HyperBody>, uri: &http::Uri) {
+    fn on_request(&self, request: &mut http::Request<aioduct::AioductBody>, uri: &http::Uri) {
         println!("[MW] → {} {}", request.method(), uri);
     }
 
-    fn on_response(&self, response: &mut http::Response<aioduct::HyperBody>, uri: &http::Uri) {
+    fn on_response(&self, response: &mut http::Response<aioduct::AioductBody>, uri: &http::Uri) {
         println!("[MW] ← {} {}", response.status(), uri);
     }
 
@@ -40,7 +40,7 @@ struct MetricsMiddleware {
 }
 
 impl Middleware for MetricsMiddleware {
-    fn on_request(&self, _request: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri) {
+    fn on_request(&self, _request: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri) {
         let count = self.request_count.fetch_add(1, Ordering::Relaxed) + 1;
         println!("[Metrics] request #{count}");
     }
@@ -73,7 +73,7 @@ async fn main() -> Result<(), aioduct::Error> {
     // Closure as middleware (request-only)
     let client = Client::<TokioRuntime>::builder()
         .middleware(
-            |req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     "x-injected",
                     http::HeaderValue::from_static("by-middleware"),

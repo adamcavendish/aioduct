@@ -46,24 +46,6 @@ impl Runtime for CompioRuntime {
         })
     }
 
-    fn resolve(host: &str, port: u16) -> impl Future<Output = io::Result<SocketAddr>> + Send {
-        let addr_str = format!("{host}:{port}");
-        AssertSend(async move {
-            let addrs = compio_runtime::spawn_blocking(move || {
-                use std::net::ToSocketAddrs;
-                addr_str
-                    .to_socket_addrs()
-                    .map(|iter| iter.collect::<Vec<_>>())
-            })
-            .await
-            .map_err(|e| io::Error::other(format!("{e:?}")))?;
-            let addrs = addrs?;
-            addrs.into_iter().next().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found")
-            })
-        })
-    }
-
     fn resolve_all(
         host: &str,
         port: u16,
@@ -165,7 +147,7 @@ impl Runtime for CompioRuntime {
                 let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
                 socket.bind(&SockAddr::from(std::net::SocketAddr::new(local, 0)))?;
                 socket.connect(&SockAddr::from(addr))?;
-                socket.set_nodelay(true)?;
+                socket.set_tcp_nodelay(true)?;
                 Ok::<std::net::TcpStream, io::Error>(socket.into())
             })
             .await

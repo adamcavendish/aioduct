@@ -23,15 +23,6 @@ impl Runtime for SmolRuntime {
         Ok(SmolIo::new(stream))
     }
 
-    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr> {
-        let addr = format!("{host}:{port}");
-        smol::net::resolve(addr)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found"))
-    }
-
     async fn resolve_all(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
         let addr = format!("{host}:{port}");
         let addrs: Vec<SocketAddr> = smol::net::resolve(addr).await?;
@@ -119,7 +110,7 @@ impl Runtime for SmolRuntime {
             let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
             socket.bind(&SockAddr::from(std::net::SocketAddr::new(local, 0)))?;
             socket.connect(&SockAddr::from(addr))?;
-            socket.set_nodelay(true)?;
+            socket.set_tcp_nodelay(true)?;
             Ok::<std::net::TcpStream, io::Error>(socket.into())
         })
         .await?;

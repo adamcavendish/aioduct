@@ -2,21 +2,23 @@ use std::sync::Arc;
 
 use http::{Method, StatusCode, Uri};
 
-use crate::error::{Error, HyperBody};
+use crate::error::{AioductBody, Error};
 
 /// Middleware that can inspect or modify requests and responses.
 ///
 /// Implement this trait to add cross-cutting behavior like logging, metrics,
 /// or auth token refresh. Middleware is applied in order: request hooks run
 /// first-to-last, response hooks run last-to-first.
+///
+/// Note: all hooks are synchronous. Async operations (e.g., token refresh) are not supported.
 pub trait Middleware: Send + Sync + 'static {
     /// Called before the request is sent. May modify the request in place.
-    fn on_request(&self, request: &mut http::Request<HyperBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
         let _ = (request, uri);
     }
 
     /// Called after the response is received. May modify the response in place.
-    fn on_response(&self, response: &mut http::Response<HyperBody>, uri: &Uri) {
+    fn on_response(&self, response: &mut http::Response<AioductBody>, uri: &Uri) {
         let _ = (response, uri);
     }
 
@@ -38,9 +40,9 @@ pub trait Middleware: Send + Sync + 'static {
 
 impl<F> Middleware for F
 where
-    F: Fn(&mut http::Request<HyperBody>, &Uri) + Send + Sync + 'static,
+    F: Fn(&mut http::Request<AioductBody>, &Uri) + Send + Sync + 'static,
 {
-    fn on_request(&self, request: &mut http::Request<HyperBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
         (self)(request, uri);
     }
 }
@@ -70,13 +72,13 @@ impl MiddlewareStack {
         self.layers.is_empty()
     }
 
-    pub fn apply_request(&self, request: &mut http::Request<HyperBody>, uri: &Uri) {
+    pub fn apply_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
         for layer in &self.layers {
             layer.on_request(request, uri);
         }
     }
 
-    pub fn apply_response(&self, response: &mut http::Response<HyperBody>, uri: &Uri) {
+    pub fn apply_response(&self, response: &mut http::Response<AioductBody>, uri: &Uri) {
         for layer in self.layers.iter().rev() {
             layer.on_response(response, uri);
         }
@@ -107,7 +109,7 @@ mod tests {
     use http_body_util::BodyExt;
     use std::sync::Mutex;
 
-    fn empty_body() -> HyperBody {
+    fn empty_body() -> AioductBody {
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed()
@@ -123,10 +125,10 @@ mod tests {
     }
 
     impl Middleware for RecordingMiddleware {
-        fn on_request(&self, _req: &mut http::Request<HyperBody>, _uri: &Uri) {
+        fn on_request(&self, _req: &mut http::Request<AioductBody>, _uri: &Uri) {
             self.log.lock().unwrap().push((self.id, "request"));
         }
-        fn on_response(&self, _resp: &mut http::Response<HyperBody>, _uri: &Uri) {
+        fn on_response(&self, _resp: &mut http::Response<AioductBody>, _uri: &Uri) {
             self.log.lock().unwrap().push((self.id, "response"));
         }
         fn on_error(&self, _err: &Error, _uri: &Uri, _method: &Method) {
@@ -237,7 +239,7 @@ mod tests {
     fn closure_as_middleware() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<HyperBody>, _uri: &Uri| {
+            |req: &mut http::Request<AioductBody>, _uri: &Uri| {
                 req.headers_mut()
                     .insert("x-test", http::header::HeaderValue::from_static("added"));
             },

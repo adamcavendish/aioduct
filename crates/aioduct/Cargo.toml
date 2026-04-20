@@ -17,6 +17,7 @@ json = ["dep:serde", "dep:serde_json", "dep:serde_urlencoded"]
 charset = ["dep:encoding_rs", "dep:mime"]
 rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile"]
 rustls-native-roots = ["rustls", "dep:rustls-native-certs"]
+# Note: hickory-dns implies tokio (hickory-resolver requires tokio)
 hickory-dns = ["dep:hickory-resolver", "tokio"]
 blocking = ["tokio"]
 tokio = ["dep:tokio"]
@@ -43,7 +44,7 @@ pin-project-lite = "0.2"
 thiserror = "2"
 base64 = "0.22"
 percent-encoding = "2"
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6" }
 futures-core = "0.3"
 
 # JSON

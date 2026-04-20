@@ -7,7 +7,7 @@ use opentelemetry::trace::{Status, TraceContextExt};
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_http::HeaderInjector;
 
-use crate::error::{Error, HyperBody};
+use crate::error::{AioductBody, Error};
 use crate::middleware::Middleware;
 
 /// OpenTelemetry middleware that propagates trace context and records HTTP
@@ -74,7 +74,7 @@ impl Default for OtelMiddleware {
 }
 
 impl Middleware for OtelMiddleware {
-    fn on_request(&self, request: &mut http::Request<HyperBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
         self.inject_context(request.headers_mut());
 
         Context::map_current(|cx| {
@@ -87,7 +87,7 @@ impl Middleware for OtelMiddleware {
         });
     }
 
-    fn on_response(&self, response: &mut http::Response<HyperBody>, _uri: &Uri) {
+    fn on_response(&self, response: &mut http::Response<AioductBody>, _uri: &Uri) {
         Context::map_current(|cx| {
             let span = cx.span();
             span.set_attribute(KeyValue::new(
@@ -156,7 +156,7 @@ mod tests {
     use http_body_util::BodyExt;
     use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
 
-    fn empty_body() -> HyperBody {
+    fn empty_body() -> AioductBody {
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed()

@@ -23,7 +23,7 @@ aioduct = { path = "../aioduct", features = [
     "json",
 ] }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "signal"] }
 indicatif = { version = "0.17", features = ["tokio"] }
 console = "0.15"
 bytes = "1"

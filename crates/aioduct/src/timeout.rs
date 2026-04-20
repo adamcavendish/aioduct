@@ -43,7 +43,7 @@ pin_project! {
     /// Body wrapper that enforces a timeout between data chunks.
     pub struct ReadTimeoutBody<S: crate::runtime::Runtime> {
         #[pin]
-        inner: crate::error::HyperBody,
+        inner: crate::error::AioductBody,
         duration: Duration,
         #[pin]
         sleep: Option<S::Sleep>,
@@ -51,7 +51,7 @@ pin_project! {
 }
 
 impl<S: crate::runtime::Runtime> ReadTimeoutBody<S> {
-    pub fn new(inner: crate::error::HyperBody, duration: Duration) -> Self {
+    pub fn new(inner: crate::error::AioductBody, duration: Duration) -> Self {
         Self {
             inner,
             duration,
@@ -142,7 +142,7 @@ mod tests {
         use http_body::Body;
         use http_body_util::BodyExt;
 
-        let inner: crate::error::HyperBody = http_body_util::Empty::new()
+        let inner: crate::error::AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed();
         let body = ReadTimeoutBody::<TokioRuntime>::new(inner, Duration::from_secs(1));
@@ -155,7 +155,7 @@ mod tests {
         use http_body::Body;
         use http_body_util::BodyExt;
 
-        let inner: crate::error::HyperBody = http_body_util::Full::new(Bytes::from("hello"))
+        let inner: crate::error::AioductBody = http_body_util::Full::new(Bytes::from("hello"))
             .map_err(|never| match never {})
             .boxed();
         let body = ReadTimeoutBody::<TokioRuntime>::new(inner, Duration::from_secs(1));
@@ -168,7 +168,7 @@ mod tests {
         use http_body::Body;
         use http_body_util::BodyExt;
 
-        let inner: crate::error::HyperBody = http_body_util::Full::new(Bytes::from("data"))
+        let inner: crate::error::AioductBody = http_body_util::Full::new(Bytes::from("data"))
             .map_err(|never| match never {})
             .boxed();
         let body = ReadTimeoutBody::<TokioRuntime>::new(inner, Duration::from_secs(1));

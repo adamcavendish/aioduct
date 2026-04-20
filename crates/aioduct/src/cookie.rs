@@ -55,6 +55,12 @@ pub struct CookieJar {
     inner: Arc<Mutex<HashMap<String, Vec<Cookie>>>>,
 }
 
+impl std::fmt::Debug for CookieJar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CookieJar").finish()
+    }
+}
+
 impl CookieJar {
     /// Create an empty cookie jar.
     pub fn new() -> Self {

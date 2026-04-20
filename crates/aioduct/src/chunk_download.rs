@@ -17,7 +17,16 @@ pub struct ChunkDownload<R: Runtime> {
     _runtime: PhantomData<R>,
 }
 
+impl<R: Runtime> std::fmt::Debug for ChunkDownload<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChunkDownload")
+            .field("url", &self.url)
+            .finish()
+    }
+}
+
 /// Result of a parallel chunk download.
+#[derive(Debug)]
 pub struct ChunkDownloadResult {
     /// Total size of the downloaded file in bytes.
     pub total_size: u64,

@@ -53,7 +53,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "smol",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror",
  "tokio",
  "tower-layer",
@@ -103,7 +103,6 @@ name = "aioduct-curl"
 version = "0.1.0"
 dependencies = [
  "aioduct",
- "base64",
  "clap",
  "http 1.4.0",
  "tokio",

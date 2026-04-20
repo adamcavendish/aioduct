@@ -29,8 +29,6 @@ pub struct DownloadTask {
 }
 
 pub struct DownloadResult {
-    #[allow(dead_code)]
-    pub url: String,
     pub output: PathBuf,
     pub total_size: u64,
     pub error: Option<String>,
@@ -105,13 +103,11 @@ impl DownloadEngine {
 
         match result {
             Ok(size) => DownloadResult {
-                url: task.url.clone(),
                 output: task.output.clone(),
                 total_size: size,
                 error: None,
             },
             Err(e) => DownloadResult {
-                url: task.url.clone(),
                 output: task.output.clone(),
                 total_size: 0,
                 error: Some(e.to_string()),
@@ -156,7 +152,9 @@ impl DownloadEngine {
         task: &DownloadTask,
         progress: &ProgressHandle,
     ) -> Result<u64, aioduct::Error> {
-        let total_size = task.total_size.unwrap();
+        let total_size = task
+            .total_size
+            .ok_or_else(|| aioduct::Error::Other("server did not report content length".into()))?;
         progress.set_total(total_size);
 
         let resume_offset = if self.cli.continue_download {
@@ -198,6 +196,7 @@ impl DownloadEngine {
             let extra = Arc::clone(&self.extra);
 
             handles.push(tokio::spawn(async move {
+                // Semaphore is never closed
                 let _permit = sem.acquire().await.unwrap();
                 if failed.load(Ordering::Relaxed) {
                     return Err(aioduct::Error::Other(
@@ -223,7 +222,10 @@ impl DownloadEngine {
 
         let mut first_error = None;
         for handle in handles {
-            if let Err(e) = handle.await.unwrap() {
+            if let Err(e) = handle
+                .await
+                .map_err(|e| aioduct::Error::Other(Box::new(e)))?
+            {
                 if first_error.is_none() {
                     first_error = Some(e);
                 }

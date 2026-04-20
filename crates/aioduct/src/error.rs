@@ -23,10 +23,6 @@ pub enum Error {
     #[error("TLS error: {0}")]
     Tls(BoxError),
 
-    /// A connection pool error.
-    #[error("connection pool error: {0}")]
-    Pool(String),
-
     /// The request timed out.
     #[error("request timeout")]
     Timeout,
@@ -39,10 +35,26 @@ pub enum Error {
     #[error("HTTP status error: {0}")]
     Status(http::StatusCode),
 
+    /// The redirect did not include a valid Location header.
+    #[error("redirect error: {0}")]
+    Redirect(String),
+
+    /// Too many redirects were followed.
+    #[error("too many redirects (max {0})")]
+    TooManyRedirects(usize),
+
+    /// HTTPS-only mode rejected a non-HTTPS URL.
+    #[error("HTTPS required but URL scheme is {0}")]
+    HttpsOnly(String),
+
+    /// An invalid header name or value was encountered.
+    #[error("invalid header: {0}")]
+    InvalidHeader(String),
+
     /// A catch-all for other errors.
     #[error("{0}")]
     Other(BoxError),
 }
 
 /// Boxed HTTP body type used throughout aioduct.
-pub type HyperBody = BoxBody<Bytes, Error>;
+pub type AioductBody = BoxBody<Bytes, Error>;

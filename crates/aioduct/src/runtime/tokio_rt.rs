@@ -23,14 +23,6 @@ impl Runtime for TokioRuntime {
         Ok(TokioIo::new(stream))
     }
 
-    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr> {
-        let addr = format!("{host}:{port}");
-        tokio::net::lookup_host(addr)
-            .await?
-            .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found"))
-    }
-
     async fn resolve_all(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
         let addr = format!("{host}:{port}");
         let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();

@@ -8,7 +8,7 @@ use http::{Method, Uri, Version};
 
 use crate::body::RequestBody;
 use crate::client::Client;
-use crate::error::{Error, HyperBody};
+use crate::error::{AioductBody, Error};
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::Runtime;
@@ -25,6 +25,15 @@ pub struct RequestBuilder<'a, R: Runtime> {
     timeout: Option<Duration>,
     retry: Option<RetryConfig>,
     _runtime: PhantomData<R>,
+}
+
+impl<R: Runtime> std::fmt::Debug for RequestBuilder<'_, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestBuilder")
+            .field("method", &self.method)
+            .field("uri", &self.uri)
+            .finish()
+    }
 }
 
 impl<'a, R: Runtime> RequestBuilder<'a, R> {
@@ -56,13 +65,21 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
 
     /// Add a header from string name and value.
     pub fn header_str(mut self, name: &str, value: &str) -> Result<Self, Error> {
-        let name: HeaderName = name.parse().map_err(|e| Error::Other(Box::new(e)))?;
-        let value: HeaderValue = value.parse().map_err(|e| Error::Other(Box::new(e)))?;
+        let name: HeaderName = name
+            .parse()
+            .map_err(|e: http::header::InvalidHeaderName| Error::InvalidHeader(e.to_string()))?;
+        let value: HeaderValue = value
+            .parse()
+            .map_err(|e: http::header::InvalidHeaderValue| Error::InvalidHeader(e.to_string()))?;
         self.headers.insert(name, value);
         Ok(self)
     }
 
     /// Set a Bearer token Authorization header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the token contains invalid header characters.
     pub fn bearer_auth(mut self, token: &str) -> Self {
         let value = HeaderValue::from_str(&format!("Bearer {token}")).expect("valid bearer token");
         self.headers.insert(AUTHORIZATION, value);
@@ -70,6 +87,10 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     }
 
     /// Set a Basic Authorization header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the username or password contain invalid header characters.
     pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         use base64::engine::{Engine, general_purpose::STANDARD};
         let credentials = match password {
@@ -133,7 +154,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     }
 
     /// Set a streaming request body.
-    pub fn body_stream(mut self, body: HyperBody) -> Self {
+    pub fn body_stream(mut self, body: AioductBody) -> Self {
         self.body = Some(RequestBody::Streaming(body));
         self
     }
@@ -196,6 +217,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     /// Set a multipart/form-data body.
     pub fn multipart(mut self, multipart: crate::multipart::Multipart) -> Self {
         let ct = multipart.content_type();
+        // Content-type is constructed from valid parts
         let value = HeaderValue::from_str(&ct).expect("valid multipart content-type");
         self.headers.insert(http::header::CONTENT_TYPE, value);
         if multipart.has_streaming_parts() {
@@ -655,7 +677,7 @@ mod tests {
         use http_body_util::BodyExt;
         let client = test_client();
         let rb = client.post("http://example.com").unwrap();
-        let stream_body: crate::error::HyperBody = http_body_util::Empty::new()
+        let stream_body: crate::error::AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed();
         let rb = rb.body_stream(stream_body);

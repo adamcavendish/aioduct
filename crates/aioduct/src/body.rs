@@ -1,18 +1,27 @@
 use bytes::Bytes;
 use http_body_util::BodyExt;
 
-use crate::error::{Error, HyperBody};
+use crate::error::{AioductBody, Error};
 
 /// HTTP request body, either buffered in memory or streaming.
 pub enum RequestBody {
     /// Fully buffered body from bytes.
     Buffered(Bytes),
     /// Streaming body from a boxed hyper body.
-    Streaming(HyperBody),
+    Streaming(AioductBody),
+}
+
+impl std::fmt::Debug for RequestBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestBody::Buffered(_) => f.debug_tuple("Buffered").field(&"..").finish(),
+            RequestBody::Streaming(_) => f.debug_tuple("Streaming").field(&"..").finish(),
+        }
+    }
 }
 
 impl RequestBody {
-    pub(crate) fn into_hyper_body(self) -> HyperBody {
+    pub(crate) fn into_hyper_body(self) -> AioductBody {
         match self {
             RequestBody::Buffered(b) => http_body_util::Full::new(b)
                 .map_err(|never| match never {})
@@ -60,20 +69,26 @@ impl From<&'static [u8]> for RequestBody {
     }
 }
 
-impl From<HyperBody> for RequestBody {
-    fn from(body: HyperBody) -> Self {
+impl From<AioductBody> for RequestBody {
+    fn from(body: AioductBody) -> Self {
         RequestBody::Streaming(body)
     }
 }
 
 /// Async iterator over response body data frames.
 pub struct BodyStream {
-    body: HyperBody,
+    body: AioductBody,
     done: bool,
 }
 
+impl std::fmt::Debug for BodyStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyStream").finish()
+    }
+}
+
 impl BodyStream {
-    pub(crate) fn new(body: HyperBody) -> Self {
+    pub(crate) fn new(body: AioductBody) -> Self {
         Self { body, done: false }
     }
 
@@ -112,7 +127,7 @@ mod tests {
     }
 
     fn streaming() -> RequestBody {
-        let body: HyperBody = http_body_util::Empty::new()
+        let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed();
         RequestBody::Streaming(body)
@@ -182,7 +197,7 @@ mod tests {
 
     #[test]
     fn from_hyper_body_is_streaming() {
-        let hyper_body: HyperBody = http_body_util::Empty::new()
+        let hyper_body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed();
         let body: RequestBody = hyper_body.into();

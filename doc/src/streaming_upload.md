@@ -7,14 +7,14 @@ aioduct supports streaming request bodies for large file uploads without bufferi
 Internally, request bodies are represented as `RequestBody`, which has two variants:
 
 - **Buffered** — an in-memory `Bytes` buffer (used by `.body()`, `.json()`, `.form()`, `.multipart()`)
-- **Streaming** — a `HyperBody` that produces chunks on demand
+- **Streaming** — a `AioductBody` that produces chunks on demand
 
 Buffered bodies can be retried and redirected automatically. Streaming bodies are consumed on first use — retries and 307/308 redirects that preserve the body will send an empty body on subsequent attempts.
 
 ## Basic Streaming Upload
 
 ```rust,no_run
-use aioduct::{Client, HyperBody};
+use aioduct::{Client, AioductBody};
 use aioduct::runtime::TokioRuntime;
 use bytes::Bytes;
 use http_body_util::{BodyExt, StreamBody};
@@ -30,7 +30,7 @@ async fn main() -> Result<(), aioduct::Error> {
         Ok(hyper::body::Frame::data(Bytes::from("chunk 2 "))),
         Ok(hyper::body::Frame::data(Bytes::from("chunk 3"))),
     ];
-    let body: HyperBody = StreamBody::new(stream::iter(chunks)).boxed();
+    let body: AioductBody = StreamBody::new(stream::iter(chunks)).boxed();
 
     let resp = client
         .post("http://httpbin.org/post")?
@@ -46,7 +46,7 @@ async fn main() -> Result<(), aioduct::Error> {
 ## Streaming from a File
 
 ```rust,no_run
-use aioduct::{Client, HyperBody};
+use aioduct::{Client, AioductBody};
 use aioduct::runtime::TokioRuntime;
 use bytes::Bytes;
 use http_body_util::{BodyExt, StreamBody};
@@ -66,7 +66,7 @@ async fn main() -> Result<(), aioduct::Error> {
             .map(|bytes| hyper::body::Frame::data(bytes))
             .map_err(|e| aioduct::Error::Io(e))
     });
-    let body: HyperBody = StreamBody::new(mapped).boxed();
+    let body: AioductBody = StreamBody::new(mapped).boxed();
 
     let resp = client
         .put("https://httpbin.org/put")?

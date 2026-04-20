@@ -191,4 +191,58 @@ mod tests {
         assert_eq!(parse_rate("1M").unwrap(), 1024 * 1024);
         assert_eq!(parse_rate("1024").unwrap(), 1024);
     }
+
+    #[test]
+    fn effective_method_default_is_get() {
+        let cli = Cli::parse_from(["aioduct-curl", "http://example.com"]);
+        assert_eq!(cli.effective_method(), "GET");
+    }
+
+    #[test]
+    fn effective_method_explicit_overrides() {
+        let cli = Cli::parse_from(["aioduct-curl", "-X", "PUT", "http://example.com"]);
+        assert_eq!(cli.effective_method(), "PUT");
+    }
+
+    #[test]
+    fn effective_method_head_flag() {
+        let cli = Cli::parse_from(["aioduct-curl", "-I", "http://example.com"]);
+        assert_eq!(cli.effective_method(), "HEAD");
+    }
+
+    #[test]
+    fn effective_method_data_implies_post() {
+        let cli = Cli::parse_from(["aioduct-curl", "-d", "payload", "http://example.com"]);
+        assert_eq!(cli.effective_method(), "POST");
+    }
+
+    #[test]
+    fn effective_method_explicit_plus_data() {
+        let cli = Cli::parse_from([
+            "aioduct-curl",
+            "-X",
+            "PUT",
+            "-d",
+            "payload",
+            "http://example.com",
+        ]);
+        assert_eq!(cli.effective_method(), "PUT");
+    }
+
+    #[test]
+    fn effective_method_form_implies_post() {
+        let cli = Cli::parse_from(["aioduct-curl", "-F", "file=@data.txt", "http://example.com"]);
+        assert_eq!(cli.effective_method(), "POST");
+    }
+
+    #[test]
+    fn effective_method_data_binary_implies_post() {
+        let cli = Cli::parse_from([
+            "aioduct-curl",
+            "--data-binary",
+            "@file.bin",
+            "http://example.com",
+        ]);
+        assert_eq!(cli.effective_method(), "POST");
+    }
 }

@@ -18,7 +18,16 @@ pub trait Runtime: Send + Sync + 'static {
     /// Connect to a remote address over TCP.
     fn connect(addr: SocketAddr) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
     /// Resolve a hostname to a socket address.
-    fn resolve(host: &str, port: u16) -> impl Future<Output = io::Result<SocketAddr>> + Send;
+    ///
+    /// The default implementation delegates to [`Runtime::resolve_all`] and
+    /// returns the first address.
+    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr> {
+        let addrs = Self::resolve_all(host, port).await?;
+        addrs
+            .into_iter()
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses resolved"))
+    }
     /// Resolve a hostname to all available socket addresses.
     fn resolve_all(
         host: &str,
@@ -110,7 +119,7 @@ where
 }
 
 /// Executor adapter that delegates to `R::spawn` for hyper's HTTP/2 handshake.
-pub struct HyperExecutor<R>(PhantomData<fn() -> R>);
+pub(crate) struct HyperExecutor<R>(PhantomData<fn() -> R>);
 
 impl<R> Clone for HyperExecutor<R> {
     fn clone(&self) -> Self {
@@ -131,7 +140,7 @@ where
 }
 
 /// Create a [`HyperExecutor`] for the given runtime.
-pub fn hyper_executor<R: Runtime>() -> HyperExecutor<R> {
+pub(crate) fn hyper_executor<R: Runtime>() -> HyperExecutor<R> {
     HyperExecutor(PhantomData)
 }
 

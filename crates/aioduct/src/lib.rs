@@ -33,8 +33,8 @@ pub mod cookie;
 pub mod error;
 /// Multipart/form-data request body builder.
 pub mod multipart;
-/// Connection pool for HTTP keep-alive.
-pub mod pool;
+/// Internal connection pool for HTTP keep-alive.
+pub(crate) mod pool;
 /// HTTP and SOCKS proxy configuration.
 pub mod proxy;
 /// Redirect policy configuration.
@@ -100,7 +100,7 @@ pub use cache::{CacheConfig, HttpCache};
 pub use chunk_download::ChunkDownload;
 pub use client::Client;
 pub use cookie::{Cookie, CookieJar};
-pub use error::{Error, HyperBody};
+pub use error::{AioductBody, Error};
 #[cfg(feature = "hickory-dns")]
 pub use hickory::HickoryResolver;
 pub use http2::Http2Config;

@@ -7,13 +7,13 @@ use http::header::{CONTENT_LENGTH, HeaderMap};
 use http::{StatusCode, Uri, Version};
 use http_body_util::BodyExt;
 
-use crate::error::{Error, HyperBody};
+use crate::error::{AioductBody, Error};
 
 pin_project_lite::pin_project! {
     #[project = ResponseBodyProj]
     pub(crate) enum ResponseBody {
         Incoming { #[pin] body: http_body_util::combinators::MapErr<hyper::body::Incoming, fn(hyper::Error) -> Error> },
-        Boxed { #[pin] body: HyperBody },
+        Boxed { #[pin] body: AioductBody },
     }
 }
 
@@ -24,11 +24,11 @@ impl ResponseBody {
         }
     }
 
-    pub(crate) fn from_boxed(body: HyperBody) -> Self {
+    pub(crate) fn from_boxed(body: AioductBody) -> Self {
         ResponseBody::Boxed { body }
     }
 
-    pub(crate) fn into_boxed(self) -> HyperBody {
+    pub(crate) fn into_boxed(self) -> AioductBody {
         match self {
             ResponseBody::Incoming { body } => body.boxed(),
             ResponseBody::Boxed { body } => body,
@@ -93,7 +93,7 @@ impl Response {
         }
     }
 
-    pub(crate) fn from_boxed(inner: http::Response<HyperBody>, url: Uri) -> Self {
+    pub(crate) fn from_boxed(inner: http::Response<AioductBody>, url: Uri) -> Self {
         let (parts, body) = inner.into_parts();
         Self {
             inner: http::Response::from_parts(parts, ResponseBody::from_boxed(body)),
@@ -150,7 +150,7 @@ impl Response {
         let (parts, body) = self.inner.into_parts();
         let boxed = body.into_boxed();
         let timeout_body = crate::timeout::ReadTimeoutBody::<R>::new(boxed, duration);
-        let boxed: HyperBody = timeout_body.map_err(|e| e).boxed();
+        let boxed: AioductBody = timeout_body.map_err(|e| e).boxed();
         Self {
             inner: http::Response::from_parts(parts, ResponseBody::from_boxed(boxed)),
             url: self.url,
@@ -284,7 +284,7 @@ impl Response {
     }
 
     /// Consume the response and return the raw hyper body.
-    pub fn into_body(self) -> HyperBody {
+    pub fn into_body(self) -> AioductBody {
         self.inner.into_body().into_boxed()
     }
 

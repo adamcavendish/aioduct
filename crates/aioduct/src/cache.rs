@@ -77,6 +77,12 @@ impl Default for CacheConfig {
     }
 }
 
+impl std::fmt::Debug for HttpCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpCache").finish()
+    }
+}
+
 impl HttpCache {
     /// Create a new cache with default settings (256 max entries).
     pub fn new() -> Self {
@@ -266,7 +272,7 @@ impl Validators {
 }
 
 impl CachedResponse {
-    pub fn into_http_response(self) -> http::Response<crate::error::HyperBody> {
+    pub fn into_http_response(self) -> http::Response<crate::error::AioductBody> {
         use http_body_util::BodyExt;
 
         let mut builder = http::Response::builder().status(self.status);

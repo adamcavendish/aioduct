@@ -6,7 +6,7 @@ use std::sync::Arc;
 use http::Uri;
 use http::header::{AUTHORIZATION, HeaderValue};
 
-use crate::error::HyperBody;
+use crate::error::AioductBody;
 use crate::middleware::Middleware;
 
 /// A parsed .netrc file mapping machine names to credentials.
@@ -187,7 +187,7 @@ impl NetrcMiddleware {
 }
 
 impl Middleware for NetrcMiddleware {
-    fn on_request(&self, request: &mut http::Request<HyperBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
         if request.headers().contains_key(AUTHORIZATION) {
             return;
         }

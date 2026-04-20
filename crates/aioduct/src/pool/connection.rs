@@ -4,18 +4,18 @@ use std::net::SocketAddr;
 use crate::runtime::Runtime;
 
 /// An established HTTP connection at a specific protocol version.
-pub enum HttpConnection {
+pub(crate) enum HttpConnection {
     /// An HTTP/1.1 connection.
-    H1(hyper::client::conn::http1::SendRequest<crate::error::HyperBody>),
+    H1(hyper::client::conn::http1::SendRequest<crate::error::AioductBody>),
     /// An HTTP/2 connection.
-    H2(hyper::client::conn::http2::SendRequest<crate::error::HyperBody>),
+    H2(hyper::client::conn::http2::SendRequest<crate::error::AioductBody>),
     /// An HTTP/3 connection.
     #[cfg(feature = "http3")]
     H3(h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>),
 }
 
 /// A pooled HTTP connection wrapper.
-pub struct PooledConnection<R: Runtime> {
+pub(crate) struct PooledConnection<R: Runtime> {
     pub(crate) conn: HttpConnection,
     pub(crate) remote_addr: Option<SocketAddr>,
     pub(crate) tls_info: Option<crate::tls::TlsInfo>,
@@ -24,8 +24,8 @@ pub struct PooledConnection<R: Runtime> {
 
 impl<R: Runtime> PooledConnection<R> {
     /// Wrap an HTTP/1.1 connection.
-    pub fn new_h1(
-        sender: hyper::client::conn::http1::SendRequest<crate::error::HyperBody>,
+    pub(crate) fn new_h1(
+        sender: hyper::client::conn::http1::SendRequest<crate::error::AioductBody>,
     ) -> Self {
         Self {
             conn: HttpConnection::H1(sender),
@@ -36,8 +36,8 @@ impl<R: Runtime> PooledConnection<R> {
     }
 
     /// Wrap an HTTP/2 connection.
-    pub fn new_h2(
-        sender: hyper::client::conn::http2::SendRequest<crate::error::HyperBody>,
+    pub(crate) fn new_h2(
+        sender: hyper::client::conn::http2::SendRequest<crate::error::AioductBody>,
     ) -> Self {
         Self {
             conn: HttpConnection::H2(sender),
@@ -49,7 +49,9 @@ impl<R: Runtime> PooledConnection<R> {
 
     /// Wrap an HTTP/3 connection.
     #[cfg(feature = "http3")]
-    pub fn new_h3(sender: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>) -> Self {
+    pub(crate) fn new_h3(
+        sender: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>,
+    ) -> Self {
         Self {
             conn: HttpConnection::H3(sender),
             remote_addr: None,
@@ -58,14 +60,8 @@ impl<R: Runtime> PooledConnection<R> {
         }
     }
 
-    /// Set the remote address of this connection.
-    pub fn with_remote_addr(mut self, addr: SocketAddr) -> Self {
-        self.remote_addr = Some(addr);
-        self
-    }
-
     /// Returns true if the connection is ready to send a request.
-    pub fn is_ready(&self) -> bool {
+    pub(crate) fn is_ready(&self) -> bool {
         match &self.conn {
             HttpConnection::H1(s) => s.is_ready(),
             HttpConnection::H2(s) => s.is_ready(),

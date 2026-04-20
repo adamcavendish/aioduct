@@ -1300,7 +1300,7 @@ async fn test_streaming_body_upload() {
     ];
 
     let stream = futures_util::stream::iter(chunks);
-    let stream_body: aioduct::HyperBody = http_body_util::StreamBody::new(stream).boxed();
+    let stream_body: aioduct::AioductBody = http_body_util::StreamBody::new(stream).boxed();
 
     let client = Client::<TokioRuntime>::new();
     let resp = client
@@ -2268,7 +2268,7 @@ async fn test_middleware_adds_request_header() {
 
     let client = Client::<TokioRuntime>::builder()
         .middleware(
-            |req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-middleware"),
                     http::header::HeaderValue::from_static("injected"),
@@ -2299,7 +2299,11 @@ async fn test_middleware_modifies_response_header() {
     }
 
     impl aioduct::Middleware for ResponseTagger {
-        fn on_response(&self, response: &mut http::Response<aioduct::HyperBody>, _uri: &http::Uri) {
+        fn on_response(
+            &self,
+            response: &mut http::Response<aioduct::AioductBody>,
+            _uri: &http::Uri,
+        ) {
             self.called.store(true, Ordering::SeqCst);
             response.headers_mut().insert(
                 http::header::HeaderName::from_static("x-from-middleware"),
@@ -2348,7 +2352,7 @@ async fn test_multiple_middleware_ordering() {
 
     let client = Client::<TokioRuntime>::builder()
         .middleware(
-            |req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-order"),
                     http::header::HeaderValue::from_static("first"),
@@ -2356,7 +2360,7 @@ async fn test_multiple_middleware_ordering() {
             },
         )
         .middleware(
-            |req: &mut http::Request<aioduct::HyperBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-order"),
                     http::header::HeaderValue::from_static("second"),
