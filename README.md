@@ -32,7 +32,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Proxy** — HTTP CONNECT tunneling, SOCKS4/SOCKS4a, SOCKS5, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
 - **Middleware** — pluggable request/response interceptors via trait or closure
 - **Rate limiting** — token-bucket rate limiter for outgoing requests
-- **Caching** — in-memory HTTP cache with immutable responses, stale-while-revalidate, stale-if-error
+- **Caching** — in-memory HTTP cache with immutable responses, stale-while-revalidate, stale-if-error (fallback on 5xx/connection failure)
 - **HSTS** — automatic HTTP-to-HTTPS upgrade for Strict-Transport-Security domains
 - **SSE** — Server-Sent Events stream parsing for LLM APIs
 - **Multipart** — `multipart/form-data` uploads with text fields and file parts

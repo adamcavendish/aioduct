@@ -59,6 +59,8 @@ Cache-Control: max-age=60, stale-if-error=3600
 
 If the origin is unavailable, the stale response can be served for up to 3600 seconds past expiry.
 
+**Client behavior:** When the client holds a stale cached response with a `stale-if-error` directive, it first attempts a normal request to the origin (including conditional validation headers). If the origin returns a 5xx status code or the connection fails entirely, the client checks whether the cached entry's age is within the `stale-if-error` grace window. If so, the stale cached response is returned transparently instead of the error. If the grace window has expired, the original error is propagated.
+
 ## Conditional Validation
 
 When a cached response becomes stale, the cache performs conditional validation:

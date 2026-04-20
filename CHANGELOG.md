@@ -12,12 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SameSite cookie attribute (Strict/Lax/None) and cookie prefix validation (__Host-, __Secure-) per RFC 6265bis
 - `immutable` Cache-Control directive — skip revalidation for immutable resources (RFC 8246)
 - `stale-while-revalidate` and `stale-if-error` Cache-Control extensions (RFC 5861)
+- `stale-if-error` client fallback — serves stale cached responses when the origin returns 5xx or is unreachable, within the grace window
 - Retry-After header parsing (seconds and HTTP-date formats) integrated into retry loop (RFC 9110)
 - 429 Too Many Requests now triggers retry (alongside 5xx)
 - Link header parsing with `Response::links()` (RFC 8288)
 - RFC 9457 Problem Details response helper with `Response::problem_details()` (requires `json` feature)
 - TCP Fast Open support on Linux via `ClientBuilder::tcp_fast_open()` (RFC 7413)
 - Forwarded header builder and parser (RFC 7239)
+
+### Changed
+- Test suite expanded from 485 to 793 tests (95% line coverage)
+
+### Fixed
+- Resolved all clippy warnings under `--all-features --all-targets`
+- Fixed env-var race conditions in netrc tests via serialization mutex
 
 ## [0.1.0] - 2026-04-19
 

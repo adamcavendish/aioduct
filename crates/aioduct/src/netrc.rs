@@ -210,6 +210,8 @@ mod tests {
     use super::*;
     use http_body_util::BodyExt;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn parse_simple_netrc() {
         let netrc = Netrc::parse(
@@ -476,6 +478,7 @@ mod tests {
 
     #[test]
     fn default_netrc_path_via_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
         use std::io::Write;
         let dir = std::env::temp_dir().join("aioduct_netrc_env_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -494,6 +497,7 @@ mod tests {
 
     #[test]
     fn default_netrc_path_falls_back_to_home_dotnetrc() {
+        let _lock = ENV_LOCK.lock().unwrap();
         use std::io::Write;
         let dir = std::env::temp_dir().join("aioduct_netrc_home_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -518,6 +522,7 @@ mod tests {
 
     #[test]
     fn default_netrc_path_falls_back_to_underscore_netrc() {
+        let _lock = ENV_LOCK.lock().unwrap();
         use std::io::Write;
         let dir = std::env::temp_dir().join("aioduct_netrc_alt_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -545,6 +550,7 @@ mod tests {
 
     #[test]
     fn default_netrc_path_returns_dotnetrc_when_neither_exists() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join("aioduct_netrc_neither_test");
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::remove_file(dir.join(".netrc"));
@@ -565,6 +571,7 @@ mod tests {
 
     #[test]
     fn load_default_via_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
         use std::io::Write;
         let dir = std::env::temp_dir().join("aioduct_netrc_load_default_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -583,6 +590,7 @@ mod tests {
 
     #[test]
     fn middleware_from_default_via_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
         use std::io::Write;
         let dir = std::env::temp_dir().join("aioduct_netrc_mw_default_test");
         let _ = std::fs::create_dir_all(&dir);
