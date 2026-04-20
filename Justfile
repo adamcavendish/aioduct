@@ -28,6 +28,10 @@ clippy:
     cargo clippy --features tokio,json         --all-targets -- -D warnings
     cargo clippy --features tokio,rustls,json  --all-targets -- -D warnings
 
+# Run clippy with all features enabled
+clippy-all:
+    cargo clippy -p aioduct --features {{ all-features }} --all-targets -- -D warnings
+
 # Run clippy with a specific feature set
 clippy-features features:
     cargo clippy --features {{ features }} --all-targets -- -D warnings

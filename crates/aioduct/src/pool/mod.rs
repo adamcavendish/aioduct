@@ -73,7 +73,7 @@ impl<R: Runtime> ConnectionPool<R> {
     ///
     /// This is useful for unit tests that don't need the reaper and may not
     /// have a full async runtime available.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(crate) fn new_no_reaper(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
         Self {
             inner: Arc::new(Mutex::new(PoolInner::<R> {
