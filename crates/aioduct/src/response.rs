@@ -3,6 +3,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
+#[cfg(feature = "json")]
+use http::header::CONTENT_TYPE;
 use http::header::{CONTENT_LENGTH, HeaderMap};
 use http::{StatusCode, Uri, Version};
 use http_body_util::BodyExt;
@@ -235,6 +237,11 @@ impl Response {
             .ok()
     }
 
+    /// Parse all `Link` headers from the response (RFC 8288).
+    pub fn links(&self) -> Vec<crate::link::Link> {
+        crate::link::parse_link_headers(self.inner.headers())
+    }
+
     /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes, Error> {
         let body = self.inner.into_body();
@@ -281,6 +288,28 @@ impl Response {
     pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
         let bytes = self.bytes().await?;
         serde_json::from_slice(&bytes).map_err(|e| Error::Other(Box::new(e)))
+    }
+
+    /// Consume the response body and deserialize it as RFC 9457 Problem Details.
+    ///
+    /// Checks that the `Content-Type` is `application/problem+json` before
+    /// attempting to parse. Returns `None` if the content type does not match.
+    #[cfg(feature = "json")]
+    pub async fn problem_details(self) -> Option<Result<crate::problem::ProblemDetails, Error>> {
+        let is_problem = self
+            .inner
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| {
+                let ct = ct.to_lowercase();
+                ct.starts_with("application/problem+json")
+            })
+            .unwrap_or(false);
+        if !is_problem {
+            return None;
+        }
+        Some(self.json().await)
     }
 
     /// Consume the response and return the raw hyper body.

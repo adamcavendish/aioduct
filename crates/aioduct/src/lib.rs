@@ -57,16 +57,25 @@ pub mod tls;
 pub mod bandwidth;
 mod decompress;
 mod digest_auth;
+/// Forwarded header builder and parser (RFC 7239).
+pub mod forwarded;
 mod happy_eyeballs;
 /// Hickory DNS resolver integration.
 #[cfg(feature = "hickory-dns")]
 pub mod hickory;
+/// HSTS (HTTP Strict Transport Security) store.
+pub mod hsts;
 /// HTTP/2 connection configuration.
 pub mod http2;
+/// Link header parsing (RFC 8288).
+pub mod link;
 /// Request/response middleware trait and stack.
 pub mod middleware;
 /// Netrc credential file parsing and middleware.
 pub mod netrc;
+/// RFC 9457 Problem Details for HTTP APIs.
+#[cfg(feature = "json")]
+pub mod problem;
 mod socks4;
 mod socks5;
 /// Token-bucket rate limiter for throttling requests.
@@ -99,14 +108,19 @@ pub use body::{BodyStream, RequestBody};
 pub use cache::{CacheConfig, HttpCache};
 pub use chunk_download::ChunkDownload;
 pub use client::Client;
-pub use cookie::{Cookie, CookieJar};
+pub use cookie::{Cookie, CookieJar, SameSite};
 pub use error::{AioductBody, Error};
+pub use forwarded::ForwardedElement;
 #[cfg(feature = "hickory-dns")]
 pub use hickory::HickoryResolver;
+pub use hsts::HstsStore;
 pub use http2::Http2Config;
+pub use link::Link;
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
 pub use netrc::{Netrc, NetrcMiddleware};
+#[cfg(feature = "json")]
+pub use problem::ProblemDetails;
 pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;

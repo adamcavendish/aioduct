@@ -52,6 +52,7 @@ pub struct Client<R: Runtime> {
     pub(crate) https_only: bool,
     pub(crate) referer: bool,
     pub(crate) no_connection_reuse: bool,
+    pub(crate) tcp_fast_open: bool,
     pub(crate) http2_prior_knowledge: bool,
     pub(crate) accept_encoding: crate::decompress::AcceptEncoding,
     pub(crate) default_headers: HeaderMap,
@@ -65,6 +66,7 @@ pub struct Client<R: Runtime> {
     pub(crate) bandwidth_limiter: Option<crate::bandwidth::BandwidthLimiter>,
     pub(crate) digest_auth: Option<crate::digest_auth::DigestAuth>,
     pub(crate) cache: Option<HttpCache>,
+    pub(crate) hsts: Option<crate::hsts::HstsStore>,
     #[cfg(feature = "tower")]
     pub(crate) connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
@@ -97,6 +99,7 @@ impl<R: Runtime> Clone for Client<R> {
             https_only: self.https_only,
             referer: self.referer,
             no_connection_reuse: self.no_connection_reuse,
+            tcp_fast_open: self.tcp_fast_open,
             http2_prior_knowledge: self.http2_prior_knowledge,
             accept_encoding: self.accept_encoding.clone(),
             default_headers: self.default_headers.clone(),
@@ -110,6 +113,7 @@ impl<R: Runtime> Clone for Client<R> {
             bandwidth_limiter: self.bandwidth_limiter.clone(),
             digest_auth: self.digest_auth.clone(),
             cache: self.cache.clone(),
+            hsts: self.hsts.clone(),
             #[cfg(feature = "tower")]
             connector: self.connector.clone(),
             #[cfg(feature = "rustls")]
@@ -261,6 +265,28 @@ impl<R: Runtime> Client<R> {
         }
 
         let mut current_uri = original_uri;
+
+        // HSTS: upgrade http:// to https:// for known HSTS hosts
+        if let Some(ref hsts) = self.hsts {
+            if current_uri.scheme() == Some(&http::uri::Scheme::HTTP) {
+                if let Some(authority) = current_uri.authority() {
+                    if hsts.should_upgrade(authority.host()) {
+                        let upgraded = format!(
+                            "https://{}{}",
+                            authority,
+                            current_uri
+                                .path_and_query()
+                                .map(|pq| pq.as_str())
+                                .unwrap_or("/")
+                        );
+                        if let Ok(uri) = upgraded.parse() {
+                            current_uri = uri;
+                        }
+                    }
+                }
+            }
+        }
+
         let mut current_method = method;
         let mut current_body = body;
         let mut current_headers = headers;
@@ -311,7 +337,9 @@ impl<R: Runtime> Client<R> {
                         let http_resp = cached.into_http_response();
                         return Ok(Response::from_boxed(http_resp, current_uri));
                     }
-                    crate::cache::CacheLookup::Stale { validators, cached } => {
+                    crate::cache::CacheLookup::Stale {
+                        validators, cached, ..
+                    } => {
                         validators.apply_to_request(&mut current_headers);
                         Some(cached)
                     }
@@ -412,6 +440,15 @@ impl<R: Runtime> Client<R> {
             if let Some(jar) = &self.cookie_jar {
                 if let Some(authority) = current_uri.authority() {
                     jar.store_from_response(authority.host(), resp.headers());
+                }
+            }
+
+            // HSTS: store STS header from HTTPS responses
+            if let Some(ref hsts) = self.hsts {
+                if current_uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
+                    if let Some(authority) = current_uri.authority() {
+                        hsts.store_from_response(authority.host(), resp.headers());
+                    }
                 }
             }
 

@@ -47,8 +47,18 @@ By default, aioduct retries on:
 - **Connection errors** — I/O errors, hyper transport errors
 - **Timeouts** — request-level or client-level timeout exceeded
 - **5xx server errors** — 500, 502, 503, etc. (when `retry_on_status` is true)
+- **429 Too Many Requests** — rate limiting responses (when `retry_on_status` is true)
 
-Client errors (4xx) are never retried. To disable 5xx retry, set `retry_on_status(false)`.
+Client errors (4xx, other than 429) are never retried. To disable status-based retry, set `retry_on_status(false)`.
+
+## Retry-After Header
+
+When a server responds with a `Retry-After` header (common on 429 and 503 responses), aioduct uses the server's requested delay instead of its own exponential backoff for that attempt. Both formats are supported:
+
+- **Seconds**: `Retry-After: 120` — wait 120 seconds
+- **HTTP-date**: `Retry-After: Wed, 21 Oct 2026 07:28:00 GMT` — wait until the specified time
+
+If the `Retry-After` value is missing or unparseable, the normal backoff delay is used.
 
 ## Retry Budget
 

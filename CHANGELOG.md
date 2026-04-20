@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-04-20
+
+### Added
+- HSTS (HTTP Strict Transport Security) auto-upgrade with `HstsStore` (RFC 6797)
+- SameSite cookie attribute (Strict/Lax/None) and cookie prefix validation (__Host-, __Secure-) per RFC 6265bis
+- `immutable` Cache-Control directive — skip revalidation for immutable resources (RFC 8246)
+- `stale-while-revalidate` and `stale-if-error` Cache-Control extensions (RFC 5861)
+- Retry-After header parsing (seconds and HTTP-date formats) integrated into retry loop (RFC 9110)
+- 429 Too Many Requests now triggers retry (alongside 5xx)
+- Link header parsing with `Response::links()` (RFC 8288)
+- RFC 9457 Problem Details response helper with `Response::problem_details()` (requires `json` feature)
+- TCP Fast Open support on Linux via `ClientBuilder::tcp_fast_open()` (RFC 7413)
+- Forwarded header builder and parser (RFC 7239)
+
 ## [0.1.0] - 2026-04-19
 
 ### Added

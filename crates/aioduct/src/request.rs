@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
-use http::{Method, Uri, Version};
+use http::{Method, StatusCode, Uri, Version};
 
 use crate::body::RequestBody;
 use crate::client::Client;
@@ -346,10 +346,13 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
         let effective_timeout = self.timeout.or(self.client.default_timeout());
         let mut last_error = None;
         let mut body = self.body;
+        let mut retry_after_delay: Option<Duration> = None;
 
         for attempt in 0..=config.max_retries {
             if attempt > 0 {
-                let delay = config.delay_for_attempt(attempt - 1);
+                let delay = retry_after_delay
+                    .take()
+                    .unwrap_or_else(|| config.delay_for_attempt(attempt - 1));
                 R::sleep(delay).await;
             }
 
@@ -386,7 +389,8 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
             match result {
                 Ok(resp) => {
                     if config.retry_on_status
-                        && resp.status().is_server_error()
+                        && (resp.status().is_server_error()
+                            || resp.status() == StatusCode::TOO_MANY_REQUESTS)
                         && attempt < config.max_retries
                     {
                         if let Some(ref budget) = config.budget {
@@ -394,6 +398,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                                 return Ok(resp);
                             }
                         }
+                        retry_after_delay = crate::retry::parse_retry_after(resp.headers());
                         let err = Error::Other(format!("server error: {}", resp.status()).into());
                         let mw = self.client.middleware();
                         if !mw.is_empty() {

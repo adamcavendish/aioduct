@@ -5,6 +5,17 @@ use std::time::{Duration, SystemTime};
 use http::HeaderMap;
 use http::header::{COOKIE, SET_COOKIE};
 
+/// The `SameSite` attribute for cookies (RFC 6265bis).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SameSite {
+    /// Cookie is only sent in first-party context.
+    Strict,
+    /// Cookie is sent with top-level navigations and third-party GET requests.
+    Lax,
+    /// Cookie is always sent (requires Secure).
+    None,
+}
+
 /// A parsed HTTP cookie.
 #[derive(Clone, Debug)]
 pub struct Cookie {
@@ -14,6 +25,7 @@ pub struct Cookie {
     path: Option<String>,
     secure: bool,
     http_only: bool,
+    same_site: Option<SameSite>,
     expired: bool,
 }
 
@@ -46,6 +58,11 @@ impl Cookie {
     /// Returns whether this cookie is HTTP-only (not accessible to scripts).
     pub fn http_only(&self) -> bool {
         self.http_only
+    }
+
+    /// Returns the SameSite attribute, if set.
+    pub fn same_site(&self) -> Option<&SameSite> {
+        self.same_site.as_ref()
     }
 }
 
@@ -162,6 +179,7 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
     let mut path = None;
     let mut secure = false;
     let mut http_only = false;
+    let mut same_site = None;
     let mut expired = false;
 
     for attr in parts {
@@ -176,6 +194,13 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
             domain = Some(val.trim_start_matches('.').to_owned());
         } else if let Some(val) = lower.strip_prefix("path=") {
             path = Some(val.to_owned());
+        } else if let Some(val) = lower.strip_prefix("samesite=") {
+            same_site = match val.trim() {
+                "strict" => Some(SameSite::Strict),
+                "lax" => Some(SameSite::Lax),
+                "none" => Some(SameSite::None),
+                _ => None,
+            };
         } else if let Some(val) = lower.strip_prefix("max-age=") {
             if let Ok(seconds) = val.trim().parse::<i64>() {
                 if seconds <= 0 {
@@ -198,6 +223,15 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
         domain = Some(request_domain.to_owned());
     }
 
+    // Cookie prefix validation (RFC 6265bis §4.1.3)
+    if name.starts_with("__Host-") {
+        if !secure || domain.as_deref() != Some(request_domain) || path.as_deref() != Some("/") {
+            return None;
+        }
+    } else if name.starts_with("__Secure-") && !secure {
+        return None;
+    }
+
     Some(Cookie {
         name,
         value,
@@ -205,6 +239,7 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
         path,
         secure,
         http_only,
+        same_site,
         expired,
     })
 }
@@ -485,5 +520,73 @@ mod tests {
         let mut req_headers = HeaderMap::new();
         jar.apply_to_request("sub.example.com", false, "/", &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "k=v");
+    }
+
+    #[test]
+    fn samesite_strict_parsed() {
+        let cookie = parse_set_cookie("a=b; SameSite=Strict", "example.com");
+        assert_eq!(cookie.unwrap().same_site, Some(SameSite::Strict));
+    }
+
+    #[test]
+    fn samesite_lax_parsed() {
+        let cookie = parse_set_cookie("a=b; SameSite=Lax", "example.com");
+        assert_eq!(cookie.unwrap().same_site, Some(SameSite::Lax));
+    }
+
+    #[test]
+    fn samesite_none_parsed() {
+        let cookie = parse_set_cookie("a=b; SameSite=None; Secure", "example.com");
+        let c = cookie.unwrap();
+        assert_eq!(c.same_site, Some(SameSite::None));
+        assert!(c.secure);
+    }
+
+    #[test]
+    fn samesite_unknown_value_ignored() {
+        let cookie = parse_set_cookie("a=b; SameSite=Invalid", "example.com");
+        assert_eq!(cookie.unwrap().same_site, None);
+    }
+
+    #[test]
+    fn host_prefix_valid() {
+        let cookie = parse_set_cookie("__Host-id=123; Secure; Path=/", "example.com");
+        let c = cookie.unwrap();
+        assert_eq!(c.name, "__Host-id");
+        assert!(c.secure);
+        assert_eq!(c.path.as_deref(), Some("/"));
+    }
+
+    #[test]
+    fn host_prefix_rejected_without_secure() {
+        let cookie = parse_set_cookie("__Host-id=123; Path=/", "example.com");
+        assert!(cookie.is_none());
+    }
+
+    #[test]
+    fn host_prefix_rejected_without_root_path() {
+        let cookie = parse_set_cookie("__Host-id=123; Secure; Path=/api", "example.com");
+        assert!(cookie.is_none());
+    }
+
+    #[test]
+    fn host_prefix_rejected_with_domain() {
+        let cookie = parse_set_cookie(
+            "__Host-id=123; Secure; Path=/; Domain=other.com",
+            "example.com",
+        );
+        assert!(cookie.is_none());
+    }
+
+    #[test]
+    fn secure_prefix_valid() {
+        let cookie = parse_set_cookie("__Secure-token=abc; Secure", "example.com");
+        assert!(cookie.is_some());
+    }
+
+    #[test]
+    fn secure_prefix_rejected_without_secure() {
+        let cookie = parse_set_cookie("__Secure-token=abc", "example.com");
+        assert!(cookie.is_none());
     }
 }

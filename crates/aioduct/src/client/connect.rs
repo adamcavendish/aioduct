@@ -126,6 +126,7 @@ impl<R: Runtime> Client<R> {
             let tcp_keepalive = self.tcp_keepalive;
             let tcp_keepalive_interval = self.tcp_keepalive_interval;
             let tcp_keepalive_retries = self.tcp_keepalive_retries;
+            let tcp_fast_open = self.tcp_fast_open;
             let local_address = self.local_address;
             #[cfg(target_os = "linux")]
             let interface = self.interface.as_deref();
@@ -173,6 +174,9 @@ impl<R: Runtime> Client<R> {
                         tcp_keepalive_interval,
                         tcp_keepalive_retries,
                     )?;
+                }
+                if tcp_fast_open {
+                    let _ = R::set_tcp_fast_open(&tcp_stream);
                 }
                 #[cfg(feature = "tracing")]
                 tracing::trace!(addr = %addr, "tcp.connect.done");
@@ -237,6 +241,9 @@ impl<R: Runtime> Client<R> {
                 self.tcp_keepalive_interval,
                 self.tcp_keepalive_retries,
             )?;
+        }
+        if self.tcp_fast_open {
+            let _ = R::set_tcp_fast_open(&tcp_stream);
         }
 
         if proxy.scheme == crate::proxy::ProxyScheme::Socks5 {

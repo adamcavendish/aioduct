@@ -118,6 +118,41 @@ impl Runtime for CompioRuntime {
     }
 
     #[cfg(target_os = "linux")]
+    fn set_tcp_fast_open(stream: &Self::TcpStream) -> io::Result<()> {
+        use socket2::SockRef;
+        use std::os::unix::io::AsRawFd;
+
+        unsafe extern "C" {
+            fn setsockopt(
+                sockfd: std::ffi::c_int,
+                level: std::ffi::c_int,
+                optname: std::ffi::c_int,
+                optval: *const std::ffi::c_void,
+                optlen: u32,
+            ) -> std::ffi::c_int;
+        }
+
+        let sock_ref = SockRef::from(stream.inner().get_ref());
+        let fd = sock_ref.as_raw_fd();
+        const IPPROTO_TCP: std::ffi::c_int = 6;
+        const TCP_FASTOPEN_CONNECT: std::ffi::c_int = 30;
+        let optval: std::ffi::c_int = 1;
+        unsafe {
+            let ret = setsockopt(
+                fd,
+                IPPROTO_TCP,
+                TCP_FASTOPEN_CONNECT,
+                &optval as *const std::ffi::c_int as *const std::ffi::c_void,
+                std::mem::size_of::<std::ffi::c_int>() as u32,
+            );
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
     fn bind_device(stream: &Self::TcpStream, interface: &str) -> io::Result<()> {
         use socket2::SockRef;
         let sock_ref = SockRef::from(stream.inner().get_ref());

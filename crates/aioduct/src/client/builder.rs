@@ -26,6 +26,7 @@ pub struct ClientBuilder<R: Runtime> {
     pub(super) pool_idle_timeout: Duration,
     pub(super) pool_max_idle_per_host: usize,
     pub(super) no_connection_reuse: bool,
+    pub(super) tcp_fast_open: bool,
     pub(super) http2_prior_knowledge: bool,
     pub(super) redirect_policy: RedirectPolicy,
     pub(super) timeout: Option<Duration>,
@@ -53,6 +54,7 @@ pub struct ClientBuilder<R: Runtime> {
     pub(super) bandwidth_limiter: Option<crate::bandwidth::BandwidthLimiter>,
     pub(super) digest_auth: Option<crate::digest_auth::DigestAuth>,
     pub(super) cache: Option<HttpCache>,
+    pub(super) hsts: Option<crate::hsts::HstsStore>,
     #[cfg(feature = "tower")]
     pub(super) connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
@@ -87,6 +89,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_idle_per_host: 10,
             no_connection_reuse: false,
+            tcp_fast_open: false,
             http2_prior_knowledge: false,
             redirect_policy: RedirectPolicy::default(),
             timeout: None,
@@ -114,6 +117,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             bandwidth_limiter: None,
             digest_auth: None,
             cache: None,
+            hsts: None,
             #[cfg(feature = "tower")]
             connector: None,
             #[cfg(feature = "rustls")]
@@ -259,6 +263,15 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Enable TCP Fast Open (RFC 7413) for reduced connection latency.
+    ///
+    /// On Linux, this sets `TCP_FASTOPEN_CONNECT` which allows the kernel to
+    /// send data in the SYN packet for subsequent connections to known hosts.
+    pub fn tcp_fast_open(mut self, enable: bool) -> Self {
+        self.tcp_fast_open = enable;
+        self
+    }
+
     /// Use HTTP/2 prior knowledge (h2c) — send HTTP/2 over plaintext without upgrade.
     pub fn http2_prior_knowledge(mut self) -> Self {
         self.http2_prior_knowledge = true;
@@ -358,6 +371,15 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Enable HTTP response caching with the given cache instance.
     pub fn cache(mut self, cache: HttpCache) -> Self {
         self.cache = Some(cache);
+        self
+    }
+
+    /// Enable HSTS (HTTP Strict Transport Security) auto-upgrade.
+    ///
+    /// When enabled, `http://` URLs are automatically upgraded to `https://`
+    /// for hosts that have sent a `Strict-Transport-Security` header.
+    pub fn hsts(mut self, store: crate::hsts::HstsStore) -> Self {
+        self.hsts = Some(store);
         self
     }
 
@@ -599,6 +621,7 @@ impl<R: Runtime> ClientBuilder<R> {
             https_only: self.https_only,
             referer: self.referer,
             no_connection_reuse: self.no_connection_reuse,
+            tcp_fast_open: self.tcp_fast_open,
             http2_prior_knowledge: self.http2_prior_knowledge,
             accept_encoding: self.accept_encoding,
             default_headers: self.default_headers,
@@ -612,6 +635,7 @@ impl<R: Runtime> ClientBuilder<R> {
             bandwidth_limiter: self.bandwidth_limiter,
             digest_auth: self.digest_auth,
             cache: self.cache,
+            hsts: self.hsts,
             #[cfg(feature = "tower")]
             connector: self.connector,
             #[cfg(feature = "rustls")]

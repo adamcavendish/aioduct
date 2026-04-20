@@ -101,6 +101,39 @@ for cookie in jar.cookies() {
 | `path()` | `Option<&str>` | Path attribute |
 | `secure()` | `bool` | Whether the cookie requires HTTPS |
 | `http_only()` | `bool` | Whether the cookie is HTTP-only |
+| `same_site()` | `Option<&SameSite>` | SameSite attribute (Strict, Lax, or None) |
+
+## SameSite Cookies
+
+aioduct parses the `SameSite` attribute from `Set-Cookie` headers per the RFC 6265bis draft:
+
+- **`Strict`** — cookie is only sent in first-party context (same-site requests)
+- **`Lax`** — cookie is sent on top-level navigations and same-site requests (browser default)
+- **`None`** — cookie is sent in all contexts (requires `Secure` flag)
+
+```rust
+# use aioduct::cookie::SameSite;
+# use aioduct::CookieJar;
+let jar = CookieJar::new();
+// ... use jar with client ...
+for cookie in jar.cookies() {
+    match cookie.same_site() {
+        Some(SameSite::Strict) => println!("{}: strict", cookie.name()),
+        Some(SameSite::Lax) => println!("{}: lax", cookie.name()),
+        Some(SameSite::None) => println!("{}: none", cookie.name()),
+        None => println!("{}: not set", cookie.name()),
+    }
+}
+```
+
+## Cookie Prefixes
+
+aioduct enforces cookie prefix validation per RFC 6265bis:
+
+- **`__Host-`** — requires `Secure`, exact domain match (no `Domain` attribute pointing elsewhere), and `Path=/`
+- **`__Secure-`** — requires `Secure` flag
+
+Cookies that fail prefix validation are silently rejected.
 
 ## Cookie Attributes
 

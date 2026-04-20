@@ -25,6 +25,9 @@ struct CacheEntry {
     etag: Option<String>,
     last_modified: Option<String>,
     must_revalidate: bool,
+    immutable: bool,
+    stale_while_revalidate: Option<Duration>,
+    stale_if_error: Option<Duration>,
 }
 
 impl CacheEntry {
@@ -40,6 +43,27 @@ impl CacheEntry {
 
     fn age(&self) -> Duration {
         self.stored_at.elapsed()
+    }
+
+    fn staleness(&self) -> Option<Duration> {
+        let age = self.age();
+        if let Some(max_age) = self.max_age {
+            if age > max_age {
+                return Some(age - max_age);
+            }
+            return None;
+        }
+        if let Some(expires) = self.expires_at {
+            if let Ok(since_epoch) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                if let Ok(expires_since) = expires.duration_since(SystemTime::UNIX_EPOCH) {
+                    if since_epoch > expires_since {
+                        return Some(since_epoch - expires_since);
+                    }
+                }
+            }
+            return None;
+        }
+        None
     }
 
     fn has_validators(&self) -> bool {
@@ -138,6 +162,30 @@ impl HttpCache {
             });
         }
 
+        // immutable entries skip revalidation while fresh
+        if entry.immutable && entry.is_fresh() {
+            return CacheLookup::Fresh(CachedResponse {
+                status: entry.status,
+                headers: entry.headers.clone(),
+                body: entry.body.clone(),
+                age: entry.age(),
+            });
+        }
+
+        // stale-while-revalidate: serve stale content within the grace window
+        if let Some(swr) = entry.stale_while_revalidate {
+            if let Some(staleness) = entry.staleness() {
+                if staleness <= swr {
+                    return CacheLookup::Fresh(CachedResponse {
+                        status: entry.status,
+                        headers: entry.headers.clone(),
+                        body: entry.body.clone(),
+                        age: entry.age(),
+                    });
+                }
+            }
+        }
+
         if entry.has_validators() {
             return CacheLookup::Stale {
                 validators: Validators {
@@ -150,6 +198,7 @@ impl HttpCache {
                     body: entry.body.clone(),
                     age: entry.age(),
                 },
+                stale_if_error: entry.stale_if_error,
             };
         }
 
@@ -194,6 +243,9 @@ impl HttpCache {
                 .and_then(|v| v.to_str().ok())
                 .map(String::from),
             must_revalidate: directives.must_revalidate,
+            immutable: directives.immutable,
+            stale_while_revalidate: directives.stale_while_revalidate,
+            stale_if_error: directives.stale_if_error,
         };
 
         let key = CacheKey {
@@ -240,6 +292,7 @@ pub(crate) enum CacheLookup {
     Stale {
         validators: Validators,
         cached: CachedResponse,
+        stale_if_error: Option<Duration>,
     },
     Miss,
 }
@@ -298,6 +351,9 @@ struct CacheDirectives {
     no_cache: bool,
     private: bool,
     must_revalidate: bool,
+    immutable: bool,
+    stale_while_revalidate: Option<Duration>,
+    stale_if_error: Option<Duration>,
 }
 
 fn parse_cache_control(headers: &HeaderMap) -> CacheDirectives {
@@ -307,6 +363,9 @@ fn parse_cache_control(headers: &HeaderMap) -> CacheDirectives {
         no_cache: false,
         private: false,
         must_revalidate: false,
+        immutable: false,
+        stale_while_revalidate: None,
+        stale_if_error: None,
     };
 
     let Some(value) = headers.get(CACHE_CONTROL) else {
@@ -334,6 +393,16 @@ fn parse_cache_control(headers: &HeaderMap) -> CacheDirectives {
         } else if let Some(age_str) = part.strip_prefix("s-maxage=") {
             if let Ok(secs) = age_str.trim().parse::<u64>() {
                 directives.max_age = Some(Duration::from_secs(secs));
+            }
+        } else if part == "immutable" {
+            directives.immutable = true;
+        } else if let Some(age_str) = part.strip_prefix("stale-while-revalidate=") {
+            if let Ok(secs) = age_str.trim().parse::<u64>() {
+                directives.stale_while_revalidate = Some(Duration::from_secs(secs));
+            }
+        } else if let Some(age_str) = part.strip_prefix("stale-if-error=") {
+            if let Ok(secs) = age_str.trim().parse::<u64>() {
+                directives.stale_if_error = Some(Duration::from_secs(secs));
             }
         }
     }
@@ -711,6 +780,77 @@ mod tests {
         match cache.lookup(&Method::GET, &uri) {
             CacheLookup::Stale { .. } => {}
             _ => panic!("expected stale due to no-cache"),
+        }
+    }
+
+    #[test]
+    fn test_cache_immutable() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/immut".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600, immutable".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(_) => {}
+            _ => panic!("expected fresh for immutable entry"),
+        }
+    }
+
+    #[test]
+    fn test_cache_stale_while_revalidate() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/swr".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            "max-age=0, stale-while-revalidate=3600".parse().unwrap(),
+        );
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("stale-ok"),
+        );
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.body, Bytes::from("stale-ok"));
+            }
+            _ => panic!("expected fresh via stale-while-revalidate"),
+        }
+    }
+
+    #[test]
+    fn test_cache_stale_if_error_propagated() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/sie".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            "max-age=0, stale-if-error=600".parse().unwrap(),
+        );
+        headers.insert(ETAG, "\"sie\"".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Stale { stale_if_error, .. } => {
+                assert_eq!(stale_if_error, Some(Duration::from_secs(600)));
+            }
+            _ => panic!("expected stale with stale_if_error"),
         }
     }
 

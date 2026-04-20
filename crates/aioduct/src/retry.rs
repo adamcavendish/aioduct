@@ -2,6 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use http::HeaderMap;
+
 use crate::error::Error;
 
 /// Configuration for automatic request retry with exponential backoff.
@@ -81,6 +83,72 @@ impl RetryConfig {
 
 pub(crate) fn is_retryable_error(err: &Error) -> bool {
     matches!(err, Error::Io(_) | Error::Hyper(_) | Error::Timeout)
+}
+
+pub(crate) fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
+    let value = headers.get(http::header::RETRY_AFTER)?;
+    let s = value.to_str().ok()?;
+
+    if let Ok(secs) = s.trim().parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+
+    let target = parse_http_date(s.trim())?;
+    let now = std::time::SystemTime::now();
+    target.duration_since(now).ok()
+}
+
+fn parse_http_date(s: &str) -> Option<std::time::SystemTime> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() < 6 {
+        return None;
+    }
+
+    let day: u64 = parts[1].parse().ok()?;
+    let month = match parts[2].to_lowercase().as_str() {
+        "jan" => 1u64,
+        "feb" => 2,
+        "mar" => 3,
+        "apr" => 4,
+        "may" => 5,
+        "jun" => 6,
+        "jul" => 7,
+        "aug" => 8,
+        "sep" => 9,
+        "oct" => 10,
+        "nov" => 11,
+        "dec" => 12,
+        _ => return None,
+    };
+    let year: u64 = parts[3].parse().ok()?;
+    let time_parts: Vec<&str> = parts[4].split(':').collect();
+    if time_parts.len() != 3 {
+        return None;
+    }
+    let hour: u64 = time_parts[0].parse().ok()?;
+    let min: u64 = time_parts[1].parse().ok()?;
+    let sec: u64 = time_parts[2].parse().ok()?;
+
+    let days_before_month = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let m = (month - 1) as usize;
+    if m >= 12 {
+        return None;
+    }
+
+    let mut days = (year - 1970) * 365;
+    if year > 1970 {
+        days += (year - 1) / 4 - 1969 / 4;
+        days -= (year - 1) / 100 - 1969 / 100;
+        days += (year - 1) / 400 - 1969 / 400;
+    }
+    days += days_before_month[m];
+    if month > 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) {
+        days += 1;
+    }
+    days += day - 1;
+
+    let unix_secs = days * 86400 + hour * 3600 + min * 60 + sec;
+    Some(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(unix_secs))
 }
 
 /// A token-bucket retry budget that prevents retry storms.
@@ -255,5 +323,35 @@ mod tests {
         let budget = RetryBudget::new(10, 1);
         let cfg = RetryConfig::default().budget(budget);
         assert!(cfg.budget.is_some());
+    }
+
+    #[test]
+    fn parse_retry_after_seconds() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, "120".parse().unwrap());
+        let delay = parse_retry_after(&headers).unwrap();
+        assert_eq!(delay, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn parse_retry_after_zero() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, "0".parse().unwrap());
+        let delay = parse_retry_after(&headers).unwrap();
+        assert_eq!(delay, Duration::from_secs(0));
+    }
+
+    #[test]
+    fn parse_retry_after_missing() {
+        let headers = HeaderMap::new();
+        assert!(parse_retry_after(&headers).is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_invalid() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, "not-a-number".parse().unwrap());
+        // Falls through to HTTP-date parsing which also fails
+        assert!(parse_retry_after(&headers).is_none());
     }
 }

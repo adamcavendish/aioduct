@@ -25,14 +25,15 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **rustls TLS** — async handshake with ALPN-based HTTP/1.1 and HTTP/2 negotiation
 - **Connection pooling** — keyed by (scheme, authority) with idle timeout and per-host limits
 - **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping and content header removal
-- **Cookie jar** — automatic cookie storage, domain/path/subdomain matching, Max-Age and Expires expiration, Secure flag enforcement
+- **Cookie jar** — automatic cookie storage, domain/path/subdomain matching, Max-Age and Expires expiration, Secure flag enforcement, SameSite (Strict/Lax/None), cookie prefixes (__Host-, __Secure-)
 - **Timeouts** — per-request, client-level, connect, and read timeouts
-- **Retry** — configurable exponential backoff with retry budgets, per-request or client-level
+- **Retry** — configurable exponential backoff with retry budgets, Retry-After header support, 429 Too Many Requests retry
 - **Decompression** — automatic gzip, brotli, zstd, deflate response decompression
 - **Proxy** — HTTP CONNECT tunneling, SOCKS4/SOCKS4a, SOCKS5, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
 - **Middleware** — pluggable request/response interceptors via trait or closure
 - **Rate limiting** — token-bucket rate limiter for outgoing requests
-- **Caching** — in-memory HTTP cache with configurable max entries
+- **Caching** — in-memory HTTP cache with immutable responses, stale-while-revalidate, stale-if-error
+- **HSTS** — automatic HTTP-to-HTTPS upgrade for Strict-Transport-Security domains
 - **SSE** — Server-Sent Events stream parsing for LLM APIs
 - **Multipart** — `multipart/form-data` uploads with text fields and file parts
 - **Streaming** — chunked downloads and streaming uploads without buffering
@@ -42,8 +43,10 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
 - **TCP keepalive** — configurable keepalive interval for long-lived connections
+- **TCP Fast Open** — reduced connection latency on Linux via TCP_FASTOPEN_CONNECT
 - **Local address binding** — bind outgoing connections to a specific local IP
 - **JSON** — optional `json` feature for request/response serialization
+- **Problem Details** — RFC 9457 `application/problem+json` response parsing (requires `json` feature)
 - **Happy Eyeballs** — RFC 6555 connection racing, interleaves IPv6/IPv4 with 250ms stagger
 - **Digest auth** — automatic HTTP Digest authentication with 401 retry (RFC 7616, MD5)
 - **Bandwidth limiter** — token-bucket byte-rate throttle for download speed limiting
@@ -54,6 +57,8 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Default headers** — automatic User-Agent, configurable defaults
 - **Observability** — optional tracing spans and OpenTelemetry middleware
 - **Tower integration** — use aioduct as a tower `Service`
+- **Link headers** — RFC 8288 Link header parsing for pagination and discovery
+- **Forwarded header** — RFC 7239 Forwarded header builder and parser
 
 ## Quick Start
 
@@ -309,6 +314,9 @@ pub trait Runtime: Send + Sync + 'static {
 | SSE streaming | No (manual) | Built-in |
 | Rate limiting | No | Built-in |
 | HTTP caching | No | Built-in |
+| HSTS | No | Built-in |
+| Link headers | No | Built-in |
+| Problem Details | No | Built-in |
 | Middleware | Via tower | Built-in + tower |
 | Happy Eyeballs | No | RFC 6555 |
 | Digest auth | No | Built-in |

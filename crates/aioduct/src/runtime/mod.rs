@@ -50,6 +50,14 @@ pub trait Runtime: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Enable TCP Fast Open on a connected stream (RFC 7413).
+    ///
+    /// On Linux this sets `TCP_FASTOPEN_CONNECT`, which causes the kernel to
+    /// use TFO for subsequent connections to the same destination.
+    fn set_tcp_fast_open(_stream: &Self::TcpStream) -> io::Result<()> {
+        Ok(())
+    }
+
     /// Bind a TCP stream to a network interface (Linux only).
     #[cfg(target_os = "linux")]
     fn bind_device(_stream: &Self::TcpStream, _interface: &str) -> io::Result<()> {
