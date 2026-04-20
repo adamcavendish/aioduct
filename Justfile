@@ -129,6 +129,18 @@ book:
 book-serve:
     mdbook serve doc --open
 
+# ---------- Publish ----------
+
+all-features := "tokio,smol,rustls,json,gzip,brotli,zstd,deflate,blocking,charset,tower,tracing"
+
+# Dry-run publish to verify packaging
+publish-dry-run:
+    cargo publish --dry-run -p aioduct --features {{ all-features }}
+
+# Publish aioduct to crates.io
+publish:
+    cargo publish -p aioduct --features {{ all-features }}
+
 # ---------- CI (run everything) ----------
 
 # Run the full CI pipeline locally
