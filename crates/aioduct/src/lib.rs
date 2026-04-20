@@ -101,6 +101,7 @@ pub use otel_middleware::OtelMiddleware;
 mod alt_svc;
 #[cfg(feature = "http3")]
 #[path = "h3/mod.rs"]
+/// HTTP/3 transport layer using QUIC.
 pub mod h3_transport;
 
 pub use bandwidth::BandwidthLimiter;

@@ -293,4 +293,36 @@ mod tests {
             "LIFO: most recent connection first"
         );
     }
+
+    #[tokio::test]
+    async fn checkout_expired_connection_returns_none() {
+        let pool = ConnectionPool::<TokioRuntime>::new_no_reaper(8, Duration::from_millis(50));
+        let k = key("example.com:80");
+
+        let conn = make_h1_conn().await;
+        pool.checkin(k.clone(), conn);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            pool.checkout(&k).is_none(),
+            "expired connection should be discarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn reaper_removes_expired_connections() {
+        let pool = ConnectionPool::<TokioRuntime>::new(1, Duration::from_millis(50));
+        let k = key("example.com:80");
+
+        let conn = make_h1_conn().await;
+        pool.checkin(k.clone(), conn);
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        assert!(
+            pool.checkout(&k).is_none(),
+            "reaper should have removed the expired connection"
+        );
+    }
 }

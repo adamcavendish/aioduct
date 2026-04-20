@@ -706,4 +706,82 @@ mod tests {
         assert!(cookie.http_only());
         assert_eq!(cookie.same_site(), Some(&SameSite::Strict));
     }
+
+    #[test]
+    fn expires_november() {
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Sun, 06 Nov 2099 08:49:37 GMT",
+            "example.com",
+        );
+        assert!(cookie.is_some());
+        assert!(!cookie.unwrap().expired);
+    }
+
+    #[test]
+    fn expires_december() {
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Mon, 25 Dec 2099 12:00:00 GMT",
+            "example.com",
+        );
+        assert!(cookie.is_some());
+        assert!(!cookie.unwrap().expired);
+    }
+
+    #[test]
+    fn expires_invalid_month() {
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Wed, 21 Xyz 2025 07:28:00 GMT",
+            "example.com",
+        );
+        let c = cookie.unwrap();
+        assert!(!c.expired);
+    }
+
+    #[test]
+    fn expires_bad_time_format() {
+        let cookie = parse_set_cookie("sid=abc; Expires=Wed, 21 Oct 2025 07:28 GMT", "example.com");
+        let c = cookie.unwrap();
+        assert!(!c.expired);
+    }
+
+    #[test]
+    fn expires_leap_year_after_february() {
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Fri, 01 Mar 2096 00:00:00 GMT",
+            "example.com",
+        );
+        assert!(cookie.is_some());
+        assert!(!cookie.unwrap().expired);
+    }
+
+    #[test]
+    fn expired_cookie_removes_existing() {
+        let jar = CookieJar::new();
+        jar.store_from_response("example.com", &headers_with_cookies(&["k=v"]));
+        let cookies = jar.cookies();
+        assert_eq!(cookies.len(), 1);
+
+        jar.store_from_response(
+            "example.com",
+            &headers_with_cookies(&["k=v; Expires=Wed, 01 Jan 2020 00:00:00 GMT"]),
+        );
+        let cookies = jar.cookies();
+        assert_eq!(cookies.len(), 0);
+    }
+
+    #[test]
+    fn parse_http_date_all_months() {
+        let months = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        for m in &months {
+            let date = format!("Mon, 15 {m} 2099 10:30:00 GMT");
+            let cookie = parse_set_cookie(&format!("sid=abc; Expires={date}"), "example.com");
+            assert!(cookie.is_some(), "cookie with month {m} should parse");
+            assert!(
+                !cookie.unwrap().expired,
+                "future date with month {m} should not be expired"
+            );
+        }
+    }
 }

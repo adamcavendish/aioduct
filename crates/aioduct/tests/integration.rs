@@ -3475,6 +3475,165 @@ async fn test_cache_304_revalidation() {
 }
 
 #[tokio::test]
+async fn test_cache_stale_if_error_serves_stale_on_5xx() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("cache-control", "max-age=0, stale-if-error=3600")
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::from("cached")))
+                        .unwrap(),
+                )
+            } else {
+                let has_inm = req.headers().contains_key("if-none-match");
+                assert!(has_inm, "revalidation should send If-None-Match");
+                Ok(Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::from("server error")))
+                    .unwrap())
+            }
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+
+    let resp = client
+        .get(&format!("http://{addr}/sie"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cached");
+
+    let resp = client
+        .get(&format!("http://{addr}/sie"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "cached");
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_cache_stale_if_error_serves_stale_on_connection_error() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("cache-control", "max-age=0, stale-if-error=3600")
+                    .header("etag", "\"v1\"")
+                    .body(Full::new(Bytes::from("cached")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = Client::<TokioRuntime>::builder()
+        .cache(cache.clone())
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/sie"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cached");
+
+    // Build a new client pointing at a dead port but using the same cache
+    let dead_port = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
+    };
+    let client2 = Client::<TokioRuntime>::builder()
+        .cache(cache)
+        .resolver(move |_host: &str, _port: u16| {
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], dead_port));
+            Box::pin(async move { Ok(addr) })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
+                >
+        })
+        .build();
+
+    let resp = client2
+        .get(&format!("http://{addr}/sie"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "cached");
+}
+
+#[tokio::test]
+async fn test_cache_stale_if_error_not_applied_without_directive() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("cache-control", "max-age=0")
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::from("cached")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::from("server error")))
+                    .unwrap())
+            }
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+
+    let resp = client
+        .get(&format!("http://{addr}/no-sie"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cached");
+
+    let resp = client
+        .get(&format!("http://{addr}/no-sie"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
 async fn test_rate_limiter_throttles() {
     let addr = start_server().await;
 
@@ -3889,4 +4048,779 @@ async fn test_tcp_fast_open_works() {
 
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}
+
+// --- H2 prior knowledge ---
+
+async fn start_h2_server_with<F, Fut>(handler: F) -> SocketAddr
+where
+    F: Fn(Request<hyper::body::Incoming>) -> Fut + Send + Clone + 'static,
+    Fut: std::future::Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
+{
+    use hyper::server::conn::http2 as server_http2;
+
+    #[derive(Clone)]
+    struct TokioExec;
+    impl<F> hyper::rt::Executor<F> for TokioExec
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        fn execute(&self, fut: F) {
+            tokio::spawn(fut);
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let _ = server_http2::Builder::new(TokioExec)
+                    .serve_connection(io, service_fn(handler))
+                    .await;
+            });
+        }
+    });
+
+    addr
+}
+
+#[tokio::test]
+async fn test_h2_prior_knowledge() {
+    let addr = start_h2_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("h2 response"))))
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .http2_prior_knowledge()
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "h2 response");
+}
+
+#[tokio::test]
+async fn test_h2_prior_knowledge_multiple_requests() {
+    let count = Arc::new(AtomicU32::new(0));
+    let count_clone = count.clone();
+
+    let addr = start_h2_server_with(move |_req| {
+        let count = count_clone.clone();
+        async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("h2 ok"))))
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .http2_prior_knowledge()
+        .build();
+
+    for _ in 0..3 {
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await;
+    }
+    assert_eq!(count.load(Ordering::SeqCst), 3);
+}
+
+// --- Redirect stop (RedirectPolicy::limited(0)) ---
+
+#[tokio::test]
+async fn test_redirect_stop_returns_redirect_response() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(301)
+                .header("location", "/target")
+                .body(Full::new(Bytes::from("moved")))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .redirect_policy(aioduct::RedirectPolicy::custom(
+            |_current, _next, _status, _method| aioduct::RedirectAction::Stop,
+        ))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::MOVED_PERMANENTLY);
+}
+
+// --- Client Debug impl ---
+
+#[tokio::test]
+async fn test_client_debug() {
+    let client = Client::<TokioRuntime>::new();
+    let dbg = format!("{client:?}");
+    assert!(dbg.contains("Client"));
+}
+
+// --- Chunk download: HEAD fails ---
+
+#[tokio::test]
+async fn test_chunk_download_head_fails() {
+    let addr = start_server_with(|req| async move {
+        if req.method() == http::Method::HEAD {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(404)
+                    .body(Full::new(Bytes::from("not found")))
+                    .unwrap(),
+            )
+        } else {
+            Ok(Response::new(Full::new(Bytes::from("full body data"))))
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let result = client
+        .chunk_download(&format!("http://{addr}/file"))
+        .download()
+        .await;
+    assert!(result.is_err());
+}
+
+// --- Chunk download: no Accept-Ranges, falls back to full GET ---
+
+#[tokio::test]
+async fn test_chunk_download_fallback_to_get() {
+    let addr = start_server_with(|req| async move {
+        if req.method() == http::Method::HEAD {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-length", "100")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            Ok(Response::new(Full::new(Bytes::from("fallback data"))))
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let result = client
+        .chunk_download(&format!("http://{addr}/file"))
+        .download()
+        .await
+        .unwrap();
+    assert_eq!(result.data, Bytes::from("fallback data"));
+}
+
+// --- Happy eyeballs: single address ---
+
+#[tokio::test]
+async fn test_happy_eyeballs_single_addr() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+            tokio::spawn(async move {
+                let _ = server_http1::Builder::new()
+                    .serve_connection(io, service_fn(hello))
+                    .await;
+            });
+        }
+    });
+
+    let client = Client::<TokioRuntime>::builder()
+        .resolver(move |_host: &str, _port: u16| {
+            let addr = addr;
+            Box::pin(async move { Ok(addr) })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
+                >
+        })
+        .build();
+
+    let resp = client
+        .get(&format!("http://custom-host:{}/", addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+// --- TCP keepalive with interval and retries ---
+
+#[tokio::test]
+async fn test_tcp_keepalive_with_interval_and_retries() {
+    let addr = start_server().await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .tcp_keepalive(Duration::from_secs(60))
+        .tcp_keepalive_interval(Duration::from_secs(10))
+        .tcp_keepalive_retries(3)
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}
+
+// --- Unix socket connection ---
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_unix_socket_connection() {
+    use tokio::net::UnixListener;
+
+    let dir = std::env::temp_dir().join("aioduct_unix_test");
+    let _ = std::fs::create_dir_all(&dir);
+    let sock_path = dir.join("test.sock");
+    let _ = std::fs::remove_file(&sock_path);
+
+    let listener = UnixListener::bind(&sock_path).unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+            tokio::spawn(async move {
+                let _ = server_http1::Builder::new()
+                    .serve_connection(io, service_fn(hello))
+                    .await;
+            });
+        }
+    });
+
+    let client = Client::<TokioRuntime>::builder()
+        .unix_socket(&sock_path)
+        .build();
+
+    let resp = client
+        .get("http://localhost/")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+    let _ = std::fs::remove_file(&sock_path);
+    let _ = std::fs::remove_dir(&dir);
+}
+
+// --- Upgrade flush/shutdown/into_inner ---
+
+#[tokio::test]
+async fn test_upgrade_flush_and_shutdown() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+        let _ = server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|mut req: Request<hyper::body::Incoming>| async move {
+                    if req.headers().get("upgrade").map(|v| v.as_bytes()) == Some(b"websocket") {
+                        tokio::spawn(async move {
+                            if let Ok(upgraded) = hyper::upgrade::on(&mut req).await {
+                                let mut upgraded = aioduct::Upgraded::from(upgraded);
+                                let mut buf = vec![0u8; 1024];
+                                if let Ok(n) = AsyncReadExt::read(&mut upgraded, &mut buf).await {
+                                    let _ =
+                                        AsyncWriteExt::write_all(&mut upgraded, &buf[..n]).await;
+                                    let _ = AsyncWriteExt::flush(&mut upgraded).await;
+                                    let _ = AsyncWriteExt::shutdown(&mut upgraded).await;
+                                }
+                            }
+                        });
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(101)
+                                .header("upgrade", "websocket")
+                                .header("connection", "upgrade")
+                                .body(Full::new(Bytes::new()))
+                                .unwrap(),
+                        )
+                    } else {
+                        Ok(Response::new(Full::new(Bytes::from("not an upgrade"))))
+                    }
+                }),
+            )
+            .with_upgrades()
+            .await;
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/ws"))
+        .unwrap()
+        .upgrade()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+    let mut upgraded = resp.upgrade().await.unwrap();
+    let dbg = format!("{upgraded:?}");
+    assert!(dbg.contains("Upgraded"));
+    AsyncWriteExt::write_all(&mut upgraded, b"ping")
+        .await
+        .unwrap();
+    AsyncWriteExt::flush(&mut upgraded).await.unwrap();
+
+    let mut buf = vec![0u8; 1024];
+    let n = AsyncReadExt::read(&mut upgraded, &mut buf).await.unwrap();
+    assert_eq!(&buf[..n], b"ping");
+
+    let _inner = upgraded.into_inner();
+}
+
+#[tokio::test]
+async fn test_retry_with_timeout_succeeds_on_retry() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .timeout(Duration::from_millis(200))
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(attempt.load(Ordering::SeqCst) >= 2);
+}
+
+#[tokio::test]
+async fn test_retry_budget_deposit_on_success() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(503)
+                        .body(Full::new(Bytes::from("error")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::new(Full::new(Bytes::from("ok"))))
+            }
+        }
+    })
+    .await;
+
+    let budget = aioduct::RetryBudget::new(5, 2);
+    assert_eq!(budget.available(), 5);
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::from_millis(10))
+                .budget(budget.clone()),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    // Budget started at 5, one retry withdrew 1 (→4), success deposited 2 (→5, capped at max)
+    assert_eq!(budget.available(), 5);
+}
+
+#[tokio::test]
+async fn test_retry_exhaustion_returns_last_error() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(503)
+                    .body(Full::new(Bytes::from("unavailable")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) => {
+            assert!(r.status().is_server_error());
+        }
+        Err(_) => {}
+    }
+    assert_eq!(attempt.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_retry_with_retry_after_header() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(429)
+                        .header("retry-after", "0")
+                        .body(Full::new(Bytes::from("rate limited")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::new(Full::new(Bytes::from("ok"))))
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_chunk_download_debug() {
+    let client = Client::<TokioRuntime>::new();
+    let dl = client.chunk_download("http://example.com/file.bin");
+    let dbg = format!("{dl:?}");
+    assert!(dbg.contains("ChunkDownload"));
+    assert!(dbg.contains("example.com"));
+}
+
+#[tokio::test]
+async fn test_chunk_download_with_custom_chunks() {
+    let data = "x".repeat(10000);
+    let data_clone = data.clone();
+
+    let addr = start_server_with(move |req| {
+        let data = data_clone.clone();
+        async move {
+            if req.method() == http::Method::HEAD {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("accept-ranges", "bytes")
+                        .header("content-length", data.len().to_string())
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            } else if let Some(range) = req.headers().get("range") {
+                let range_str = range.to_str().unwrap();
+                let range_str = range_str.strip_prefix("bytes=").unwrap();
+                let parts: Vec<&str> = range_str.split('-').collect();
+                let start: usize = parts[0].parse().unwrap();
+                let end: usize = parts[1].parse().unwrap();
+                let chunk = &data.as_bytes()[start..=end];
+                Ok(Response::builder()
+                    .status(206)
+                    .body(Full::new(Bytes::copy_from_slice(chunk)))
+                    .unwrap())
+            } else {
+                Ok(Response::new(Full::new(Bytes::from(data.clone()))))
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let result = client
+        .chunk_download(&format!("http://{addr}/file"))
+        .chunks(2)
+        .download()
+        .await
+        .unwrap();
+
+    assert_eq!(result.total_size, 10000);
+    assert_eq!(result.data.len(), 10000);
+    assert_eq!(result.data, Bytes::from(data));
+}
+
+#[tokio::test]
+async fn test_chunk_download_range_request_fails() {
+    let addr = start_server_with(move |req| async move {
+        if req.method() == http::Method::HEAD {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("accept-ranges", "bytes")
+                    .header("content-length", "100")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            Ok(Response::builder()
+                .status(500)
+                .body(Full::new(Bytes::from("server error")))
+                .unwrap())
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let result = client
+        .chunk_download(&format!("http://{addr}/file"))
+        .chunks(2)
+        .download()
+        .await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_rate_limiter_sleep_path() {
+    let addr = start_server().await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .rate_limiter(aioduct::RateLimiter::new(1, Duration::from_millis(200)))
+        .build();
+
+    let start = tokio::time::Instant::now();
+    for i in 0..3 {
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::OK,
+            "request {i} should succeed"
+        );
+        let _ = resp.text().await;
+    }
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(300),
+        "1 req per 200ms → 3 requests should take at least 300ms, got {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_retry_on_status_disabled_no_retry() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::from("error")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(3)
+                .retry_on_status(false),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(attempt.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_client_default_retry_with_recovery() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(500)
+                        .body(Full::new(Bytes::from("error")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::new(Full::new(Bytes::from("ok"))))
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(3)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(attempt.load(Ordering::SeqCst) >= 3);
+}
+
+#[tokio::test]
+async fn test_happy_eyeballs_multi_addrs_integration() {
+    let addr = start_server_with(move |_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("he-ok"))))
+    })
+    .await;
+
+    let good_addr = addr;
+    let bad_addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+
+    struct MultiResolver {
+        addrs: Vec<std::net::SocketAddr>,
+    }
+
+    impl aioduct::Resolve for MultiResolver {
+        fn resolve(
+            &self,
+            _host: &str,
+            _port: u16,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::io::Result<std::net::SocketAddr>> + Send>,
+        > {
+            let addr = self.addrs[0];
+            Box::pin(async move { Ok(addr) })
+        }
+
+        fn resolve_all(
+            &self,
+            _host: &str,
+            _port: u16,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = std::io::Result<Vec<std::net::SocketAddr>>> + Send,
+            >,
+        > {
+            let addrs = self.addrs.clone();
+            Box::pin(async move { Ok(addrs) })
+        }
+    }
+
+    let client = Client::<TokioRuntime>::builder()
+        .resolver(MultiResolver {
+            addrs: vec![bad_addr, good_addr],
+        })
+        .build();
+
+    let resp = client
+        .get(&format!("http://multi.example.com:{}/", good_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "he-ok");
 }

@@ -245,4 +245,66 @@ mod tests {
         assert_eq!(v4[0].to_string(), "1.0.0.1:80");
         assert_eq!(v4[1].to_string(), "8.8.8.8:80");
     }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn connect_empty_addrs_errors() {
+        use crate::runtime::TokioRuntime;
+        let result = connect_happy_eyeballs::<TokioRuntime>(&[], None).await;
+        let err = result.err().expect("should be an error");
+        assert_eq!(err.kind(), io::ErrorKind::AddrNotAvailable);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn connect_single_addr_succeeds() {
+        use crate::runtime::TokioRuntime;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stream, connected_addr) = connect_happy_eyeballs::<TokioRuntime>(&[addr], None)
+            .await
+            .unwrap();
+        assert_eq!(connected_addr, addr);
+        drop(stream);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn connect_multi_addrs_first_succeeds() {
+        use crate::runtime::TokioRuntime;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_addr = listener.local_addr().unwrap();
+        let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let (stream, connected_addr) =
+            connect_happy_eyeballs::<TokioRuntime>(&[good_addr, bad_addr], None)
+                .await
+                .unwrap();
+        assert_eq!(connected_addr, good_addr);
+        drop(stream);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn connect_multi_addrs_second_succeeds() {
+        use crate::runtime::TokioRuntime;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_addr = listener.local_addr().unwrap();
+        let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let (stream, connected_addr) =
+            connect_happy_eyeballs::<TokioRuntime>(&[bad_addr, good_addr], None)
+                .await
+                .unwrap();
+        assert_eq!(connected_addr, good_addr);
+        drop(stream);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn connect_all_fail() {
+        use crate::runtime::TokioRuntime;
+        let bad1: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let bad2: SocketAddr = "127.0.0.1:2".parse().unwrap();
+        let result = connect_happy_eyeballs::<TokioRuntime>(&[bad1, bad2], None).await;
+        assert!(result.is_err());
+    }
 }

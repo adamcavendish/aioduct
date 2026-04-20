@@ -331,22 +331,24 @@ impl<R: Runtime> Client<R> {
             }
 
             // Cache lookup: return fresh cached response or prepare conditional headers
-            let cache_state = if let Some(ref cache) = self.cache {
+            let (cache_state, stale_if_error) = if let Some(ref cache) = self.cache {
                 match cache.lookup(&current_method, &current_uri) {
                     crate::cache::CacheLookup::Fresh(cached) => {
                         let http_resp = cached.into_http_response();
                         return Ok(Response::from_boxed(http_resp, current_uri));
                     }
                     crate::cache::CacheLookup::Stale {
-                        validators, cached, ..
+                        validators,
+                        cached,
+                        stale_if_error,
                     } => {
                         validators.apply_to_request(&mut current_headers);
-                        Some(cached)
+                        (Some(cached), stale_if_error)
                     }
-                    crate::cache::CacheLookup::Miss => None,
+                    crate::cache::CacheLookup::Miss => (None, None),
                 }
             } else {
-                None
+                (None, None)
             };
 
             let path_and_query = current_uri
@@ -375,7 +377,33 @@ impl<R: Runtime> Client<R> {
                 self.middleware.apply_request(&mut request, &current_uri);
             }
 
-            let resp = self.execute_single(request, &current_uri).await?;
+            let resp = match self.execute_single(request, &current_uri).await {
+                Ok(resp) => {
+                    if resp.status().is_server_error() {
+                        if let Some(sie_duration) = stale_if_error {
+                            if let Some(ref cached) = cache_state {
+                                if cached.age <= sie_duration {
+                                    let _ = resp.bytes().await;
+                                    let http_resp = cache_state.unwrap().into_http_response();
+                                    return Ok(Response::from_boxed(http_resp, current_uri));
+                                }
+                            }
+                        }
+                    }
+                    resp
+                }
+                Err(e) => {
+                    if let Some(sie_duration) = stale_if_error {
+                        if let Some(cached) = cache_state {
+                            if cached.age <= sie_duration {
+                                let http_resp = cached.into_http_response();
+                                return Ok(Response::from_boxed(http_resp, current_uri));
+                            }
+                        }
+                    }
+                    return Err(e);
+                }
+            };
 
             // Digest auth: retry once with credentials on 401 + WWW-Authenticate: Digest
             let resp = if let Some(ref digest) = self.digest_auth {

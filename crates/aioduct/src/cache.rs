@@ -939,4 +939,256 @@ mod tests {
             _ => panic!("expected miss for POST"),
         }
     }
+
+    #[test]
+    fn test_cache_debug() {
+        let cache = HttpCache::new();
+        let dbg = format!("{cache:?}");
+        assert!(dbg.contains("HttpCache"));
+    }
+
+    #[test]
+    fn test_cache_default() {
+        let cache: HttpCache = Default::default();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_cache_expires_based_freshness() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/expires".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(EXPIRES, "Thu, 01 Jan 2099 00:00:00 GMT".parse().unwrap());
+        let body = Bytes::from("expires-fresh");
+
+        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.body, Bytes::from("expires-fresh"));
+            }
+            _ => panic!("expected fresh from Expires header"),
+        }
+    }
+
+    #[test]
+    fn test_cache_expires_based_staleness_with_etag() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/stale-expires".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(EXPIRES, "Thu, 01 Jan 2020 00:00:00 GMT".parse().unwrap());
+        headers.insert(ETAG, "\"exp-v1\"".parse().unwrap());
+        let body = Bytes::from("expired");
+
+        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Stale { validators, .. } => {
+                assert_eq!(validators.etag.as_deref(), Some("\"exp-v1\""));
+            }
+            _ => panic!("expected stale due to expired Expires header"),
+        }
+    }
+
+    #[test]
+    fn test_cache_stale_without_validators_is_miss() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/no-validators".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=0".parse().unwrap());
+        let body = Bytes::from("no validators");
+
+        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Miss => {}
+            _ => panic!("expected miss for stale entry without validators"),
+        }
+    }
+
+    #[test]
+    fn test_cache_immutable_with_must_revalidate() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/immut-mr".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            "max-age=3600, immutable, must-revalidate".parse().unwrap(),
+        );
+        let body = Bytes::from("immut");
+
+        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.body, Bytes::from("immut"));
+            }
+            _ => panic!("expected fresh for immutable+must_revalidate entry"),
+        }
+    }
+
+    #[test]
+    fn test_httpdate_parse_november() {
+        let result = httpdate_parse("Sun, 06 Nov 1994 08:49:37 GMT");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_httpdate_parse_december() {
+        let result = httpdate_parse("Sun, 25 Dec 2022 12:00:00 GMT");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_httpdate_parse_all_months() {
+        let months = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        for m in &months {
+            let date = format!("Mon, 15 {m} 2023 10:30:00 GMT");
+            assert!(httpdate_parse(&date).is_some(), "month {m} should parse");
+        }
+    }
+
+    #[test]
+    fn test_httpdate_leap_year() {
+        let result = httpdate_parse("Mon, 01 Mar 2024 00:00:00 GMT");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_cache_config_debug() {
+        let config = CacheConfig::default();
+        let dbg = format!("{config:?}");
+        assert!(dbg.contains("CacheConfig"));
+    }
+
+    #[test]
+    fn test_cache_expires_staleness_returns_some() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/exp-stale".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(EXPIRES, "Thu, 01 Jan 2020 00:00:00 GMT".parse().unwrap());
+        headers.insert(ETAG, "\"exp-stale\"".parse().unwrap());
+        let body = Bytes::from("data");
+
+        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+
+        let key = CacheKey {
+            method: Method::GET,
+            uri: uri.clone(),
+        };
+        let inner = cache.inner.lock().unwrap();
+        let entry = inner.entries.get(&key).unwrap();
+        let staleness = entry.staleness();
+        assert!(
+            staleness.is_some(),
+            "staleness should be Some for expired Expires"
+        );
+        assert!(staleness.unwrap().as_secs() > 0);
+    }
+
+    #[test]
+    fn test_cache_expires_freshness_staleness_returns_none() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/exp-fresh".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(EXPIRES, "Thu, 01 Jan 2099 00:00:00 GMT".parse().unwrap());
+        let body = Bytes::from("data");
+
+        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+
+        let key = CacheKey {
+            method: Method::GET,
+            uri: uri.clone(),
+        };
+        let inner = cache.inner.lock().unwrap();
+        let entry = inner.entries.get(&key).unwrap();
+        assert!(
+            entry.staleness().is_none(),
+            "staleness should be None for fresh Expires"
+        );
+    }
+
+    #[test]
+    fn test_cache_expires_stale_while_revalidate_serves_within_grace() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/exp-swr".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(EXPIRES, "Thu, 01 Jan 2020 00:00:00 GMT".parse().unwrap());
+        headers.insert(
+            CACHE_CONTROL,
+            "stale-while-revalidate=999999999".parse().unwrap(),
+        );
+        let body = Bytes::from("swr-expires");
+
+        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.body, Bytes::from("swr-expires"));
+            }
+            _ => panic!("expected fresh via stale-while-revalidate with Expires"),
+        }
+    }
+
+    #[test]
+    fn test_cached_response_into_http_response() {
+        let cached = CachedResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("resp"),
+            age: Duration::from_secs(42),
+        };
+        let resp = cached.into_http_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get(AGE).unwrap().to_str().unwrap(), "42");
+    }
+
+    #[test]
+    fn test_validators_apply_only_etag() {
+        let validators = Validators {
+            etag: Some("\"only-etag\"".to_string()),
+            last_modified: None,
+        };
+        let mut headers = HeaderMap::new();
+        validators.apply_to_request(&mut headers);
+        assert!(headers.contains_key(IF_NONE_MATCH));
+        assert!(!headers.contains_key(IF_MODIFIED_SINCE));
+    }
+
+    #[test]
+    fn test_validators_apply_only_last_modified() {
+        let validators = Validators {
+            etag: None,
+            last_modified: Some("Sun, 06 Nov 1994 08:49:37 GMT".to_string()),
+        };
+        let mut headers = HeaderMap::new();
+        validators.apply_to_request(&mut headers);
+        assert!(!headers.contains_key(IF_NONE_MATCH));
+        assert!(headers.contains_key(IF_MODIFIED_SINCE));
+    }
+
+    #[test]
+    fn test_is_response_cacheable_with_expires() {
+        let mut headers = HeaderMap::new();
+        headers.insert(EXPIRES, "Thu, 01 Jan 2099 00:00:00 GMT".parse().unwrap());
+        assert!(is_response_cacheable(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn test_non_cacheable_status_not_stored() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/500".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &headers,
+            &Bytes::from("err"),
+        );
+        assert!(cache.is_empty());
+    }
 }

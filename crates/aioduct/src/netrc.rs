@@ -429,4 +429,181 @@ mod tests {
         mw.on_request(&mut req, &uri);
         assert!(req.headers().contains_key("authorization"));
     }
+
+    #[test]
+    fn top_level_unknown_tokens_skipped() {
+        let netrc = Netrc::parse("garbage foo machine example.com login u password p\n");
+        assert_eq!(netrc.lookup("example.com"), Some(("u", "p")));
+    }
+
+    #[test]
+    fn load_from_file_succeeds() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aioduct_netrc_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_netrc");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "machine file.example.com login fuser password fpass").unwrap();
+        }
+        let netrc = Netrc::load(&path).unwrap();
+        assert_eq!(netrc.lookup("file.example.com"), Some(("fuser", "fpass")));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn middleware_from_path() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aioduct_netrc_mw_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_netrc_mw");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "machine mw.example.com login mwuser password mwpass").unwrap();
+        }
+        let mw = NetrcMiddleware::from_path(&path).unwrap();
+        let uri: http::Uri = "http://mw.example.com/test".parse().unwrap();
+        let body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
+        mw.on_request(&mut req, &uri);
+        assert!(req.headers().contains_key("authorization"));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn default_netrc_path_via_env() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aioduct_netrc_env_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("custom_netrc");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "machine env.example.com login envuser password envpass").unwrap();
+        }
+        unsafe { std::env::set_var("NETRC", path.to_str().unwrap()) };
+        let result = default_netrc_path();
+        unsafe { std::env::remove_var("NETRC") };
+        assert_eq!(result.unwrap(), path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn default_netrc_path_falls_back_to_home_dotnetrc() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aioduct_netrc_home_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let netrc_path = dir.join(".netrc");
+        {
+            let mut f = std::fs::File::create(&netrc_path).unwrap();
+            writeln!(f, "machine home.example.com login hu password hp").unwrap();
+        }
+        unsafe { std::env::remove_var("NETRC") };
+        let saved_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", dir.to_str().unwrap()) };
+        let result = default_netrc_path();
+        if let Some(h) = saved_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+        assert_eq!(result.unwrap(), netrc_path);
+        let _ = std::fs::remove_file(&netrc_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn default_netrc_path_falls_back_to_underscore_netrc() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aioduct_netrc_alt_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let alt_path = dir.join("_netrc");
+        {
+            let mut f = std::fs::File::create(&alt_path).unwrap();
+            writeln!(f, "machine alt.example.com login au password ap").unwrap();
+        }
+        let dotnetrc = dir.join(".netrc");
+        let _ = std::fs::remove_file(&dotnetrc);
+
+        unsafe { std::env::remove_var("NETRC") };
+        let saved_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", dir.to_str().unwrap()) };
+        let result = default_netrc_path();
+        if let Some(h) = saved_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+        assert_eq!(result.unwrap(), alt_path);
+        let _ = std::fs::remove_file(&alt_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn default_netrc_path_returns_dotnetrc_when_neither_exists() {
+        let dir = std::env::temp_dir().join("aioduct_netrc_neither_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::remove_file(dir.join(".netrc"));
+        let _ = std::fs::remove_file(dir.join("_netrc"));
+
+        unsafe { std::env::remove_var("NETRC") };
+        let saved_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", dir.to_str().unwrap()) };
+        let result = default_netrc_path();
+        if let Some(h) = saved_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+        assert_eq!(result.unwrap(), dir.join(".netrc"));
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn load_default_via_env() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aioduct_netrc_load_default_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("load_default_netrc");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "machine ld.example.com login ldu password ldp").unwrap();
+        }
+        unsafe { std::env::set_var("NETRC", path.to_str().unwrap()) };
+        let netrc = Netrc::load_default().unwrap();
+        unsafe { std::env::remove_var("NETRC") };
+        assert_eq!(netrc.lookup("ld.example.com"), Some(("ldu", "ldp")));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn middleware_from_default_via_env() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("aioduct_netrc_mw_default_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("mw_default_netrc");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "machine mwd.example.com login mwdu password mwdp").unwrap();
+        }
+        unsafe { std::env::set_var("NETRC", path.to_str().unwrap()) };
+        let mw = NetrcMiddleware::from_default().unwrap();
+        unsafe { std::env::remove_var("NETRC") };
+
+        let uri: http::Uri = "http://mwd.example.com/test".parse().unwrap();
+        let body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
+        mw.on_request(&mut req, &uri);
+        assert!(req.headers().contains_key("authorization"));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
 }

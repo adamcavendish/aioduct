@@ -250,3 +250,54 @@ where
         tokio::io::AsyncWrite::is_write_vectored(&self.inner)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Runtime;
+
+    #[tokio::test]
+    async fn resolve_all_localhost() {
+        let addrs = TokioRuntime::resolve_all("localhost", 80).await.unwrap();
+        assert!(!addrs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connect_and_set_keepalive_with_interval_retries() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TokioRuntime::connect(addr).await.unwrap();
+        let result = TokioRuntime::set_tcp_keepalive(
+            &stream,
+            Duration::from_secs(60),
+            Some(Duration::from_secs(10)),
+            Some(3),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn from_std_tcp_succeeds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let std_stream = std::net::TcpStream::connect(addr).unwrap();
+        let tokio_stream = TokioRuntime::from_std_tcp(std_stream).unwrap();
+        assert!(tokio_stream.inner().peer_addr().is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_unix_succeeds() {
+        let dir = std::env::temp_dir().join("aioduct_rt_unix_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let sock_path = dir.join("rt_test.sock");
+        let _ = std::fs::remove_file(&sock_path);
+
+        let _listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+        let stream = TokioRuntime::connect_unix(&sock_path).await.unwrap();
+        drop(stream);
+
+        let _ = std::fs::remove_file(&sock_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+}
