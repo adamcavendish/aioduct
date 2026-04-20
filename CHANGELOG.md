@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-04-20
+
+### Fixed
+- Fixed docs.rs build failure by gating `compile_error!` with `not(doc)` so rustdoc succeeds without a runtime feature
+- Added `package.metadata.docs.rs` with `all-features = true` to expose the full API surface on docs.rs
+
 ## [0.1.1] - 2026-04-20
 
 ### Added
