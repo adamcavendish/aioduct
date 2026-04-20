@@ -351,7 +351,85 @@ mod tests {
     fn parse_retry_after_invalid() {
         let mut headers = HeaderMap::new();
         headers.insert(http::header::RETRY_AFTER, "not-a-number".parse().unwrap());
-        // Falls through to HTTP-date parsing which also fails
         assert!(parse_retry_after(&headers).is_none());
+    }
+
+    #[test]
+    fn parse_http_date_valid() {
+        let dt = parse_http_date("Wed, 21 Oct 2015 07:28:00 GMT");
+        assert!(dt.is_some());
+        let secs = dt
+            .unwrap()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(secs, 1445412480);
+    }
+
+    #[test]
+    fn parse_http_date_too_few_parts() {
+        assert!(parse_http_date("Wed, 21 Oct").is_none());
+    }
+
+    #[test]
+    fn parse_http_date_bad_month() {
+        assert!(parse_http_date("Wed, 21 Xyz 2015 07:28:00 GMT").is_none());
+    }
+
+    #[test]
+    fn parse_http_date_bad_day() {
+        assert!(parse_http_date("Wed, XX Oct 2015 07:28:00 GMT").is_none());
+    }
+
+    #[test]
+    fn parse_http_date_bad_year() {
+        assert!(parse_http_date("Wed, 21 Oct XXXX 07:28:00 GMT").is_none());
+    }
+
+    #[test]
+    fn parse_http_date_bad_time_format() {
+        assert!(parse_http_date("Wed, 21 Oct 2015 07:28 GMT").is_none());
+    }
+
+    #[test]
+    fn parse_http_date_bad_time_values() {
+        assert!(parse_http_date("Wed, 21 Oct 2015 AA:BB:CC GMT").is_none());
+    }
+
+    #[test]
+    fn parse_http_date_all_months() {
+        let months = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        for m in months {
+            let date = format!("Wed, 15 {m} 2020 12:00:00 GMT");
+            assert!(parse_http_date(&date).is_some(), "failed for month {m}");
+        }
+    }
+
+    #[test]
+    fn parse_http_date_leap_year() {
+        let dt = parse_http_date("Sat, 29 Feb 2020 00:00:00 GMT");
+        assert!(dt.is_some());
+    }
+
+    #[test]
+    fn parse_retry_after_http_date_in_future() {
+        let future = std::time::SystemTime::now() + Duration::from_secs(3600);
+        let secs = future
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let epoch = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        let dur = epoch
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let days = dur.as_secs() / 86400;
+        let year = 1970 + days / 365;
+        let formatted = format!("Wed, 01 Jan {year} 12:00:00 GMT");
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, formatted.parse().unwrap());
+        // May or may not parse depending on exact date math, just ensure no panic
+        let _ = parse_retry_after(&headers);
     }
 }

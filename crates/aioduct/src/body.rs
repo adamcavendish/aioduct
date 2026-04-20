@@ -203,4 +203,70 @@ mod tests {
         let body: RequestBody = hyper_body.into();
         assert!(body.try_clone().is_none());
     }
+
+    #[test]
+    fn debug_buffered() {
+        let body = buffered(b"data");
+        let dbg = format!("{body:?}");
+        assert!(dbg.contains("Buffered"));
+    }
+
+    #[test]
+    fn debug_streaming() {
+        let body = streaming();
+        let dbg = format!("{body:?}");
+        assert!(dbg.contains("Streaming"));
+    }
+
+    #[test]
+    fn into_hyper_body_buffered() {
+        let body = buffered(b"hello");
+        let _hyper = body.into_hyper_body();
+    }
+
+    #[test]
+    fn into_hyper_body_streaming() {
+        let body = streaming();
+        let _hyper = body.into_hyper_body();
+    }
+
+    #[test]
+    fn body_stream_debug() {
+        let hyper_body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let stream = BodyStream::new(hyper_body);
+        let dbg = format!("{stream:?}");
+        assert!(dbg.contains("BodyStream"));
+    }
+
+    #[tokio::test]
+    async fn body_stream_empty_returns_none() {
+        let hyper_body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mut stream = BodyStream::new(hyper_body);
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn body_stream_with_data() {
+        let hyper_body: AioductBody = http_body_util::Full::new(Bytes::from("hello"))
+            .map_err(|never| match never {})
+            .boxed();
+        let mut stream = BodyStream::new(hyper_body);
+        let chunk = stream.next().await.unwrap().unwrap();
+        assert_eq!(&chunk[..], b"hello");
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn body_stream_done_stays_none() {
+        let hyper_body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mut stream = BodyStream::new(hyper_body);
+        assert!(stream.next().await.is_none());
+        assert!(stream.next().await.is_none());
+    }
 }

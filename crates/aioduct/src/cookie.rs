@@ -589,4 +589,121 @@ mod tests {
         let cookie = parse_set_cookie("__Secure-token=abc", "example.com");
         assert!(cookie.is_none());
     }
+
+    #[test]
+    fn expires_past_marks_expired() {
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Wed, 01 Jan 2020 00:00:00 GMT",
+            "example.com",
+        );
+        assert!(cookie.is_some());
+        assert!(cookie.unwrap().expired);
+    }
+
+    #[test]
+    fn expires_future_not_expired() {
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Wed, 01 Jan 2099 00:00:00 GMT",
+            "example.com",
+        );
+        assert!(cookie.is_some());
+        assert!(!cookie.unwrap().expired);
+    }
+
+    #[test]
+    fn max_age_positive_not_expired() {
+        let cookie = parse_set_cookie("sid=abc; Max-Age=3600", "example.com");
+        assert!(cookie.is_some());
+        assert!(!cookie.unwrap().expired);
+    }
+
+    #[test]
+    fn max_age_negative_expired() {
+        let cookie = parse_set_cookie("sid=abc; Max-Age=-1", "example.com");
+        assert!(cookie.is_some());
+        assert!(cookie.unwrap().expired);
+    }
+
+    #[test]
+    fn cookie_jar_debug() {
+        let jar = CookieJar::new();
+        let dbg = format!("{jar:?}");
+        assert!(dbg.contains("CookieJar"));
+    }
+
+    #[test]
+    fn cookie_jar_cookies_returns_all() {
+        let jar = CookieJar::new();
+        let mut headers = HeaderMap::new();
+        headers.append(SET_COOKIE, "a=1".parse().unwrap());
+        headers.append(SET_COOKIE, "b=2".parse().unwrap());
+        jar.store_from_response("example.com", &headers);
+        let cookies = jar.cookies();
+        assert_eq!(cookies.len(), 2);
+    }
+
+    #[test]
+    fn apply_to_request_adds_cookie_header() {
+        let jar = CookieJar::new();
+        let mut headers = HeaderMap::new();
+        headers.append(SET_COOKIE, "token=xyz".parse().unwrap());
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        let cookie = req_headers.get("cookie").unwrap().to_str().unwrap();
+        assert!(cookie.contains("token=xyz"));
+    }
+
+    #[test]
+    fn apply_to_request_no_match_no_header() {
+        let jar = CookieJar::new();
+        let mut headers = HeaderMap::new();
+        headers.append(SET_COOKIE, "token=xyz".parse().unwrap());
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("other.com", false, "/", &mut req_headers);
+        assert!(req_headers.get("cookie").is_none());
+    }
+
+    #[test]
+    fn secure_cookie_not_sent_on_http() {
+        let jar = CookieJar::new();
+        let mut headers = HeaderMap::new();
+        headers.append(SET_COOKIE, "s=1; Secure".parse().unwrap());
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        assert!(req_headers.get("cookie").is_none());
+    }
+
+    #[test]
+    fn secure_cookie_sent_on_https() {
+        let jar = CookieJar::new();
+        let mut headers = HeaderMap::new();
+        headers.append(SET_COOKIE, "s=1; Secure".parse().unwrap());
+        jar.store_from_response("example.com", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", true, "/", &mut req_headers);
+        assert!(req_headers.get("cookie").is_some());
+    }
+
+    #[test]
+    fn cookie_accessors() {
+        let cookie = parse_set_cookie(
+            "name=value; Domain=example.com; Path=/api; Secure; HttpOnly; SameSite=Strict",
+            "example.com",
+        )
+        .unwrap();
+        assert_eq!(cookie.name(), "name");
+        assert_eq!(cookie.value(), "value");
+        assert_eq!(cookie.domain(), Some("example.com"));
+        assert_eq!(cookie.path(), Some("/api"));
+        assert!(cookie.secure());
+        assert!(cookie.http_only());
+        assert_eq!(cookie.same_site(), Some(&SameSite::Strict));
+    }
 }

@@ -711,4 +711,73 @@ mod tests {
         let ct = req.headers().get("content-type").unwrap().to_str().unwrap();
         assert!(ct.starts_with("multipart/form-data; boundary="));
     }
+
+    #[tokio::test]
+    async fn header_str_invalid_name() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let result = rb.header_str("invalid header\n", "value");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn header_str_invalid_value() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        let result = rb.header_str("x-custom", "bad\0value");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn debug_request_builder() {
+        let client = test_client();
+        let rb = client.get("http://example.com/path").unwrap();
+        let dbg = format!("{rb:?}");
+        assert!(dbg.contains("RequestBuilder"));
+        assert!(dbg.contains("GET"));
+    }
+
+    #[tokio::test]
+    async fn query_encodes_special_chars() {
+        let client = test_client();
+        let rb = client.get("http://example.com/path").unwrap();
+        let rb = rb.query(&[("key", "hello world"), ("tag", "a&b=c")]);
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(uri.contains("hello%20world"));
+        assert!(uri.contains("a%26b%3Dc"));
+    }
+
+    #[tokio::test]
+    async fn timeout_setter() {
+        let client = test_client();
+        let rb = client
+            .get("http://example.com")
+            .unwrap()
+            .timeout(Duration::from_secs(5));
+        let _req = rb.build().unwrap();
+    }
+
+    #[tokio::test]
+    async fn retry_setter() {
+        let client = test_client();
+        let rb = client
+            .get("http://example.com")
+            .unwrap()
+            .retry(RetryConfig::default());
+        let _req = rb.build().unwrap();
+    }
+
+    #[cfg(feature = "json")]
+    #[tokio::test]
+    async fn query_serde_empty_struct() {
+        #[derive(serde::Serialize)]
+        struct Empty {}
+        let client = test_client();
+        let rb = client.get("http://example.com/path").unwrap();
+        let rb = rb.query_serde(&Empty {}).unwrap();
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(!uri.contains('?'));
+    }
 }

@@ -259,4 +259,86 @@ mod tests {
         let cloned = stack.clone();
         assert!(!cloned.is_empty());
     }
+
+    #[test]
+    fn empty_stack_apply_request_no_panic() {
+        let stack = MiddlewareStack::new();
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        stack.apply_request(&mut req, &uri);
+    }
+
+    #[test]
+    fn empty_stack_apply_response_no_panic() {
+        let stack = MiddlewareStack::new();
+        let uri = test_uri();
+        let mut resp = http::Response::builder()
+            .status(200)
+            .body(empty_body())
+            .unwrap();
+        stack.apply_response(&mut resp, &uri);
+    }
+
+    #[test]
+    fn empty_stack_apply_error_no_panic() {
+        let stack = MiddlewareStack::new();
+        stack.apply_error(&Error::Timeout, &test_uri(), &Method::GET);
+    }
+
+    #[test]
+    fn empty_stack_apply_redirect_no_panic() {
+        let stack = MiddlewareStack::new();
+        let from: Uri = "http://a.com".parse().unwrap();
+        let to: Uri = "http://b.com".parse().unwrap();
+        stack.apply_redirect(StatusCode::MOVED_PERMANENTLY, &from, &to);
+    }
+
+    #[test]
+    fn empty_stack_apply_retry_no_panic() {
+        let stack = MiddlewareStack::new();
+        stack.apply_retry(&Error::Timeout, &test_uri(), &Method::GET, 1);
+    }
+
+    #[test]
+    fn closure_middleware_default_hooks_no_panic() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |_req: &mut http::Request<AioductBody>, _uri: &Uri| {},
+        ));
+        let uri = test_uri();
+        let mut resp = http::Response::builder()
+            .status(200)
+            .body(empty_body())
+            .unwrap();
+        stack.apply_response(&mut resp, &uri);
+        stack.apply_error(&Error::Timeout, &uri, &Method::GET);
+        let to: Uri = "http://b.com".parse().unwrap();
+        stack.apply_redirect(StatusCode::FOUND, &uri, &to);
+        stack.apply_retry(&Error::Timeout, &uri, &Method::POST, 2);
+    }
+
+    #[test]
+    fn default_trait_methods_no_panic() {
+        struct NoopMiddleware;
+        impl Middleware for NoopMiddleware {}
+
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(NoopMiddleware));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        stack.apply_request(&mut req, &uri);
+        let mut resp = http::Response::builder()
+            .status(200)
+            .body(empty_body())
+            .unwrap();
+        stack.apply_response(&mut resp, &uri);
+        stack.apply_error(&Error::Timeout, &uri, &Method::GET);
+        let to: Uri = "http://b.com".parse().unwrap();
+        stack.apply_redirect(StatusCode::FOUND, &uri, &to);
+        stack.apply_retry(&Error::Timeout, &uri, &Method::POST, 1);
+    }
 }

@@ -172,4 +172,77 @@ mod tests {
         let result = interleave_addrs(&[]);
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn interleave_only_v6() {
+        let addrs = vec!["[::1]:443".parse().unwrap(), "[::2]:443".parse().unwrap()];
+        let result = interleave_addrs(&addrs);
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|a| a.is_ipv6()));
+    }
+
+    #[test]
+    fn interleave_single_v4() {
+        let addrs = vec!["1.2.3.4:80".parse().unwrap()];
+        let result = interleave_addrs(&addrs);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_ipv4());
+    }
+
+    #[test]
+    fn interleave_single_v6() {
+        let addrs = vec!["[::1]:80".parse().unwrap()];
+        let result = interleave_addrs(&addrs);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_ipv6());
+    }
+
+    #[test]
+    fn interleave_uneven_more_v6() {
+        let addrs = vec![
+            "[::1]:80".parse().unwrap(),
+            "[::2]:80".parse().unwrap(),
+            "[::3]:80".parse().unwrap(),
+            "1.1.1.1:80".parse().unwrap(),
+        ];
+        let result = interleave_addrs(&addrs);
+        assert_eq!(result.len(), 4);
+        assert!(result[0].is_ipv6()); // ::1
+        assert!(result[1].is_ipv4()); // 1.1.1.1
+        assert!(result[2].is_ipv6()); // ::2
+        assert!(result[3].is_ipv6()); // ::3
+    }
+
+    #[test]
+    fn interleave_uneven_more_v4() {
+        let addrs = vec![
+            "1.1.1.1:80".parse().unwrap(),
+            "2.2.2.2:80".parse().unwrap(),
+            "3.3.3.3:80".parse().unwrap(),
+            "[::1]:80".parse().unwrap(),
+        ];
+        let result = interleave_addrs(&addrs);
+        assert_eq!(result.len(), 4);
+        assert!(result[0].is_ipv6()); // ::1
+        assert!(result[1].is_ipv4()); // 1.1.1.1
+        assert!(result[2].is_ipv4()); // 2.2.2.2
+        assert!(result[3].is_ipv4()); // 3.3.3.3
+    }
+
+    #[test]
+    fn interleave_preserves_order_within_family() {
+        let addrs = vec![
+            "1.0.0.1:80".parse().unwrap(),
+            "[2001:db8::1]:80".parse().unwrap(),
+            "8.8.8.8:80".parse().unwrap(),
+            "[2001:db8::2]:80".parse().unwrap(),
+        ];
+        let result = interleave_addrs(&addrs);
+        let v6: Vec<_> = result.iter().filter(|a| a.is_ipv6()).collect();
+        let v4: Vec<_> = result.iter().filter(|a| a.is_ipv4()).collect();
+        assert_eq!(v6[0].to_string(), "[2001:db8::1]:80");
+        assert_eq!(v6[1].to_string(), "[2001:db8::2]:80");
+        assert_eq!(v4[0].to_string(), "1.0.0.1:80");
+        assert_eq!(v4[1].to_string(), "8.8.8.8:80");
+    }
 }

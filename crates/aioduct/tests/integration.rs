@@ -3289,3 +3289,604 @@ async fn test_connect_timeout() {
         "should timeout quickly, not wait for request timeout"
     );
 }
+
+// --- Integration tests for coverage of client internals ---
+
+#[tokio::test]
+async fn test_digest_auth_flow() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // First request: challenge with Digest auth
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(401)
+                        .header(
+                            "www-authenticate",
+                            r#"Digest realm="test@example.com", nonce="dcd98b7102dd2f0e", qop="auth""#,
+                        )
+                        .body(Full::new(Bytes::from("unauthorized")))
+                        .unwrap(),
+                )
+            } else {
+                // Second request: verify Authorization header is present
+                let auth = req
+                    .headers()
+                    .get("authorization")
+                    .map(|v| v.to_str().unwrap().to_owned())
+                    .unwrap_or_default();
+                assert!(auth.starts_with("Digest "), "expected Digest auth, got: {auth}");
+                assert!(auth.contains("username=\"testuser\""));
+                assert!(auth.contains("realm=\"test@example.com\""));
+                assert!(auth.contains("qop=auth"));
+                Ok(Response::new(Full::new(Bytes::from("authenticated"))))
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .digest_auth("testuser", "testpass")
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "authenticated");
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_digest_auth_no_challenge() {
+    let addr = start_server().await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .digest_auth("user", "pass")
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}
+
+#[tokio::test]
+async fn test_cache_stores_and_returns_fresh() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("cache-control", "max-age=3600")
+                    .body(Full::new(Bytes::from("cached data")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+
+    // First request: hits the server, stores in cache
+    let resp = client
+        .get(&format!("http://{addr}/resource"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cached data");
+    assert_eq!(attempt.load(Ordering::SeqCst), 1);
+
+    // Second request: should be served from cache without hitting the server
+    let resp = client
+        .get(&format!("http://{addr}/resource"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cached data");
+    assert_eq!(
+        attempt.load(Ordering::SeqCst),
+        1,
+        "cache should prevent second server hit"
+    );
+}
+
+#[tokio::test]
+async fn test_cache_304_revalidation() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // First request: return with ETag, short max-age
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("cache-control", "max-age=0, must-revalidate")
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::from("original")))
+                        .unwrap(),
+                )
+            } else {
+                // Subsequent: check If-None-Match and return 304
+                let inm = req
+                    .headers()
+                    .get("if-none-match")
+                    .map(|v| v.to_str().unwrap().to_owned())
+                    .unwrap_or_default();
+                if inm.contains("\"v1\"") {
+                    Ok(Response::builder()
+                        .status(304)
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap())
+                } else {
+                    Ok(Response::new(Full::new(Bytes::from("new data"))))
+                }
+            }
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+
+    // First: populate cache
+    let resp = client
+        .get(&format!("http://{addr}/revalidate"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+
+    // Second: should revalidate and get 304, return cached body
+    let resp = client
+        .get(&format!("http://{addr}/revalidate"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_rate_limiter_throttles() {
+    let addr = start_server().await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .rate_limiter(aioduct::RateLimiter::new(100, Duration::from_secs(1)))
+        .build();
+
+    let start = tokio::time::Instant::now();
+    for _ in 0..3 {
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await;
+    }
+    let elapsed = start.elapsed();
+    // 100 req/sec → ~10ms per request. 3 requests should be fast.
+    assert!(elapsed < Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn test_bandwidth_limiter_download() {
+    let data = "x".repeat(500);
+    let data_clone = data.clone();
+
+    let addr = start_server_with(move |_req| {
+        let data = data_clone.clone();
+        async move { Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(data)))) }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .max_download_speed(100_000)
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(client.bandwidth_limiter().is_some());
+    let body = resp.text().await.unwrap();
+    assert_eq!(body.len(), 500);
+}
+
+#[tokio::test]
+async fn test_no_connection_reuse() {
+    let request_count = Arc::new(AtomicU32::new(0));
+    let request_count_clone = request_count.clone();
+
+    let addr = start_server_with(move |_req| {
+        let count = request_count_clone.clone();
+        async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .no_connection_reuse()
+        .build();
+
+    for _ in 0..3 {
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await;
+    }
+    assert_eq!(request_count.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_retry_429_too_many_requests() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n < 2 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(429)
+                        .header("retry-after", "0")
+                        .body(Full::new(Bytes::from("rate limited")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::new(Full::new(Bytes::from("ok"))))
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(3)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "ok");
+    assert_eq!(attempt.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn test_retry_with_budget_exhaustion() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::from("error")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let budget = aioduct::RetryBudget::new(1, 1);
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(5)
+                .initial_backoff(Duration::from_millis(10))
+                .budget(budget),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // Budget of 1 token: original request + 1 retry, then budget exhausted → returns 500
+    assert_eq!(resp.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_remote_addr_is_set() {
+    let addr = start_server().await;
+    let client = Client::<TokioRuntime>::new();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let remote = resp.remote_addr();
+    assert!(remote.is_some(), "remote_addr should be set");
+    assert_eq!(remote.unwrap().port(), addr.port());
+}
+
+#[tokio::test]
+async fn test_middleware_on_error_callback() {
+    use std::sync::atomic::AtomicBool;
+
+    struct ErrorRecorder {
+        error_seen: Arc<AtomicBool>,
+    }
+
+    impl aioduct::Middleware for ErrorRecorder {
+        fn on_error(&self, _err: &aioduct::Error, _uri: &http::Uri, _method: &http::Method) {
+            self.error_seen.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let error_seen = Arc::new(AtomicBool::new(false));
+    let client = Client::<TokioRuntime>::builder()
+        .middleware(ErrorRecorder {
+            error_seen: error_seen.clone(),
+        })
+        .build();
+
+    // Connect to a port that will refuse connection
+    let result = client.get("http://127.0.0.1:1/").unwrap().send().await;
+    assert!(result.is_err());
+    assert!(
+        error_seen.load(Ordering::SeqCst),
+        "middleware on_error should have been called"
+    );
+}
+
+#[tokio::test]
+async fn test_middleware_on_redirect_callback() {
+    use std::sync::atomic::AtomicBool;
+
+    struct RedirectRecorder {
+        redirect_seen: Arc<AtomicBool>,
+    }
+
+    impl aioduct::Middleware for RedirectRecorder {
+        fn on_redirect(&self, _status: http::StatusCode, _from: &http::Uri, _to: &http::Uri) {
+            self.redirect_seen.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let final_addr = start_server().await;
+    let redirect_addr = start_server_with(move |_req| {
+        let target = format!("http://{final_addr}/");
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let redirect_seen = Arc::new(AtomicBool::new(false));
+    let client = Client::<TokioRuntime>::builder()
+        .middleware(RedirectRecorder {
+            redirect_seen: redirect_seen.clone(),
+        })
+        .build();
+
+    let resp = client
+        .get(&format!("http://{redirect_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(
+        redirect_seen.load(Ordering::SeqCst),
+        "middleware on_redirect should have been called"
+    );
+}
+
+#[tokio::test]
+async fn test_middleware_on_retry_callback() {
+    use std::sync::atomic::AtomicBool;
+
+    struct RetryRecorder {
+        retry_seen: Arc<AtomicBool>,
+    }
+
+    impl aioduct::Middleware for RetryRecorder {
+        fn on_retry(
+            &self,
+            _err: &aioduct::Error,
+            _uri: &http::Uri,
+            _method: &http::Method,
+            _attempt: u32,
+        ) {
+            self.retry_seen.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n < 1 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(500)
+                        .body(Full::new(Bytes::from("error")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::new(Full::new(Bytes::from("ok"))))
+            }
+        }
+    })
+    .await;
+
+    let retry_seen = Arc::new(AtomicBool::new(false));
+    let client = Client::<TokioRuntime>::builder()
+        .middleware(RetryRecorder {
+            retry_seen: retry_seen.clone(),
+        })
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::from_millis(10)),
+        )
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(
+        retry_seen.load(Ordering::SeqCst),
+        "middleware on_retry should have been called"
+    );
+}
+
+#[tokio::test]
+async fn test_https_only_rejects_http() {
+    let client = Client::<TokioRuntime>::builder().https_only(true).build();
+
+    let result = client.get("http://example.com/").unwrap().send().await;
+    assert!(result.is_err());
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        err.contains("HttpsOnly") || err.contains("http"),
+        "expected https-only error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_response_url_after_redirect() {
+    let final_addr = start_server().await;
+    let redirect_addr = start_server_with(move |_req| {
+        let target = format!("http://{final_addr}/final");
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{redirect_addr}/start"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let url = resp.url().to_string();
+    assert!(
+        url.contains("/final"),
+        "url should reflect final destination after redirect, got: {url}"
+    );
+}
+
+#[tokio::test]
+async fn test_error_for_status_integration() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(404)
+                .body(Full::new(Bytes::from("not found")))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/missing"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
+    let result = resp.error_for_status();
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_tcp_fast_open_works() {
+    let addr = start_server().await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .tcp_fast_open(true)
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}

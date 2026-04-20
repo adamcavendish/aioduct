@@ -802,4 +802,124 @@ mod builder_tests {
         let client = TokioClient::builder().no_connection_reuse().build();
         assert!(client.no_connection_reuse);
     }
+
+    #[tokio::test]
+    async fn builder_tcp_fast_open() {
+        let client = TokioClient::builder().tcp_fast_open(true).build();
+        assert!(client.tcp_fast_open);
+    }
+
+    #[tokio::test]
+    async fn builder_tcp_fast_open_disabled() {
+        let client = TokioClient::builder().tcp_fast_open(false).build();
+        assert!(!client.tcp_fast_open);
+    }
+
+    #[tokio::test]
+    async fn builder_hsts() {
+        let store = crate::hsts::HstsStore::new();
+        let client = TokioClient::builder().hsts(store).build();
+        assert!(client.hsts.is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_cache() {
+        let cache = crate::cache::HttpCache::new();
+        let client = TokioClient::builder().cache(cache).build();
+        assert!(client.cache.is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_cookie_jar() {
+        let jar = crate::cookie::CookieJar::new();
+        let client = TokioClient::builder().cookie_jar(jar).build();
+        assert!(client.cookie_jar.is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_timeout() {
+        let client = TokioClient::builder()
+            .timeout(Duration::from_secs(10))
+            .build();
+        assert_eq!(client.timeout, Some(Duration::from_secs(10)));
+    }
+
+    #[tokio::test]
+    async fn builder_connect_timeout() {
+        let client = TokioClient::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .build();
+        assert_eq!(client.connect_timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[tokio::test]
+    async fn builder_max_redirects() {
+        let _client = TokioClient::builder().max_redirects(3).build();
+    }
+
+    #[tokio::test]
+    async fn builder_redirect_policy_none() {
+        let _client = TokioClient::builder()
+            .redirect_policy(crate::redirect::RedirectPolicy::none())
+            .build();
+    }
+
+    #[tokio::test]
+    async fn builder_no_decompression() {
+        let _client = TokioClient::builder().no_decompression().build();
+    }
+
+    #[tokio::test]
+    async fn builder_default_headers() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-custom", "value".parse().unwrap());
+        let client = TokioClient::builder().default_headers(headers).build();
+        assert!(client.default_headers.contains_key("x-custom"));
+    }
+
+    #[tokio::test]
+    async fn builder_retry() {
+        let client = TokioClient::builder()
+            .retry(crate::retry::RetryConfig::default())
+            .build();
+        assert!(client.retry.is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_system_proxy() {
+        let _client = TokioClient::builder().system_proxy().build();
+    }
+
+    #[tokio::test]
+    async fn builder_max_download_speed() {
+        let client = TokioClient::builder()
+            .max_download_speed(1024 * 1024)
+            .build();
+        assert!(client.bandwidth_limiter.is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_digest_auth() {
+        let client = TokioClient::builder().digest_auth("user", "pass").build();
+        assert!(client.digest_auth.is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_https_only() {
+        let client = TokioClient::builder().https_only(true).build();
+        assert!(client.https_only);
+    }
+
+    #[tokio::test]
+    async fn builder_debug() {
+        let builder = TokioClient::builder();
+        let dbg = format!("{builder:?}");
+        assert!(dbg.contains("ClientBuilder"));
+    }
+
+    #[tokio::test]
+    async fn client_clone() {
+        let client = TokioClient::new();
+        let _cloned = client.clone();
+    }
 }

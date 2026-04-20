@@ -208,6 +208,7 @@ impl Middleware for NetrcMiddleware {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt;
 
     #[test]
     fn parse_simple_netrc() {
@@ -246,5 +247,186 @@ mod tests {
     fn comments_and_extra_whitespace() {
         let netrc = Netrc::parse("  machine   example.com   login   user1   password   pass1  \n");
         assert_eq!(netrc.lookup("example.com"), Some(("user1", "pass1")));
+    }
+
+    #[test]
+    fn passwd_keyword() {
+        let netrc = Netrc::parse("machine example.com login user1 passwd pass1\n");
+        assert_eq!(netrc.lookup("example.com"), Some(("user1", "pass1")));
+    }
+
+    #[test]
+    fn account_and_macdef_skipped() {
+        let netrc = Netrc::parse(
+            "machine example.com login user1 account acct1 macdef init password pass1\n",
+        );
+        assert_eq!(netrc.lookup("example.com"), Some(("user1", "pass1")));
+    }
+
+    #[test]
+    fn missing_login_defaults_to_empty() {
+        let netrc = Netrc::parse("machine example.com password pass1\n");
+        assert_eq!(netrc.lookup("example.com"), Some(("", "pass1")));
+    }
+
+    #[test]
+    fn missing_password_defaults_to_empty() {
+        let netrc = Netrc::parse("machine example.com login user1\n");
+        assert_eq!(netrc.lookup("example.com"), Some(("user1", "")));
+    }
+
+    #[test]
+    fn multiple_machines_with_default_fallback() {
+        let netrc = Netrc::parse(
+            "machine a.com login a password pa\n\
+             machine b.com login b password pb\n\
+             default login d password pd\n",
+        );
+        assert_eq!(netrc.lookup("a.com"), Some(("a", "pa")));
+        assert_eq!(netrc.lookup("b.com"), Some(("b", "pb")));
+        assert_eq!(netrc.lookup("c.com"), Some(("d", "pd")));
+    }
+
+    #[test]
+    fn truncated_machine_at_end() {
+        let netrc = Netrc::parse("machine");
+        assert_eq!(netrc.lookup("anything"), None);
+    }
+
+    #[test]
+    fn unknown_tokens_skipped() {
+        let netrc =
+            Netrc::parse("machine example.com login user1 unknown_key val password pass1\n");
+        assert_eq!(netrc.lookup("example.com"), Some(("user1", "pass1")));
+    }
+
+    #[test]
+    fn netrc_middleware_sets_basic_auth() {
+        use http::Uri;
+        let netrc = Netrc::parse("machine api.example.com login myuser password mypass\n");
+        let mw = NetrcMiddleware::new(netrc);
+
+        let uri: Uri = "http://api.example.com/path".parse().unwrap();
+        let body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
+        mw.on_request(&mut req, &uri);
+
+        let auth = req
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth.starts_with("Basic "));
+    }
+
+    #[test]
+    fn netrc_middleware_skips_when_auth_present() {
+        use http::Uri;
+        let netrc = Netrc::parse("machine api.example.com login myuser password mypass\n");
+        let mw = NetrcMiddleware::new(netrc);
+
+        let uri: Uri = "http://api.example.com/path".parse().unwrap();
+        let body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mut req = http::Request::builder()
+            .uri(&uri)
+            .header("authorization", "Bearer existing")
+            .body(body)
+            .unwrap();
+        mw.on_request(&mut req, &uri);
+
+        assert_eq!(
+            req.headers()
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Bearer existing"
+        );
+    }
+
+    #[test]
+    fn netrc_middleware_no_match() {
+        use http::Uri;
+        let netrc = Netrc::parse("machine other.com login user password pass\n");
+        let mw = NetrcMiddleware::new(netrc);
+
+        let uri: Uri = "http://api.example.com/path".parse().unwrap();
+        let body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
+        mw.on_request(&mut req, &uri);
+
+        assert!(req.headers().get("authorization").is_none());
+    }
+
+    #[test]
+    fn load_nonexistent_file_errors() {
+        let result = Netrc::load(std::path::Path::new("/nonexistent/path/.netrc"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn debug_impl() {
+        let netrc = Netrc::parse("machine a.com login u password p\n");
+        let dbg = format!("{netrc:?}");
+        assert!(dbg.contains("Netrc"));
+    }
+
+    #[test]
+    fn login_token_at_end() {
+        let netrc = Netrc::parse("machine example.com login");
+        assert_eq!(netrc.lookup("example.com"), Some(("", "")));
+    }
+
+    #[test]
+    fn password_token_at_end() {
+        let netrc = Netrc::parse("machine example.com password");
+        assert_eq!(netrc.lookup("example.com"), Some(("", "")));
+    }
+
+    #[test]
+    fn account_token_at_end() {
+        let netrc = Netrc::parse("machine example.com login u account");
+        assert_eq!(netrc.lookup("example.com"), Some(("u", "")));
+    }
+
+    #[test]
+    fn default_only() {
+        let netrc = Netrc::parse("default login anon password anon");
+        assert_eq!(netrc.lookup("any.host"), Some(("anon", "anon")));
+    }
+
+    #[test]
+    fn default_without_login_password() {
+        let netrc = Netrc::parse("default");
+        assert_eq!(netrc.lookup("any.host"), Some(("", "")));
+    }
+
+    #[test]
+    fn multiple_defaults_first_wins() {
+        let netrc =
+            Netrc::parse("default login first password p1\ndefault login second password p2");
+        assert_eq!(netrc.lookup("any.host"), Some(("second", "p2")));
+    }
+
+    #[test]
+    fn middleware_uri_without_host() {
+        use http::Uri;
+        let netrc = Netrc::parse("default login u password p\n");
+        let mw = NetrcMiddleware::new(netrc);
+
+        let uri: Uri = "/relative/path".parse().unwrap();
+        let body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
+        mw.on_request(&mut req, &uri);
+        assert!(req.headers().contains_key("authorization"));
     }
 }

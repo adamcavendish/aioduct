@@ -269,4 +269,200 @@ mod tests {
         assert!(v.contains("realm=\"testrealm@host.com\""));
         assert!(v.contains("qop=auth"));
     }
+
+    #[test]
+    fn needs_retry_401_with_header() {
+        let auth = DigestAuth::new("u".into(), "p".into());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Digest realm=\"r\""),
+        );
+        assert!(auth.needs_retry(StatusCode::UNAUTHORIZED, &headers));
+    }
+
+    #[test]
+    fn needs_retry_401_without_header() {
+        let auth = DigestAuth::new("u".into(), "p".into());
+        assert!(!auth.needs_retry(StatusCode::UNAUTHORIZED, &HeaderMap::new()));
+    }
+
+    #[test]
+    fn needs_retry_200_with_header() {
+        let auth = DigestAuth::new("u".into(), "p".into());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Digest realm=\"r\""),
+        );
+        assert!(!auth.needs_retry(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn needs_retry_200_without_header() {
+        let auth = DigestAuth::new("u".into(), "p".into());
+        assert!(!auth.needs_retry(StatusCode::OK, &HeaderMap::new()));
+    }
+
+    #[test]
+    fn authorize_no_www_authenticate() {
+        let auth = DigestAuth::new("u".into(), "p".into());
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        assert!(
+            auth.authorize(&Method::GET, &uri, &HeaderMap::new())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn authorize_non_digest_challenge() {
+        let auth = DigestAuth::new("u".into(), "p".into());
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"test\""),
+        );
+        assert!(auth.authorize(&Method::GET, &uri, &headers).is_none());
+    }
+
+    #[test]
+    fn authorize_missing_realm() {
+        let auth = DigestAuth::new("u".into(), "p".into());
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Digest nonce=\"abc\""),
+        );
+        assert!(auth.authorize(&Method::GET, &uri, &headers).is_none());
+    }
+
+    #[test]
+    fn authorize_missing_nonce() {
+        let auth = DigestAuth::new("u".into(), "p".into());
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Digest realm=\"test\""),
+        );
+        assert!(auth.authorize(&Method::GET, &uri, &headers).is_none());
+    }
+
+    #[test]
+    fn authorize_without_qop() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc""#),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v = value.to_str().unwrap().to_string();
+        assert!(v.starts_with("Digest "));
+        assert!(!v.contains("qop="));
+        assert!(!v.contains("cnonce="));
+    }
+
+    #[test]
+    fn authorize_without_opaque() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc", qop="auth""#),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v = value.to_str().unwrap().to_string();
+        assert!(!v.contains("opaque="));
+    }
+
+    #[test]
+    fn authorize_with_non_md5_algorithm() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc", algorithm=SHA-256"#),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v = value.to_str().unwrap().to_string();
+        assert!(v.contains("algorithm=SHA-256"));
+    }
+
+    #[test]
+    fn authorize_uri_without_path() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc""#),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers);
+        assert!(value.is_some());
+    }
+
+    #[test]
+    fn authorize_nonce_count_increments() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc", qop="auth""#),
+        );
+        let v1 = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v2 = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let s1 = v1.to_str().unwrap().to_string();
+        let s2 = v2.to_str().unwrap().to_string();
+        assert!(s1.contains("nc=00000001"));
+        assert!(s2.contains("nc=00000002"));
+    }
+
+    #[test]
+    fn parse_challenge_empty() {
+        let params = parse_challenge("");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn parse_challenge_no_equals() {
+        let params = parse_challenge("just-a-key");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn parse_challenge_unterminated_quote() {
+        let params = parse_challenge(r#"realm="unterminated"#);
+        assert_eq!(params.get("realm").unwrap(), "unterminated");
+    }
+
+    #[test]
+    fn parse_challenge_unquoted_values() {
+        let params = parse_challenge("realm=test, nonce=abc123");
+        assert_eq!(params.get("realm").unwrap(), "test");
+        assert_eq!(params.get("nonce").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn debug_redacts_password() {
+        let auth = DigestAuth::new("myuser".into(), "secret".into());
+        let dbg = format!("{auth:?}");
+        assert!(dbg.contains("myuser"));
+        assert!(dbg.contains("[redacted]"));
+        assert!(!dbg.contains("secret"));
+    }
+
+    #[test]
+    fn md5_long_input() {
+        let input = "a".repeat(100);
+        let hash = md5_hex(&input);
+        assert_eq!(hash.len(), 32);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 }

@@ -153,4 +153,45 @@ mod tests {
         assert_eq!(b.try_consume(50), 50);
         assert_eq!(b.try_consume(1), 0);
     }
+
+    #[test]
+    fn debug_output() {
+        let bw = BandwidthLimiter::new(500);
+        let dbg = format!("{bw:?}");
+        assert!(dbg.contains("BandwidthLimiter"));
+        assert!(dbg.contains("500"));
+    }
+
+    #[test]
+    fn try_consume_zero() {
+        let bw = BandwidthLimiter::new(100);
+        assert_eq!(bw.try_consume(0), 0);
+    }
+
+    #[test]
+    fn wait_duration_zero_bytes() {
+        let bw = BandwidthLimiter::new(100);
+        assert_eq!(bw.wait_duration(0), Duration::ZERO);
+    }
+
+    #[test]
+    fn wait_duration_exact_boundary() {
+        let bw = BandwidthLimiter::new(100);
+        assert_eq!(bw.wait_duration(100), Duration::ZERO);
+    }
+
+    #[test]
+    fn partial_consumption() {
+        let bw = BandwidthLimiter::new(100);
+        assert_eq!(bw.try_consume(60), 60);
+        assert_eq!(bw.try_consume(60), 40);
+    }
+
+    #[test]
+    fn zero_bytes_per_sec() {
+        let bw = BandwidthLimiter::new(0);
+        assert_eq!(bw.try_consume(10), 0);
+        let wait = bw.wait_duration(10);
+        assert!(wait > Duration::ZERO);
+    }
 }
