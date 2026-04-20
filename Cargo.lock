@@ -99,6 +99,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aioduct-curl"
+version = "0.1.0"
+dependencies = [
+ "aioduct",
+ "base64",
+ "clap",
+ "http 1.4.0",
+ "tokio",
+]
+
+[[package]]
 name = "aligned-array"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
