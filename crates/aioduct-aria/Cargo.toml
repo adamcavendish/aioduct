@@ -1,11 +1,11 @@
 [package]
 name = "aioduct-aria"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Aria2-inspired parallel download CLI built on aioduct"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/adamcavendish/aioduct"
 publish = false
 
 [[bin]]
@@ -13,7 +13,7 @@ name = "aioduct-aria"
 path = "src/main.rs"
 
 [dependencies]
-aioduct = { path = "../aioduct", features = [
+aioduct = { workspace = true, features = [
     "tokio",
     "rustls",
     "gzip",
@@ -22,11 +22,8 @@ aioduct = { path = "../aioduct", features = [
     "deflate",
     "json",
 ] }
-clap = { version = "4", features = ["derive"] }
+clap.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "signal"] }
-indicatif = { version = "0.17", features = ["tokio"] }
-console = "0.15"
-bytes = "1"
-http = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indicatif.workspace = true
+http.workspace = true
+tracing-subscriber.workspace = true

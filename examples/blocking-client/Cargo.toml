@@ -1,9 +1,8 @@
 [package]
 name = "example-blocking-client"
-version = "0.0.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { path = "../../crates/aioduct", features = ["blocking"] }
-
+aioduct = { workspace = true, features = ["blocking"] }

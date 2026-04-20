@@ -1,9 +1,9 @@
 [package]
 name = "example-redirects"
-version = "0.0.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { path = "../../crates/aioduct", features = ["tokio"] }
+aioduct = { workspace = true, features = ["tokio"] }
 tokio = { version = "1", features = ["full"] }

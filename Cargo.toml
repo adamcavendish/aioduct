@@ -1,3 +1,92 @@
 [workspace]
 members = ["crates/*", "examples/*"]
 resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/adamcavendish/aioduct"
+
+[workspace.dependencies]
+# Internal
+aioduct = { path = "crates/aioduct" }
+
+# Core
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+bytes = "1"
+pin-project-lite = "0.2"
+thiserror = "2"
+base64 = "0.22"
+percent-encoding = "2"
+socket2 = "0.6"
+futures-core = "0.3"
+futures-util = "0.3"
+
+# Serialization / JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+
+# Charset decoding
+encoding_rs = "0.8"
+mime = "0.3"
+
+# TLS
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+webpki-roots = "1"
+rustls-pemfile = "2"
+rustls-native-certs = "0.8"
+
+# DNS
+hickory-resolver = "0.26"
+
+# Runtime: tokio
+tokio = { version = "1", features = ["net", "rt", "time"] }
+
+# Runtime: smol
+smol = "2"
+async-io = "2"
+futures-io = "0.3"
+
+# Runtime: compio
+compio-runtime = { version = "0.11", features = ["time"] }
+compio-driver = { version = "0.11", default-features = false, features = ["polling"] }
+
+# HTTP/3
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+quinn = { version = "0.11", default-features = false, features = ["rustls-ring"] }
+
+# Decompression
+flate2 = "1"
+brotli = { version = "8", default-features = false, features = ["std"] }
+zstd = { version = "0.13", default-features = false }
+
+# Tower integration
+tower-service = "0.3"
+tower-layer = "0.3"
+
+# Tracing
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# OpenTelemetry
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
+opentelemetry-http = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["trace", "rt-tokio"] }
+opentelemetry-stdout = { version = "0.31", features = ["trace"] }
+
+# WASM/browser
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+indicatif = { version = "0.18", features = ["tokio"] }

@@ -1,11 +1,11 @@
 [package]
 name = "example-tracing-logs"
-version = "0.0.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { path = "../../crates/aioduct", features = ["tokio", "tracing"] }
+aioduct = { workspace = true, features = ["tokio", "tracing"] }
 tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true

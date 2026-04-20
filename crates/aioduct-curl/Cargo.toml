@@ -1,11 +1,11 @@
 [package]
 name = "aioduct-curl"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Curl-inspired HTTP CLI built on aioduct"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/adamcavendish/aioduct"
 publish = false
 
 [[bin]]
@@ -13,7 +13,7 @@ name = "aioduct-curl"
 path = "src/main.rs"
 
 [dependencies]
-aioduct = { path = "../aioduct", features = [
+aioduct = { workspace = true, features = [
     "tokio",
     "rustls",
     "gzip",
@@ -22,6 +22,6 @@ aioduct = { path = "../aioduct", features = [
     "deflate",
     "json",
 ] }
-clap = { version = "4", features = ["derive"] }
+clap.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-http = "1"
+http.workspace = true

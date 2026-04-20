@@ -1,12 +1,12 @@
 [package]
 name = "example-otel-spans"
-version = "0.0.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { path = "../../crates/aioduct", features = ["tokio", "otel", "rustls"] }
+aioduct = { workspace = true, features = ["tokio", "otel", "rustls"] }
 tokio = { version = "1", features = ["full"] }
-opentelemetry = { version = "0.31", features = ["trace"] }
-opentelemetry_sdk = { version = "0.31", features = ["trace", "rt-tokio"] }
-opentelemetry-stdout = { version = "0.31", features = ["trace"] }
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-stdout.workspace = true
