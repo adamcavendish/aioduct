@@ -31,6 +31,18 @@ impl Runtime for TokioRuntime {
             .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found"))
     }
 
+    async fn resolve_all(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+        let addr = format!("{host}:{port}");
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
+        if addrs.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "no addresses found",
+            ));
+        }
+        Ok(addrs)
+    }
+
     fn sleep(duration: Duration) -> Self::Sleep {
         TokioSleep {
             inner: tokio::time::sleep(duration),

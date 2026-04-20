@@ -32,6 +32,18 @@ impl Runtime for SmolRuntime {
             .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found"))
     }
 
+    async fn resolve_all(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+        let addr = format!("{host}:{port}");
+        let addrs: Vec<SocketAddr> = smol::net::resolve(addr).await?;
+        if addrs.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "no addresses found",
+            ));
+        }
+        Ok(addrs)
+    }
+
     fn sleep(duration: Duration) -> Self::Sleep {
         SmolSleep {
             inner: async_io::Timer::after(duration),

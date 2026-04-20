@@ -534,7 +534,8 @@ mod tests {
             .header("X-Test", "value")
             .body(hyper_body)
             .unwrap();
-        let inner = crate::Response::new(inner_http, "http://example.com/path".parse().unwrap());
+        let inner =
+            crate::Response::from_boxed(inner_http, "http://example.com/path".parse().unwrap());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

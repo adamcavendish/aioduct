@@ -19,6 +19,11 @@ pub trait Runtime: Send + Sync + 'static {
     fn connect(addr: SocketAddr) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
     /// Resolve a hostname to a socket address.
     fn resolve(host: &str, port: u16) -> impl Future<Output = io::Result<SocketAddr>> + Send;
+    /// Resolve a hostname to all available socket addresses.
+    fn resolve_all(
+        host: &str,
+        port: u16,
+    ) -> impl Future<Output = io::Result<Vec<SocketAddr>>> + Send;
     /// Sleep for the given duration.
     fn sleep(duration: Duration) -> Self::Sleep;
     /// Spawn a background task.
@@ -73,6 +78,19 @@ pub trait Resolve: Send + Sync + 'static {
         host: &str,
         port: u16,
     ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>>;
+
+    /// Resolve a hostname and port to all available socket addresses.
+    ///
+    /// The default implementation delegates to [`Resolve::resolve`] and wraps
+    /// the single result in a `Vec`.
+    fn resolve_all(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send>> {
+        let fut = self.resolve(host, port);
+        Box::pin(async move { fut.await.map(|a| vec![a]) })
+    }
 }
 
 impl<F> Resolve for F

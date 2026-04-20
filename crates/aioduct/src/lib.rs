@@ -53,7 +53,11 @@ mod timeout;
 /// TLS configuration and connector types.
 pub mod tls;
 
+/// Token-bucket bandwidth limiter for throttling download throughput.
+pub mod bandwidth;
 mod decompress;
+mod digest_auth;
+mod happy_eyeballs;
 /// Hickory DNS resolver integration.
 #[cfg(feature = "hickory-dns")]
 pub mod hickory;
@@ -61,6 +65,8 @@ pub mod hickory;
 pub mod http2;
 /// Request/response middleware trait and stack.
 pub mod middleware;
+/// Netrc credential file parsing and middleware.
+pub mod netrc;
 mod socks4;
 mod socks5;
 /// Token-bucket rate limiter for throttling requests.
@@ -88,6 +94,7 @@ mod alt_svc;
 #[path = "h3/mod.rs"]
 pub mod h3_transport;
 
+pub use bandwidth::BandwidthLimiter;
 pub use body::{BodyStream, RequestBody};
 pub use cache::{CacheConfig, HttpCache};
 pub use chunk_download::ChunkDownload;
@@ -99,6 +106,7 @@ pub use hickory::HickoryResolver;
 pub use http2::Http2Config;
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
+pub use netrc::{Netrc, NetrcMiddleware};
 pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use request::RequestBuilder;

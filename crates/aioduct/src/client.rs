@@ -61,6 +61,8 @@ pub struct Client<R: Runtime> {
     http2: Option<Http2Config>,
     middleware: MiddlewareStack,
     rate_limiter: Option<crate::throttle::RateLimiter>,
+    bandwidth_limiter: Option<crate::bandwidth::BandwidthLimiter>,
+    digest_auth: Option<crate::digest_auth::DigestAuth>,
     cache: Option<HttpCache>,
     #[cfg(feature = "tower")]
     connector: Option<crate::connector::LayeredConnector<R>>,
@@ -104,6 +106,8 @@ impl<R: Runtime> Clone for Client<R> {
             http2: self.http2.clone(),
             middleware: self.middleware.clone(),
             rate_limiter: self.rate_limiter.clone(),
+            bandwidth_limiter: self.bandwidth_limiter.clone(),
+            digest_auth: self.digest_auth.clone(),
             cache: self.cache.clone(),
             #[cfg(feature = "tower")]
             connector: self.connector.clone(),
@@ -149,6 +153,8 @@ pub struct ClientBuilder<R: Runtime> {
     http2: Option<Http2Config>,
     middleware: MiddlewareStack,
     rate_limiter: Option<crate::throttle::RateLimiter>,
+    bandwidth_limiter: Option<crate::bandwidth::BandwidthLimiter>,
+    digest_auth: Option<crate::digest_auth::DigestAuth>,
     cache: Option<HttpCache>,
     #[cfg(feature = "tower")]
     connector: Option<crate::connector::LayeredConnector<R>>,
@@ -208,6 +214,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             http2: None,
             middleware: MiddlewareStack::new(),
             rate_limiter: None,
+            bandwidth_limiter: None,
+            digest_auth: None,
             cache: None,
             #[cfg(feature = "tower")]
             connector: None,
@@ -421,6 +429,24 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Set a rate limiter to throttle outgoing requests.
     pub fn rate_limiter(mut self, limiter: crate::throttle::RateLimiter) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    /// Set a bandwidth limiter to throttle download throughput (bytes per second).
+    pub fn max_download_speed(mut self, bytes_per_sec: u64) -> Self {
+        self.bandwidth_limiter = Some(crate::bandwidth::BandwidthLimiter::new(bytes_per_sec));
+        self
+    }
+
+    /// Enable HTTP Digest Authentication with the given credentials.
+    ///
+    /// When a server responds with `401 Unauthorized` and a `WWW-Authenticate: Digest`
+    /// challenge, the client will automatically retry the request with digest credentials.
+    pub fn digest_auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.digest_auth = Some(crate::digest_auth::DigestAuth::new(
+            username.into(),
+            password.into(),
+        ));
         self
     }
 
@@ -678,6 +704,8 @@ impl<R: Runtime> ClientBuilder<R> {
             http2: self.http2,
             middleware: self.middleware,
             rate_limiter: self.rate_limiter,
+            bandwidth_limiter: self.bandwidth_limiter,
+            digest_auth: self.digest_auth,
             cache: self.cache,
             #[cfg(feature = "tower")]
             connector: self.connector,
@@ -804,6 +832,11 @@ impl<R: Runtime> Client<R> {
         &self.middleware
     }
 
+    /// Returns the bandwidth limiter if one was configured via [`ClientBuilder::max_download_speed`].
+    pub fn bandwidth_limiter(&self) -> Option<&crate::bandwidth::BandwidthLimiter> {
+        self.bandwidth_limiter.as_ref()
+    }
+
     pub(crate) async fn execute(
         &self,
         method: Method,
@@ -910,6 +943,53 @@ impl<R: Runtime> Client<R> {
             }
 
             let resp = self.execute_single(request, &current_uri).await?;
+
+            // Digest auth: retry once with credentials on 401 + WWW-Authenticate: Digest
+            let resp = if let Some(ref digest) = self.digest_auth {
+                if digest.needs_retry(resp.status(), resp.headers()) {
+                    if let Some(auth_value) =
+                        digest.authorize(&current_method, &current_uri, resp.headers())
+                    {
+                        let _ = resp.bytes().await;
+                        current_headers.insert(AUTHORIZATION, auth_value);
+
+                        let retry_body = match current_body.take() {
+                            Some(rb) => rb.into_hyper_body(),
+                            None => http_body_util::Full::new(Bytes::new())
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        };
+
+                        let retry_uri: Uri = current_uri
+                            .path_and_query()
+                            .map(|pq| pq.as_str())
+                            .unwrap_or("/")
+                            .parse()
+                            .map_err(|e| Error::Other(Box::new(e)))?;
+                        let mut retry_builder = http::Request::builder()
+                            .method(current_method.clone())
+                            .uri(retry_uri);
+                        if let Some(ver) = version {
+                            retry_builder = retry_builder.version(ver);
+                        }
+                        for (name, value) in &current_headers {
+                            retry_builder = retry_builder.header(name, value);
+                        }
+                        let mut retry_request = retry_builder.body(retry_body)?;
+                        if !self.middleware.is_empty() {
+                            self.middleware
+                                .apply_request(&mut retry_request, &current_uri);
+                        }
+                        self.execute_single(retry_request, &current_uri).await?
+                    } else {
+                        resp
+                    }
+                } else {
+                    resp
+                }
+            } else {
+                resp
+            };
 
             // Handle 304 Not Modified: reuse cached response
             if resp.status() == StatusCode::NOT_MODIFIED {
@@ -1170,7 +1250,9 @@ impl<R: Runtime> Client<R> {
             self.connect_via_proxy(proxy, authority, is_https).await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
-            let addr = self.resolve_authority(authority, default_port).await?;
+            let host = authority.host();
+            let port = authority.port_u16().unwrap_or(default_port);
+            let addrs = self.resolve_all_authority_raw(host, port).await?;
 
             let tcp_keepalive = self.tcp_keepalive;
             let tcp_keepalive_interval = self.tcp_keepalive_interval;
@@ -1180,26 +1262,37 @@ impl<R: Runtime> Client<R> {
             let interface = self.interface.as_deref();
             let connect_fut = async {
                 #[cfg(feature = "tracing")]
-                tracing::trace!(addr = %addr, "tcp.connect.start");
+                tracing::trace!(addrs = ?addrs, "tcp.connect.start");
 
-                let tcp_stream = if let Some(local_addr) = local_address {
-                    R::connect_bound(addr, local_addr)
+                let (tcp_stream, addr) = if addrs.len() > 1 && local_address.is_none() {
+                    #[cfg(feature = "tower")]
+                    let _ = original_uri;
+                    crate::happy_eyeballs::connect_happy_eyeballs::<R>(&addrs, local_address)
                         .await
                         .map_err(Error::Io)?
                 } else {
-                    #[cfg(feature = "tower")]
-                    if let Some(ref connector) = self.connector {
-                        let info = crate::connector::ConnectInfo {
-                            uri: original_uri.clone(),
-                            addr,
-                        };
-                        connector.connect(info).await.map_err(Error::Io)?
+                    let addr = addrs[0];
+                    let stream = if let Some(local_addr) = local_address {
+                        R::connect_bound(addr, local_addr)
+                            .await
+                            .map_err(Error::Io)?
                     } else {
+                        #[cfg(feature = "tower")]
+                        if let Some(ref connector) = self.connector {
+                            let info = crate::connector::ConnectInfo {
+                                uri: original_uri.clone(),
+                                addr,
+                            };
+                            connector.connect(info).await.map_err(Error::Io)?
+                        } else {
+                            R::connect(addr).await?
+                        }
+                        #[cfg(not(feature = "tower"))]
                         R::connect(addr).await?
-                    }
-                    #[cfg(not(feature = "tower"))]
-                    R::connect(addr).await?
+                    };
+                    (stream, addr)
                 };
+
                 #[cfg(target_os = "linux")]
                 if let Some(iface) = interface {
                     R::bind_device(&tcp_stream, iface)?;
@@ -1215,14 +1308,16 @@ impl<R: Runtime> Client<R> {
                 #[cfg(feature = "tracing")]
                 tracing::trace!(addr = %addr, "tcp.connect.done");
 
-                if is_https {
-                    self.connect_tls(tcp_stream, authority.host()).await
+                let mut conn = if is_https {
+                    self.connect_tls(tcp_stream, authority.host()).await?
                 } else {
-                    self.connect_plaintext(tcp_stream).await
-                }
+                    self.connect_plaintext(tcp_stream).await?
+                };
+                conn.remote_addr = Some(addr);
+                Ok::<PooledConnection<R>, Error>(conn)
             };
 
-            let mut conn = match self.connect_timeout {
+            match self.connect_timeout {
                 Some(duration) => {
                     crate::timeout::Timeout::WithTimeout {
                         future: connect_fut,
@@ -1231,9 +1326,7 @@ impl<R: Runtime> Client<R> {
                     .await?
                 }
                 None => connect_fut.await?,
-            };
-            conn.remote_addr = Some(addr);
-            conn
+            }
         };
 
         let mut resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
@@ -1603,8 +1696,18 @@ impl<R: Runtime> Client<R> {
         host: &str,
         port: u16,
     ) -> Result<std::net::SocketAddr, Error> {
-        if let Ok(addr) = format!("{host}:{port}").parse() {
-            return Ok(addr);
+        self.resolve_all_authority_raw(host, port)
+            .await
+            .map(|addrs| addrs[0])
+    }
+
+    async fn resolve_all_authority_raw(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<std::net::SocketAddr>, Error> {
+        if let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() {
+            return Ok(vec![addr]);
         }
 
         #[cfg(feature = "tracing")]
@@ -1612,18 +1715,18 @@ impl<R: Runtime> Client<R> {
 
         let result = if let Some(resolver) = &self.resolver {
             resolver
-                .resolve(host, port)
+                .resolve_all(host, port)
                 .await
                 .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
         } else {
-            R::resolve(host, port)
+            R::resolve_all(host, port)
                 .await
                 .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
         };
 
         #[cfg(feature = "tracing")]
         match &result {
-            Ok(addr) => tracing::trace!(host = host, addr = %addr, "dns.resolve.done"),
+            Ok(addrs) => tracing::trace!(host = host, count = addrs.len(), "dns.resolve.done"),
             Err(e) => tracing::trace!(host = host, error = %e, "dns.resolve.error"),
         }
 

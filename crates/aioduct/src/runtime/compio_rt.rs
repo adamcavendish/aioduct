@@ -64,6 +64,31 @@ impl Runtime for CompioRuntime {
         })
     }
 
+    fn resolve_all(
+        host: &str,
+        port: u16,
+    ) -> impl Future<Output = io::Result<Vec<SocketAddr>>> + Send {
+        let addr_str = format!("{host}:{port}");
+        AssertSend(async move {
+            let addrs = compio_runtime::spawn_blocking(move || {
+                use std::net::ToSocketAddrs;
+                addr_str
+                    .to_socket_addrs()
+                    .map(|iter| iter.collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|e| io::Error::other(format!("{e:?}")))?;
+            let addrs = addrs?;
+            if addrs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    "no addresses found",
+                ));
+            }
+            Ok(addrs)
+        })
+    }
+
     fn sleep(duration: Duration) -> Self::Sleep {
         CompioSleep {
             inner: Box::pin(compio_runtime::time::sleep(duration)),
