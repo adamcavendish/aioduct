@@ -120,3 +120,7 @@ serde.workspace = true
 serde_json.workspace = true
 futures-util.workspace = true
 flate2.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

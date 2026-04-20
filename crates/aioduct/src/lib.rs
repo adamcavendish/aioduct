@@ -9,7 +9,8 @@
     feature = "tokio",
     feature = "smol",
     feature = "compio",
-    feature = "wasm"
+    feature = "wasm",
+    doc
 )))]
 compile_error!("aioduct: enable at least one runtime feature: tokio, smol, compio, or wasm");
 
