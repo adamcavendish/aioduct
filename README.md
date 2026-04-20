@@ -41,6 +41,10 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **TCP keepalive** — configurable keepalive interval for long-lived connections
 - **Local address binding** — bind outgoing connections to a specific local IP
 - **JSON** — optional `json` feature for request/response serialization
+- **Happy Eyeballs** — RFC 6555 connection racing, interleaves IPv6/IPv4 with 250ms stagger
+- **Digest auth** — automatic HTTP Digest authentication with 401 retry (RFC 7616, MD5)
+- **Bandwidth limiter** — token-bucket byte-rate throttle for download speed limiting
+- **Netrc** — `.netrc` file parser and middleware for automatic credential injection
 - **Auth helpers** — bearer token, basic auth
 - **Form data** — URL-encoded form bodies
 - **Query parameters** — with percent-encoding
@@ -227,6 +231,39 @@ smol::block_on(async {
 });
 ```
 
+## CLI Tools
+
+The workspace includes two CLI tools built on aioduct:
+
+### aioduct-aria
+
+An aria2-inspired parallel download tool. Splits large files into segments and downloads them concurrently using HTTP Range requests.
+
+```sh
+# Download with 8 segments
+aioduct-aria -s 8 https://example.com/large-file.tar.gz
+
+# Resume an interrupted download
+aioduct-aria -c https://example.com/large-file.tar.gz
+```
+
+### aioduct-curl
+
+A curl-inspired HTTP tool with familiar flags.
+
+```sh
+# GET request
+aioduct-curl https://httpbin.org/get
+
+# POST with JSON body
+aioduct-curl -X POST -d '{"key":"val"}' -H 'Content-Type: application/json' https://httpbin.org/post
+
+# Follow redirects, basic auth, save to file
+aioduct-curl -L -u user:pass -o output.html https://example.com
+```
+
+Both tools are workspace members (`publish = false`) and serve as real-world integration examples.
+
 ## Architecture
 
 ```
@@ -270,6 +307,10 @@ pub trait Runtime: Send + Sync + 'static {
 | Rate limiting | No | Built-in |
 | HTTP caching | No | Built-in |
 | Middleware | Via tower | Built-in + tower |
+| Happy Eyeballs | No | RFC 6555 |
+| Digest auth | No | Built-in |
+| Bandwidth limiter | No | Built-in |
+| Netrc | No | Built-in |
 
 ## MSRV
 

@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TCP keepalive and local address binding
 - Custom DNS resolver support
 - Bearer and Basic authentication helpers
-- Comprehensive test suite (78 integration tests)
+- Happy Eyeballs (RFC 6555) connection racing — interleaves IPv6/IPv4 addresses with 250ms stagger
+- HTTP Digest authentication — automatic 401 retry with MD5 challenge-response (RFC 7616)
+- Bandwidth limiter — token-bucket byte-rate throttle for download speed limiting
+- `.netrc` support — `Netrc` parser and `NetrcMiddleware` for automatic credential injection
+- `aioduct-aria` — aria2-inspired parallel download CLI with segmented range requests
+- `aioduct-curl` — curl-inspired HTTP CLI with familiar flags (-X, -d, -H, -o, -L, -u, etc.)
+- Comprehensive test suite (485 tests)
 - Criterion benchmarks comparing against reqwest
 - mdbook documentation

@@ -15,8 +15,12 @@ src/
   cache.rs            # HttpCache, CacheConfig — in-memory HTTP cache
   retry.rs            # RetryConfig, RetryBudget — exponential backoff
   throttle.rs         # RateLimiter — token-bucket rate limiting
+  bandwidth.rs        # BandwidthLimiter — byte-rate download throttle
   redirect.rs         # RedirectPolicy, RedirectAction
   middleware.rs       # Middleware trait
+  digest_auth.rs      # DigestAuth — HTTP Digest challenge-response
+  netrc.rs            # Netrc, NetrcMiddleware — .netrc credential injection
+  happy_eyeballs.rs   # RFC 6555 IPv6/IPv4 connection racing
   sse.rs              # SseStream, SseEvent — Server-Sent Events
   multipart.rs        # Multipart, Part — multipart/form-data
   chunk_download.rs   # ChunkDownload — parallel range requests
@@ -65,15 +69,18 @@ Client::get("http://example.com/path")
           → build http::Request with method, path-only URI, headers
           → Client::execute_single()
             → pool checkout (reuse existing connection?)
-            → if miss: DNS resolve → TCP connect → TLS handshake (if HTTPS)
+            → if miss: DNS resolve → Happy Eyeballs (interleave IPv6/IPv4)
+              → TCP connect → TLS handshake (if HTTPS)
             → ALPN → select h1 or h2 sender
             → send request on connection
             → pool checkin
+          → digest auth retry (if 401 + WWW-Authenticate: Digest)
           → run middleware on_response hooks
           → store response cookies in jar (if configured)
           → check redirect status → follow or return
       → cache response (if configured and cacheable)
       → decompress body (if content-encoding matches)
+      → apply bandwidth limiter (if configured)
   → Response
 ```
 
