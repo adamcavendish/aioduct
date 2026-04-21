@@ -51,7 +51,7 @@ impl TlsVersion {
             .collect();
         assert!(
             !versions.is_empty(),
-            "no TLS versions match the configured min ({min:?}) / max ({max:?}) constraints"
+            "no TLS versions match the configured min/max constraints"
         );
         versions
     }
