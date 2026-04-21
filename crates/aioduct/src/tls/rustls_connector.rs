@@ -348,9 +348,10 @@ where
                         .process_new_packets()
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                     if this.tls.wants_write() {
-                        match write_tls(&mut this.tls, &mut this.inner, cx) {
-                            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                            _ => {}
+                        if let Poll::Ready(Err(e)) =
+                            write_tls(&mut this.tls, &mut this.inner, cx)
+                        {
+                            return Poll::Ready(Err(e));
                         }
                     }
                     match this.tls.reader().read(plaintext_slice) {
@@ -1271,10 +1272,10 @@ mod tests {
     #[tokio::test]
     async fn skip_hostname_verification_allows_mismatched_cert() {
         install_crypto_provider();
-        let cert = rcgen::generate_simple_self_signed(vec!["wrong-host.example.com".into()]).unwrap();
+        let cert =
+            rcgen::generate_simple_self_signed(vec!["wrong-host.example.com".into()]).unwrap();
         let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-        let key_der =
-            rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into());
+        let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into());
 
         let srv_cfg = Arc::new(
             rustls::ServerConfig::builder()

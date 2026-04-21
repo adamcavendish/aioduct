@@ -512,8 +512,9 @@ impl<R: Runtime> ClientBuilder<R> {
                 .expect("HTTP/3 requires a TLS connector — call .tls() before .http3(true)")
                 .config()
                 .clone();
-            let endpoint = crate::h3_transport::build_quinn_endpoint(tls_config, self.local_address)
-                .expect("failed to build QUIC endpoint");
+            let endpoint =
+                crate::h3_transport::build_quinn_endpoint(tls_config, self.local_address)
+                    .expect("failed to build QUIC endpoint");
             self.h3_endpoint = Some(endpoint);
         }
         self
@@ -570,7 +571,9 @@ impl<R: Runtime> ClientBuilder<R> {
                             self.danger_accept_invalid_hostnames,
                             identity,
                         )
-                        .expect("failed to build TLS configuration — check CRLs and client identity"),
+                        .expect(
+                            "failed to build TLS configuration — check CRLs and client identity",
+                        ),
                     ))
                 } else if let Some(identity) = self.client_identity {
                     Some(Arc::new(

@@ -629,9 +629,7 @@ fn parse_connect_status(status_line: &str) -> Result<u16, Error> {
         .split_whitespace()
         .nth(1)
         .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| {
-            Error::Other(format!("malformed CONNECT status line: {status_line}").into())
-        })
+        .ok_or_else(|| Error::Other(format!("malformed CONNECT status line: {status_line}").into()))
 }
 
 #[cfg(test)]
@@ -661,10 +659,7 @@ mod tests {
 
     #[test]
     fn parse_403_forbidden() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 403 Forbidden").unwrap(),
-            403
-        );
+        assert_eq!(parse_connect_status("HTTP/1.1 403 Forbidden").unwrap(), 403);
     }
 
     #[test]
