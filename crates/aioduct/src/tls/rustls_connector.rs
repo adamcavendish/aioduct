@@ -126,6 +126,12 @@ impl RustlsConnector {
     ) -> Self {
         let mut root_store = rustls::RootCertStore::empty();
         let native_certs = rustls_native_certs::load_native_certs();
+        if native_certs.certs.is_empty() && !native_certs.errors.is_empty() {
+            panic!(
+                "failed to load any native root certificates: {:?}",
+                native_certs.errors
+            );
+        }
         for cert in native_certs.certs {
             let _ = root_store.add(cert);
         }
