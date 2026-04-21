@@ -560,25 +560,25 @@ impl<R: Runtime> ClientBuilder<R> {
                     }
                     let crls: Vec<_> = self.crls.into_iter().map(|c| c.der).collect();
                     let identity = self.client_identity.map(|id| (id.certs, id.key));
-                    crate::tls::RustlsConnector::build_configured(
-                        root_store,
-                        &versions,
-                        crls,
-                        self.danger_accept_invalid_hostnames,
-                        identity,
-                    )
-                    .ok()
-                    .map(Arc::new)
-                    .or(self.tls)
+                    Some(Arc::new(
+                        crate::tls::RustlsConnector::build_configured(
+                            root_store,
+                            &versions,
+                            crls,
+                            self.danger_accept_invalid_hostnames,
+                            identity,
+                        )
+                        .expect("failed to build TLS configuration — check CRLs and client identity"),
+                    ))
                 } else if let Some(identity) = self.client_identity {
-                    crate::tls::RustlsConnector::with_identity_versioned(
-                        &self.extra_root_certs,
-                        identity,
-                        &versions,
-                    )
-                    .ok()
-                    .map(Arc::new)
-                    .or(self.tls)
+                    Some(Arc::new(
+                        crate::tls::RustlsConnector::with_identity_versioned(
+                            &self.extra_root_certs,
+                            identity,
+                            &versions,
+                        )
+                        .expect("failed to build TLS configuration — check client identity (cert/key pair)"),
+                    ))
                 } else if !self.extra_root_certs.is_empty() {
                     Some(Arc::new(
                         crate::tls::RustlsConnector::with_extra_roots_versioned(
