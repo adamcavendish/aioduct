@@ -202,10 +202,10 @@ impl<'a> WasmRequestBuilder<'a> {
             .map_err(|e| Error::Other(format!("Headers::new failed: {e:?}").into()))?;
 
         for (name, value) in &self.client.default_headers {
-            if !self.headers.contains_key(name) {
-                if let Ok(v) = value.to_str() {
-                    let _ = headers.set(name.as_str(), v);
-                }
+            if !self.headers.contains_key(name)
+                && let Ok(v) = value.to_str()
+            {
+                let _ = headers.set(name.as_str(), v);
             }
         }
         for (name, value) in &self.headers {

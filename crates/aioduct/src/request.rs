@@ -393,10 +393,10 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                             || resp.status() == StatusCode::TOO_MANY_REQUESTS)
                         && attempt < config.max_retries
                     {
-                        if let Some(ref budget) = config.budget {
-                            if !budget.try_withdraw() {
-                                return Ok(resp);
-                            }
+                        if let Some(ref budget) = config.budget
+                            && !budget.try_withdraw()
+                        {
+                            return Ok(resp);
                         }
                         retry_after_delay = crate::retry::parse_retry_after(resp.headers());
                         let err = Error::Other(format!("server error: {}", resp.status()).into());
@@ -414,14 +414,14 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
                 }
                 Err(e) => {
                     if attempt < config.max_retries && crate::retry::is_retryable_error(&e) {
-                        if let Some(ref budget) = config.budget {
-                            if !budget.try_withdraw() {
-                                let mw = self.client.middleware();
-                                if !mw.is_empty() {
-                                    mw.apply_error(&e, &self.uri, &self.method);
-                                }
-                                return Err(e);
+                        if let Some(ref budget) = config.budget
+                            && !budget.try_withdraw()
+                        {
+                            let mw = self.client.middleware();
+                            if !mw.is_empty() {
+                                mw.apply_error(&e, &self.uri, &self.method);
                             }
+                            return Err(e);
                         }
                         let mw = self.client.middleware();
                         if !mw.is_empty() {

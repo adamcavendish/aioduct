@@ -39,20 +39,20 @@ impl HstsStore {
     /// Per RFC 6797, HSTS headers must only be processed when received over
     /// a secure (HTTPS) connection. The caller must enforce this.
     pub fn store_from_response(&self, host: &str, headers: &HeaderMap) {
-        if let Some(value) = headers.get("strict-transport-security") {
-            if let Some((max_age, include_subdomains)) = parse_hsts(value) {
-                let mut store = self.inner.lock().unwrap();
-                if max_age.is_zero() {
-                    store.remove(host);
-                } else {
-                    store.insert(
-                        host.to_owned(),
-                        HstsEntry {
-                            include_subdomains,
-                            expires_at: Instant::now() + max_age,
-                        },
-                    );
-                }
+        if let Some(value) = headers.get("strict-transport-security")
+            && let Some((max_age, include_subdomains)) = parse_hsts(value)
+        {
+            let mut store = self.inner.lock().unwrap();
+            if max_age.is_zero() {
+                store.remove(host);
+            } else {
+                store.insert(
+                    host.to_owned(),
+                    HstsEntry {
+                        include_subdomains,
+                        expires_at: Instant::now() + max_age,
+                    },
+                );
             }
         }
     }
@@ -61,20 +61,21 @@ impl HstsStore {
     pub fn should_upgrade(&self, host: &str) -> bool {
         let store = self.inner.lock().unwrap();
 
-        if let Some(entry) = store.get(host) {
-            if Instant::now() < entry.expires_at {
-                return true;
-            }
+        if let Some(entry) = store.get(host)
+            && Instant::now() < entry.expires_at
+        {
+            return true;
         }
 
         // Check parent domains for includeSubDomains
         let mut domain = host;
         while let Some(dot_pos) = domain.find('.') {
             domain = &domain[dot_pos + 1..];
-            if let Some(entry) = store.get(domain) {
-                if entry.include_subdomains && Instant::now() < entry.expires_at {
-                    return true;
-                }
+            if let Some(entry) = store.get(domain)
+                && entry.include_subdomains
+                && Instant::now() < entry.expires_at
+            {
+                return true;
             }
         }
 

@@ -54,12 +54,11 @@ impl CacheEntry {
             return None;
         }
         if let Some(expires) = self.expires_at {
-            if let Ok(since_epoch) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                if let Ok(expires_since) = expires.duration_since(SystemTime::UNIX_EPOCH) {
-                    if since_epoch > expires_since {
-                        return Some(since_epoch - expires_since);
-                    }
-                }
+            if let Ok(since_epoch) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
+                && let Ok(expires_since) = expires.duration_since(SystemTime::UNIX_EPOCH)
+                && since_epoch > expires_since
+            {
+                return Some(since_epoch - expires_since);
             }
             return None;
         }
@@ -173,17 +172,16 @@ impl HttpCache {
         }
 
         // stale-while-revalidate: serve stale content within the grace window
-        if let Some(swr) = entry.stale_while_revalidate {
-            if let Some(staleness) = entry.staleness() {
-                if staleness <= swr {
-                    return CacheLookup::Fresh(CachedResponse {
-                        status: entry.status,
-                        headers: entry.headers.clone(),
-                        body: entry.body.clone(),
-                        age: entry.age(),
-                    });
-                }
-            }
+        if let Some(swr) = entry.stale_while_revalidate
+            && let Some(staleness) = entry.staleness()
+            && staleness <= swr
+        {
+            return CacheLookup::Fresh(CachedResponse {
+                status: entry.status,
+                headers: entry.headers.clone(),
+                body: entry.body.clone(),
+                age: entry.age(),
+            });
         }
 
         if entry.has_validators() {
@@ -255,10 +253,11 @@ impl HttpCache {
 
         let mut inner = self.inner.lock().unwrap();
 
-        if inner.entries.len() >= inner.max_entries && !inner.entries.contains_key(&key) {
-            if let Some(oldest_key) = find_oldest_entry(&inner.entries) {
-                inner.entries.remove(&oldest_key);
-            }
+        if inner.entries.len() >= inner.max_entries
+            && !inner.entries.contains_key(&key)
+            && let Some(oldest_key) = find_oldest_entry(&inner.entries)
+        {
+            inner.entries.remove(&oldest_key);
         }
 
         inner.entries.insert(key, entry);
@@ -311,15 +310,15 @@ pub(crate) struct Validators {
 
 impl Validators {
     pub fn apply_to_request(&self, headers: &mut HeaderMap) {
-        if let Some(ref etag) = self.etag {
-            if let Ok(val) = etag.parse() {
-                headers.insert(IF_NONE_MATCH, val);
-            }
+        if let Some(ref etag) = self.etag
+            && let Ok(val) = etag.parse()
+        {
+            headers.insert(IF_NONE_MATCH, val);
         }
-        if let Some(ref lm) = self.last_modified {
-            if let Ok(val) = lm.parse() {
-                headers.insert(IF_MODIFIED_SINCE, val);
-            }
+        if let Some(ref lm) = self.last_modified
+            && let Ok(val) = lm.parse()
+        {
+            headers.insert(IF_MODIFIED_SINCE, val);
         }
     }
 }
@@ -386,24 +385,24 @@ fn parse_cache_control(headers: &HeaderMap) -> CacheDirectives {
             directives.private = true;
         } else if part == "must-revalidate" {
             directives.must_revalidate = true;
-        } else if let Some(age_str) = part.strip_prefix("max-age=") {
-            if let Ok(secs) = age_str.trim().parse::<u64>() {
-                directives.max_age = Some(Duration::from_secs(secs));
-            }
-        } else if let Some(age_str) = part.strip_prefix("s-maxage=") {
-            if let Ok(secs) = age_str.trim().parse::<u64>() {
-                directives.max_age = Some(Duration::from_secs(secs));
-            }
+        } else if let Some(age_str) = part.strip_prefix("max-age=")
+            && let Ok(secs) = age_str.trim().parse::<u64>()
+        {
+            directives.max_age = Some(Duration::from_secs(secs));
+        } else if let Some(age_str) = part.strip_prefix("s-maxage=")
+            && let Ok(secs) = age_str.trim().parse::<u64>()
+        {
+            directives.max_age = Some(Duration::from_secs(secs));
         } else if part == "immutable" {
             directives.immutable = true;
-        } else if let Some(age_str) = part.strip_prefix("stale-while-revalidate=") {
-            if let Ok(secs) = age_str.trim().parse::<u64>() {
-                directives.stale_while_revalidate = Some(Duration::from_secs(secs));
-            }
-        } else if let Some(age_str) = part.strip_prefix("stale-if-error=") {
-            if let Ok(secs) = age_str.trim().parse::<u64>() {
-                directives.stale_if_error = Some(Duration::from_secs(secs));
-            }
+        } else if let Some(age_str) = part.strip_prefix("stale-while-revalidate=")
+            && let Ok(secs) = age_str.trim().parse::<u64>()
+        {
+            directives.stale_while_revalidate = Some(Duration::from_secs(secs));
+        } else if let Some(age_str) = part.strip_prefix("stale-if-error=")
+            && let Ok(secs) = age_str.trim().parse::<u64>()
+        {
+            directives.stale_if_error = Some(Duration::from_secs(secs));
         }
     }
 

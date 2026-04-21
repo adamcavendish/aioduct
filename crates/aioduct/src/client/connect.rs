@@ -35,52 +35,49 @@ impl<R: Runtime> Client<R> {
 
         let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
 
-        if !self.no_connection_reuse {
-            if let Some(mut conn) = self.pool.checkout(&pool_key) {
-                #[cfg(feature = "tracing")]
-                tracing::trace!(authority = %authority, "connection.pool.hit");
+        if !self.no_connection_reuse
+            && let Some(mut conn) = self.pool.checkout(&pool_key)
+        {
+            #[cfg(feature = "tracing")]
+            tracing::trace!(authority = %authority, "connection.pool.hit");
 
-                let mut resp =
-                    Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
-                resp.set_remote_addr(conn.remote_addr);
-                resp.set_tls_info(conn.tls_info.clone());
-                if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                    self.pool.checkin(pool_key, conn);
-                }
-                return Ok(resp);
+            let mut resp =
+                Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
+            resp.set_remote_addr(conn.remote_addr);
+            resp.set_tls_info(conn.tls_info.clone());
+            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                self.pool.checkin(pool_key, conn);
             }
+            return Ok(resp);
         }
 
         #[cfg(feature = "http3")]
-        if is_https {
-            if let Some(endpoint) = &self.h3_endpoint {
-                let use_h3 = self.prefer_h3 || self.alt_svc_cache.lookup_h3(authority).is_some();
-                if use_h3 {
-                    let default_port = 443u16;
-                    let (h3_host, h3_port) = self
-                        .alt_svc_cache
-                        .lookup_h3(authority)
-                        .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
-                    let connect_host = h3_host.as_deref().unwrap_or(authority.host());
-                    let addr = self.resolve_authority_raw(connect_host, h3_port).await?;
-                    let sni_host = authority.host().to_owned();
-                    let quinn_conn = endpoint
-                        .connect(addr, &sni_host)
-                        .map_err(|e| Error::Other(Box::new(e)))?
-                        .await
-                        .map_err(|e| Error::Other(Box::new(e)))?;
-                    let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
-                    pooled.remote_addr = Some(addr);
-                    let mut resp =
-                        Self::send_on_connection(&mut pooled, request, original_uri.clone())
-                            .await?;
-                    resp.set_remote_addr(pooled.remote_addr);
-                    resp.set_tls_info(pooled.tls_info.clone());
-                    if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                        self.pool.checkin(pool_key, pooled);
-                    }
-                    return Ok(resp);
+        if is_https && let Some(endpoint) = &self.h3_endpoint {
+            let use_h3 = self.prefer_h3 || self.alt_svc_cache.lookup_h3(authority).is_some();
+            if use_h3 {
+                let default_port = 443u16;
+                let (h3_host, h3_port) = self
+                    .alt_svc_cache
+                    .lookup_h3(authority)
+                    .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
+                let connect_host = h3_host.as_deref().unwrap_or(authority.host());
+                let addr = self.resolve_authority_raw(connect_host, h3_port).await?;
+                let sni_host = authority.host().to_owned();
+                let quinn_conn = endpoint
+                    .connect(addr, &sni_host)
+                    .map_err(|e| Error::Other(Box::new(e)))?
+                    .await
+                    .map_err(|e| Error::Other(Box::new(e)))?;
+                let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
+                pooled.remote_addr = Some(addr);
+                let mut resp =
+                    Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
+                resp.set_remote_addr(pooled.remote_addr);
+                resp.set_tls_info(pooled.tls_info.clone());
+                if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                    self.pool.checkin(pool_key, pooled);
                 }
+                return Ok(resp);
             }
         }
 
@@ -613,13 +610,12 @@ impl<R: Runtime> Client<R> {
     #[cfg(feature = "http3")]
     pub(super) fn cache_alt_svc(&self, uri: &Uri, headers: &http::HeaderMap) {
         use http::header::ALT_SVC;
-        if let Some(authority) = uri.authority() {
-            if let Some(alt_svc_value) = headers.get(ALT_SVC) {
-                if let Ok(value_str) = alt_svc_value.to_str() {
-                    let entries = crate::alt_svc::parse_alt_svc(value_str);
-                    self.alt_svc_cache.insert(authority.clone(), entries);
-                }
-            }
+        if let Some(authority) = uri.authority()
+            && let Some(alt_svc_value) = headers.get(ALT_SVC)
+            && let Ok(value_str) = alt_svc_value.to_str()
+        {
+            let entries = crate::alt_svc::parse_alt_svc(value_str);
+            self.alt_svc_cache.insert(authority.clone(), entries);
         }
     }
 }

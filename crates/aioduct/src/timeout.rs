@@ -79,11 +79,11 @@ impl<S: crate::runtime::Runtime> http_body::Body for ReadTimeoutBody<S> {
                 if this.sleep.as_ref().get_ref().is_none() {
                     this.sleep.set(Some(S::sleep(*this.duration)));
                 }
-                if let Some(sleep) = this.sleep.as_mut().as_pin_mut() {
-                    if let Poll::Ready(()) = sleep.poll(cx) {
-                        this.sleep.set(None);
-                        return Poll::Ready(Some(Err(crate::error::Error::Timeout)));
-                    }
+                if let Some(sleep) = this.sleep.as_mut().as_pin_mut()
+                    && let Poll::Ready(()) = sleep.poll(cx)
+                {
+                    this.sleep.set(None);
+                    return Poll::Ready(Some(Err(crate::error::Error::Timeout)));
                 }
                 Poll::Pending
             }

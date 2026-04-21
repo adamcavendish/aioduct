@@ -267,23 +267,21 @@ impl<R: Runtime> Client<R> {
         let mut current_uri = original_uri;
 
         // HSTS: upgrade http:// to https:// for known HSTS hosts
-        if let Some(ref hsts) = self.hsts {
-            if current_uri.scheme() == Some(&http::uri::Scheme::HTTP) {
-                if let Some(authority) = current_uri.authority() {
-                    if hsts.should_upgrade(authority.host()) {
-                        let upgraded = format!(
-                            "https://{}{}",
-                            authority,
-                            current_uri
-                                .path_and_query()
-                                .map(|pq| pq.as_str())
-                                .unwrap_or("/")
-                        );
-                        if let Ok(uri) = upgraded.parse() {
-                            current_uri = uri;
-                        }
-                    }
-                }
+        if let Some(ref hsts) = self.hsts
+            && current_uri.scheme() == Some(&http::uri::Scheme::HTTP)
+            && let Some(authority) = current_uri.authority()
+            && hsts.should_upgrade(authority.host())
+        {
+            let upgraded = format!(
+                "https://{}{}",
+                authority,
+                current_uri
+                    .path_and_query()
+                    .map(|pq| pq.as_str())
+                    .unwrap_or("/")
+            );
+            if let Ok(uri) = upgraded.parse() {
+                current_uri = uri;
             }
         }
 
@@ -300,12 +298,12 @@ impl<R: Runtime> Client<R> {
         crate::decompress::set_accept_encoding(&mut current_headers, &self.accept_encoding);
 
         for _ in 0..=self.redirect_policy.max_redirects() {
-            if let Some(jar) = &self.cookie_jar {
-                if let Some(authority) = current_uri.authority() {
-                    let is_secure = current_uri.scheme() == Some(&http::uri::Scheme::HTTPS);
-                    let path = current_uri.path();
-                    jar.apply_to_request(authority.host(), is_secure, path, &mut current_headers);
-                }
+            if let Some(jar) = &self.cookie_jar
+                && let Some(authority) = current_uri.authority()
+            {
+                let is_secure = current_uri.scheme() == Some(&http::uri::Scheme::HTTPS);
+                let path = current_uri.path();
+                jar.apply_to_request(authority.host(), is_secure, path, &mut current_headers);
             }
 
             let (req_body, body_for_redirect) = match current_body.take() {
@@ -322,12 +320,11 @@ impl<R: Runtime> Client<R> {
                 }
             };
 
-            if !current_headers.contains_key(HOST) {
-                if let Some(authority) = current_uri.authority() {
-                    if let Ok(host_value) = authority.as_str().parse() {
-                        current_headers.insert(HOST, host_value);
-                    }
-                }
+            if !current_headers.contains_key(HOST)
+                && let Some(authority) = current_uri.authority()
+                && let Ok(host_value) = authority.as_str().parse()
+            {
+                current_headers.insert(HOST, host_value);
             }
 
             // Cache lookup: return fresh cached response or prepare conditional headers
@@ -379,27 +376,24 @@ impl<R: Runtime> Client<R> {
 
             let resp = match self.execute_single(request, &current_uri).await {
                 Ok(resp) => {
-                    if resp.status().is_server_error() {
-                        if let Some(sie_duration) = stale_if_error {
-                            if let Some(ref cached) = cache_state {
-                                if cached.age <= sie_duration {
-                                    let _ = resp.bytes().await;
-                                    let http_resp = cache_state.unwrap().into_http_response();
-                                    return Ok(Response::from_boxed(http_resp, current_uri));
-                                }
-                            }
-                        }
+                    if resp.status().is_server_error()
+                        && let Some(sie_duration) = stale_if_error
+                        && let Some(ref cached) = cache_state
+                        && cached.age <= sie_duration
+                    {
+                        let _ = resp.bytes().await;
+                        let http_resp = cache_state.unwrap().into_http_response();
+                        return Ok(Response::from_boxed(http_resp, current_uri));
                     }
                     resp
                 }
                 Err(e) => {
-                    if let Some(sie_duration) = stale_if_error {
-                        if let Some(cached) = cache_state {
-                            if cached.age <= sie_duration {
-                                let http_resp = cached.into_http_response();
-                                return Ok(Response::from_boxed(http_resp, current_uri));
-                            }
-                        }
+                    if let Some(sie_duration) = stale_if_error
+                        && let Some(cached) = cache_state
+                        && cached.age <= sie_duration
+                    {
+                        let http_resp = cached.into_http_response();
+                        return Ok(Response::from_boxed(http_resp, current_uri));
                     }
                     return Err(e);
                 }
@@ -453,11 +447,11 @@ impl<R: Runtime> Client<R> {
             };
 
             // Handle 304 Not Modified: reuse cached response
-            if resp.status() == StatusCode::NOT_MODIFIED {
-                if let Some(cached) = cache_state {
-                    let http_resp = cached.into_http_response();
-                    return Ok(Response::from_boxed(http_resp, current_uri));
-                }
+            if resp.status() == StatusCode::NOT_MODIFIED
+                && let Some(cached) = cache_state
+            {
+                let http_resp = cached.into_http_response();
+                return Ok(Response::from_boxed(http_resp, current_uri));
             }
 
             // Invalidate cache on unsafe methods
@@ -465,19 +459,18 @@ impl<R: Runtime> Client<R> {
                 cache.invalidate(&current_method, &current_uri);
             }
 
-            if let Some(jar) = &self.cookie_jar {
-                if let Some(authority) = current_uri.authority() {
-                    jar.store_from_response(authority.host(), resp.headers());
-                }
+            if let Some(jar) = &self.cookie_jar
+                && let Some(authority) = current_uri.authority()
+            {
+                jar.store_from_response(authority.host(), resp.headers());
             }
 
             // HSTS: store STS header from HTTPS responses
-            if let Some(ref hsts) = self.hsts {
-                if current_uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
-                    if let Some(authority) = current_uri.authority() {
-                        hsts.store_from_response(authority.host(), resp.headers());
-                    }
-                }
+            if let Some(ref hsts) = self.hsts
+                && current_uri.scheme() == Some(&http::uri::Scheme::HTTPS)
+                && let Some(authority) = current_uri.authority()
+            {
+                hsts.store_from_response(authority.host(), resp.headers());
             }
 
             if !resp.status().is_redirection()
@@ -580,10 +573,10 @@ impl<R: Runtime> Client<R> {
             }
 
             // Update Host header for the new target
-            if let Some(authority) = next_uri.authority() {
-                if let Ok(host_value) = authority.as_str().parse() {
-                    current_headers.insert(HOST, host_value);
-                }
+            if let Some(authority) = next_uri.authority()
+                && let Ok(host_value) = authority.as_str().parse()
+            {
+                current_headers.insert(HOST, host_value);
             }
 
             // Strip sensitive headers on cross-origin redirect
@@ -595,10 +588,10 @@ impl<R: Runtime> Client<R> {
                 current_headers.remove(PROXY_AUTHORIZATION);
             }
 
-            if self.referer {
-                if let Ok(val) = HeaderValue::from_str(&current_uri.to_string()) {
-                    current_headers.insert(REFERER, val);
-                }
+            if self.referer
+                && let Ok(val) = HeaderValue::from_str(&current_uri.to_string())
+            {
+                current_headers.insert(REFERER, val);
             }
 
             current_uri = next_uri;
@@ -611,10 +604,10 @@ impl<R: Runtime> Client<R> {
 }
 
 fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
-    if let Ok(absolute) = location.parse::<Uri>() {
-        if absolute.scheme().is_some() {
-            return Ok(absolute);
-        }
+    if let Ok(absolute) = location.parse::<Uri>()
+        && absolute.scheme().is_some()
+    {
+        return Ok(absolute);
     }
 
     let scheme = base

@@ -189,10 +189,10 @@ impl ProxySettings {
         if let Some(ref custom) = self.custom {
             return custom.proxy_for(uri);
         }
-        if let Some(host) = uri.host() {
-            if self.no_proxy.matches(host) {
-                return None;
-            }
+        if let Some(host) = uri.host()
+            && self.no_proxy.matches(host)
+        {
+            return None;
         }
         match uri.scheme_str() {
             Some("https") => self.https_proxy.clone(),

@@ -35,15 +35,15 @@ impl TlsVersion {
         let versions: Vec<_> = all
             .into_iter()
             .filter(|v| {
-                if let Some(min) = min {
-                    if *v < min {
-                        return false;
-                    }
+                if let Some(min) = min
+                    && *v < min
+                {
+                    return false;
                 }
-                if let Some(max) = max {
-                    if *v > max {
-                        return false;
-                    }
+                if let Some(max) = max
+                    && *v > max
+                {
+                    return false;
                 }
                 true
             })

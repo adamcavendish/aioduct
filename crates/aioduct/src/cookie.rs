@@ -90,17 +90,15 @@ impl CookieJar {
         let cookies = jar.entry(domain.to_owned()).or_default();
 
         for value in headers.get_all(SET_COOKIE) {
-            if let Ok(s) = value.to_str() {
-                if let Some(cookie) = parse_set_cookie(s, domain) {
-                    if cookie.expired {
-                        cookies.retain(|c| c.name != cookie.name);
-                    } else if let Some(existing) =
-                        cookies.iter_mut().find(|c| c.name == cookie.name)
-                    {
-                        *existing = cookie;
-                    } else {
-                        cookies.push(cookie);
-                    }
+            if let Ok(s) = value.to_str()
+                && let Some(cookie) = parse_set_cookie(s, domain)
+            {
+                if cookie.expired {
+                    cookies.retain(|c| c.name != cookie.name);
+                } else if let Some(existing) = cookies.iter_mut().find(|c| c.name == cookie.name) {
+                    *existing = cookie;
+                } else {
+                    cookies.push(cookie);
                 }
             }
         }
@@ -127,10 +125,10 @@ impl CookieJar {
                 if c.secure && !is_secure {
                     continue;
                 }
-                if let Some(p) = &c.path {
-                    if !request_path.starts_with(p.as_str()) {
-                        continue;
-                    }
+                if let Some(p) = &c.path
+                    && !request_path.starts_with(p.as_str())
+                {
+                    continue;
                 }
                 matching_cookies.push(c);
             }
@@ -201,21 +199,18 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
                 "none" => Some(SameSite::None),
                 _ => None,
             };
-        } else if let Some(val) = lower.strip_prefix("max-age=") {
-            if let Ok(seconds) = val.trim().parse::<i64>() {
-                if seconds <= 0 {
-                    expired = true;
-                }
-            }
+        } else if let Some(val) = lower.strip_prefix("max-age=")
+            && let Ok(seconds) = val.trim().parse::<i64>()
+            && seconds <= 0
+        {
+            expired = true;
         } else if let Some(val) = attr
             .strip_prefix("Expires=")
             .or_else(|| attr.strip_prefix("expires="))
+            && let Some(expires_time) = parse_http_date(val.trim())
+            && expires_time < SystemTime::now()
         {
-            if let Some(expires_time) = parse_http_date(val.trim()) {
-                if expires_time < SystemTime::now() {
-                    expired = true;
-                }
-            }
+            expired = true;
         }
     }
 
@@ -291,7 +286,9 @@ fn parse_http_date(s: &str) -> Option<SystemTime> {
         days += (year - 1) / 400 - 1969 / 400;
     }
     days += days_before_month[m];
-    if month > 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) {
+    if month > 2
+        && (year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)))
+    {
         days += 1;
     }
     days += day - 1;

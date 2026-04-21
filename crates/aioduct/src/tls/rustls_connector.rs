@@ -347,10 +347,10 @@ where
                     this.tls
                         .process_new_packets()
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                    if this.tls.wants_write() {
-                        if let Poll::Ready(Err(e)) = write_tls(&mut this.tls, &mut this.inner, cx) {
-                            return Poll::Ready(Err(e));
-                        }
+                    if this.tls.wants_write()
+                        && let Poll::Ready(Err(e)) = write_tls(&mut this.tls, &mut this.inner, cx)
+                    {
+                        return Poll::Ready(Err(e));
                     }
                     match this.tls.reader().read(plaintext_slice) {
                         Ok(n) if n > 0 => {
@@ -602,7 +602,8 @@ mod tests {
     ) {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-        let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into());
+        let key_der =
+            rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
         (vec![cert_der], key_der)
     }
 
@@ -1273,7 +1274,8 @@ mod tests {
         let cert =
             rcgen::generate_simple_self_signed(vec!["wrong-host.example.com".into()]).unwrap();
         let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-        let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into());
+        let key_der =
+            rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
         let srv_cfg = Arc::new(
             rustls::ServerConfig::builder()

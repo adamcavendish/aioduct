@@ -142,7 +142,9 @@ fn parse_http_date(s: &str) -> Option<std::time::SystemTime> {
         days += (year - 1) / 400 - 1969 / 400;
     }
     days += days_before_month[m];
-    if month > 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) {
+    if month > 2
+        && (year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)))
+    {
         days += 1;
     }
     days += day - 1;

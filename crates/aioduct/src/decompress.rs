@@ -97,10 +97,10 @@ impl AcceptEncoding {
 }
 
 pub(crate) fn set_accept_encoding(headers: &mut HeaderMap, accept: &AcceptEncoding) {
-    if !headers.contains_key(ACCEPT_ENCODING) {
-        if let Some(value) = accept.header_value() {
-            headers.insert(ACCEPT_ENCODING, value);
-        }
+    if !headers.contains_key(ACCEPT_ENCODING)
+        && let Some(value) = accept.header_value()
+    {
+        headers.insert(ACCEPT_ENCODING, value);
     }
 }
 

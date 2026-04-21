@@ -108,10 +108,10 @@ fn parse_single_entry(s: &str) -> Option<AltSvcEntry> {
     let mut max_age = Duration::from_secs(86400);
     for param in params.split(';') {
         let param = param.trim();
-        if let Some(val) = param.strip_prefix("ma=") {
-            if let Ok(secs) = val.trim().parse::<u64>() {
-                max_age = Duration::from_secs(secs);
-            }
+        if let Some(val) = param.strip_prefix("ma=")
+            && let Ok(secs) = val.trim().parse::<u64>()
+        {
+            max_age = Duration::from_secs(secs);
         }
     }
 
