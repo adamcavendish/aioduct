@@ -265,6 +265,11 @@ impl<R: Runtime> TlsConnect<R> for RustlsConnector {
                         .tls
                         .process_new_packets()
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                } else if !tls_stream.tls.wants_write() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "TLS handshake stalled: neither wants_read nor wants_write",
+                    ));
                 }
             }
 
