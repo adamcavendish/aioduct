@@ -90,6 +90,7 @@ fn ensure_h3_alpn(config: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig
 
 pub(crate) fn build_quinn_endpoint(
     tls_config: Arc<rustls::ClientConfig>,
+    local_address: Option<std::net::IpAddr>,
 ) -> Result<quinn::Endpoint, Error> {
     let mut transport_config = quinn::TransportConfig::default();
     transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
@@ -101,7 +102,11 @@ pub(crate) fn build_quinn_endpoint(
     let mut client_config = quinn::ClientConfig::new(Arc::new(quic_config));
     client_config.transport_config(Arc::new(transport_config));
 
-    let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).map_err(Error::Io)?;
+    let bind_addr: std::net::SocketAddr = match local_address {
+        Some(ip) => std::net::SocketAddr::new(ip, 0),
+        None => "0.0.0.0:0".parse().unwrap(),
+    };
+    let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(Error::Io)?;
     endpoint.set_default_client_config(client_config);
 
     Ok(endpoint)

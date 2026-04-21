@@ -512,7 +512,7 @@ impl<R: Runtime> ClientBuilder<R> {
                 .expect("HTTP/3 requires a TLS connector — call .tls() before .http3(true)")
                 .config()
                 .clone();
-            let endpoint = crate::h3_transport::build_quinn_endpoint(tls_config)
+            let endpoint = crate::h3_transport::build_quinn_endpoint(tls_config, self.local_address)
                 .expect("failed to build QUIC endpoint");
             self.h3_endpoint = Some(endpoint);
         }
