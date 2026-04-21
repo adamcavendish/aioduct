@@ -87,6 +87,9 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = "0.3"
 
+# Test utilities
+rcgen = "0.13"
+
 # CLI
 clap = { version = "4", features = ["derive"] }
 indicatif = { version = "0.18", features = ["tokio"] }
