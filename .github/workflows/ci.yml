@@ -118,7 +118,7 @@ jobs:
           prefix-key: coverage
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
-      - run: cargo llvm-cov nextest -p aioduct --features tokio,json --lcov --output-path lcov.info
+      - run: cargo llvm-cov nextest -p aioduct --features tokio,rustls,json,charset,gzip,brotli,zstd,deflate,tower,tracing,otel --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v6
         with:
           files: lcov.info
