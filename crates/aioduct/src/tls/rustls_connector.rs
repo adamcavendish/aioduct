@@ -335,7 +335,10 @@ where
                         .process_new_packets()
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                     if this.tls.wants_write() {
-                        let _ = write_tls(&mut this.tls, &mut this.inner, cx);
+                        match write_tls(&mut this.tls, &mut this.inner, cx) {
+                            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                            _ => {}
+                        }
                     }
                     match this.tls.reader().read(plaintext_slice) {
                         Ok(n) if n > 0 => {
