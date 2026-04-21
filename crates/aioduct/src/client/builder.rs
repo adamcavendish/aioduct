@@ -598,9 +598,10 @@ impl<R: Runtime> ClientBuilder<R> {
             };
 
             if needs_sni_update {
-                if let Some(ref mut c) = connector {
-                    Arc::make_mut(c).config_mut().enable_sni = false;
-                }
+                let c = connector.get_or_insert_with(|| {
+                    Arc::new(crate::tls::RustlsConnector::with_webpki_roots())
+                });
+                Arc::make_mut(c).config_mut().enable_sni = false;
             }
 
             connector
