@@ -335,7 +335,8 @@ impl<R: Runtime> Client<R> {
             .next()
             .ok_or_else(|| Error::Other("empty CONNECT response".into()))?;
 
-        if !status_line.contains("200") {
+        let status_code = parse_connect_status(status_line)?;
+        if status_code != 200 {
             return Err(Error::Other(
                 format!("CONNECT tunnel failed: {status_line}").into(),
             ));
@@ -620,5 +621,67 @@ impl<R: Runtime> Client<R> {
                 }
             }
         }
+    }
+}
+
+fn parse_connect_status(status_line: &str) -> Result<u16, Error> {
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| {
+            Error::Other(format!("malformed CONNECT status line: {status_line}").into())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_connect_status;
+
+    #[test]
+    fn parse_200_ok() {
+        assert_eq!(parse_connect_status("HTTP/1.1 200 OK").unwrap(), 200);
+    }
+
+    #[test]
+    fn parse_200_connection_established() {
+        assert_eq!(
+            parse_connect_status("HTTP/1.1 200 Connection Established").unwrap(),
+            200
+        );
+    }
+
+    #[test]
+    fn parse_407_proxy_auth_required() {
+        assert_eq!(
+            parse_connect_status("HTTP/1.1 407 Proxy Authentication Required").unwrap(),
+            407
+        );
+    }
+
+    #[test]
+    fn parse_403_forbidden() {
+        assert_eq!(
+            parse_connect_status("HTTP/1.1 403 Forbidden").unwrap(),
+            403
+        );
+    }
+
+    #[test]
+    fn malformed_status_line_returns_error() {
+        assert!(parse_connect_status("garbage").is_err());
+    }
+
+    #[test]
+    fn empty_status_line_returns_error() {
+        assert!(parse_connect_status("").is_err());
+    }
+
+    #[test]
+    fn status_with_200_in_reason_is_not_200() {
+        assert_eq!(
+            parse_connect_status("HTTP/1.1 403 Contains 200 in text").unwrap(),
+            403
+        );
     }
 }
