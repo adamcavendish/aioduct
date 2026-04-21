@@ -79,12 +79,22 @@ pub(crate) async fn send_on_h3(
     Ok(Response::from_boxed(http_resp, url))
 }
 
+fn ensure_h3_alpn(config: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig> {
+    if config.alpn_protocols.iter().any(|p| p == b"h3") {
+        return config;
+    }
+    let mut config = (*config).clone();
+    config.alpn_protocols.insert(0, b"h3".to_vec());
+    Arc::new(config)
+}
+
 pub(crate) fn build_quinn_endpoint(
     tls_config: Arc<rustls::ClientConfig>,
 ) -> Result<quinn::Endpoint, Error> {
     let mut transport_config = quinn::TransportConfig::default();
     transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
 
+    let tls_config = ensure_h3_alpn(tls_config);
     let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
         .map_err(|e| Error::Tls(Box::new(e)))?;
 
@@ -95,4 +105,60 @@ pub(crate) fn build_quinn_endpoint(
     endpoint.set_default_client_config(client_config);
 
     Ok(endpoint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn make_rustls_config(alpn: &[&[u8]]) -> Arc<rustls::ClientConfig> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut config = rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::from_iter(
+                webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+            ))
+            .with_no_client_auth();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+        Arc::new(config)
+    }
+
+    #[test]
+    fn ensure_h3_alpn_adds_h3_when_missing() {
+        let config = make_rustls_config(&[b"h2", b"http/1.1"]);
+        let result = ensure_h3_alpn(config);
+        assert_eq!(result.alpn_protocols[0], b"h3");
+        assert_eq!(result.alpn_protocols[1], b"h2");
+        assert_eq!(result.alpn_protocols[2], b"http/1.1");
+    }
+
+    #[test]
+    fn ensure_h3_alpn_preserves_existing_h3() {
+        let config = make_rustls_config(&[b"h3", b"h2"]);
+        let original_ptr = Arc::as_ptr(&config);
+        let result = ensure_h3_alpn(config);
+        assert_eq!(Arc::as_ptr(&result), original_ptr);
+    }
+
+    #[test]
+    fn ensure_h3_alpn_adds_h3_to_empty_list() {
+        let config = make_rustls_config(&[]);
+        let result = ensure_h3_alpn(config);
+        assert_eq!(result.alpn_protocols, vec![b"h3".to_vec()]);
+    }
+
+    #[test]
+    fn ensure_h3_alpn_does_not_duplicate() {
+        let config = make_rustls_config(&[b"h2", b"h3", b"http/1.1"]);
+        let result = ensure_h3_alpn(config);
+        assert_eq!(result.alpn_protocols.len(), 3);
+        assert!(result.alpn_protocols.contains(&b"h3".to_vec()));
+    }
+
+    #[test]
+    fn h3_alpn_is_first_in_list() {
+        let config = make_rustls_config(&[b"h2", b"http/1.1"]);
+        let result = ensure_h3_alpn(config);
+        assert_eq!(result.alpn_protocols[0], b"h3");
+    }
 }
