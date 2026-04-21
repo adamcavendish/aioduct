@@ -551,9 +551,10 @@ impl rustls::client::danger::ServerCertVerifier for NoHostnameVerifier {
             now,
         ) {
             Ok(v) => Ok(v),
-            Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName)) => {
-                Ok(rustls::client::danger::ServerCertVerified::assertion())
-            }
+            Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName))
+            | Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForNameContext { .. },
+            )) => Ok(rustls::client::danger::ServerCertVerified::assertion()),
             Err(e) => Err(e),
         }
     }
@@ -1257,5 +1258,48 @@ mod tests {
 
         assert_eq!(received.len(), payload.len());
         assert_eq!(received, payload);
+    }
+
+    // ---- Hostname verification bypass tests ----
+
+    #[tokio::test]
+    async fn skip_hostname_verification_allows_mismatched_cert() {
+        install_crypto_provider();
+        let cert = rcgen::generate_simple_self_signed(vec!["wrong-host.example.com".into()]).unwrap();
+        let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+        let key_der =
+            rustls::pki_types::PrivateKeyDer::Pkcs8(cert.key_pair.serialize_der().into());
+
+        let srv_cfg = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert_der.clone()], key_der)
+                .unwrap(),
+        );
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add(cert_der).unwrap();
+
+        let connector = RustlsConnector::build_configured(
+            root_store,
+            &[&rustls::version::TLS12, &rustls::version::TLS13],
+            vec![],
+            true,
+            None,
+        )
+        .unwrap();
+
+        let (client_io, server_io) = tokio::io::duplex(8192);
+        let mut server_stream = TokioIo::new(server_io);
+
+        let (client_result, _) = tokio::join!(
+            client_connect(&connector, TokioIo::new(client_io)),
+            do_server_handshake(srv_cfg, &mut server_stream),
+        );
+
+        assert!(
+            client_result.is_ok(),
+            "hostname verification skip should allow mismatched cert"
+        );
     }
 }
