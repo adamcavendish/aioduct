@@ -32,7 +32,8 @@ impl TlsVersion {
         max: Option<TlsVersion>,
     ) -> Vec<&'static rustls::SupportedProtocolVersion> {
         let all = [TlsVersion::Tls1_2, TlsVersion::Tls1_3];
-        all.into_iter()
+        let versions: Vec<_> = all
+            .into_iter()
             .filter(|v| {
                 if let Some(min) = min {
                     if *v < min {
@@ -47,7 +48,12 @@ impl TlsVersion {
                 true
             })
             .map(|v| v.to_rustls())
-            .collect()
+            .collect();
+        assert!(
+            !versions.is_empty(),
+            "no TLS versions match the configured min ({min:?}) / max ({max:?}) constraints"
+        );
+        versions
     }
 }
 
@@ -156,5 +162,41 @@ impl CertificateRevocationList {
         let mut reader = io::BufReader::new(pem);
         let crls = rustls_pemfile::crls(&mut reader).collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(crls.into_iter().map(|der| Self { der }).collect())
+    }
+}
+
+#[cfg(all(test, feature = "rustls"))]
+mod tests {
+    use super::TlsVersion;
+
+    #[test]
+    fn filter_versions_tls12_only() {
+        let versions = TlsVersion::filter_versions(None, Some(TlsVersion::Tls1_2));
+        assert_eq!(versions.len(), 1);
+    }
+
+    #[test]
+    fn filter_versions_tls13_only() {
+        let versions = TlsVersion::filter_versions(Some(TlsVersion::Tls1_3), None);
+        assert_eq!(versions.len(), 1);
+    }
+
+    #[test]
+    fn filter_versions_both() {
+        let versions = TlsVersion::filter_versions(None, None);
+        assert_eq!(versions.len(), 2);
+    }
+
+    #[test]
+    fn filter_versions_exact_range() {
+        let versions =
+            TlsVersion::filter_versions(Some(TlsVersion::Tls1_2), Some(TlsVersion::Tls1_3));
+        assert_eq!(versions.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "no TLS versions match")]
+    fn filter_versions_empty_panics() {
+        TlsVersion::filter_versions(Some(TlsVersion::Tls1_3), Some(TlsVersion::Tls1_2));
     }
 }
