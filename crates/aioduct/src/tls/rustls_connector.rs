@@ -17,9 +17,17 @@ pub struct RustlsConnector {
 }
 
 impl RustlsConnector {
+    const DEFAULT_ALPN: &[&[u8]] = &[b"h2", b"http/1.1"];
+
     /// Create a connector from a rustls client config.
     pub fn new(config: Arc<rustls::ClientConfig>) -> Self {
         Self { config }
+    }
+
+    fn set_default_alpn(config: &mut rustls::ClientConfig) {
+        if config.alpn_protocols.is_empty() {
+            config.alpn_protocols = Self::DEFAULT_ALPN.iter().map(|p| p.to_vec()).collect();
+        }
     }
 
     /// Get a reference to the underlying rustls config.
@@ -43,9 +51,10 @@ impl RustlsConnector {
     ) -> Self {
         let root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+        let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
             .with_no_client_auth();
+        Self::set_default_alpn(&mut config);
         Self::new(Arc::new(config))
     }
 
@@ -64,9 +73,10 @@ impl RustlsConnector {
         for cert in certs {
             let _ = root_store.add(cert.der.clone());
         }
-        let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+        let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
             .with_no_client_auth();
+        Self::set_default_alpn(&mut config);
         Self::new(Arc::new(config))
     }
 
@@ -93,10 +103,11 @@ impl RustlsConnector {
         for cert in certs {
             let _ = root_store.add(cert.der.clone());
         }
-        let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+        let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
             .with_client_auth_cert(identity.certs, identity.key)
             .map_err(io::Error::other)?;
+        Self::set_default_alpn(&mut config);
         Ok(Self::new(Arc::new(config)))
     }
 
@@ -116,18 +127,20 @@ impl RustlsConnector {
         for cert in native_certs.certs {
             let _ = root_store.add(cert);
         }
-        let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+        let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
             .with_no_client_auth();
+        Self::set_default_alpn(&mut config);
         Self::new(Arc::new(config))
     }
 
     /// Create a connector that accepts any server certificate (INSECURE — testing only).
     pub fn danger_accept_invalid_certs() -> Self {
-        let config = rustls::ClientConfig::builder()
+        let mut config = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoVerifier))
             .with_no_client_auth();
+        Self::set_default_alpn(&mut config);
         Self::new(Arc::new(config))
     }
 
@@ -161,23 +174,25 @@ impl RustlsConnector {
                 .dangerous()
                 .with_custom_certificate_verifier(verifier);
 
-            let config = match identity {
+            let mut config = match identity {
                 Some((certs, key)) => config
                     .with_client_auth_cert(certs, key)
                     .map_err(io::Error::other)?,
                 None => config.with_no_client_auth(),
             };
+            Self::set_default_alpn(&mut config);
             Ok(Self::new(Arc::new(config)))
         } else {
             let builder = rustls::ClientConfig::builder_with_protocol_versions(versions)
                 .with_root_certificates(root_store);
 
-            let config = match identity {
+            let mut config = match identity {
                 Some((certs, key)) => builder
                     .with_client_auth_cert(certs, key)
                     .map_err(io::Error::other)?,
                 None => builder.with_no_client_auth(),
             };
+            Self::set_default_alpn(&mut config);
             Ok(Self::new(Arc::new(config)))
         }
     }
@@ -1132,6 +1147,50 @@ mod tests {
 
         let tls_stream = client_result.unwrap();
         assert_eq!(RustlsConnector::negotiated_protocol(&tls_stream.tls), None);
+    }
+
+    #[tokio::test]
+    async fn default_alpn_negotiates_h2() {
+        install_crypto_provider();
+        let (certs, key) = self_signed_cert();
+        let mut srv_cfg = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap();
+        srv_cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let srv_cfg = Arc::new(srv_cfg);
+
+        let (client_io, server_io) = tokio::io::duplex(8192);
+        let mut server_stream = TokioIo::new(server_io);
+        // Uses default ALPN from danger_accept_invalid_certs — no manual config
+        let connector = RustlsConnector::danger_accept_invalid_certs();
+
+        let (client_result, _) = tokio::join!(
+            client_connect(&connector, TokioIo::new(client_io)),
+            do_server_handshake(srv_cfg, &mut server_stream),
+        );
+
+        let tls_stream = client_result.unwrap();
+        assert_eq!(
+            RustlsConnector::negotiated_protocol(&tls_stream.tls),
+            Some(AlpnProtocol::H2),
+        );
+    }
+
+    #[test]
+    fn default_alpn_set_on_all_constructors() {
+        install_crypto_provider();
+        let c = RustlsConnector::danger_accept_invalid_certs();
+        assert_eq!(
+            c.config().alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
+
+        let c = RustlsConnector::with_webpki_roots();
+        assert_eq!(
+            c.config().alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
     }
 
     // ---- Large payload (exercises the while-wants_write drain loops) ----
