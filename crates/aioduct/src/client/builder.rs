@@ -556,7 +556,9 @@ impl<R: Runtime> ClientBuilder<R> {
                         webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
                     );
                     for cert in &self.extra_root_certs {
-                        let _ = root_store.add(cert.der.clone());
+                        root_store
+                            .add(cert.der.clone())
+                            .expect("invalid extra root certificate");
                     }
                     let crls: Vec<_> = self.crls.into_iter().map(|c| c.der).collect();
                     let identity = self.client_identity.map(|id| (id.certs, id.key));

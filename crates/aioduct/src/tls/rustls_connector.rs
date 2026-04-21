@@ -71,7 +71,9 @@ impl RustlsConnector {
         let mut root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         for cert in certs {
-            let _ = root_store.add(cert.der.clone());
+            root_store
+                .add(cert.der.clone())
+                .expect("invalid extra root certificate");
         }
         let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
@@ -101,7 +103,7 @@ impl RustlsConnector {
         let mut root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         for cert in certs {
-            let _ = root_store.add(cert.der.clone());
+            root_store.add(cert.der.clone()).map_err(io::Error::other)?;
         }
         let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(root_store)
