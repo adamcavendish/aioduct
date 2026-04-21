@@ -348,9 +348,7 @@ where
                         .process_new_packets()
                         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                     if this.tls.wants_write() {
-                        if let Poll::Ready(Err(e)) =
-                            write_tls(&mut this.tls, &mut this.inner, cx)
-                        {
+                        if let Poll::Ready(Err(e)) = write_tls(&mut this.tls, &mut this.inner, cx) {
                             return Poll::Ready(Err(e));
                         }
                     }
