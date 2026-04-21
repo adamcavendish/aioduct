@@ -12,9 +12,9 @@ build:
 build-all:
     cargo build --features tokio,rustls,json,gzip,brotli,zstd,deflate,blocking
 
-# Check MSRV (1.85)
+# Check MSRV (1.88)
 msrv:
-    cargo +1.85.0 check --features tokio
+    cargo +1.88.0 check --features tokio
 
 # ---------- Lint ----------
 
