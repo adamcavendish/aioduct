@@ -169,3 +169,73 @@ pub use smol_rt::SmolRuntime;
 pub mod compio_rt;
 #[cfg(feature = "compio")]
 pub use compio_rt::CompioRuntime;
+
+#[cfg(all(test, feature = "tokio"))]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn resolve_default_resolve_all_wraps_single() {
+        struct SingleResolver(SocketAddr);
+        impl Resolve for SingleResolver {
+            fn resolve(
+                &self,
+                _host: &str,
+                _port: u16,
+            ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+                let addr = self.0;
+                Box::pin(async move { Ok(addr) })
+            }
+        }
+        let addr: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let resolver = SingleResolver(addr);
+        let result = resolver.resolve_all("example.com", 80).await.unwrap();
+        assert_eq!(result, vec![addr]);
+    }
+
+    #[tokio::test]
+    async fn resolve_closure_blanket_impl() {
+        let resolver = |_host: &str,
+                        _port: u16|
+         -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+            Box::pin(async { Ok("127.0.0.1:443".parse().unwrap()) })
+        };
+        let result = resolver.resolve("example.com", 443).await.unwrap();
+        assert_eq!(result, "127.0.0.1:443".parse::<SocketAddr>().unwrap());
+    }
+
+    #[tokio::test]
+    async fn resolve_closure_resolve_all_default() {
+        let resolver = |_host: &str,
+                        _port: u16|
+         -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+            Box::pin(async { Ok("10.0.0.1:8080".parse().unwrap()) })
+        };
+        let result = resolver.resolve_all("example.com", 8080).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "10.0.0.1:8080".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn hyper_executor_clone_and_copy() {
+        let exec = hyper_executor::<tokio_rt::TokioRuntime>();
+        #[allow(clippy::clone_on_copy)]
+        let _cloned = exec.clone();
+        let _copied = exec;
+    }
+
+    #[tokio::test]
+    async fn hyper_executor_execute_runs_future() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag2 = flag.clone();
+        let exec = hyper_executor::<tokio_rt::TokioRuntime>();
+        hyper::rt::Executor::execute(&exec, async move {
+            flag2.store(true, Ordering::SeqCst);
+        });
+        tokio::task::yield_now().await;
+        assert!(flag.load(Ordering::SeqCst));
+    }
+}

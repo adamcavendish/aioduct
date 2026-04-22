@@ -486,4 +486,140 @@ mod tests {
         let dbg = format!("{ae:?}");
         assert!(dbg.contains("AcceptEncoding"));
     }
+
+    #[cfg(all(feature = "deflate", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_deflate_round_trip() {
+        use bytes::Bytes;
+        use flate2::Compression;
+        use flate2::write::ZlibEncoder;
+        use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+        use http_body_util::BodyExt;
+        use std::io::Write;
+
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(b"hello deflate").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "deflate".parse().unwrap());
+        headers.insert(
+            CONTENT_LENGTH,
+            compressed.len().to_string().parse().unwrap(),
+        );
+
+        let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
+            .map_err(|never| match never {})
+            .boxed();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        assert!(!headers.contains_key(CONTENT_ENCODING));
+        assert!(!headers.contains_key(CONTENT_LENGTH));
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], b"hello deflate");
+    }
+
+    #[cfg(all(feature = "brotli", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_brotli_round_trip() {
+        use bytes::Bytes;
+        use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+        use http_body_util::BodyExt;
+        use std::io::Write;
+
+        let mut compressed = Vec::new();
+        {
+            let mut encoder = brotli::CompressorWriter::new(&mut compressed, 4096, 1, 22);
+            encoder.write_all(b"hello brotli").unwrap();
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "br".parse().unwrap());
+        headers.insert(
+            CONTENT_LENGTH,
+            compressed.len().to_string().parse().unwrap(),
+        );
+
+        let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
+            .map_err(|never| match never {})
+            .boxed();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        assert!(!headers.contains_key(CONTENT_ENCODING));
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], b"hello brotli");
+    }
+
+    #[cfg(all(feature = "zstd", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_zstd_round_trip() {
+        use bytes::Bytes;
+        use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+        use http_body_util::BodyExt;
+
+        let data = b"hello zstd";
+        let compressed = zstd::encode_all(&data[..], 1).unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "zstd".parse().unwrap());
+        headers.insert(
+            CONTENT_LENGTH,
+            compressed.len().to_string().parse().unwrap(),
+        );
+
+        let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
+            .map_err(|never| match never {})
+            .boxed();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        assert!(!headers.contains_key(CONTENT_ENCODING));
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], b"hello zstd");
+    }
+
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_empty_gzip_body() {
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        let body: AioductBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert!(collected.is_empty());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn maybe_decompress_unknown_encoding_passthrough() {
+        use bytes::Bytes;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "identity".parse().unwrap());
+
+        let body: AioductBody = http_body_util::Full::new(Bytes::from("raw"))
+            .map_err(|never| match never {})
+            .boxed();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        assert!(headers.contains_key(CONTENT_ENCODING));
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], b"raw");
+    }
 }

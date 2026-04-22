@@ -121,6 +121,7 @@ impl Certificate {
 
 #[cfg(feature = "rustls")]
 /// A client identity (certificate + private key) for mutual TLS.
+#[derive(Debug)]
 pub struct Identity {
     pub(crate) certs: Vec<rustls::pki_types::CertificateDer<'static>>,
     pub(crate) key: rustls::pki_types::PrivateKeyDer<'static>,
@@ -167,7 +168,11 @@ impl CertificateRevocationList {
 
 #[cfg(all(test, feature = "rustls"))]
 mod tests {
-    use super::TlsVersion;
+    use super::*;
+
+    fn install_crypto() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
 
     #[test]
     fn filter_versions_tls12_only() {
@@ -198,5 +203,101 @@ mod tests {
     #[should_panic(expected = "no TLS versions match")]
     fn filter_versions_empty_panics() {
         TlsVersion::filter_versions(Some(TlsVersion::Tls1_3), Some(TlsVersion::Tls1_2));
+    }
+
+    #[test]
+    fn to_rustls_tls12() {
+        install_crypto();
+        let v = TlsVersion::Tls1_2.to_rustls();
+        assert_eq!(*v, rustls::version::TLS12);
+    }
+
+    #[test]
+    fn to_rustls_tls13() {
+        install_crypto();
+        let v = TlsVersion::Tls1_3.to_rustls();
+        assert_eq!(*v, rustls::version::TLS13);
+    }
+
+    #[test]
+    fn tls_version_ord() {
+        assert!(TlsVersion::Tls1_2 < TlsVersion::Tls1_3);
+    }
+
+    #[test]
+    fn tls_info_no_peer_cert() {
+        let info = TlsInfo {
+            peer_certificate: None,
+        };
+        assert!(info.peer_certificate().is_none());
+    }
+
+    #[test]
+    fn tls_info_with_peer_cert() {
+        let info = TlsInfo {
+            peer_certificate: Some(vec![1, 2, 3]),
+        };
+        assert_eq!(info.peer_certificate(), Some(&[1, 2, 3][..]));
+    }
+
+    #[test]
+    fn tls_info_debug() {
+        let info = TlsInfo {
+            peer_certificate: None,
+        };
+        let dbg = format!("{info:?}");
+        assert!(dbg.contains("TlsInfo"));
+    }
+
+    #[test]
+    fn certificate_from_der() {
+        let cert = Certificate::from_der(vec![0x30, 0x00]);
+        assert!(!cert.der.is_empty());
+    }
+
+    #[test]
+    fn certificate_from_pem_valid() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let pem = ca.cert.pem();
+        let certs = Certificate::from_pem(pem.as_bytes()).unwrap();
+        assert_eq!(certs.len(), 1);
+    }
+
+    #[test]
+    fn certificate_from_pem_empty() {
+        let certs = Certificate::from_pem(b"").unwrap();
+        assert!(certs.is_empty());
+    }
+
+    #[test]
+    fn identity_from_pem_valid() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let mut pem = ca.cert.pem();
+        pem.push_str(&ca.signing_key.serialize_pem());
+        let id = Identity::from_pem(pem.as_bytes()).unwrap();
+        assert!(!id.certs.is_empty());
+    }
+
+    #[test]
+    fn identity_from_pem_no_key_fails() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let pem = ca.cert.pem();
+        let err = Identity::from_pem(pem.as_bytes()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn crl_from_der() {
+        let crl = CertificateRevocationList::from_der(vec![0x30, 0x00]);
+        assert!(!crl.der.is_empty());
+    }
+
+    #[test]
+    fn crl_from_pem_empty() {
+        let crls = CertificateRevocationList::from_pem(b"").unwrap();
+        assert!(crls.is_empty());
     }
 }

@@ -121,7 +121,8 @@ serde_json.workspace = true
 futures-util.workspace = true
 flate2.workspace = true
 rcgen.workspace = true
-rustls = { version = "0.23", features = ["ring"] }
+rustls = { workspace = true, features = ["ring"] }
+tracing-subscriber.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

@@ -699,6 +699,11 @@ mod builder_tests {
 
     type TokioClient = Client<TokioRuntime>;
 
+    #[cfg(feature = "rustls")]
+    fn install_crypto() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
     #[tokio::test]
     async fn builder_read_timeout() {
         let _client = TokioClient::builder()
@@ -942,5 +947,189 @@ mod builder_tests {
     async fn client_clone() {
         let client = TokioClient::new();
         let _cloned = client.clone();
+    }
+
+    #[tokio::test]
+    async fn builder_pool_idle_timeout() {
+        let client = TokioClient::builder()
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build();
+        assert_eq!(client.timeout, None);
+    }
+
+    #[tokio::test]
+    async fn builder_pool_max_idle_per_host() {
+        let _client = TokioClient::builder().pool_max_idle_per_host(5).build();
+    }
+
+    #[tokio::test]
+    async fn builder_proxy_shorthand() {
+        use crate::proxy::ProxyConfig;
+        let config = ProxyConfig::http("http://proxy:8080").unwrap();
+        let client = TokioClient::builder().proxy(config).build();
+        assert!(client.proxy.is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_user_agent_invalid_is_ignored() {
+        let client = TokioClient::builder().user_agent("bad\x00agent").build();
+        let ua = client.default_headers.get(USER_AGENT).unwrap();
+        assert_eq!(ua.as_bytes(), DEFAULT_USER_AGENT.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn builder_middleware() {
+        use crate::middleware::Middleware;
+        struct NoopMiddleware;
+        impl Middleware for NoopMiddleware {}
+        let _client = TokioClient::builder().middleware(NoopMiddleware).build();
+    }
+
+    #[tokio::test]
+    async fn builder_resolver() {
+        use std::net::SocketAddr;
+        use std::pin::Pin;
+        let _client = TokioClient::builder()
+            .resolver(
+                |_host: &str,
+                 _port: u16|
+                 -> Pin<
+                    Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
+                > { Box::pin(async { Ok("127.0.0.1:80".parse().unwrap()) }) },
+            )
+            .build();
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_explicit_passthrough() {
+        install_crypto();
+        let client = TokioClient::builder()
+            .tls(crate::tls::RustlsConnector::with_webpki_roots())
+            .build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_version_constraints_only() {
+        install_crypto();
+        let client = TokioClient::builder()
+            .min_tls_version(crate::tls::TlsVersion::Tls1_2)
+            .build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_max_version_only() {
+        install_crypto();
+        let client = TokioClient::builder()
+            .max_tls_version(crate::tls::TlsVersion::Tls1_3)
+            .build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_min_and_max() {
+        install_crypto();
+        let client = TokioClient::builder()
+            .min_tls_version(crate::tls::TlsVersion::Tls1_2)
+            .max_tls_version(crate::tls::TlsVersion::Tls1_3)
+            .build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_extra_root_certs() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let cert = crate::tls::Certificate::from_der(ca.cert.der().to_vec());
+        let client = TokioClient::builder()
+            .add_root_certificates(&[cert])
+            .build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_extra_root_certs_with_version() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let cert = crate::tls::Certificate::from_der(ca.cert.der().to_vec());
+        let client = TokioClient::builder()
+            .add_root_certificates(&[cert])
+            .min_tls_version(crate::tls::TlsVersion::Tls1_3)
+            .build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_identity() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let mut pem = ca.cert.pem();
+        pem.push_str(&ca.signing_key.serialize_pem());
+        let id = crate::tls::Identity::from_pem(pem.as_bytes()).unwrap();
+        let client = TokioClient::builder().identity(id).build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_danger_accept_invalid_certs() {
+        install_crypto();
+        let client = TokioClient::builder().danger_accept_invalid_certs().build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_danger_accept_invalid_hostnames() {
+        install_crypto();
+        let client = TokioClient::builder()
+            .danger_accept_invalid_hostnames(true)
+            .build();
+        assert!(client.tls.is_some());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_sni_disabled() {
+        install_crypto();
+        let client = TokioClient::builder().tls_sni(false).build();
+        let tls = client.tls.as_ref().unwrap();
+        assert!(!tls.config().enable_sni);
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_sni_enabled_is_noop() {
+        install_crypto();
+        let client = TokioClient::builder().tls_sni(true).build();
+        assert!(client.tls.is_none());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_crls() {
+        install_crypto();
+        let crl = crate::tls::CertificateRevocationList::from_der(vec![]);
+        let _builder = TokioClient::builder().add_crls([crl]);
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn builder_tls_explicit_with_sni_disabled() {
+        install_crypto();
+        let client = TokioClient::builder()
+            .tls(crate::tls::RustlsConnector::with_webpki_roots())
+            .tls_sni(false)
+            .build();
+        let tls = client.tls.as_ref().unwrap();
+        assert!(!tls.config().enable_sni);
     }
 }
