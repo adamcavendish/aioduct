@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-04-24
+
+### Fixed
+- Fixed TLS 1.3 handshake hang: flush client Finished message immediately after handshake loop completes, preventing HTTPS requests from stalling until timeout
+- Moved `tokio-rustls` and `hyper-util` dev-dependencies to workspace, enforcing consistent dependency management
+
+### Added
+- HTTPS integration tests covering H2 over TLS, HTTP/1.1 over TLS, no-ALPN server, and `danger_accept_invalid_certs` paths
+
 ## [0.1.2] - 2026-04-20
 
 ### Fixed

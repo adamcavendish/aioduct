@@ -279,6 +279,16 @@ impl<R: Runtime> TlsConnect<R> for RustlsConnector {
                 }
             }
 
+            // Flush any remaining handshake data (e.g. TLS 1.3 client Finished)
+            // so the server can complete the handshake before we send app data.
+            while tls_stream.tls.wants_write() {
+                std::future::poll_fn(|cx| {
+                    write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
+                })
+                .await?;
+            }
+            std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
+
             Ok(tls_stream)
         })
     }
