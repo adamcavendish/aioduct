@@ -4831,8 +4831,7 @@ async fn test_https_local_tls_server() {
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-    let key_der =
-        rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     let mut server_tls_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -4863,9 +4862,7 @@ async fn test_https_local_tls_server() {
                     .serve_connection(
                         io,
                         service_fn(|_req| async {
-                            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
-                                "hello tls",
-                            ))))
+                            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("hello tls"))))
                         }),
                     )
                     .await;
@@ -4917,8 +4914,7 @@ async fn test_https_h1_local_tls_server() {
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-    let key_der =
-        rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     // Server only offers h1
     let mut server_tls_config = rustls::ServerConfig::builder()
@@ -5002,8 +4998,7 @@ async fn test_https_no_alpn_server() {
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-    let key_der =
-        rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     // Server with NO ALPN
     let server_tls_config = rustls::ServerConfig::builder()
@@ -5086,8 +5081,7 @@ async fn test_https_with_webpki_roots_local() {
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-    let key_der =
-        rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     let mut server_tls_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -5158,4 +5152,3 @@ async fn test_https_with_webpki_roots_local() {
     let body = resp.unwrap().text().await.unwrap();
     assert_eq!(body, "hello webpki");
 }
-
