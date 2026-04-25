@@ -9,25 +9,26 @@ use http::header::{
 use http::{HeaderMap, Method, StatusCode, Uri};
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-struct CacheKey {
+pub(crate) struct CacheKey {
     method: Method,
     uri: Uri,
 }
 
+/// A cached HTTP response entry stored by a [`CacheStore`].
 #[derive(Clone)]
-struct CacheEntry {
-    status: StatusCode,
-    headers: HeaderMap,
-    body: Bytes,
-    stored_at: Instant,
-    max_age: Option<Duration>,
-    expires_at: Option<SystemTime>,
-    etag: Option<String>,
-    last_modified: Option<String>,
-    must_revalidate: bool,
-    immutable: bool,
-    stale_while_revalidate: Option<Duration>,
-    stale_if_error: Option<Duration>,
+pub struct CacheEntry {
+    pub(crate) status: StatusCode,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Bytes,
+    pub(crate) stored_at: Instant,
+    pub(crate) max_age: Option<Duration>,
+    pub(crate) expires_at: Option<SystemTime>,
+    pub(crate) etag: Option<String>,
+    pub(crate) last_modified: Option<String>,
+    pub(crate) must_revalidate: bool,
+    pub(crate) immutable: bool,
+    pub(crate) stale_while_revalidate: Option<Duration>,
+    pub(crate) stale_if_error: Option<Duration>,
 }
 
 impl CacheEntry {
@@ -70,21 +71,107 @@ impl CacheEntry {
     }
 }
 
-/// In-memory HTTP response cache.
+/// Pluggable storage backend for [`HttpCache`].
 ///
-/// Caches responses based on `Cache-Control`, `Expires`, `ETag`, and
-/// `Last-Modified` headers. Supports conditional validation via
-/// `If-None-Match` and `If-Modified-Since`.
+/// Implement this trait to use a custom cache store (e.g. moka, foyer, Redis).
+/// The default implementation is [`InMemoryCacheStore`].
 ///
-/// Only `GET` and `HEAD` responses with cacheable status codes are stored.
-#[derive(Clone)]
-pub struct HttpCache {
-    inner: Arc<Mutex<CacheInner>>,
+/// All methods receive `&self` and must be safe to call from multiple threads.
+/// Implementations should handle their own synchronization.
+pub trait CacheStore: Send + Sync + 'static {
+    /// Retrieve a cached entry by method and URI.
+    fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry>;
+
+    /// Store a cache entry.
+    fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry);
+
+    /// Remove entries for the given method and URI.
+    fn remove(&self, method: &Method, uri: &Uri);
+
+    /// Remove all entries.
+    fn clear(&self);
+
+    /// Number of entries currently stored.
+    fn len(&self) -> usize;
+
+    /// Whether the store is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
-struct CacheInner {
+/// In-memory cache store backed by a `HashMap`.
+///
+/// This is the default [`CacheStore`] used by [`HttpCache`].
+pub struct InMemoryCacheStore {
+    inner: Mutex<InMemoryInner>,
+}
+
+struct InMemoryInner {
     entries: HashMap<CacheKey, CacheEntry>,
     max_entries: usize,
+}
+
+impl InMemoryCacheStore {
+    /// Create a new in-memory store with the given maximum entry count.
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            inner: Mutex::new(InMemoryInner {
+                entries: HashMap::new(),
+                max_entries,
+            }),
+        }
+    }
+}
+
+impl std::fmt::Debug for InMemoryCacheStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = self.len();
+        f.debug_struct("InMemoryCacheStore")
+            .field("len", &len)
+            .finish()
+    }
+}
+
+impl CacheStore for InMemoryCacheStore {
+    fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+        let key = CacheKey {
+            method: method.clone(),
+            uri: uri.clone(),
+        };
+        self.inner.lock().unwrap().entries.get(&key).cloned()
+    }
+
+    fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
+        let key = CacheKey {
+            method: method.clone(),
+            uri: uri.clone(),
+        };
+        let mut inner = self.inner.lock().unwrap();
+        if inner.entries.len() >= inner.max_entries
+            && !inner.entries.contains_key(&key)
+            && let Some(oldest_key) = find_oldest_entry(&inner.entries)
+        {
+            inner.entries.remove(&oldest_key);
+        }
+        inner.entries.insert(key, entry);
+    }
+
+    fn remove(&self, method: &Method, uri: &Uri) {
+        let key = CacheKey {
+            method: method.clone(),
+            uri: uri.clone(),
+        };
+        self.inner.lock().unwrap().entries.remove(&key);
+    }
+
+    fn clear(&self) {
+        self.inner.lock().unwrap().entries.clear();
+    }
+
+    fn len(&self) -> usize {
+        self.inner.lock().unwrap().entries.len()
+    }
 }
 
 /// Configuration for the HTTP cache.
@@ -100,6 +187,25 @@ impl Default for CacheConfig {
     }
 }
 
+/// HTTP response cache with pluggable storage.
+///
+/// Owns cache *policy* (freshness, revalidation, Cache-Control parsing).
+/// The *storage* is delegated to a [`CacheStore`] implementation.
+///
+/// Use [`HttpCache::new`] or [`HttpCache::with_config`] for the default
+/// in-memory store, or [`HttpCache::with_store`] for a custom backend.
+pub struct HttpCache {
+    store: Arc<dyn CacheStore>,
+}
+
+impl Clone for HttpCache {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+        }
+    }
+}
+
 impl std::fmt::Debug for HttpCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpCache").finish()
@@ -107,34 +213,38 @@ impl std::fmt::Debug for HttpCache {
 }
 
 impl HttpCache {
-    /// Create a new cache with default settings (256 max entries).
+    /// Create a new cache with default settings (256 max entries, in-memory store).
     pub fn new() -> Self {
         Self::with_config(CacheConfig::default())
     }
 
-    /// Create a cache with custom configuration.
+    /// Create a cache with custom configuration using the default in-memory store.
     pub fn with_config(config: CacheConfig) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(CacheInner {
-                entries: HashMap::new(),
-                max_entries: config.max_entries,
-            })),
+            store: Arc::new(InMemoryCacheStore::new(config.max_entries)),
+        }
+    }
+
+    /// Create a cache with a custom [`CacheStore`] backend.
+    pub fn with_store(store: impl CacheStore) -> Self {
+        Self {
+            store: Arc::new(store),
         }
     }
 
     /// Clear all cached entries.
     pub fn clear(&self) {
-        self.inner.lock().unwrap().entries.clear();
+        self.store.clear();
     }
 
     /// Number of cached entries.
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().entries.len()
+        self.store.len()
     }
 
     /// Whether the cache is empty.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.store.is_empty()
     }
 
     pub(crate) fn lookup(&self, method: &Method, uri: &Uri) -> CacheLookup {
@@ -142,13 +252,7 @@ impl HttpCache {
             return CacheLookup::Miss;
         }
 
-        let key = CacheKey {
-            method: method.clone(),
-            uri: uri.clone(),
-        };
-
-        let inner = self.inner.lock().unwrap();
-        let Some(entry) = inner.entries.get(&key) else {
+        let Some(entry) = self.store.get(method, uri) else {
             return CacheLookup::Miss;
         };
 
@@ -246,36 +350,13 @@ impl HttpCache {
             stale_if_error: directives.stale_if_error,
         };
 
-        let key = CacheKey {
-            method: method.clone(),
-            uri: uri.clone(),
-        };
-
-        let mut inner = self.inner.lock().unwrap();
-
-        if inner.entries.len() >= inner.max_entries
-            && !inner.entries.contains_key(&key)
-            && let Some(oldest_key) = find_oldest_entry(&inner.entries)
-        {
-            inner.entries.remove(&oldest_key);
-        }
-
-        inner.entries.insert(key, entry);
+        self.store.put(method, uri, entry);
     }
 
     pub(crate) fn invalidate(&self, method: &Method, uri: &Uri) {
         if is_unsafe_method(method) {
-            let key = CacheKey {
-                method: Method::GET,
-                uri: uri.clone(),
-            };
-            let mut inner = self.inner.lock().unwrap();
-            inner.entries.remove(&key);
-            let head_key = CacheKey {
-                method: Method::HEAD,
-                uri: uri.clone(),
-            };
-            inner.entries.remove(&head_key);
+            self.store.remove(&Method::GET, uri);
+            self.store.remove(&Method::HEAD, uri);
         }
     }
 }
@@ -1064,27 +1145,25 @@ mod tests {
 
     #[test]
     fn test_cache_expires_staleness_returns_some() {
-        let cache = HttpCache::new();
+        let store = InMemoryCacheStore::new(256);
         let uri: Uri = "http://example.com/exp-stale".parse().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(EXPIRES, "Thu, 01 Jan 2020 00:00:00 GMT".parse().unwrap());
         headers.insert(ETAG, "\"exp-stale\"".parse().unwrap());
-        let body = Bytes::from("data");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
-
-        let key = CacheKey {
-            method: Method::GET,
-            uri: uri.clone(),
-        };
-        let inner = cache.inner.lock().unwrap();
-        let entry = inner.entries.get(&key).unwrap();
-        let staleness = entry.staleness();
-        assert!(
-            staleness.is_some(),
-            "staleness should be Some for expired Expires"
+        let cache = HttpCache::with_store(store);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("data"),
         );
-        assert!(staleness.unwrap().as_secs() > 0);
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Stale { .. } => {}
+            _ => panic!("expected stale for expired Expires"),
+        }
     }
 
     #[test]
@@ -1093,20 +1172,19 @@ mod tests {
         let uri: Uri = "http://example.com/exp-fresh".parse().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(EXPIRES, "Thu, 01 Jan 2099 00:00:00 GMT".parse().unwrap());
-        let body = Bytes::from("data");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
-
-        let key = CacheKey {
-            method: Method::GET,
-            uri: uri.clone(),
-        };
-        let inner = cache.inner.lock().unwrap();
-        let entry = inner.entries.get(&key).unwrap();
-        assert!(
-            entry.staleness().is_none(),
-            "staleness should be None for fresh Expires"
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("data"),
         );
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(_) => {}
+            _ => panic!("expected fresh for future Expires"),
+        }
     }
 
     #[test]
@@ -1189,5 +1267,463 @@ mod tests {
             &Bytes::from("err"),
         );
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_custom_store() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingStore {
+            inner: InMemoryCacheStore,
+            put_count: Arc<AtomicUsize>,
+        }
+
+        impl CacheStore for CountingStore {
+            fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+                self.inner.get(method, uri)
+            }
+            fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
+                self.put_count.fetch_add(1, Ordering::Relaxed);
+                self.inner.put(method, uri, entry);
+            }
+            fn remove(&self, method: &Method, uri: &Uri) {
+                self.inner.remove(method, uri);
+            }
+            fn clear(&self) {
+                self.inner.clear();
+            }
+            fn len(&self) -> usize {
+                self.inner.len()
+            }
+        }
+
+        let put_count = Arc::new(AtomicUsize::new(0));
+        let store = CountingStore {
+            inner: InMemoryCacheStore::new(256),
+            put_count: put_count.clone(),
+        };
+        let cache = HttpCache::with_store(store);
+
+        let uri: Uri = "http://example.com/custom".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("custom"),
+        );
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(put_count.load(Ordering::Relaxed), 1);
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.body, Bytes::from("custom"));
+            }
+            _ => panic!("expected fresh hit from custom store"),
+        }
+    }
+
+    #[test]
+    fn test_in_memory_store_debug() {
+        let store = InMemoryCacheStore::new(256);
+        let dbg = format!("{store:?}");
+        assert!(dbg.contains("InMemoryCacheStore"));
+    }
+
+    #[test]
+    fn test_in_memory_store_get_put_remove() {
+        let store = InMemoryCacheStore::new(256);
+        let uri: Uri = "http://example.com/a".parse().unwrap();
+
+        assert!(store.get(&Method::GET, &uri).is_none());
+        assert!(store.is_empty());
+
+        let entry = CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("body"),
+            stored_at: Instant::now(),
+            max_age: Some(Duration::from_secs(60)),
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+        };
+        store.put(&Method::GET, &uri, entry);
+        assert_eq!(store.len(), 1);
+        assert!(!store.is_empty());
+
+        let got = store.get(&Method::GET, &uri).unwrap();
+        assert_eq!(got.body, Bytes::from("body"));
+
+        store.remove(&Method::GET, &uri);
+        assert!(store.get(&Method::GET, &uri).is_none());
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn test_in_memory_store_clear() {
+        let store = InMemoryCacheStore::new(256);
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=60".parse().unwrap());
+
+        let cache = HttpCache::with_store(store);
+        for i in 0..5 {
+            let uri: Uri = format!("http://example.com/{i}").parse().unwrap();
+            cache.store(
+                &Method::GET,
+                &uri,
+                StatusCode::OK,
+                &headers,
+                &Bytes::from("x"),
+            );
+        }
+        assert_eq!(cache.len(), 5);
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_in_memory_store_eviction_oldest() {
+        let store = InMemoryCacheStore::new(2);
+
+        let entry = |body: &str| CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from(body.to_owned()),
+            stored_at: Instant::now(),
+            max_age: Some(Duration::from_secs(3600)),
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+        };
+
+        let uri_a: Uri = "http://example.com/a".parse().unwrap();
+        let uri_b: Uri = "http://example.com/b".parse().unwrap();
+        let uri_c: Uri = "http://example.com/c".parse().unwrap();
+
+        store.put(&Method::GET, &uri_a, entry("a"));
+        store.put(&Method::GET, &uri_b, entry("b"));
+        assert_eq!(store.len(), 2);
+
+        store.put(&Method::GET, &uri_c, entry("c"));
+        assert_eq!(store.len(), 2);
+        assert!(
+            store.get(&Method::GET, &uri_a).is_none(),
+            "oldest entry (a) should be evicted"
+        );
+        assert!(store.get(&Method::GET, &uri_b).is_some());
+        assert!(store.get(&Method::GET, &uri_c).is_some());
+    }
+
+    #[test]
+    fn test_in_memory_store_put_existing_key_no_eviction() {
+        let store = InMemoryCacheStore::new(2);
+
+        let entry = |body: &str| CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from(body.to_owned()),
+            stored_at: Instant::now(),
+            max_age: Some(Duration::from_secs(3600)),
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+        };
+
+        let uri_a: Uri = "http://example.com/a".parse().unwrap();
+        let uri_b: Uri = "http://example.com/b".parse().unwrap();
+
+        store.put(&Method::GET, &uri_a, entry("a1"));
+        store.put(&Method::GET, &uri_b, entry("b1"));
+
+        store.put(&Method::GET, &uri_a, entry("a2"));
+        assert_eq!(store.len(), 2);
+        let got = store.get(&Method::GET, &uri_a).unwrap();
+        assert_eq!(got.body, Bytes::from("a2"));
+    }
+
+    #[test]
+    fn test_in_memory_store_separate_method_keys() {
+        let store = InMemoryCacheStore::new(256);
+
+        let entry = CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("get-body"),
+            stored_at: Instant::now(),
+            max_age: Some(Duration::from_secs(60)),
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+        };
+        let head_entry = CacheEntry {
+            body: Bytes::from("head-body"),
+            ..entry.clone()
+        };
+
+        let uri: Uri = "http://example.com/x".parse().unwrap();
+        store.put(&Method::GET, &uri, entry);
+        store.put(&Method::HEAD, &uri, head_entry);
+        assert_eq!(store.len(), 2);
+
+        let get_val = store.get(&Method::GET, &uri).unwrap();
+        assert_eq!(get_val.body, Bytes::from("get-body"));
+        let head_val = store.get(&Method::HEAD, &uri).unwrap();
+        assert_eq!(head_val.body, Bytes::from("head-body"));
+
+        store.remove(&Method::GET, &uri);
+        assert!(store.get(&Method::GET, &uri).is_none());
+        assert!(store.get(&Method::HEAD, &uri).is_some());
+    }
+
+    #[test]
+    fn test_custom_store_invalidate_calls_remove() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct TrackingStore {
+            inner: InMemoryCacheStore,
+            remove_count: Arc<AtomicUsize>,
+        }
+
+        impl CacheStore for TrackingStore {
+            fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+                self.inner.get(method, uri)
+            }
+            fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
+                self.inner.put(method, uri, entry);
+            }
+            fn remove(&self, method: &Method, uri: &Uri) {
+                self.remove_count.fetch_add(1, Ordering::Relaxed);
+                self.inner.remove(method, uri);
+            }
+            fn clear(&self) {
+                self.inner.clear();
+            }
+            fn len(&self) -> usize {
+                self.inner.len()
+            }
+        }
+
+        let remove_count = Arc::new(AtomicUsize::new(0));
+        let store = TrackingStore {
+            inner: InMemoryCacheStore::new(256),
+            remove_count: remove_count.clone(),
+        };
+        let cache = HttpCache::with_store(store);
+
+        let uri: Uri = "http://example.com/res".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("data"),
+        );
+
+        cache.invalidate(&Method::POST, &uri);
+        assert_eq!(
+            remove_count.load(Ordering::Relaxed),
+            2,
+            "invalidate should call remove for GET and HEAD"
+        );
+    }
+
+    #[test]
+    fn test_custom_store_clear_and_len() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FlagStore {
+            inner: InMemoryCacheStore,
+            cleared: Arc<AtomicBool>,
+        }
+
+        impl CacheStore for FlagStore {
+            fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+                self.inner.get(method, uri)
+            }
+            fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
+                self.inner.put(method, uri, entry);
+            }
+            fn remove(&self, method: &Method, uri: &Uri) {
+                self.inner.remove(method, uri);
+            }
+            fn clear(&self) {
+                self.cleared.store(true, Ordering::Relaxed);
+                self.inner.clear();
+            }
+            fn len(&self) -> usize {
+                self.inner.len()
+            }
+        }
+
+        let cleared = Arc::new(AtomicBool::new(false));
+        let store = FlagStore {
+            inner: InMemoryCacheStore::new(256),
+            cleared: cleared.clone(),
+        };
+        let cache = HttpCache::with_store(store);
+
+        let uri: Uri = "http://example.com/f".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+        );
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.is_empty());
+
+        cache.clear();
+        assert!(cleared.load(Ordering::Relaxed));
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_with_store_fresh_lookup_through_policy() {
+        let store = InMemoryCacheStore::new(256);
+        let cache = HttpCache::with_store(store);
+
+        let uri: Uri = "http://example.com/ws".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("ws-data"),
+        );
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.status, StatusCode::OK);
+                assert_eq!(resp.body, Bytes::from("ws-data"));
+            }
+            _ => panic!("expected fresh hit via with_store"),
+        }
+    }
+
+    #[test]
+    fn test_with_store_stale_revalidation() {
+        let store = InMemoryCacheStore::new(256);
+        let cache = HttpCache::with_store(store);
+
+        let uri: Uri = "http://example.com/stale".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=0".parse().unwrap());
+        headers.insert(ETAG, "\"custom-v1\"".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("old"),
+        );
+
+        match cache.lookup(&Method::GET, &uri) {
+            CacheLookup::Stale { validators, .. } => {
+                assert_eq!(validators.etag.as_deref(), Some("\"custom-v1\""));
+            }
+            _ => panic!("expected stale with validators via custom store"),
+        }
+    }
+
+    #[test]
+    fn test_with_store_no_store_directive_skips_put() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingStore {
+            inner: InMemoryCacheStore,
+            put_count: Arc<AtomicUsize>,
+        }
+
+        impl CacheStore for CountingStore {
+            fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+                self.inner.get(method, uri)
+            }
+            fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
+                self.put_count.fetch_add(1, Ordering::Relaxed);
+                self.inner.put(method, uri, entry);
+            }
+            fn remove(&self, method: &Method, uri: &Uri) {
+                self.inner.remove(method, uri);
+            }
+            fn clear(&self) {
+                self.inner.clear();
+            }
+            fn len(&self) -> usize {
+                self.inner.len()
+            }
+        }
+
+        let put_count = Arc::new(AtomicUsize::new(0));
+        let store = CountingStore {
+            inner: InMemoryCacheStore::new(256),
+            put_count: put_count.clone(),
+        };
+        let cache = HttpCache::with_store(store);
+
+        let uri: Uri = "http://example.com/ns".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "no-store".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("secret"),
+        );
+
+        assert_eq!(put_count.load(Ordering::Relaxed), 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn test_with_store_clone_shares_backend() {
+        let cache = HttpCache::with_store(InMemoryCacheStore::new(256));
+        let cache2 = cache.clone();
+
+        let uri: Uri = "http://example.com/shared".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("shared"),
+        );
+
+        assert_eq!(cache2.len(), 1);
+        match cache2.lookup(&Method::GET, &uri) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.body, Bytes::from("shared"));
+            }
+            _ => panic!("cloned cache should see entries from original"),
+        }
     }
 }

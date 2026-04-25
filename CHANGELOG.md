@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.4] - 2026-04-25
 
 ### Added
+- Pluggable cache store via `CacheStore` trait — implement custom backends (moka, foyer, Redis, etc.) and pass to `HttpCache::with_store()`
+- `InMemoryCacheStore` extracted as the default `CacheStore` implementation
+- `CacheEntry` made public for custom store implementations
+- New public exports: `CacheStore`, `InMemoryCacheStore`, `CacheEntry`
 - Per-request timing breakdown via `Response::timings()` — exposes DNS resolution, TCP connect, TLS handshake, transfer (TTFB), and total durations as `RequestTimings`
 - Pool-hit requests report transfer and total only; skipped phases are `None`
 - Integration tests for HTTP and HTTPS timing verification

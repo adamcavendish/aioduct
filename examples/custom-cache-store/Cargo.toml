@@ -1,0 +1,9 @@
+[package]
+name = "example-custom-cache-store"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio"] }
+tokio = { version = "1", features = ["full"] }
