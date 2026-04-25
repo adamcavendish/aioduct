@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use crate::runtime::Runtime;
 
@@ -19,6 +20,7 @@ pub(crate) struct PooledConnection<R: Runtime> {
     pub(crate) conn: HttpConnection,
     pub(crate) remote_addr: Option<SocketAddr>,
     pub(crate) tls_info: Option<crate::tls::TlsInfo>,
+    pub(crate) tls_handshake_duration: Option<Duration>,
     _runtime: PhantomData<R>,
 }
 
@@ -31,6 +33,7 @@ impl<R: Runtime> PooledConnection<R> {
             conn: HttpConnection::H1(sender),
             remote_addr: None,
             tls_info: None,
+            tls_handshake_duration: None,
             _runtime: PhantomData,
         }
     }
@@ -43,6 +46,7 @@ impl<R: Runtime> PooledConnection<R> {
             conn: HttpConnection::H2(sender),
             remote_addr: None,
             tls_info: None,
+            tls_handshake_duration: None,
             _runtime: PhantomData,
         }
     }
@@ -56,6 +60,7 @@ impl<R: Runtime> PooledConnection<R> {
             conn: HttpConnection::H3(sender),
             remote_addr: None,
             tls_info: None,
+            tls_handshake_duration: None,
             _runtime: PhantomData,
         }
     }

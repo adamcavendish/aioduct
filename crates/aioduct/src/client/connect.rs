@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Instant;
 
 use http::Uri;
 
@@ -8,6 +9,7 @@ use crate::pool::{HttpConnection, PooledConnection};
 use crate::proxy::ProxyConfig;
 use crate::response::Response;
 use crate::runtime::Runtime;
+use crate::timing::TimingCollector;
 
 use super::Client;
 
@@ -17,6 +19,8 @@ impl<R: Runtime> Client<R> {
         request: http::Request<AioductBody>,
         original_uri: &Uri,
     ) -> Result<Response, Error> {
+        let request_start = Instant::now();
+
         if let Some(ref limiter) = self.rate_limiter {
             while !limiter.try_acquire() {
                 let wait = limiter.wait_duration();
@@ -41,10 +45,15 @@ impl<R: Runtime> Client<R> {
             #[cfg(feature = "tracing")]
             tracing::trace!(authority = %authority, "connection.pool.hit");
 
+            let transfer_start = Instant::now();
             let mut resp =
                 Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
+            let transfer = transfer_start.elapsed();
             resp.set_remote_addr(conn.remote_addr);
             resp.set_tls_info(conn.tls_info.clone());
+            resp.set_timings(Some(
+                TimingCollector::default().into_timings(Some(transfer), request_start.elapsed()),
+            ));
             if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                 self.pool.checkin(pool_key, conn);
             }
@@ -91,6 +100,8 @@ impl<R: Runtime> Client<R> {
         #[cfg(not(unix))]
         let unix_socket: Option<&std::path::PathBuf> = None;
 
+        let mut timing = TimingCollector::default();
+
         let mut pooled = if let Some(unix_path) = unix_socket {
             let _ = &proxy; // suppress unused warning when unix_socket is set
             #[cfg(unix)]
@@ -118,7 +129,10 @@ impl<R: Runtime> Client<R> {
             let default_port = if is_https { 443 } else { 80 };
             let host = authority.host();
             let port = authority.port_u16().unwrap_or(default_port);
+
+            let dns_start = Instant::now();
             let addrs = self.resolve_all_authority_raw(host, port).await?;
+            timing.dns = Some(dns_start.elapsed());
 
             let tcp_keepalive = self.tcp_keepalive;
             let tcp_keepalive_interval = self.tcp_keepalive_interval;
@@ -127,6 +141,8 @@ impl<R: Runtime> Client<R> {
             let local_address = self.local_address;
             #[cfg(target_os = "linux")]
             let interface = self.interface.as_deref();
+
+            let tcp_start = Instant::now();
             let connect_fut = async {
                 #[cfg(feature = "tracing")]
                 tracing::trace!(addrs = ?addrs, "tcp.connect.start");
@@ -184,10 +200,10 @@ impl<R: Runtime> Client<R> {
                     self.connect_plaintext(tcp_stream).await?
                 };
                 conn.remote_addr = Some(addr);
-                Ok::<PooledConnection<R>, Error>(conn)
+                Ok::<(PooledConnection<R>, Instant), Error>((conn, Instant::now()))
             };
 
-            match self.connect_timeout {
+            let (conn, connect_done) = match self.connect_timeout {
                 Some(duration) => {
                     crate::timeout::Timeout::WithTimeout {
                         future: connect_fut,
@@ -196,12 +212,29 @@ impl<R: Runtime> Client<R> {
                     .await?
                 }
                 None => connect_fut.await?,
+            };
+            let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
+            if is_https {
+                if let Some(tls_dur) = conn.tls_handshake_duration {
+                    timing.tls_handshake = Some(tls_dur);
+                    timing.tcp_connect = Some(tcp_tls_elapsed.saturating_sub(tls_dur));
+                } else {
+                    timing.tcp_connect = Some(tcp_tls_elapsed);
+                }
+            } else {
+                timing.tcp_connect = Some(tcp_tls_elapsed);
             }
+            conn
         };
 
+        let transfer_start = Instant::now();
         let mut resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
+        let transfer = transfer_start.elapsed();
         resp.set_remote_addr(pooled.remote_addr);
         resp.set_tls_info(pooled.tls_info.clone());
+        resp.set_timings(Some(
+            timing.into_timings(Some(transfer), request_start.elapsed()),
+        ));
         if !self.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
             self.pool.checkin(pool_key, pooled);
         }
@@ -423,6 +456,8 @@ impl<R: Runtime> Client<R> {
         #[cfg(feature = "tracing")]
         tracing::trace!(host = host, "tls.handshake.start");
 
+        let tls_start = Instant::now();
+
         let tls_connector = self
             .tls
             .as_ref()
@@ -439,6 +474,8 @@ impl<R: Runtime> Client<R> {
             tracing::trace!(host = host, error = %e, "tls.handshake.error");
             Error::Tls(Box::new(e))
         })?;
+
+        let tls_duration = tls_start.elapsed();
 
         let alpn = crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
 
@@ -492,6 +529,7 @@ impl<R: Runtime> Client<R> {
                 });
                 let mut pooled = PooledConnection::new_h2(sender);
                 pooled.tls_info = Some(tls_info);
+                pooled.tls_handshake_duration = Some(tls_duration);
                 Ok(pooled)
             }
             _ => {
@@ -501,6 +539,7 @@ impl<R: Runtime> Client<R> {
                 });
                 let mut pooled = PooledConnection::new_h1(sender);
                 pooled.tls_info = Some(tls_info);
+                pooled.tls_handshake_duration = Some(tls_duration);
                 Ok(pooled)
             }
         }
