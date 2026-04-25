@@ -109,7 +109,7 @@ pub mod h3_transport;
 
 pub use bandwidth::BandwidthLimiter;
 pub use body::{BodyStream, RequestBody};
-pub use cache::{CacheConfig, HttpCache};
+pub use cache::{CacheConfig, CacheEntry, CacheStore, HttpCache, InMemoryCacheStore};
 pub use chunk_download::ChunkDownload;
 pub use client::Client;
 pub use cookie::{Cookie, CookieJar, SameSite};

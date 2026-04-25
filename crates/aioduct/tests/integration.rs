@@ -5275,3 +5275,247 @@ async fn test_timings_https_with_tls() {
         "total should be >= dns + tcp"
     );
 }
+
+#[tokio::test]
+async fn test_custom_cache_store_with_client() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingStore {
+        inner: aioduct::InMemoryCacheStore,
+        get_count: Arc<AtomicUsize>,
+        put_count: Arc<AtomicUsize>,
+    }
+
+    impl aioduct::CacheStore for CountingStore {
+        fn get(&self, method: &http::Method, uri: &http::Uri) -> Option<aioduct::CacheEntry> {
+            self.get_count.fetch_add(1, Ordering::Relaxed);
+            self.inner.get(method, uri)
+        }
+        fn put(&self, method: &http::Method, uri: &http::Uri, entry: aioduct::CacheEntry) {
+            self.put_count.fetch_add(1, Ordering::Relaxed);
+            self.inner.put(method, uri, entry);
+        }
+        fn remove(&self, method: &http::Method, uri: &http::Uri) {
+            self.inner.remove(method, uri);
+        }
+        fn clear(&self) {
+            self.inner.clear();
+        }
+        fn len(&self) -> usize {
+            self.inner.len()
+        }
+    }
+
+    let get_count = Arc::new(AtomicUsize::new(0));
+    let put_count = Arc::new(AtomicUsize::new(0));
+    let store = CountingStore {
+        inner: aioduct::InMemoryCacheStore::new(256),
+        get_count: get_count.clone(),
+        put_count: put_count.clone(),
+    };
+    let cache = aioduct::HttpCache::with_store(store);
+
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("cache-control", "max-age=3600")
+                .body(Full::new(Bytes::from("custom-cached")))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+
+    let resp = client
+        .get(&format!("http://{addr}/custom"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "custom-cached");
+    assert_eq!(put_count.load(Ordering::Relaxed), 1, "first request stores");
+
+    let resp = client
+        .get(&format!("http://{addr}/custom"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "custom-cached");
+    assert!(
+        get_count.load(Ordering::Relaxed) >= 2,
+        "second request should hit store.get"
+    );
+    assert_eq!(
+        put_count.load(Ordering::Relaxed),
+        1,
+        "second request should not store again"
+    );
+}
+
+#[tokio::test]
+async fn test_custom_cache_store_304_revalidation() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("cache-control", "max-age=0, must-revalidate")
+                        .header("etag", "\"cs-v1\"")
+                        .body(Full::new(Bytes::from("original")))
+                        .unwrap(),
+                )
+            } else {
+                let inm = req
+                    .headers()
+                    .get("if-none-match")
+                    .map(|v| v.to_str().unwrap().to_owned())
+                    .unwrap_or_default();
+                if inm.contains("\"cs-v1\"") {
+                    Ok(Response::builder()
+                        .status(304)
+                        .header("etag", "\"cs-v1\"")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap())
+                } else {
+                    Ok(Response::new(Full::new(Bytes::from("new data"))))
+                }
+            }
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
+    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+
+    let resp = client
+        .get(&format!("http://{addr}/cs-reval"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+
+    let resp = client
+        .get(&format!("http://{addr}/cs-reval"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_custom_cache_store_invalidation_on_post() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("cache-control", "max-age=3600")
+                    .body(Full::new(Bytes::from(format!("v{n}"))))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
+    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+
+    let resp = client
+        .get(&format!("http://{addr}/inv"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "v0");
+
+    // Second GET: from cache
+    let resp = client
+        .get(&format!("http://{addr}/inv"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "v0");
+    assert_eq!(attempt.load(Ordering::SeqCst), 1);
+
+    // POST invalidates cache
+    let _ = client
+        .post(&format!("http://{addr}/inv"))
+        .unwrap()
+        .body("x")
+        .send()
+        .await
+        .unwrap();
+
+    // GET after POST: should hit server again
+    let resp = client
+        .get(&format!("http://{addr}/inv"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "v2");
+}
+
+#[tokio::test]
+async fn test_custom_cache_store_shared_across_cloned_clients() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("cache-control", "max-age=3600")
+                    .body(Full::new(Bytes::from("shared")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
+    let client1 = Client::<TokioRuntime>::builder()
+        .cache(cache.clone())
+        .build();
+    let client2 = Client::<TokioRuntime>::builder().cache(cache).build();
+
+    let resp = client1
+        .get(&format!("http://{addr}/shared"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "shared");
+    assert_eq!(attempt.load(Ordering::SeqCst), 1);
+
+    // client2 uses the same cache store — should get cache hit
+    let resp = client2
+        .get(&format!("http://{addr}/shared"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "shared");
+    assert_eq!(
+        attempt.load(Ordering::SeqCst),
+        1,
+        "second client should use shared cache"
+    );
+}
