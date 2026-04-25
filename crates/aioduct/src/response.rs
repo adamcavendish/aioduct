@@ -73,6 +73,7 @@ pub struct Response {
     url: Uri,
     remote_addr: Option<SocketAddr>,
     tls_info: Option<crate::tls::TlsInfo>,
+    timings: Option<crate::timing::RequestTimings>,
 }
 
 impl std::fmt::Debug for Response {
@@ -92,6 +93,7 @@ impl Response {
             url,
             remote_addr: None,
             tls_info: None,
+            timings: None,
         }
     }
 
@@ -102,6 +104,7 @@ impl Response {
             url,
             remote_addr: None,
             tls_info: None,
+            timings: None,
         }
     }
 
@@ -111,6 +114,10 @@ impl Response {
 
     pub(crate) fn set_tls_info(&mut self, info: Option<crate::tls::TlsInfo>) {
         self.tls_info = info;
+    }
+
+    pub(crate) fn set_timings(&mut self, timings: Option<crate::timing::RequestTimings>) {
+        self.timings = timings;
     }
 
     pub(crate) fn apply_middleware(
@@ -142,6 +149,7 @@ impl Response {
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
+            timings: self.timings,
         }
     }
 
@@ -158,6 +166,7 @@ impl Response {
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
+            timings: self.timings,
         }
     }
 
@@ -174,6 +183,11 @@ impl Response {
     /// Returns TLS handshake info (peer certificate), if the connection used TLS.
     pub fn tls_info(&self) -> Option<&crate::tls::TlsInfo> {
         self.tls_info.as_ref()
+    }
+
+    /// Returns per-request timing breakdown (DNS, TCP, TLS, TTFB, total).
+    pub fn timings(&self) -> Option<&crate::timing::RequestTimings> {
+        self.timings.as_ref()
     }
 
     /// Returns the HTTP status code.

@@ -5152,3 +5152,126 @@ async fn test_https_with_webpki_roots_local() {
     let body = resp.unwrap().text().await.unwrap();
     assert_eq!(body, "hello webpki");
 }
+
+#[tokio::test]
+async fn test_timings_http_direct() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            tokio::spawn(async move {
+                server_http1::Builder::new()
+                    .serve_connection(io, service_fn(hello))
+                    .await
+                    .ok();
+            });
+        }
+    });
+
+    let client: Client<TokioRuntime> = Client::builder().build();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let timings = resp.timings().expect("timings should be present");
+    assert!(timings.dns().is_some(), "DNS duration should be present");
+    assert!(
+        timings.tcp_connect().is_some(),
+        "TCP connect duration should be present"
+    );
+    assert!(
+        timings.tls_handshake().is_none(),
+        "TLS should be None for HTTP"
+    );
+    assert!(
+        timings.transfer().is_some(),
+        "transfer duration should be present"
+    );
+    assert!(!timings.total().is_zero(), "total should be non-zero");
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn test_timings_https_with_tls() {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+
+    let server_config = {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut cfg = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)
+            .unwrap();
+        cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        Arc::new(cfg)
+    };
+    let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let acc = acceptor.clone();
+            tokio::spawn(async move {
+                let tls_stream = match acc.accept(stream).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let io = hyper_util::rt::TokioIo::new(tls_stream);
+                let builder =
+                    hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new());
+                builder.serve_connection(io, service_fn(hello)).await.ok();
+            });
+        }
+    });
+
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.add(cert_der).unwrap();
+    let mut client_tls_config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
+    let client: Client<TokioRuntime> = Client::builder()
+        .tls(connector)
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/", addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let timings = resp.timings().expect("timings should be present");
+    assert!(timings.dns().is_some(), "DNS duration should be present");
+    assert!(
+        timings.tcp_connect().is_some(),
+        "TCP connect duration should be present"
+    );
+    assert!(
+        timings.tls_handshake().is_some(),
+        "TLS handshake duration should be present for HTTPS"
+    );
+    assert!(
+        timings.transfer().is_some(),
+        "transfer duration should be present"
+    );
+    assert!(!timings.total().is_zero(), "total should be non-zero");
+    assert!(
+        timings.total() >= timings.dns().unwrap() + timings.tcp_connect().unwrap(),
+        "total should be >= dns + tcp"
+    );
+}

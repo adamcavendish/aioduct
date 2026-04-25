@@ -51,6 +51,8 @@ pub mod runtime;
 /// Server-Sent Events (SSE) stream parser.
 pub mod sse;
 mod timeout;
+/// Per-request timing breakdown (DNS, TCP, TLS, TTFB).
+pub mod timing;
 /// TLS configuration and connector types.
 pub mod tls;
 
@@ -131,6 +133,7 @@ pub use retry::{RetryBudget, RetryConfig};
 pub use runtime::{Resolve, Runtime};
 pub use sse::{SseEvent, SseStream};
 pub use throttle::RateLimiter;
+pub use timing::RequestTimings;
 pub use upgrade::Upgraded;
 
 pub use tls::TlsInfo;
