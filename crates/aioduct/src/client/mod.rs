@@ -306,7 +306,7 @@ impl<R: Runtime> Client<R> {
                 jar.apply_to_request(authority.host(), is_secure, path, &mut current_headers);
             }
 
-            let (req_body, body_for_redirect) = match current_body.take() {
+            let (req_body, body_for_replay) = match current_body.take() {
                 Some(RequestBody::Buffered(b)) => {
                     let body_clone = RequestBody::Buffered(b.clone());
                     (RequestBody::Buffered(b).into_hyper_body(), Some(body_clone))
@@ -408,12 +408,13 @@ impl<R: Runtime> Client<R> {
                         let _ = resp.bytes().await;
                         current_headers.insert(AUTHORIZATION, auth_value);
 
-                        let retry_body = match current_body.take() {
-                            Some(rb) => rb.into_hyper_body(),
-                            None => http_body_util::Full::new(Bytes::new())
-                                .map_err(|never| match never {})
-                                .boxed(),
-                        };
+                        let retry_body =
+                            match body_for_replay.as_ref().and_then(RequestBody::try_clone) {
+                                Some(rb) => rb.into_hyper_body(),
+                                None => http_body_util::Full::new(Bytes::new())
+                                    .map_err(|never| match never {})
+                                    .boxed(),
+                            };
 
                         let retry_uri: Uri = current_uri
                             .path_and_query()
@@ -485,29 +486,6 @@ impl<R: Runtime> Client<R> {
                     resp.apply_middleware(&self.middleware, &current_uri);
                 }
 
-                // Store cacheable responses in the HTTP cache
-                if let Some(ref cache) = self.cache {
-                    let status = resp.status();
-                    let headers = resp.headers().clone();
-                    if crate::cache::is_response_cacheable(status, &headers) {
-                        let body_bytes = resp.bytes().await?;
-                        cache.store(&current_method, &current_uri, status, &headers, &body_bytes);
-                        let cached_resp = http::Response::builder().status(status);
-                        let cached_resp = {
-                            let mut builder = cached_resp;
-                            for (name, value) in &headers {
-                                builder = builder.header(name, value);
-                            }
-                            builder.body(
-                                http_body_util::Full::new(body_bytes)
-                                    .map_err(|never| match never {})
-                                    .boxed(),
-                            )?
-                        };
-                        return Ok(Response::from_boxed(cached_resp, current_uri));
-                    }
-                }
-
                 let resp = if !self.accept_encoding.is_empty() {
                     resp.decompress(&self.accept_encoding)
                 } else {
@@ -518,6 +496,20 @@ impl<R: Runtime> Client<R> {
                 } else {
                     resp
                 };
+
+                // Store cacheable responses in the HTTP cache after normal response
+                // finalization so cache hits match what callers see.
+                if let Some(ref cache) = self.cache {
+                    let status = resp.status();
+                    let headers = resp.headers().clone();
+                    if crate::cache::is_response_cacheable(status, &headers) {
+                        let body_bytes = resp.bytes().await?;
+                        cache.store(&current_method, &current_uri, status, &headers, &body_bytes);
+                        let cached_resp = boxed_response_from_bytes(status, &headers, body_bytes);
+                        return Ok(Response::from_boxed(cached_resp, current_uri));
+                    }
+                }
+
                 return Ok(resp);
             }
 
@@ -567,7 +559,7 @@ impl<R: Runtime> Client<R> {
                     current_headers.remove(CONTENT_ENCODING);
                 }
                 StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
-                    current_body = body_for_redirect;
+                    current_body = body_for_replay;
                 }
                 _ => return Err(Error::Redirect("unexpected redirect status".into())),
             }
@@ -604,23 +596,38 @@ impl<R: Runtime> Client<R> {
 }
 
 fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
-    if let Ok(absolute) = location.parse::<Uri>()
-        && absolute.scheme().is_some()
-    {
-        return Ok(absolute);
-    }
-
-    let scheme = base
-        .scheme_str()
+    base.scheme_str()
         .ok_or_else(|| Error::InvalidUrl("missing scheme in base".into()))?;
-    let authority = base
-        .authority()
+    base.authority()
         .ok_or_else(|| Error::InvalidUrl("missing authority in base".into()))?;
 
-    let new_uri = format!("{scheme}://{authority}{location}");
-    new_uri
+    let base_url =
+        url::Url::parse(&base.to_string()).map_err(|e| Error::InvalidUrl(e.to_string()))?;
+    let mut next = base_url
+        .join(location)
+        .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))?;
+    next.set_fragment(None);
+    next.as_str()
         .parse()
         .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))
+}
+
+fn boxed_response_from_bytes(
+    status: StatusCode,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> http::Response<AioductBody> {
+    let mut builder = http::Response::builder().status(status);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    builder
+        .body(
+            http_body_util::Full::new(body)
+                .map_err(|never| match never {})
+                .boxed(),
+        )
+        .expect("response builder with valid status cannot fail")
 }
 
 #[cfg(test)]
@@ -646,6 +653,34 @@ mod tests {
         let base: Uri = "https://example.com/page".parse().unwrap();
         let result = resolve_redirect(&base, "/search?q=test").unwrap();
         assert_eq!(result.to_string(), "https://example.com/search?q=test");
+    }
+
+    #[test]
+    fn resolve_redirect_relative_without_leading_slash_uses_base_directory() {
+        let base: Uri = "http://example.com/dir/page".parse().unwrap();
+        let result = resolve_redirect(&base, "next").unwrap();
+        assert_eq!(result.to_string(), "http://example.com/dir/next");
+    }
+
+    #[test]
+    fn resolve_redirect_relative_parent_directory_is_normalized() {
+        let base: Uri = "http://example.com/dir/page".parse().unwrap();
+        let result = resolve_redirect(&base, "../up").unwrap();
+        assert_eq!(result.to_string(), "http://example.com/up");
+    }
+
+    #[test]
+    fn resolve_redirect_query_only_keeps_base_path() {
+        let base: Uri = "http://example.com/dir/page?old=1".parse().unwrap();
+        let result = resolve_redirect(&base, "?new=2").unwrap();
+        assert_eq!(result.to_string(), "http://example.com/dir/page?new=2");
+    }
+
+    #[test]
+    fn resolve_redirect_protocol_relative_uses_base_scheme() {
+        let base: Uri = "https://example.com/old".parse().unwrap();
+        let result = resolve_redirect(&base, "//other.example/new").unwrap();
+        assert_eq!(result.to_string(), "https://other.example/new");
     }
 
     #[test]

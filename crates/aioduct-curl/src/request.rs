@@ -29,20 +29,20 @@ fn apply_headers<'a>(
     mut req: RequestBuilder<'a, TokioRuntime>,
 ) -> RequestBuilder<'a, TokioRuntime> {
     for h in &cli.headers {
-        if let Some((name, value)) = h.split_once(':') {
-            if let (Ok(n), Ok(v)) = (
+        if let Some((name, value)) = h.split_once(':')
+            && let (Ok(n), Ok(v)) = (
                 name.trim().parse::<HeaderName>(),
                 value.trim().parse::<HeaderValue>(),
-            ) {
-                req = req.header(n, v);
-            }
+            )
+        {
+            req = req.header(n, v);
         }
     }
 
-    if let Some(ref referer) = cli.referer {
-        if let Ok(v) = referer.parse::<HeaderValue>() {
-            req = req.header(http::header::REFERER, v);
-        }
+    if let Some(ref referer) = cli.referer
+        && let Ok(v) = referer.parse::<HeaderValue>()
+    {
+        req = req.header(http::header::REFERER, v);
     }
 
     req
