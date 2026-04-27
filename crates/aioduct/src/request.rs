@@ -163,10 +163,9 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
     /// Serialize a value as JSON and set it as the request body.
     pub fn json(mut self, value: &impl serde::Serialize) -> Result<Self, Error> {
         let bytes = serde_json::to_vec(value).map_err(|e| Error::Other(Box::new(e)))?;
-        self.headers.insert(
-            http::header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
+        self.headers
+            .entry(http::header::CONTENT_TYPE)
+            .or_insert_with(|| HeaderValue::from_static("application/json"));
         self.body = Some(RequestBody::Buffered(bytes.into()));
         Ok(self)
     }
@@ -578,6 +577,25 @@ mod tests {
         assert_eq!(
             req.headers().get("content-type").unwrap(),
             "application/json"
+        );
+    }
+
+    #[cfg(feature = "json")]
+    #[tokio::test]
+    async fn json_preserves_existing_content_type() {
+        let client = test_client();
+        let rb = client.post("http://example.com").unwrap();
+        let rb = rb
+            .header(
+                http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/vnd.api+json"),
+            )
+            .json(&serde_json::json!({"key": "value"}))
+            .unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(
+            req.headers().get("content-type").unwrap(),
+            "application/vnd.api+json"
         );
     }
 

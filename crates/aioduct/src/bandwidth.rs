@@ -116,8 +116,8 @@ mod tests {
 
     #[test]
     fn new_starts_with_full_bandwidth() {
-        let bw = BandwidthLimiter::new(1000);
-        assert_eq!(bw.try_consume(1000), 1000);
+        let bw = BandwidthLimiter::new(1);
+        assert_eq!(bw.try_consume(1), 1);
         assert_eq!(bw.try_consume(1), 0);
     }
 
