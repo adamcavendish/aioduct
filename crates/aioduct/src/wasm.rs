@@ -184,10 +184,9 @@ impl<'a> WasmRequestBuilder<'a> {
     pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self, Error> {
         let json_bytes = serde_json::to_vec(value).map_err(|e| Error::Other(Box::new(e)))?;
         self.body = Some(Bytes::from(json_bytes));
-        self.headers.insert(
-            http::header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
+        self.headers
+            .entry(http::header::CONTENT_TYPE)
+            .or_insert_with(|| HeaderValue::from_static("application/json"));
         Ok(self)
     }
 
@@ -370,5 +369,44 @@ impl WasmResponse {
         } else {
             Ok(self)
         }
+    }
+}
+
+#[cfg(all(test, feature = "json"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_sets_default_content_type() {
+        let client = WasmClient::new();
+        let req = client
+            .post("https://example.com/")
+            .unwrap()
+            .json(&serde_json::json!({"key": "value"}))
+            .unwrap();
+
+        assert_eq!(
+            req.headers.get(http::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+    }
+
+    #[test]
+    fn json_preserves_existing_content_type() {
+        let client = WasmClient::new();
+        let req = client
+            .post("https://example.com/")
+            .unwrap()
+            .header(
+                http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/vnd.api+json"),
+            )
+            .json(&serde_json::json!({"key": "value"}))
+            .unwrap();
+
+        assert_eq!(
+            req.headers.get(http::header::CONTENT_TYPE).unwrap(),
+            "application/vnd.api+json"
+        );
     }
 }
