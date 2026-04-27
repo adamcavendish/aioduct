@@ -57,12 +57,11 @@ impl DownloadEngine {
             builder = builder.danger_accept_invalid_certs();
         }
 
-        if let Some(ref proxy_uri) = cli.all_proxy {
-            if let Ok(proxy) = aioduct::ProxyConfig::http(proxy_uri)
+        if let Some(ref proxy_uri) = cli.all_proxy
+            && let Ok(proxy) = aioduct::ProxyConfig::http(proxy_uri)
                 .or_else(|_| aioduct::ProxyConfig::socks5(proxy_uri))
-            {
-                builder = builder.proxy(proxy);
-            }
+        {
+            builder = builder.proxy(proxy);
         }
 
         let extra = Arc::new(ExtraRequestConfig::from_cli(&cli));
@@ -225,10 +224,9 @@ impl DownloadEngine {
             if let Err(e) = handle
                 .await
                 .map_err(|e| aioduct::Error::Other(Box::new(e)))?
+                && first_error.is_none()
             {
-                if first_error.is_none() {
-                    first_error = Some(e);
-                }
+                first_error = Some(e);
             }
         }
 

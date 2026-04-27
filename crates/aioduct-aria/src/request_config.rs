@@ -11,19 +11,19 @@ impl ExtraRequestConfig {
     pub fn from_cli(cli: &Cli) -> Self {
         let mut headers = Vec::new();
         for h in &cli.headers {
-            if let Some((name, value)) = h.split_once(':') {
-                if let (Ok(n), Ok(v)) = (
+            if let Some((name, value)) = h.split_once(':')
+                && let (Ok(n), Ok(v)) = (
                     name.trim().parse::<http::HeaderName>(),
                     value.trim().parse::<http::HeaderValue>(),
-                ) {
-                    headers.push((n, v));
-                }
+                )
+            {
+                headers.push((n, v));
             }
         }
-        if let Some(ref referer) = cli.referer {
-            if let Ok(v) = referer.parse::<http::HeaderValue>() {
-                headers.push((http::header::REFERER, v));
-            }
+        if let Some(ref referer) = cli.referer
+            && let Ok(v) = referer.parse::<http::HeaderValue>()
+        {
+            headers.push((http::header::REFERER, v));
         }
         let auth = match (&cli.http_user, &cli.http_passwd) {
             (Some(u), Some(p)) => Some((u.clone(), p.clone())),

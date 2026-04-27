@@ -27,6 +27,7 @@ pub struct Cookie {
     http_only: bool,
     same_site: Option<SameSite>,
     expired: bool,
+    host_only: bool,
 }
 
 impl Cookie {
@@ -119,7 +120,11 @@ impl CookieJar {
         for (stored_domain, cookies) in jar.iter() {
             for c in cookies {
                 let cookie_domain = c.domain.as_deref().unwrap_or(stored_domain);
-                if !domain_matches(domain, cookie_domain) {
+                if c.host_only {
+                    if domain != cookie_domain {
+                        continue;
+                    }
+                } else if !domain_matches(domain, cookie_domain) {
                     continue;
                 }
                 if c.secure && !is_secure {
@@ -214,13 +219,19 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
         }
     }
 
+    let host_only = domain.is_none();
+
     if domain.is_none() {
         domain = Some(request_domain.to_owned());
     }
 
     // Cookie prefix validation (RFC 6265bis §4.1.3)
     if name.starts_with("__Host-") {
-        if !secure || domain.as_deref() != Some(request_domain) || path.as_deref() != Some("/") {
+        if !secure
+            || !host_only
+            || domain.as_deref() != Some(request_domain)
+            || path.as_deref() != Some("/")
+        {
             return None;
         }
     } else if name.starts_with("__Secure-") && !secure {
@@ -236,6 +247,7 @@ fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
         http_only,
         same_site,
         expired,
+        host_only,
     })
 }
 
@@ -413,6 +425,34 @@ mod tests {
     }
 
     #[test]
+    fn host_only_cookie_not_sent_to_subdomain() {
+        let jar = CookieJar::new();
+        jar.store_from_response("example.com", &headers_with_cookies(&["hostonly=1"]));
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("sub.example.com", false, "/", &mut req_headers);
+
+        assert!(
+            req_headers.get(COOKIE).is_none(),
+            "cookie without Domain must be scoped to the exact origin host"
+        );
+    }
+
+    #[test]
+    fn domain_attribute_cookie_sent_to_subdomain() {
+        let jar = CookieJar::new();
+        jar.store_from_response(
+            "example.com",
+            &headers_with_cookies(&["domain=1; Domain=example.com"]),
+        );
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("sub.example.com", false, "/", &mut req_headers);
+
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "domain=1");
+    }
+
+    #[test]
     fn httponly_attribute_parsed() {
         let cookie = parse_set_cookie("a=b; HttpOnly", "example.com");
         assert!(cookie.unwrap().http_only);
@@ -512,7 +552,10 @@ mod tests {
     #[test]
     fn subdomain_cookie_applied() {
         let jar = CookieJar::new();
-        jar.store_from_response("example.com", &headers_with_cookies(&["k=v"]));
+        jar.store_from_response(
+            "example.com",
+            &headers_with_cookies(&["k=v; Domain=example.com"]),
+        );
 
         let mut req_headers = HeaderMap::new();
         jar.apply_to_request("sub.example.com", false, "/", &mut req_headers);

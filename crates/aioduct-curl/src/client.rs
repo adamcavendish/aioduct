@@ -50,12 +50,11 @@ pub fn build_client(cli: &Cli) -> Client<TokioRuntime> {
         builder = builder.no_decompression();
     }
 
-    if let Some(ref proxy_url) = cli.proxy {
-        if let Ok(proxy) = aioduct::ProxyConfig::http(proxy_url)
+    if let Some(ref proxy_url) = cli.proxy
+        && let Ok(proxy) = aioduct::ProxyConfig::http(proxy_url)
             .or_else(|_| aioduct::ProxyConfig::socks5(proxy_url))
-        {
-            builder = builder.proxy(proxy);
-        }
+    {
+        builder = builder.proxy(proxy);
     }
 
     builder.build()

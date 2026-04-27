@@ -3347,6 +3347,75 @@ async fn test_digest_auth_flow() {
 }
 
 #[tokio::test]
+async fn test_digest_auth_post_replays_buffered_body() {
+    use http_body_util::BodyExt;
+
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let addr = start_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            let method = req.method().clone();
+            let auth = req
+                .headers()
+                .get("authorization")
+                .map(|v| v.to_str().unwrap().to_owned())
+                .unwrap_or_else(|| "none".to_owned());
+            let body = req.into_body().collect().await.unwrap().to_bytes();
+
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(401)
+                        .header(
+                            "www-authenticate",
+                            r#"Digest realm="post@example.com", nonce="abcdef123456", qop="auth""#,
+                        )
+                        .body(Full::new(Bytes::from("unauthorized")))
+                        .unwrap(),
+                )
+            } else {
+                let body = format!(
+                    "method={method}\nauth={auth}\nbody={}",
+                    String::from_utf8_lossy(&body)
+                );
+                Ok(Response::new(Full::new(Bytes::from(body))))
+            }
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::builder()
+        .digest_auth("testuser", "testpass")
+        .build();
+
+    let resp = client
+        .post(&format!("http://{addr}/submit"))
+        .unwrap()
+        .body("payload=aioduct")
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("method=POST"),
+        "POST method must be replayed: {body}"
+    );
+    assert!(
+        body.contains("auth=Digest "),
+        "digest retry must include Authorization: {body}"
+    );
+    assert!(
+        body.contains("body=payload=aioduct"),
+        "digest retry must replay the original buffered request body: {body}"
+    );
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn test_digest_auth_no_challenge() {
     let addr = start_server().await;
 
@@ -3409,6 +3478,63 @@ async fn test_cache_stores_and_returns_fresh() {
         attempt.load(Ordering::SeqCst),
         1,
         "cache should prevent second server hit"
+    );
+}
+
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn test_cacheable_gzip_response_is_decompressed_before_return_and_cache_hit() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(b"cached gzip").unwrap();
+    let compressed = Bytes::from(encoder.finish().unwrap());
+
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+    let compressed_clone = compressed.clone();
+
+    let addr = start_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        let compressed = compressed_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("cache-control", "max-age=3600")
+                    .header("content-encoding", "gzip")
+                    .header("content-length", compressed.len().to_string())
+                    .body(Full::new(compressed))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let url = format!("http://{addr}/gzip-cache");
+
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert!(
+        !resp.headers().contains_key("content-encoding"),
+        "cacheable gzip response should expose decoded response headers"
+    );
+    assert_eq!(resp.text().await.unwrap(), "cached gzip");
+    assert_eq!(attempt.load(Ordering::SeqCst), 1);
+
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert!(
+        !resp.headers().contains_key("content-encoding"),
+        "cached gzip response should expose decoded response headers"
+    );
+    assert_eq!(resp.text().await.unwrap(), "cached gzip");
+    assert_eq!(
+        attempt.load(Ordering::SeqCst),
+        1,
+        "fresh cache hit must not contact the server again"
     );
 }
 

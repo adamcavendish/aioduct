@@ -1,12 +1,11 @@
 use std::path::{Path, PathBuf};
 
 pub fn from_url_and_headers(url: &str, headers: &http::HeaderMap) -> String {
-    if let Some(cd) = headers.get("content-disposition") {
-        if let Ok(cd_str) = cd.to_str() {
-            if let Some(name) = parse_content_disposition(cd_str) {
-                return name;
-            }
-        }
+    if let Some(cd) = headers.get("content-disposition")
+        && let Ok(cd_str) = cd.to_str()
+        && let Some(name) = parse_content_disposition(cd_str)
+    {
+        return name;
     }
 
     from_url(url)
@@ -19,12 +18,11 @@ fn parse_content_disposition(cd: &str) -> Option<String> {
             if let Some(encoded) = rest
                 .strip_prefix("UTF-8''")
                 .or_else(|| rest.strip_prefix("utf-8''"))
+                && let Ok(decoded) = percent_decode(encoded)
             {
-                if let Ok(decoded) = percent_decode(encoded) {
-                    let name = decoded.trim_matches('"');
-                    if !name.is_empty() {
-                        return Some(name.to_string());
-                    }
+                let name = decoded.trim_matches('"');
+                if !name.is_empty() {
+                    return Some(name.to_string());
                 }
             }
         } else if let Some(rest) = part.strip_prefix("filename=") {
@@ -42,15 +40,16 @@ fn percent_decode(s: &str) -> Result<String, ()> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(
                 std::str::from_utf8(&bytes[i + 1..i + 3]).map_err(|_| ())?,
                 16,
-            ) {
-                result.push(byte);
-                i += 3;
-                continue;
-            }
+            )
+        {
+            result.push(byte);
+            i += 3;
+            continue;
         }
         result.push(bytes[i]);
         i += 1;
