@@ -16,6 +16,8 @@ default = []
 json = ["dep:serde", "dep:serde_json", "dep:serde_urlencoded"]
 charset = ["dep:encoding_rs", "dep:mime"]
 rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile"]
+rustls-ring = ["rustls?/ring", "quinn?/rustls-ring"]
+rustls-aws-lc-rs = ["rustls?/aws-lc-rs", "quinn?/rustls-aws-lc-rs"]
 rustls-native-roots = ["rustls", "dep:rustls-native-certs"]
 # Note: hickory-dns implies tokio (hickory-resolver requires tokio)
 hickory-dns = ["dep:hickory-resolver", "tokio"]
@@ -23,7 +25,7 @@ blocking = ["tokio"]
 tokio = ["dep:tokio"]
 smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
 compio = ["dep:compio-runtime", "dep:compio-driver", "dep:async-io", "dep:futures-io"]
-http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:futures-util", "rustls"]
+http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:futures-util"]
 gzip = ["dep:flate2"]
 brotli = ["dep:brotli"]
 zstd = ["dep:zstd"]
@@ -128,5 +130,25 @@ tokio.workspace = true
 tracing-subscriber.workspace = true
 
 [package.metadata.docs.rs]
-all-features = true
+features = [
+    "json",
+    "charset",
+    "rustls",
+    "rustls-ring",
+    "rustls-native-roots",
+    "hickory-dns",
+    "blocking",
+    "tokio",
+    "smol",
+    "compio",
+    "http3",
+    "gzip",
+    "brotli",
+    "zstd",
+    "deflate",
+    "tower",
+    "tracing",
+    "otel",
+    "wasm",
+]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -4,14 +4,21 @@ aioduct has experimental HTTP/3 support via [h3](https://crates.io/crates/h3), [
 
 ## Feature Flag
 
-Enable the `http3` feature in your `Cargo.toml`:
+Enable the `http3` transport feature with the rustls backend and a rustls crypto provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "http3"] }
+aioduct = { version = "0.1", features = ["tokio", "http3", "rustls", "rustls-ring"] }
 ```
 
-The `http3` feature automatically enables `rustls` since QUIC requires TLS 1.3.
+To use AWS-LC instead of ring, select the AWS-LC rustls provider:
+
+```toml
+[dependencies]
+aioduct = { version = "0.1", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
+```
+
+The `http3` feature only selects the QUIC/HTTP/3 transport dependencies. Today HTTP/3 still requires the rustls backend because quinn uses rustls for QUIC TLS; choose exactly one of `rustls-ring` or `rustls-aws-lc-rs`.
 
 ## Usage
 
@@ -67,7 +74,7 @@ let client = Client::<TokioRuntime>::builder()
     .build();
 ```
 
-> **Important:** `.tls()` must be called before `.http3(true)` or `.alt_svc_h3(true)` because HTTP/3 reuses the rustls configuration to build the QUIC endpoint.
+> **Important:** `.tls()` must be called before `.http3(true)` or `.alt_svc_h3(true)` when you provide a custom TLS connector because HTTP/3 reuses that rustls configuration to build the QUIC endpoint.
 
 ## Alt-Svc Protocol Upgrade
 
@@ -96,3 +103,4 @@ When HTTP/3 is **not** enabled (default), the client uses TCP with HTTP/1.1 or H
 - **Experimental** — the h3 ecosystem (h3 0.0.8, h3-quinn 0.0.10) is pre-1.0.
 - **No fallback** — in always-h3 mode, if the server doesn't support QUIC, the request fails rather than falling back to TCP. Use Alt-Svc mode or the default (non-h3) client for servers where QUIC support is uncertain.
 - **Tokio only** — quinn requires tokio, so HTTP/3 is only available with the `tokio` runtime feature.
+- **rustls required today** — future TLS backend work may change the available combinations, but current HTTP/3 support composes with rustls provider features.

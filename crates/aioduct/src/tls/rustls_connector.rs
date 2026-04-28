@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use hyper::rt::{self, Read, Write};
 use rustls::pki_types::ServerName;
 
-use super::TlsConnect;
+use super::{TlsConnect, crypto_provider};
 use crate::runtime::Runtime;
 
 /// TLS connector backed by rustls.
@@ -51,7 +51,9 @@ impl RustlsConnector {
     ) -> Self {
         let root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+        let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+            .with_protocol_versions(versions)
+            .expect("configured rustls provider does not support the requested TLS versions")
             .with_root_certificates(root_store)
             .with_no_client_auth();
         Self::set_default_alpn(&mut config);
@@ -75,7 +77,9 @@ impl RustlsConnector {
                 .add(cert.der.clone())
                 .expect("invalid extra root certificate");
         }
-        let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+        let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+            .with_protocol_versions(versions)
+            .expect("configured rustls provider does not support the requested TLS versions")
             .with_root_certificates(root_store)
             .with_no_client_auth();
         Self::set_default_alpn(&mut config);
@@ -105,7 +109,9 @@ impl RustlsConnector {
         for cert in certs {
             root_store.add(cert.der.clone()).map_err(io::Error::other)?;
         }
-        let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+        let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+            .with_protocol_versions(versions)
+            .expect("configured rustls provider does not support the requested TLS versions")
             .with_root_certificates(root_store)
             .with_client_auth_cert(identity.certs, identity.key)
             .map_err(io::Error::other)?;
@@ -135,7 +141,9 @@ impl RustlsConnector {
         for cert in native_certs.certs {
             let _ = root_store.add(cert);
         }
-        let mut config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+        let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+            .with_protocol_versions(versions)
+            .expect("configured rustls provider does not support the requested TLS versions")
             .with_root_certificates(root_store)
             .with_no_client_auth();
         Self::set_default_alpn(&mut config);
@@ -144,7 +152,9 @@ impl RustlsConnector {
 
     /// Create a connector that accepts any server certificate (INSECURE — testing only).
     pub fn danger_accept_invalid_certs() -> Self {
-        let mut config = rustls::ClientConfig::builder()
+        let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoVerifier))
             .with_no_client_auth();
@@ -165,7 +175,10 @@ impl RustlsConnector {
     ) -> std::result::Result<Self, io::Error> {
         if !crls.is_empty() || skip_hostname_verification {
             let mut server_verifier_builder =
-                rustls::client::WebPkiServerVerifier::builder(Arc::new(root_store));
+                rustls::client::WebPkiServerVerifier::builder_with_provider(
+                    Arc::new(root_store),
+                    crypto_provider(),
+                );
             if !crls.is_empty() {
                 server_verifier_builder = server_verifier_builder.with_crls(crls);
             }
@@ -178,7 +191,9 @@ impl RustlsConnector {
                     verifier
                 };
 
-            let config = rustls::ClientConfig::builder_with_protocol_versions(versions)
+            let config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+                .with_protocol_versions(versions)
+                .expect("configured rustls provider does not support the requested TLS versions")
                 .dangerous()
                 .with_custom_certificate_verifier(verifier);
 
@@ -191,7 +206,9 @@ impl RustlsConnector {
             Self::set_default_alpn(&mut config);
             Ok(Self::new(Arc::new(config)))
         } else {
-            let builder = rustls::ClientConfig::builder_with_protocol_versions(versions)
+            let builder = rustls::ClientConfig::builder_with_provider(crypto_provider())
+                .with_protocol_versions(versions)
+                .expect("configured rustls provider does not support the requested TLS versions")
                 .with_root_certificates(root_store);
 
             let mut config = match identity {
@@ -538,9 +555,9 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::CryptoProvider::get_default()
-            .map(|p| p.signature_verification_algorithms.supported_schemes())
-            .unwrap_or_default()
+        crypto_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -603,7 +620,7 @@ mod tests {
     use crate::runtime::tokio_rt::TokioIo;
 
     fn install_crypto_provider() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::tls::install_default_crypto_provider();
     }
 
     fn self_signed_cert() -> (
@@ -622,7 +639,9 @@ mod tests {
         key: rustls::pki_types::PrivateKeyDer<'static>,
     ) -> Arc<rustls::ServerConfig> {
         Arc::new(
-            rustls::ServerConfig::builder()
+            rustls::ServerConfig::builder_with_provider(crypto_provider())
+                .with_safe_default_protocol_versions()
+                .expect("configured rustls provider does not support the default TLS versions")
                 .with_no_client_auth()
                 .with_single_cert(certs, key)
                 .unwrap(),
@@ -833,7 +852,9 @@ mod tests {
         install_crypto_provider();
         let (certs, key) = self_signed_cert();
         let srv_cfg = Arc::new(
-            rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+            rustls::ServerConfig::builder_with_provider(crypto_provider())
+                .with_protocol_versions(&[&rustls::version::TLS12])
+                .expect("configured rustls provider does not support TLS 1.2")
                 .with_no_client_auth()
                 .with_single_cert(certs, key)
                 .unwrap(),
@@ -1095,7 +1116,9 @@ mod tests {
     async fn alpn_h2_negotiated() {
         install_crypto_provider();
         let (certs, key) = self_signed_cert();
-        let mut srv_cfg = rustls::ServerConfig::builder()
+        let mut srv_cfg = rustls::ServerConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .unwrap();
@@ -1105,7 +1128,9 @@ mod tests {
         let (client_io, server_io) = tokio::io::duplex(8192);
         let mut server_stream = TokioIo::new(server_io);
 
-        let mut client_cfg = rustls::ClientConfig::builder()
+        let mut client_cfg = rustls::ClientConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoVerifier))
             .with_no_client_auth();
@@ -1128,7 +1153,9 @@ mod tests {
     async fn alpn_h1_negotiated() {
         install_crypto_provider();
         let (certs, key) = self_signed_cert();
-        let mut srv_cfg = rustls::ServerConfig::builder()
+        let mut srv_cfg = rustls::ServerConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .unwrap();
@@ -1138,7 +1165,9 @@ mod tests {
         let (client_io, server_io) = tokio::io::duplex(8192);
         let mut server_stream = TokioIo::new(server_io);
 
-        let mut client_cfg = rustls::ClientConfig::builder()
+        let mut client_cfg = rustls::ClientConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoVerifier))
             .with_no_client_auth();
@@ -1180,7 +1209,9 @@ mod tests {
     async fn default_alpn_negotiates_h2() {
         install_crypto_provider();
         let (certs, key) = self_signed_cert();
-        let mut srv_cfg = rustls::ServerConfig::builder()
+        let mut srv_cfg = rustls::ServerConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .unwrap();
@@ -1288,7 +1319,9 @@ mod tests {
             rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
         let srv_cfg = Arc::new(
-            rustls::ServerConfig::builder()
+            rustls::ServerConfig::builder_with_provider(crypto_provider())
+                .with_safe_default_protocol_versions()
+                .expect("configured rustls provider does not support the default TLS versions")
                 .with_no_client_auth()
                 .with_single_cert(vec![cert_der.clone()], key_der)
                 .unwrap(),

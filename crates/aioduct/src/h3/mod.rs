@@ -208,8 +208,9 @@ mod tests {
     use std::sync::Arc;
 
     fn make_rustls_config(alpn: &[&[u8]]) -> Arc<rustls::ClientConfig> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let mut config = rustls::ClientConfig::builder()
+        let mut config = rustls::ClientConfig::builder_with_provider(crate::tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
             .with_root_certificates(rustls::RootCertStore::from_iter(
                 webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
             ))

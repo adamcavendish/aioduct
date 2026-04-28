@@ -73,9 +73,9 @@ pub struct ClientBuilder<R: Runtime> {
     pub(super) crls: Vec<crate::tls::CertificateRevocationList>,
     #[cfg(feature = "rustls")]
     pub(super) danger_accept_invalid_hostnames: bool,
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(super) h3_endpoint: Option<quinn::Endpoint>,
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(super) prefer_h3: bool,
     pub(super) _runtime: PhantomData<R>,
 }
@@ -136,9 +136,9 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             crls: Vec::new(),
             #[cfg(feature = "rustls")]
             danger_accept_invalid_hostnames: false,
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             h3_endpoint: None,
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             prefer_h3: false,
             _runtime: PhantomData,
         }
@@ -479,7 +479,7 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Enable or disable HTTP/3 for all HTTPS requests.
     pub fn http3(mut self, enable: bool) -> Self {
         if enable {
@@ -492,7 +492,7 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Enable automatic HTTP/3 upgrade via Alt-Svc headers.
     pub fn alt_svc_h3(mut self, enable: bool) -> Self {
         if enable {
@@ -503,7 +503,7 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     fn ensure_h3_endpoint(mut self) -> Self {
         if self.h3_endpoint.is_none() {
             let tls_config = self
@@ -646,11 +646,11 @@ impl<R: Runtime> ClientBuilder<R> {
             connector: self.connector,
             #[cfg(feature = "rustls")]
             tls,
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             h3_endpoint: self.h3_endpoint,
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             prefer_h3: self.prefer_h3,
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             _runtime: PhantomData,
         }

@@ -14,6 +14,9 @@
 )))]
 compile_error!("aioduct: enable at least one runtime feature: tokio, smol, compio, or wasm");
 
+#[cfg(all(feature = "http3", not(feature = "rustls")))]
+compile_error!("aioduct: the `http3` feature currently requires the `rustls` TLS backend feature");
+
 /// Blocking (synchronous) HTTP client wrapper.
 #[cfg(feature = "blocking")]
 pub mod blocking;
@@ -100,9 +103,9 @@ mod otel_middleware;
 #[cfg(feature = "otel")]
 pub use otel_middleware::OtelMiddleware;
 
-#[cfg(feature = "http3")]
+#[cfg(all(feature = "http3", feature = "rustls"))]
 mod alt_svc;
-#[cfg(feature = "http3")]
+#[cfg(all(feature = "http3", feature = "rustls"))]
 #[path = "h3/mod.rs"]
 /// HTTP/3 transport layer using QUIC.
 pub mod h3_transport;

@@ -16,6 +16,29 @@ use tokio::net::TcpListener;
 use aioduct::Client;
 use aioduct::runtime::TokioRuntime;
 
+#[cfg(feature = "rustls")]
+fn rustls_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls_crypto_provider_value())
+}
+
+#[cfg(feature = "rustls")]
+fn install_rustls_crypto_provider() {
+    let _ = rustls_crypto_provider_value().install_default();
+}
+
+#[cfg(feature = "rustls")]
+fn rustls_crypto_provider_value() -> rustls::crypto::CryptoProvider {
+    #[cfg(feature = "rustls-aws-lc-rs")]
+    {
+        rustls::crypto::aws_lc_rs::default_provider()
+    }
+
+    #[cfg(all(not(feature = "rustls-aws-lc-rs"), feature = "rustls-ring"))]
+    {
+        rustls::crypto::ring::default_provider()
+    }
+}
+
 async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     Ok(Response::new(Full::new(Bytes::from("hello aioduct"))))
 }
@@ -4953,16 +4976,19 @@ async fn test_happy_eyeballs_multi_addrs_integration() {
 async fn test_https_local_tls_server() {
     use std::sync::Arc;
 
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    install_rustls_crypto_provider();
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
-    let mut server_tls_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der.clone()], key_der)
-        .unwrap();
+    let mut server_tls_config =
+        rustls::ServerConfig::builder_with_provider(rustls_crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)
+            .unwrap();
     server_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let server_tls_config = Arc::new(server_tls_config);
     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
@@ -4999,9 +5025,12 @@ async fn test_https_local_tls_server() {
 
     let mut root_store = rustls::RootCertStore::empty();
     root_store.add(cert_der).unwrap();
-    let mut client_tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+    let mut client_tls_config =
+        rustls::ClientConfig::builder_with_provider(rustls_crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
@@ -5036,17 +5065,20 @@ async fn test_https_local_tls_server() {
 async fn test_https_h1_local_tls_server() {
     use std::sync::Arc;
 
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    install_rustls_crypto_provider();
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     // Server only offers h1
-    let mut server_tls_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der.clone()], key_der)
-        .unwrap();
+    let mut server_tls_config =
+        rustls::ServerConfig::builder_with_provider(rustls_crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)
+            .unwrap();
     server_tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
     let server_tls_config = Arc::new(server_tls_config);
     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
@@ -5083,9 +5115,12 @@ async fn test_https_h1_local_tls_server() {
 
     let mut root_store = rustls::RootCertStore::empty();
     root_store.add(cert_der).unwrap();
-    let mut client_tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+    let mut client_tls_config =
+        rustls::ClientConfig::builder_with_provider(rustls_crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
@@ -5120,14 +5155,16 @@ async fn test_https_h1_local_tls_server() {
 async fn test_https_no_alpn_server() {
     use std::sync::Arc;
 
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    install_rustls_crypto_provider();
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     // Server with NO ALPN
-    let server_tls_config = rustls::ServerConfig::builder()
+    let server_tls_config = rustls::ServerConfig::builder_with_provider(rustls_crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("configured rustls provider does not support the default TLS versions")
         .with_no_client_auth()
         .with_single_cert(vec![cert_der.clone()], key_der)
         .unwrap();
@@ -5166,9 +5203,12 @@ async fn test_https_no_alpn_server() {
 
     let mut root_store = rustls::RootCertStore::empty();
     root_store.add(cert_der).unwrap();
-    let mut client_tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+    let mut client_tls_config =
+        rustls::ClientConfig::builder_with_provider(rustls_crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
@@ -5203,16 +5243,19 @@ async fn test_https_no_alpn_server() {
 async fn test_https_with_webpki_roots_local() {
     use std::sync::Arc;
 
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    install_rustls_crypto_provider();
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
-    let mut server_tls_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der.clone()], key_der)
-        .unwrap();
+    let mut server_tls_config =
+        rustls::ServerConfig::builder_with_provider(rustls_crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)
+            .unwrap();
     server_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let server_tls_config = Arc::new(server_tls_config);
     let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
@@ -5331,8 +5374,10 @@ async fn test_timings_https_with_tls() {
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     let server_config = {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let mut cfg = rustls::ServerConfig::builder()
+        install_rustls_crypto_provider();
+        let mut cfg = rustls::ServerConfig::builder_with_provider(rustls_crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
             .with_no_client_auth()
             .with_single_cert(vec![cert_der.clone()], key_der)
             .unwrap();
@@ -5363,9 +5408,12 @@ async fn test_timings_https_with_tls() {
 
     let mut root_store = rustls::RootCertStore::empty();
     root_store.add(cert_der).unwrap();
-    let mut client_tls_config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+    let mut client_tls_config =
+        rustls::ClientConfig::builder_with_provider(rustls_crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
     let client: Client<TokioRuntime> = Client::builder()

@@ -60,7 +60,7 @@ impl<R: Runtime> Client<R> {
             return Ok(resp);
         }
 
-        #[cfg(feature = "http3")]
+        #[cfg(all(feature = "http3", feature = "rustls"))]
         if is_https && let Some(endpoint) = &self.h3_endpoint {
             let use_h3 = self.prefer_h3 || self.alt_svc_cache.lookup_h3(authority).is_some();
             if use_h3 {
@@ -554,7 +554,9 @@ impl<R: Runtime> Client<R> {
         _tcp_stream: R::TcpStream,
         _host: &str,
     ) -> Result<PooledConnection<R>, Error> {
-        Err(Error::Tls("HTTPS requires the `rustls` feature".into()))
+        Err(Error::Tls(
+            "HTTPS requires the `rustls` TLS backend feature".into(),
+        ))
     }
 
     async fn send_on_connection(
@@ -566,7 +568,7 @@ impl<R: Runtime> Client<R> {
         let proto = match &conn.conn {
             HttpConnection::H1(_) => "h1",
             HttpConnection::H2(_) => "h2",
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(_) => "h3",
         };
         #[cfg(feature = "tracing")]
@@ -587,7 +589,7 @@ impl<R: Runtime> Client<R> {
                 let resp = resp.map(crate::response::ResponseBody::from_incoming);
                 Ok(Response::new(resp, url))
             }
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(sender) => {
                 crate::h3_transport::send_on_h3(sender, request, url).await
             }
@@ -653,7 +655,7 @@ impl<R: Runtime> Client<R> {
         result
     }
 
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(super) fn cache_alt_svc(&self, uri: &Uri, headers: &http::HeaderMap) {
         use http::header::ALT_SVC;
         if let Some(authority) = uri.authority()

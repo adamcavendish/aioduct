@@ -2,19 +2,24 @@
 default:
     @just --list
 
+all_features_ring := "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm"
+all_features_aws_lc_rs := "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm"
+
 # ---------- Build ----------
 
 # Build with default features (tokio)
 build:
     cargo build --features tokio
 
-# Build with every feature enabled
+# Build with every compatible all-feature provider set
 build-all:
-    cargo build --all-features
+    cargo build -p aioduct --features {{ all_features_ring }}
+    cargo build -p aioduct --features {{ all_features_aws_lc_rs }}
 
 # Check MSRV (1.88)
 msrv:
-    cargo +1.88.0 check --all-features
+    cargo +1.88.0 check -p aioduct --features {{ all_features_ring }}
+    cargo +1.88.0 check -p aioduct --features {{ all_features_aws_lc_rs }}
 
 # ---------- Lint ----------
 
@@ -23,14 +28,15 @@ clippy:
     cargo clippy --features tokio              --all-targets -- -D warnings
     cargo clippy --features smol               --all-targets -- -D warnings
     cargo clippy --features compio             --all-targets -- -D warnings
-    cargo clippy --features tokio,rustls       --all-targets -- -D warnings
-    cargo clippy --features smol,rustls        --all-targets -- -D warnings
+    cargo clippy --features tokio,rustls,rustls-ring       --all-targets -- -D warnings
+    cargo clippy --features smol,rustls,rustls-ring        --all-targets -- -D warnings
     cargo clippy --features tokio,json         --all-targets -- -D warnings
-    cargo clippy --features tokio,rustls,json  --all-targets -- -D warnings
+    cargo clippy --features tokio,rustls,rustls-ring,json  --all-targets -- -D warnings
 
-# Run clippy with all features enabled
+# Run clippy with every compatible all-feature provider set
 clippy-all:
-    cargo clippy -p aioduct --all-features --all-targets -- -D warnings
+    cargo clippy -p aioduct --features {{ all_features_ring }} --all-targets -- -D warnings
+    cargo clippy -p aioduct --features {{ all_features_aws_lc_rs }} --all-targets -- -D warnings
 
 # Run clippy with a specific feature set
 clippy-features features:
@@ -50,9 +56,10 @@ fmt:
 test:
     cargo nextest run --features tokio,json
 
-# Run tests with every feature enabled
+# Run tests with every compatible all-feature provider set
 test-all:
-    cargo nextest run --all-features
+    cargo nextest run -p aioduct --features {{ all_features_ring }}
+    cargo nextest run -p aioduct --features {{ all_features_aws_lc_rs }}
 
 # Run tests with a specific feature set
 test-features features:
@@ -62,18 +69,27 @@ test-features features:
 
 # Show coverage summary table
 coverage:
-    cargo llvm-cov nextest --all-features --summary-only
+    cargo llvm-cov clean --workspace
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_ring }} --no-report
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-report --no-clean
+    cargo llvm-cov report --summary-only
 
 # Generate HTML coverage report and open in browser
 coverage-html:
     mkdir -p coverage/html
-    cargo llvm-cov nextest --all-features --html --output-dir coverage/html
+    cargo llvm-cov clean --workspace
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_ring }} --no-report
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-report --no-clean
+    cargo llvm-cov report --html --output-dir coverage/html
     open coverage/html/index.html 2>/dev/null || xdg-open coverage/html/index.html 2>/dev/null || true
 
 # Generate LCOV output for CI/editors
 coverage-lcov:
     mkdir -p coverage
-    cargo llvm-cov nextest --all-features --lcov --output-path coverage/lcov.info
+    cargo llvm-cov clean --workspace
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_ring }} --no-report
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-report --no-clean
+    cargo llvm-cov report --lcov --output-path coverage/lcov.info
 
 # ---------- Bench ----------
 
@@ -101,11 +117,12 @@ bench-compare baseline:
 
 # Build and open rustdoc
 doc:
-    RUSTDOCFLAGS="-Dwarnings" cargo doc --all-features --no-deps --open
+    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct --features {{ all_features_ring }} --no-deps --open
 
 # Build rustdoc without opening (CI mode)
 doc-check:
-    RUSTDOCFLAGS="-Dwarnings" cargo doc --all-features --no-deps
+    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct --features {{ all_features_ring }} --no-deps
+    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct --features {{ all_features_aws_lc_rs }} --no-deps
 
 # Build the mdbook
 book:
@@ -119,11 +136,11 @@ book-serve:
 
 # Dry-run publish to verify packaging
 publish-dry-run:
-    cargo publish --dry-run -p aioduct --all-features
+    cargo publish --dry-run -p aioduct --features {{ all_features_ring }}
 
 # Publish aioduct to crates.io
 publish:
-    cargo publish -p aioduct --all-features
+    cargo publish -p aioduct --features {{ all_features_ring }}
 
 # ---------- CI (run everything) ----------
 

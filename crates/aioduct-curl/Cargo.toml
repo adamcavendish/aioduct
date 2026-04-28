@@ -16,6 +16,7 @@ path = "src/main.rs"
 aioduct = { workspace = true, features = [
     "tokio",
     "rustls",
+    "rustls-ring",
     "gzip",
     "brotli",
     "zstd",

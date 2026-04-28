@@ -5,5 +5,5 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["tokio", "rustls"] }
+aioduct = { workspace = true, features = ["tokio", "rustls", "rustls-ring"] }
 tokio = { version = "1", features = ["full"] }

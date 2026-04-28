@@ -87,10 +87,22 @@ async fn main() -> Result<(), aioduct::Error> {
 
 ## HTTPS
 
-Enable the `rustls` feature:
+Enable the `rustls` TLS backend plus exactly one rustls crypto provider:
 
 ```toml
-aioduct = { version = "0.1", features = ["tokio", "rustls"] }
+aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring"] }
+```
+
+To use rustls with AWS-LC instead of ring, select the AWS-LC provider:
+
+```toml
+aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+```
+
+To use the OS certificate store, add `rustls-native-roots` alongside either TLS provider:
+
+```toml
+aioduct = { version = "0.1", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ```rust
@@ -106,8 +118,10 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 | `smol`    | Smol async runtime                     | Stable       |
 | `compio`  | Compio runtime (io_uring / IOCP)       | Experimental |
 | `wasm`    | Browser/WASM runtime via web-sys       | Experimental |
-| `rustls`  | TLS via rustls (required for HTTPS)    | Stable       |
-| `rustls-native-roots` | Use OS certificate store instead of webpki-roots | Stable |
+| `rustls`  | TLS via rustls; requires exactly one rustls provider | Stable |
+| `rustls-ring` | ring crypto provider for rustls | Stable |
+| `rustls-aws-lc-rs` | AWS-LC crypto provider for rustls | Stable |
+| `rustls-native-roots` | Use OS certificate store with either rustls provider | Stable |
 | `json`    | JSON request/response with serde       | Stable       |
 | `charset` | Charset decoding via encoding_rs       | Stable       |
 | `gzip`    | Gzip response decompression            | Stable       |
@@ -119,9 +133,9 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 | `tower`   | Tower `Service` and `Layer` integration | Stable      |
 | `tracing` | Tracing spans for requests             | Stable       |
 | `otel`    | OpenTelemetry middleware               | Stable       |
-| `http3`   | HTTP/3 via h3 + h3-quinn              | Experimental |
+| `http3`   | HTTP/3 transport via h3 + h3-quinn; currently requires `rustls` plus one rustls provider | Experimental |
 
-At least one runtime feature must be enabled or compilation will fail.
+At least one runtime feature must be enabled or compilation will fail. When `rustls` is enabled, choose exactly one of `rustls-ring` or `rustls-aws-lc-rs`. The `native-tls` backend name is reserved for possible future OpenSSL/native TLS support and is not implemented today.
 
 ## Examples
 
@@ -306,7 +320,7 @@ pub trait Runtime: Send + Sync + 'static {
 | hyper | 1.x via hyper-util legacy | 1.x direct |
 | hyper-util | Required | Not used |
 | Runtime | tokio only | tokio / smol / compio / wasm |
-| TLS | rustls or native-tls | rustls |
+| TLS | rustls or native-tls | rustls (`native-tls` reserved for future support) |
 | HTTP/3 | Experimental | Experimental |
 | io_uring | No | Via compio |
 | Connection pool | hyper-util legacy | Custom h1/h2/h3 |

@@ -71,11 +71,11 @@ pub struct Client<R: Runtime> {
     pub(crate) connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
     pub(crate) tls: Option<Arc<crate::tls::RustlsConnector>>,
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) h3_endpoint: Option<quinn::Endpoint>,
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) prefer_h3: bool,
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) alt_svc_cache: crate::alt_svc::AltSvcCache,
     pub(crate) _runtime: PhantomData<R>,
 }
@@ -118,11 +118,11 @@ impl<R: Runtime> Clone for Client<R> {
             connector: self.connector.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             h3_endpoint: self.h3_endpoint.clone(),
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             prefer_h3: self.prefer_h3,
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             alt_svc_cache: self.alt_svc_cache.clone(),
             _runtime: PhantomData,
         }
@@ -168,7 +168,7 @@ impl<R: Runtime> Client<R> {
             .build()
     }
 
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Create a client configured for HTTP/3 with rustls.
     pub fn with_http3() -> Self {
         Self::builder()
@@ -177,7 +177,7 @@ impl<R: Runtime> Client<R> {
             .build()
     }
 
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Create a client that upgrades to HTTP/3 via Alt-Svc discovery.
     pub fn with_alt_svc_h3() -> Self {
         Self::builder()
@@ -477,7 +477,7 @@ impl<R: Runtime> Client<R> {
             if !resp.status().is_redirection()
                 || matches!(self.redirect_policy, RedirectPolicy::None)
             {
-                #[cfg(feature = "http3")]
+                #[cfg(all(feature = "http3", feature = "rustls"))]
                 if self.h3_endpoint.is_some() {
                     self.cache_alt_svc(&current_uri, resp.headers());
                 }
@@ -736,7 +736,7 @@ mod builder_tests {
 
     #[cfg(feature = "rustls")]
     fn install_crypto() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        crate::tls::install_default_crypto_provider();
     }
 
     #[tokio::test]
