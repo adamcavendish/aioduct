@@ -13,7 +13,7 @@ aioduct can automatically decompress response bodies based on the `Content-Encod
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls", "gzip", "brotli"] }
+aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring", "gzip", "brotli"] }
 ```
 
 ## How It Works
@@ -31,9 +31,7 @@ use aioduct::runtime::TokioRuntime;
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // With the `gzip` feature enabled, gzip responses are decompressed automatically
-    let client = Client::<TokioRuntime>::builder()
-        .tls(aioduct::tls::RustlsConnector::new())
-        .build();
+    let client = Client::<TokioRuntime>::with_rustls();
 
     let text = client.get("https://httpbin.org/gzip")?
         .send().await?

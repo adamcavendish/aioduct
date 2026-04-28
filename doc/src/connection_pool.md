@@ -27,7 +27,7 @@ HTTP/2 connections support multiplexing — multiple concurrent requests share a
 
 ### HTTP/3 (QUIC) Pooling
 
-When the `http3` feature is enabled, QUIC connections are pooled alongside TCP connections. Like HTTP/2, HTTP/3 multiplexes streams over a single connection, so a pooled QUIC connection can serve multiple sequential requests to the same origin without re-establishing the handshake. The pool uses the same `(scheme, authority)` key for both TCP and QUIC connections.
+When the `http3` feature is enabled with the rustls backend and one rustls provider, QUIC connections are pooled alongside TCP connections. Like HTTP/2, HTTP/3 multiplexes streams over a single connection, so a pooled QUIC connection can serve multiple sequential requests to the same origin without re-establishing the handshake. The pool uses the same `(scheme, authority)` key for both TCP and QUIC connections.
 
 ## Configuration
 

@@ -1,12 +1,28 @@
 # TLS & HTTPS
 
-aioduct supports HTTPS via [rustls](https://github.com/rustls/rustls), enabled with the `rustls` feature flag. No TLS library is included by default — plain HTTP works without any TLS dependency.
+aioduct supports HTTPS via [rustls](https://github.com/rustls/rustls). No TLS library is included by default — plain HTTP works without any TLS dependency.
 
 ## Enabling HTTPS
 
+Use the `rustls` TLS backend with the ring crypto provider:
+
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls"] }
+aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring"] }
+```
+
+Use the same rustls backend with the AWS-LC crypto provider:
+
+```toml
+[dependencies]
+aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+```
+
+Add `rustls-native-roots` alongside either provider to use the OS certificate store:
+
+```toml
+[dependencies]
+aioduct = { version = "0.1", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ## Quick Start
@@ -53,6 +69,14 @@ This happens transparently — the client automatically selects the best protoco
 ### Root Certificates
 
 `Client::with_rustls()` uses [webpki-roots](https://crates.io/crates/webpki-roots), which bundles Mozilla's root certificate store directly in the binary. No system certificate store access is needed.
+
+Enable `rustls-native-roots` to build the connector from the operating system certificate store instead. This feature enables the rustls backend but does not select a crypto provider by itself; combine it with either `rustls-ring` or `rustls-aws-lc-rs`.
+
+### Crypto Providers
+
+The `rustls` feature enables the rustls TLS backend, while `rustls-ring` and `rustls-aws-lc-rs` select the crypto provider. Enable exactly one provider whenever `rustls` is enabled; enabling neither or both is a compile error.
+
+The backend/provider split keeps room for future TLS backends. A `native-tls` backend name is reserved for possible OpenSSL/native TLS support, but it is not implemented today.
 
 ## Custom TLS Configuration
 
@@ -107,5 +131,5 @@ let client = Client::<TokioRuntime>::builder()
 TLS errors surface as `Error::Tls(Box<dyn std::error::Error + Send + Sync>)`. Common failure modes:
 
 - Certificate verification failure (expired, wrong hostname, untrusted CA)
-- No TLS connector configured (HTTPS URL without `rustls` feature or `.tls()` builder call)
+- No TLS connector configured (HTTPS URL without the `rustls` backend and a rustls provider, or without a `.tls()` builder call for a custom connector)
 - Handshake timeout (use `.timeout()` on the request or client)

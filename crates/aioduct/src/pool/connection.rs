@@ -11,7 +11,7 @@ pub(crate) enum HttpConnection {
     /// An HTTP/2 connection.
     H2(hyper::client::conn::http2::SendRequest<crate::error::AioductBody>),
     /// An HTTP/3 connection.
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     H3(h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>),
 }
 
@@ -52,7 +52,7 @@ impl<R: Runtime> PooledConnection<R> {
     }
 
     /// Wrap an HTTP/3 connection.
-    #[cfg(feature = "http3")]
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) fn new_h3(
         sender: h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>,
     ) -> Self {
@@ -70,7 +70,7 @@ impl<R: Runtime> PooledConnection<R> {
         match &self.conn {
             HttpConnection::H1(s) => s.is_ready(),
             HttpConnection::H2(s) => s.is_ready(),
-            #[cfg(feature = "http3")]
+            #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(_) => true,
         }
     }

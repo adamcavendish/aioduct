@@ -38,7 +38,7 @@ encoding_rs = "0.8"
 mime = "0.3"
 
 # TLS
-rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 webpki-roots = "1"
 rustls-pemfile = "2"
 rustls-native-certs = "0.8"
@@ -61,7 +61,7 @@ compio-driver = { version = "0.11", default-features = false, features = ["polli
 # HTTP/3
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
-quinn = { version = "0.11", default-features = false, features = ["rustls-ring"] }
+quinn = { version = "0.11", default-features = false }
 
 # Decompression
 flate2 = "1"

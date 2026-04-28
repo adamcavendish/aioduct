@@ -3,11 +3,56 @@ mod rustls_connector;
 #[cfg(feature = "rustls")]
 pub use rustls_connector::{AlpnProtocol, RustlsConnector, TlsStream};
 
+#[cfg(all(
+    feature = "rustls",
+    not(any(feature = "rustls-ring", feature = "rustls-aws-lc-rs"))
+))]
+compile_error!("rustls support requires either the `rustls-ring` or `rustls-aws-lc-rs` feature");
+
+#[cfg(all(
+    feature = "rustls",
+    feature = "rustls-ring",
+    feature = "rustls-aws-lc-rs"
+))]
+compile_error!(
+    "rustls support requires exactly one crypto provider; enable either `rustls-ring` or `rustls-aws-lc-rs`, not both"
+);
+
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 
 use crate::runtime::Runtime;
+
+#[cfg(feature = "rustls")]
+pub(crate) fn crypto_provider() -> std::sync::Arc<rustls::crypto::CryptoProvider> {
+    std::sync::Arc::new(crypto_provider_value())
+}
+
+#[cfg(feature = "rustls")]
+fn crypto_provider_value() -> rustls::crypto::CryptoProvider {
+    #[cfg(feature = "rustls-aws-lc-rs")]
+    {
+        rustls::crypto::aws_lc_rs::default_provider()
+    }
+
+    #[cfg(all(not(feature = "rustls-aws-lc-rs"), feature = "rustls-ring"))]
+    {
+        rustls::crypto::ring::default_provider()
+    }
+
+    #[cfg(not(any(feature = "rustls-aws-lc-rs", feature = "rustls-ring")))]
+    {
+        unreachable!(
+            "rustls support requires either the `rustls-ring` or `rustls-aws-lc-rs` feature"
+        )
+    }
+}
+
+#[cfg(all(test, feature = "rustls"))]
+pub(crate) fn install_default_crypto_provider() {
+    let _ = crypto_provider_value().install_default();
+}
 
 /// TLS protocol version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -171,7 +216,7 @@ mod tests {
     use super::*;
 
     fn install_crypto() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        install_default_crypto_provider();
     }
 
     #[test]

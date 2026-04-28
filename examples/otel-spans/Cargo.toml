@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["tokio", "otel", "rustls"] }
+aioduct = { workspace = true, features = ["tokio", "otel", "rustls", "rustls-ring"] }
 tokio = { version = "1", features = ["full"] }
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true

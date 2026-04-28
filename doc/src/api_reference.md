@@ -1,6 +1,6 @@
 # API Reference
 
-This page covers the main types and their methods. For full documentation, see `cargo doc --features tokio,rustls,json`.
+This page covers the main types and their methods. For full documentation, see `cargo doc --features tokio,rustls,rustls-ring,json`.
 
 ## Client
 
@@ -15,7 +15,7 @@ use aioduct::runtime::TokioRuntime;
 // Default configuration
 let client = Client::<TokioRuntime>::new();
 
-// With rustls TLS (requires `rustls` feature)
+// With rustls TLS (requires `rustls` and exactly one rustls provider)
 let client = Client::<TokioRuntime>::with_rustls();
 
 // Custom configuration
