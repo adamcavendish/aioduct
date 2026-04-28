@@ -71,16 +71,14 @@ test-features features:
 coverage:
     cargo llvm-cov clean --workspace
     cargo llvm-cov nextest -p aioduct --features {{ all_features_ring }} --no-report
-    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-report --no-clean
-    cargo llvm-cov report --summary-only
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-clean
 
 # Generate HTML coverage report and open in browser
 coverage-html:
     mkdir -p coverage/html
     cargo llvm-cov clean --workspace
     cargo llvm-cov nextest -p aioduct --features {{ all_features_ring }} --no-report
-    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-report --no-clean
-    cargo llvm-cov report --html --output-dir coverage/html
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-clean --html --output-dir coverage/html
     open coverage/html/index.html 2>/dev/null || xdg-open coverage/html/index.html 2>/dev/null || true
 
 # Generate LCOV output for CI/editors
@@ -88,8 +86,7 @@ coverage-lcov:
     mkdir -p coverage
     cargo llvm-cov clean --workspace
     cargo llvm-cov nextest -p aioduct --features {{ all_features_ring }} --no-report
-    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-report --no-clean
-    cargo llvm-cov report --lcov --output-path coverage/lcov.info
+    cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-clean --lcov --output-path coverage/lcov.info
 
 # ---------- Bench ----------
 
