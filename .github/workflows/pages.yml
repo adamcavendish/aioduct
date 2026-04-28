@@ -24,7 +24,8 @@ jobs:
       - uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: 'latest'
-      - run: mdbook build doc
+      - uses: taiki-e/install-action@just
+      - run: just book
       - uses: actions/upload-pages-artifact@v5
         with:
           path: doc/book
