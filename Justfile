@@ -75,11 +75,6 @@ coverage-lcov:
     mkdir -p coverage
     cargo llvm-cov nextest --all-features --lcov --output-path coverage/lcov.info
 
-# Generate LCOV output using nextest (matches CI)
-coverage-nextest:
-    mkdir -p coverage
-    cargo llvm-cov nextest --all-features --lcov --output-path coverage/lcov.info
-
 # ---------- Bench ----------
 
 # Run all benchmarks
