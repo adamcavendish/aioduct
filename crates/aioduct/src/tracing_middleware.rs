@@ -7,6 +7,7 @@ use crate::middleware::Middleware;
 ///
 /// All spans and events use `debug` or `trace` level only — this is a library,
 /// so `info` and above are reserved for the application.
+/// URL fields are reduced to hosts so query strings are not emitted.
 ///
 /// - `on_request` / `on_response`: `debug` level
 /// - `on_error`, `on_redirect`, `on_retry`: `debug` level
@@ -29,7 +30,7 @@ impl Middleware for TracingMiddleware {
     fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
         tracing::debug!(
             method = %request.method(),
-            uri = %uri,
+            host = uri.host().unwrap_or(""),
             "http.request.start",
         );
     }
@@ -37,7 +38,7 @@ impl Middleware for TracingMiddleware {
     fn on_response(&self, response: &mut http::Response<AioductBody>, uri: &Uri) {
         tracing::debug!(
             status = response.status().as_u16(),
-            uri = %uri,
+            host = uri.host().unwrap_or(""),
             "http.request.done",
         );
     }
@@ -46,7 +47,7 @@ impl Middleware for TracingMiddleware {
         tracing::debug!(
             error = %error,
             method = %method,
-            uri = %uri,
+            host = uri.host().unwrap_or(""),
             "http.request.error",
         );
     }
@@ -54,8 +55,8 @@ impl Middleware for TracingMiddleware {
     fn on_redirect(&self, status: StatusCode, from: &Uri, to: &Uri) {
         tracing::debug!(
             status = status.as_u16(),
-            from = %from,
-            to = %to,
+            from_host = from.host().unwrap_or(""),
+            to_host = to.host().unwrap_or(""),
             "http.redirect",
         );
     }
@@ -64,7 +65,7 @@ impl Middleware for TracingMiddleware {
         tracing::debug!(
             error = %error,
             method = %method,
-            uri = %uri,
+            host = uri.host().unwrap_or(""),
             attempt = attempt,
             "http.retry",
         );
@@ -183,5 +184,35 @@ mod tests {
         let captured = events.lock().unwrap();
         assert!(!captured.is_empty());
         assert!(captured[0].contains("http.retry"));
+    }
+
+    #[test]
+    fn events_log_hosts_without_query_strings() {
+        let (_guard, events) = setup_collector();
+        let m = TracingMiddleware::new();
+        let uri: Uri = "http://example.com/path?token=secret".parse().unwrap();
+        let redirect: Uri = "http://redirect.example.com/next?token=secret"
+            .parse()
+            .unwrap();
+        let mut req = http::Request::get(&uri).body(empty_body()).unwrap();
+        let mut resp = http::Response::builder()
+            .status(200)
+            .body(empty_body())
+            .unwrap();
+
+        m.on_request(&mut req, &uri);
+        m.on_response(&mut resp, &uri);
+        m.on_error(&Error::Timeout, &uri, &Method::GET);
+        m.on_redirect(StatusCode::FOUND, &uri, &redirect);
+        m.on_retry(&Error::Timeout, &uri, &Method::POST, 1);
+
+        let captured = events.lock().unwrap();
+        let joined = captured.join("\n");
+        assert!(joined.contains("example.com"));
+        assert!(joined.contains("redirect.example.com"));
+        assert!(!joined.contains("token"));
+        assert!(!joined.contains("secret"));
+        assert!(!joined.contains("/path"));
+        assert!(!joined.contains("/next"));
     }
 }

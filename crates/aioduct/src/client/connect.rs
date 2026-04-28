@@ -43,7 +43,7 @@ impl<R: Runtime> Client<R> {
             && let Some(mut conn) = self.pool.checkout(&pool_key)
         {
             #[cfg(feature = "tracing")]
-            tracing::trace!(authority = %authority, "connection.pool.hit");
+            tracing::trace!(host = authority.host(), "connection.pool.hit");
 
             let transfer_start = Instant::now();
             let mut resp =
@@ -570,7 +570,11 @@ impl<R: Runtime> Client<R> {
             HttpConnection::H3(_) => "h3",
         };
         #[cfg(feature = "tracing")]
-        tracing::trace!(protocol = proto, uri = %url, "http.send.start");
+        tracing::trace!(
+            protocol = proto,
+            host = url.host().unwrap_or(""),
+            "http.send.start"
+        );
 
         let result = match &mut conn.conn {
             HttpConnection::H1(sender) => {
