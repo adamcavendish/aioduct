@@ -70,14 +70,17 @@ impl<R: Runtime> Client<R> {
                     .lookup_h3(authority)
                     .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
                 let connect_host = h3_host.as_deref().unwrap_or(authority.host());
-                let addr = self.resolve_authority_raw(connect_host, h3_port).await?;
+                let addrs = self
+                    .resolve_all_authority_raw(connect_host, h3_port)
+                    .await?;
                 let sni_host = authority.host().to_owned();
-                let quinn_conn = endpoint
-                    .connect(addr, &sni_host)
-                    .map_err(|e| Error::Other(Box::new(e)))?
-                    .await
-                    .map_err(|e| Error::Other(Box::new(e)))?;
-                let mut pooled = crate::h3_transport::connect_h3::<R>(quinn_conn).await?;
+                let (mut pooled, addr) = crate::h3_transport::connect_h3_addrs::<R>(
+                    endpoint,
+                    &addrs,
+                    &sni_host,
+                    self.local_address,
+                )
+                .await?;
                 pooled.remote_addr = Some(addr);
                 let mut resp =
                     Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
