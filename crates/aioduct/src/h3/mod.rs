@@ -76,17 +76,23 @@ pub(crate) async fn send_on_h3(
         .map_err(|e| Error::Other(Box::new(e)))?
         .to_bytes();
 
-    if !body_bytes.is_empty() {
-        stream
-            .send_data(body_bytes)
-            .await
-            .map_err(|e| Error::Other(Box::new(e)))?;
+    let mut request_body_stopped = false;
+    if !body_bytes.is_empty()
+        && let Err(err) = stream.send_data(body_bytes).await
+    {
+        if is_h3_no_error_stop_sending(&err) {
+            request_body_stopped = true;
+        } else {
+            return Err(Error::Other(Box::new(err)));
+        }
     }
 
-    stream
-        .finish()
-        .await
-        .map_err(|e| Error::Other(Box::new(e)))?;
+    if !request_body_stopped
+        && let Err(err) = stream.finish().await
+        && !is_h3_no_error_stop_sending(&err)
+    {
+        return Err(Error::Other(Box::new(err)));
+    }
 
     let resp = stream
         .recv_response()
@@ -119,6 +125,16 @@ fn ensure_h3_alpn(config: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig
     let mut config = (*config).clone();
     config.alpn_protocols.insert(0, b"h3".to_vec());
     Arc::new(config)
+}
+
+fn is_h3_no_error_stop_sending(error: &h3::error::StreamError) -> bool {
+    matches!(
+        error,
+        h3::error::StreamError::RemoteTerminate {
+            code: h3::error::Code::H3_NO_ERROR,
+            ..
+        }
+    )
 }
 
 fn h3_bind_addr(local_address: Option<IpAddr>) -> SocketAddr {
