@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.4] - 2026-04-25
+## [0.1.4] - 2026-04-28
 
 ### Added
 - Pluggable cache store via `CacheStore` trait — implement custom backends (moka, foyer, Redis, etc.) and pass to `HttpCache::with_store()`
@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-request timing breakdown via `Response::timings()` — exposes DNS resolution, TCP connect, TLS handshake, transfer (TTFB), and total durations as `RequestTimings`
 - Pool-hit requests report transfer and total only; skipped phases are `None`
 - Integration tests for HTTP and HTTPS timing verification
+- Explicit rustls crypto provider selection: `rustls-ring` and `rustls-aws-lc-rs` feature flags replace the implicit provider model; AWS-LC now supported for internally built TLS configurations and HTTP/3 (quinn) transport
+
+### Fixed
+- Redirect resolution replaced hand-rolled logic with `url::Url::join` — correctly handles relative paths, parent traversals (`../`), query-only redirects (`?q=`), and protocol-relative URLs (`//host/path`)
+- Digest auth 401-retry path no longer loses the original request body on retry
+- HTTP cache stores responses after decompression and header stripping so cache hits return the same content callers receive
+- Cookie `host_only` flag tracked per RFC 6265 §5.3 — cookies set without an explicit `Domain` attribute no longer leak to subdomains
+- JSON `Content-Type` preserved when callers set a custom content type
+- Hickory DNS resolver falls back to default config when system DNS loading fails; parallel IPv4/IPv6 lookups enabled
+- HTTP/3 connector tries all resolved addresses before failing, and binds default QUIC endpoints to IPv6 unspecified with IPv4 fallback
+- HTTP/3 graceful `STOP_SENDING` (`H3_NO_ERROR`) no longer surfaces as a request error
+- Tracing events record request host instead of full URIs — avoids leaking query strings, redirect targets, and credentials
 
 ## [0.1.3] - 2026-04-24
 

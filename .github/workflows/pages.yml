@@ -28,7 +28,7 @@ jobs:
       - run: just book
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: doc/book
+          path: docs/book
           overwrite: true
       - id: deploy
         uses: actions/deploy-pages@v5

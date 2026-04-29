@@ -40,3 +40,4 @@ aioduct fills this gap: a production-quality HTTP client that uses hyper 1.x **t
 | Digest auth        | No                            | Built-in                      |
 | Bandwidth limiter  | No                            | Built-in                      |
 | Netrc              | No                            | Built-in                      |
+| Request timings    | No                            | Built-in                      |

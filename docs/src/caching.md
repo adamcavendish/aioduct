@@ -5,10 +5,10 @@ aioduct includes an in-memory HTTP cache that respects `Cache-Control` directive
 ## Enabling the Cache
 
 ```rust,no_run
-use aioduct::{Client, HttpCache, CacheConfig};
+use aioduct::{Client, HttpCache};
 use aioduct::runtime::TokioRuntime;
 
-let cache = HttpCache::new(CacheConfig::default());
+let cache = HttpCache::new();
 let client = Client::<TokioRuntime>::builder()
     .cache(cache)
     .build();
@@ -74,15 +74,14 @@ When a cached response becomes stale, the cache performs conditional validation:
 `CacheConfig` controls cache behavior:
 
 ```rust
-use aioduct::CacheConfig;
+use aioduct::{CacheConfig, HttpCache};
 
-let config = CacheConfig::default()
-    .max_entries(500);
+let cache = HttpCache::with_config(CacheConfig::default());
 ```
 
 | Method | Default | Description |
 |--------|---------|-------------|
-| `max_entries()` | `1000` | Maximum number of cached responses |
+| `max_entries()` | `256` | Maximum number of cached responses |
 
 ## What Gets Cached
 
@@ -90,10 +89,49 @@ Only responses to safe, idempotent methods (`GET`, `HEAD`) with cacheable status
 
 ## Shared State
 
-`HttpCache` uses `Arc<Mutex<...>>` internally, so cloning shares state between clients:
+`HttpCache` uses `Arc` internally, so cloning shares state between clients:
 
 ```rust
-# use aioduct::{HttpCache, CacheConfig};
-let cache = HttpCache::new(CacheConfig::default());
+# use aioduct::HttpCache;
+let cache = HttpCache::new();
 let cache2 = cache.clone(); // shares the same data
 ```
+
+## Custom Cache Store
+
+Implement the `CacheStore` trait to plug in a custom backend (moka, foyer, Redis, etc.):
+
+```rust,no_run
+use aioduct::{CacheStore, CacheEntry, HttpCache, Client};
+use aioduct::runtime::TokioRuntime;
+use http::{Method, Uri};
+
+struct MyCacheStore { /* ... */ }
+
+impl CacheStore for MyCacheStore {
+    fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+        // look up entry
+        # None
+    }
+    fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
+        // store entry
+    }
+    fn remove(&self, method: &Method, uri: &Uri) {
+        // remove entry
+    }
+    fn clear(&self) {
+        // clear all entries
+    }
+    fn len(&self) -> usize {
+        // return count
+        # 0
+    }
+}
+
+let cache = HttpCache::with_store(MyCacheStore { /* ... */ });
+let client = Client::<TokioRuntime>::builder()
+    .cache(cache)
+    .build();
+```
+
+The built-in `InMemoryCacheStore` is available if you need a reference implementation or want to wrap it with additional behavior (metrics, logging, etc.).
