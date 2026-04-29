@@ -28,6 +28,7 @@
 - [HTTP Upgrade (WebSocket)](upgrade.md)
 - [Link Headers](link_headers.md)
 - [Forwarded Header](forwarded.md)
+- [Request Timings](timings.md)
 - [Problem Details](problem_details.md)
 - [CLI Tools](cli_tools.md)
 - [Benchmarks](benchmarks.md)

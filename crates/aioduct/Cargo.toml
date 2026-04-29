@@ -9,7 +9,7 @@ description = "Async-native HTTP client built directly on hyper 1.x — no hyper
 readme = "../../README.md"
 keywords = ["http", "client", "async", "hyper", "rustls"]
 categories = ["network-programming", "web-programming::http-client"]
-exclude = ["doc/", "tests/", "target/"]
+exclude = ["docs/", "tests/", "target/"]
 
 [features]
 default = []

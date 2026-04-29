@@ -32,7 +32,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Proxy** — HTTP CONNECT tunneling, SOCKS4/SOCKS4a, SOCKS5, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
 - **Middleware** — pluggable request/response interceptors via trait or closure
 - **Rate limiting** — token-bucket rate limiter for outgoing requests
-- **Caching** — in-memory HTTP cache with immutable responses, stale-while-revalidate, stale-if-error (fallback on 5xx/connection failure)
+- **Caching** — in-memory HTTP cache with immutable responses, stale-while-revalidate, stale-if-error (fallback on 5xx/connection failure); pluggable `CacheStore` trait for custom backends
 - **HSTS** — automatic HTTP-to-HTTPS upgrade for Strict-Transport-Security domains
 - **SSE** — Server-Sent Events stream parsing for LLM APIs
 - **Multipart** — `multipart/form-data` uploads with text fields and file parts
@@ -59,6 +59,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Tower integration** — use aioduct as a tower `Service`
 - **Link headers** — RFC 8288 Link header parsing for pagination and discovery
 - **Forwarded header** — RFC 7239 Forwarded header builder and parser
+- **Request timings** — per-request DNS, TCP connect, TLS handshake, transfer (TTFB), and total durations via `Response::timings()`
 
 ## Quick Start
 
@@ -336,6 +337,7 @@ pub trait Runtime: Send + Sync + 'static {
 | Digest auth | No | Built-in |
 | Bandwidth limiter | No | Built-in |
 | Netrc | No | Built-in |
+| Request timings | No | Built-in |
 
 ## MSRV
 

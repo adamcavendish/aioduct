@@ -123,11 +123,11 @@ doc-check:
 
 # Build the mdbook
 book:
-    mdbook build doc
+    mdbook build docs
 
 # Serve the mdbook with live reload
 book-serve:
-    mdbook serve doc --open
+    mdbook serve docs --open
 
 # ---------- Publish ----------
 
