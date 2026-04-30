@@ -606,6 +606,39 @@ async fn test_redirect_referer_not_set_by_default() {
     assert_eq!(body, "has_referer=false");
 }
 #[tokio::test]
+async fn test_304_not_modified_is_not_treated_as_redirect() {
+    let addr = start_server_with(|req| async move {
+        if req.headers().get("if-none-match").is_some() {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(304)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            Ok(Response::builder()
+                .status(200)
+                .header("etag", "W/\"abc\"")
+                .body(Full::new(Bytes::from("hello")))
+                .unwrap())
+        }
+    })
+    .await;
+
+    let client = Client::<TokioRuntime>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .header_str("if-none-match", "W/\"abc\"")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
 async fn test_redirect_stop_returns_redirect_response() {
     let addr = start_server_with(|_req| async move {
         Ok::<_, Infallible>(
