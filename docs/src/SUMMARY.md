@@ -26,6 +26,7 @@
 - [Bandwidth Limiting](bandwidth.md)
 - [Netrc Support](netrc.md)
 - [HTTP Upgrade (WebSocket)](upgrade.md)
+- [Request Forwarding](request_forwarding.md)
 - [Link Headers](link_headers.md)
 - [Forwarded Header](forwarded.md)
 - [Request Timings](timings.md)
