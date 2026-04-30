@@ -325,7 +325,7 @@ async fn test_timings_http_direct() {
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
-            let io = hyper_util::rt::TokioIo::new(stream);
+            let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
             tokio::spawn(async move {
                 server_http1::Builder::new()
                     .serve_connection(io, service_fn(hello))
@@ -392,9 +392,21 @@ async fn test_timings_https_with_tls() {
                     Ok(s) => s,
                     Err(_) => return,
                 };
-                let io = hyper_util::rt::TokioIo::new(tls_stream);
-                let builder =
-                    hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new());
+                let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+
+                #[derive(Clone)]
+                struct TokioExec;
+                impl<F> hyper::rt::Executor<F> for TokioExec
+                where
+                    F: std::future::Future + Send + 'static,
+                    F::Output: Send + 'static,
+                {
+                    fn execute(&self, fut: F) {
+                        tokio::spawn(fut);
+                    }
+                }
+
+                let builder = hyper::server::conn::http2::Builder::new(TokioExec);
                 builder.serve_connection(io, service_fn(hello)).await.ok();
             });
         }

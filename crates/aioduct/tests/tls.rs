@@ -3,6 +3,18 @@
 mod common;
 use common::*;
 
+#[derive(Clone)]
+struct TokioExec;
+impl<F> hyper::rt::Executor<F> for TokioExec
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    fn execute(&self, fut: F) {
+        tokio::spawn(fut);
+    }
+}
+
 #[cfg(feature = "rustls")]
 #[tokio::test]
 async fn test_https_local_tls_server() {
@@ -39,17 +51,17 @@ async fn test_https_local_tls_server() {
                         Ok(s) => s,
                         Err(_) => return,
                     };
-                    let io = hyper_util::rt::TokioIo::new(tls_stream);
-                    let _ = hyper::server::conn::http2::Builder::new(
-                        hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .serve_connection(
-                        io,
-                        service_fn(|_req| async {
-                            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("hello tls"))))
-                        }),
-                    )
-                    .await;
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExec)
+                        .serve_connection(
+                            io,
+                            service_fn(|_req| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                    "hello tls",
+                                ))))
+                            }),
+                        )
+                        .await;
                 });
             }
         }
@@ -128,7 +140,7 @@ async fn test_https_h1_local_tls_server() {
                         Ok(s) => s,
                         Err(_) => return,
                     };
-                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
                     let _ = hyper::server::conn::http1::Builder::new()
                         .serve_connection(
                             io,
@@ -215,7 +227,7 @@ async fn test_https_no_alpn_server() {
                         Ok(s) => s,
                         Err(_) => return,
                     };
-                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
                     let _ = hyper::server::conn::http1::Builder::new()
                         .serve_connection(
                             io,
@@ -303,19 +315,17 @@ async fn test_https_with_webpki_roots_local() {
                         Ok(s) => s,
                         Err(_) => return,
                     };
-                    let io = hyper_util::rt::TokioIo::new(tls_stream);
-                    let _ = hyper::server::conn::http2::Builder::new(
-                        hyper_util::rt::TokioExecutor::new(),
-                    )
-                    .serve_connection(
-                        io,
-                        service_fn(|_req| async {
-                            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
-                                "hello webpki",
-                            ))))
-                        }),
-                    )
-                    .await;
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExec)
+                        .serve_connection(
+                            io,
+                            service_fn(|_req| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                    "hello webpki",
+                                ))))
+                            }),
+                        )
+                        .await;
                 });
             }
         }

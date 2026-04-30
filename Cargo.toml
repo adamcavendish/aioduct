@@ -91,7 +91,6 @@ web-sys = "0.3"
 # Test utilities
 rcgen = "0.14"
 tokio-rustls = "0.26"
-hyper-util = { version = "0.1", features = ["tokio"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

@@ -132,9 +132,41 @@ where
         self
     }
 
+    /// Marks this as an HTTP/1.1 upgrade request, preserving Connection and
+    /// Upgrade headers through hop-by-hop stripping.
+    ///
+    /// Usually unnecessary — H1 upgrades are auto-detected from headers.
+    /// Use this if the framework stripped those headers before passing the
+    /// request to you.
+    pub fn upgrade(mut self) -> Self {
+        self.forward_headers.push(http::header::CONNECTION);
+        self.forward_headers.push(http::header::UPGRADE);
+        self
+    }
+
     /// Execute the forwarded request.
-    pub async fn send(self) -> Result<Response, Error> {
+    pub async fn send(mut self) -> Result<Response, Error> {
         let (mut parts, body) = self.request.into_parts();
+
+        // Detect upgrade requests
+        let is_h1_upgrade = parts
+            .headers
+            .get(http::header::CONNECTION)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
+
+        let is_h2_extended_connect = parts.method == http::Method::CONNECT
+            && parts.extensions.get::<hyper::ext::Protocol>().is_some();
+
+        // Auto-preserve upgrade headers and force correct HTTP version
+        if is_h1_upgrade {
+            self.forward_headers.push(http::header::CONNECTION);
+            self.forward_headers.push(http::header::UPGRADE);
+            parts.version = http::Version::HTTP_11;
+        }
+        if is_h2_extended_connect {
+            parts.version = http::Version::HTTP_2;
+        }
 
         // Save headers that were explicitly requested to be forwarded, before
         // hop-by-hop stripping might remove them.
@@ -226,15 +258,18 @@ where
             hook(&mut parts);
         }
 
-        // 8. Build the request URI for hyper (path-only for HTTP/1, full for HTTP/2)
-        let request_uri: Uri = full_uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/")
-            .parse()
-            .map_err(|e| Error::Other(Box::new(e)))?;
-
-        parts.uri = request_uri;
+        // 8. Build the request URI for hyper (path-only for HTTP/1, full for HTTP/2 CONNECT)
+        if is_h2_extended_connect {
+            parts.uri = full_uri.clone();
+        } else {
+            let request_uri: Uri = full_uri
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/")
+                .parse()
+                .map_err(|e| Error::Other(Box::new(e)))?;
+            parts.uri = request_uri;
+        }
 
         // 9. Convert body to AioductBody
         let boxed_body: AioductBody = body
@@ -266,8 +301,8 @@ where
             send_fut.await?
         };
 
-        // 11. Strip hop-by-hop from response
-        {
+        // 11. Strip hop-by-hop from response (skip for upgrade responses)
+        if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS && !is_h2_extended_connect {
             let resp_headers = resp.headers_mut();
             hop_by_hop::strip_hop_by_hop(resp_headers);
         }

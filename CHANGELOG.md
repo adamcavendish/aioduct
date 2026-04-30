@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Request forwarding via `Client::forward(req)` — proxy/gateway builder that strips hop-by-hop headers, rewrites the URI to an upstream, streams the body without buffering, and bypasses all client middleware (redirects, cookies, cache, decompression). Supports path prefix stripping, host preservation, custom header injection/removal, and `on_request`/`on_response` hooks for escape-hatch mutations.
+- WebSocket/HTTP upgrade forwarding — `ForwardBuilder` auto-detects upgrade requests (HTTP/1.1 `Connection: Upgrade` and HTTP/2 extended CONNECT via `Protocol` extension), preserves relevant headers through hop-by-hop stripping, and returns the response with an extractable `Upgraded` stream for bidirectional tunneling
+- Re-export `hyper::ext::Protocol` for constructing H2 extended CONNECT requests without a direct hyper dependency
 
 ## [0.1.5] - 2026-04-30
 
