@@ -490,6 +490,7 @@ impl<R: Runtime> Client<R> {
             }
 
             if !resp.status().is_redirection()
+                || resp.status() == StatusCode::NOT_MODIFIED
                 || matches!(self.redirect_policy, RedirectPolicy::None)
             {
                 #[cfg(all(feature = "http3", feature = "rustls"))]
