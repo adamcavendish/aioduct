@@ -5,6 +5,7 @@ pub(crate) use connection::{HttpConnection, PooledConnection};
 
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -44,12 +45,14 @@ struct PoolInner<R: Runtime> {
 /// Thread-safe pool of idle HTTP connections keyed by origin.
 pub(crate) struct ConnectionPool<R: Runtime> {
     inner: Arc<Mutex<PoolInner<R>>>,
+    reaper_spawned: Arc<AtomicBool>,
 }
 
 impl<R: Runtime> Clone for ConnectionPool<R> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            reaper_spawned: Arc::clone(&self.reaper_spawned),
         }
     }
 }
@@ -57,16 +60,15 @@ impl<R: Runtime> Clone for ConnectionPool<R> {
 impl<R: Runtime> ConnectionPool<R> {
     /// Create a pool with the given capacity and timeout settings.
     pub(crate) fn new(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
-        let pool = Self {
+        Self {
             inner: Arc::new(Mutex::new(PoolInner::<R> {
                 idle: HashMap::new(),
                 max_idle_per_host,
                 idle_timeout,
                 _runtime: PhantomData,
             })),
-        };
-        pool.spawn_reaper();
-        pool
+            reaper_spawned: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// Create a pool without spawning the background reaper task.
@@ -82,6 +84,7 @@ impl<R: Runtime> ConnectionPool<R> {
                 idle_timeout,
                 _runtime: PhantomData,
             })),
+            reaper_spawned: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -115,6 +118,7 @@ impl<R: Runtime> ConnectionPool<R> {
     ///
     /// When at capacity, evicts the oldest idle connection to make room.
     pub(crate) fn checkin(&self, key: PoolKey, connection: PooledConnection<R>) {
+        self.ensure_reaper();
         let mut inner = self.inner.lock().unwrap();
         let max = inner.max_idle_per_host;
         let queue = inner.idle.entry(key).or_default();
@@ -127,6 +131,12 @@ impl<R: Runtime> ConnectionPool<R> {
             idle_since: Instant::now(),
             _runtime: PhantomData,
         });
+    }
+
+    fn ensure_reaper(&self) {
+        if !self.reaper_spawned.swap(true, Ordering::AcqRel) {
+            self.spawn_reaper();
+        }
     }
 
     fn spawn_reaper(&self) {
@@ -197,8 +207,14 @@ mod tests {
 
     #[test]
     fn pool_creates_with_given_parameters() {
-        // The pool can be constructed without panicking.
+        // The pool can be constructed without panicking, even outside a runtime.
         let _pool = ConnectionPool::<TokioRuntime>::new_no_reaper(8, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn pool_new_does_not_require_runtime() {
+        // ConnectionPool::new (not new_no_reaper) must succeed without a runtime context.
+        let _pool = ConnectionPool::<TokioRuntime>::new(8, Duration::from_secs(30));
     }
 
     #[test]
