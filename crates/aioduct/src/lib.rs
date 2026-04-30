@@ -63,6 +63,8 @@ pub mod tls;
 pub mod bandwidth;
 mod decompress;
 mod digest_auth;
+/// Request forwarding for proxy/gateway use cases.
+pub mod forward;
 /// Forwarded header builder and parser (RFC 7239).
 pub mod forwarded;
 mod happy_eyeballs;
@@ -117,6 +119,7 @@ pub use chunk_download::ChunkDownload;
 pub use client::Client;
 pub use cookie::{Cookie, CookieJar, SameSite};
 pub use error::{AioductBody, Error};
+pub use forward::ForwardBuilder;
 pub use forwarded::ForwardedElement;
 #[cfg(feature = "hickory-dns")]
 pub use hickory::HickoryResolver;

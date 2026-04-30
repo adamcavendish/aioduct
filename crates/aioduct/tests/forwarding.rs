@@ -1,0 +1,626 @@
+#![cfg(feature = "tokio")]
+
+mod common;
+use common::*;
+
+// =============================================================================
+// Request Forwarding Tests
+// =============================================================================
+
+#[tokio::test]
+async fn forward_basic_get_to_upstream() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let path = req.uri().path().to_owned();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                        "upstream:{}",
+                        path
+                    )))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/hello/world")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "upstream:/hello/world");
+}
+
+#[tokio::test]
+async fn forward_strip_prefix() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let path = req.uri().path().to_owned();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(path))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/api/v1/users")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .strip_prefix("/api")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "/v1/users");
+}
+
+#[tokio::test]
+async fn forward_preserves_query_string() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let pq = req.uri().path_and_query().unwrap().as_str().to_owned();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(pq))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/search?q=rust&page=2")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "/search?q=rust&page=2");
+}
+
+#[tokio::test]
+async fn forward_strips_hop_by_hop_headers() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let has_connection = req.headers().contains_key("connection");
+                    let has_te = req.headers().contains_key("te");
+                    let has_custom = req.headers().contains_key("x-custom");
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                        "conn={},te={},custom={}",
+                        has_connection, has_te, has_custom
+                    )))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/test")
+        .header("Connection", "keep-alive")
+        .header("TE", "trailers")
+        .header("X-Custom", "preserved")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.text().await.unwrap(),
+        "conn=false,te=false,custom=true"
+    );
+}
+
+#[tokio::test]
+async fn forward_adds_extra_headers() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let xff = req
+                        .headers()
+                        .get("x-forwarded-for")
+                        .map(|v| v.to_str().unwrap().to_owned())
+                        .unwrap_or_default();
+                    let rid = req
+                        .headers()
+                        .get("x-request-id")
+                        .map(|v| v.to_str().unwrap().to_owned())
+                        .unwrap_or_default();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                        "xff={},rid={}",
+                        xff, rid
+                    )))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/test")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .header(
+            http::header::HeaderName::from_static("x-forwarded-for"),
+            http::header::HeaderValue::from_static("10.0.0.1"),
+        )
+        .header(
+            http::header::HeaderName::from_static("x-request-id"),
+            http::header::HeaderValue::from_static("req-123"),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "xff=10.0.0.1,rid=req-123");
+}
+
+#[tokio::test]
+async fn forward_preserve_host() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let host = req
+                        .headers()
+                        .get("host")
+                        .map(|v| v.to_str().unwrap().to_owned())
+                        .unwrap_or_default();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(host))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/test")
+        .header("host", "original.example.com")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .preserve_host()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "original.example.com");
+}
+
+#[tokio::test]
+async fn forward_rewrites_host_by_default() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let host = req
+                        .headers()
+                        .get("host")
+                        .map(|v| v.to_str().unwrap().to_owned())
+                        .unwrap_or_default();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(host))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/test")
+        .header("host", "original.example.com")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    let host = resp.text().await.unwrap();
+    assert!(
+        host.contains("127.0.0.1"),
+        "host should be rewritten to upstream, got: {}",
+        host
+    );
+}
+
+#[tokio::test]
+async fn forward_post_with_body() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    use http_body_util::BodyExt;
+                    let method = req.method().to_string();
+                    let body = req.into_body().collect().await.unwrap().to_bytes();
+                    let text = String::from_utf8(body.to_vec()).unwrap();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                        "{}:{}",
+                        method, text
+                    )))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("POST")
+        .uri("/submit")
+        .header("content-type", "text/plain")
+        .body(Full::new(Bytes::from("hello body")))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "POST:hello body");
+}
+
+#[tokio::test]
+async fn forward_on_request_hook() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let injected = req
+                        .headers()
+                        .get("x-injected")
+                        .map(|v| v.to_str().unwrap().to_owned())
+                        .unwrap_or_default();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(injected))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/test")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .on_request(|parts| {
+            parts.headers.insert(
+                http::header::HeaderName::from_static("x-injected"),
+                http::header::HeaderValue::from_static("via-hook"),
+            );
+        })
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "via-hook");
+}
+
+#[tokio::test]
+async fn forward_on_response_hook() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|_req: Request<hyper::body::Incoming>| async move {
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/test")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .on_response(|resp| {
+            resp.headers_mut().insert(
+                http::header::HeaderName::from_static("x-gateway"),
+                http::header::HeaderValue::from_static("aioduct"),
+            );
+        })
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.headers().get("x-gateway").unwrap().to_str().unwrap(),
+        "aioduct"
+    );
+}
+
+#[tokio::test]
+async fn forward_timeout() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|_req: Request<hyper::body::Incoming>| async move {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("late"))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/slow")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let result = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .timeout(Duration::from_millis(50))
+        .send()
+        .await;
+
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), aioduct::Error::Timeout));
+}
+
+#[tokio::test]
+async fn forward_remove_header() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let has_auth = req.headers().contains_key("authorization");
+                    let has_custom = req.headers().contains_key("x-keep");
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                        "auth={},keep={}",
+                        has_auth, has_custom
+                    )))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/test")
+        .header("authorization", "Bearer secret")
+        .header("x-keep", "yes")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .remove_header(http::header::AUTHORIZATION)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "auth=false,keep=true");
+}
+
+#[tokio::test]
+async fn forward_upstream_base_path() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = hyper_util::rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req: Request<hyper::body::Incoming>| async move {
+                    let path = req.uri().path().to_owned();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(path))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = Client::<TokioRuntime>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/users/123")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}/v2", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "/v2/users/123");
+}
