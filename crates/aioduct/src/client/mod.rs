@@ -1167,4 +1167,9 @@ mod builder_tests {
         let tls = client.tls.as_ref().unwrap();
         assert!(!tls.config().enable_sni);
     }
+
+    #[test]
+    fn builder_does_not_require_runtime_context() {
+        let _client = TokioClient::builder().build();
+    }
 }
