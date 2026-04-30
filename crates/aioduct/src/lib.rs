@@ -148,3 +148,4 @@ pub use tls::TlsVersion;
 pub use tls::{Certificate, Identity};
 
 pub use http::{HeaderMap, Method, StatusCode, Uri, Version};
+pub use hyper::ext::Protocol;

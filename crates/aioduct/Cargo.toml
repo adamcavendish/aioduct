@@ -118,7 +118,6 @@ flate2.workspace = true
 futures-io.workspace = true
 futures-util.workspace = true
 http.workspace = true
-hyper-util.workspace = true
 hyper.workspace = true
 rcgen.workspace = true
 rustls.workspace = true

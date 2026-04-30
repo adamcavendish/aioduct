@@ -1,6 +1,5 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Instant;
 
 use crate::error::Error;
 use crate::pool::PooledConnection;
@@ -220,6 +219,7 @@ impl<R: Runtime> Client<R> {
         host: &str,
     ) -> Result<PooledConnection<R>, Error> {
         use crate::tls::TlsConnect;
+        use std::time::Instant;
 
         #[cfg(feature = "tracing")]
         tracing::trace!(host = host, "tls.handshake.start");
