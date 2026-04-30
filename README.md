@@ -38,7 +38,8 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Multipart** — `multipart/form-data` uploads with text fields and file parts
 - **Streaming** — chunked downloads and streaming uploads without buffering
 - **Chunk download** — parallel HTTP Range requests for large files
-- **HTTP upgrade** — WebSocket and other protocol upgrades via HTTP/1.1 101
+- **HTTP upgrade** — WebSocket and other protocol upgrades via HTTP/1.1 101 and HTTP/2 extended CONNECT (RFC 8441)
+- **Request forwarding** — proxy/gateway builder via `Client::forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, and supports H2 extended CONNECT tunneling
 - **Blocking client** — synchronous wrapper for non-async contexts (requires tokio)
 - **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
@@ -254,6 +255,56 @@ smol::block_on(async {
 });
 ```
 
+### Request Forwarding (Reverse Proxy)
+
+```rust
+use aioduct::{Client, Protocol};
+use aioduct::runtime::TokioRuntime;
+use bytes::Bytes;
+use http_body_util::Full;
+
+# async fn example() -> Result<(), aioduct::Error> {
+let client = Client::<TokioRuntime>::new();
+
+// Forward a request to an upstream, stripping a path prefix
+let incoming_req = http::Request::builder()
+    .method("GET")
+    .uri("/api/users?page=2")
+    .body(Full::new(Bytes::new()))
+    .unwrap();
+
+let resp = client
+    .forward(incoming_req)
+    .upstream("http://backend:8080".parse::<http::Uri>().unwrap())
+    .strip_prefix("/api")
+    .header(
+        http::header::HeaderName::from_static("x-forwarded-for"),
+        http::header::HeaderValue::from_static("10.0.0.1"),
+    )
+    .send()
+    .await?;
+
+// WebSocket upgrade forwarding (auto-detected from headers)
+let ws_req = http::Request::builder()
+    .method("GET")
+    .uri("/ws/chat")
+    .header("connection", "Upgrade")
+    .header("upgrade", "websocket")
+    .body(Full::new(Bytes::new()))
+    .unwrap();
+
+let resp = client
+    .forward(ws_req)
+    .upstream("http://ws-backend:9000".parse::<http::Uri>().unwrap())
+    .send()
+    .await?;
+
+let upstream_io = resp.upgrade().await?;
+// Splice with downstream: tokio::io::copy_bidirectional(...)
+# Ok(())
+# }
+```
+
 ## CLI Tools
 
 The workspace includes two CLI tools built on aioduct:
@@ -338,6 +389,7 @@ pub trait Runtime: Send + Sync + 'static {
 | Bandwidth limiter | No | Built-in |
 | Netrc | No | Built-in |
 | Request timings | No | Built-in |
+| Request forwarding | No | Built-in |
 
 ## MSRV
 

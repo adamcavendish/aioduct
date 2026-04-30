@@ -1,8 +1,8 @@
 # HTTP Upgrade (WebSocket)
 
-aioduct supports HTTP/1.1 protocol upgrades, commonly used for WebSocket connections. After a successful upgrade handshake, you get a bidirectional IO stream.
+aioduct supports HTTP/1.1 protocol upgrades (101 Switching Protocols) and HTTP/2 extended CONNECT (RFC 8441), commonly used for WebSocket connections. After a successful upgrade handshake, you get a bidirectional IO stream.
 
-## Basic Usage
+## Basic Usage (HTTP/1.1)
 
 ```rust,no_run
 use aioduct::Client;
@@ -26,12 +26,43 @@ let upgraded = resp.upgrade().await?;
 # }
 ```
 
+## HTTP/2 Extended CONNECT (RFC 8441)
+
+For HTTP/2 upstreams that support the extended CONNECT protocol, use `Protocol` to signal the desired sub-protocol:
+
+```rust,no_run
+use aioduct::{Client, Protocol};
+use aioduct::runtime::TokioRuntime;
+
+# async fn example() -> Result<(), aioduct::Error> {
+let client = Client::<TokioRuntime>::builder()
+    .http2_prior_knowledge()
+    .build();
+
+let mut req = client
+    .get("http://example.com/ws/chat")?
+    .build();
+*req.method_mut() = http::Method::CONNECT;
+req.extensions_mut().insert(Protocol::from_static("websocket"));
+
+let resp = client.execute(req).await?;
+assert_eq!(resp.status(), http::StatusCode::OK);
+
+let upgraded = resp.upgrade().await?;
+// Bidirectional tunnel over the H2 stream
+# Ok(())
+# }
+```
+
+For proxy/gateway use cases, see [Request Forwarding](request_forwarding.md) which auto-detects both upgrade mechanisms.
+
 ## How It Works
 
-1. Call `.upgrade()` on the `RequestBuilder` to set the required headers (`Connection: Upgrade`, `Upgrade: websocket`) and force HTTP/1.1.
-2. Send the request and check for a `101 Switching Protocols` response.
-3. Call `.upgrade()` on the `Response` to consume it and obtain an `Upgraded` stream.
-4. The connection is **not** returned to the pool — it's exclusively yours.
+1. **HTTP/1.1**: Call `.upgrade()` on the `RequestBuilder` to set the required headers (`Connection: Upgrade`, `Upgrade: websocket`) and force HTTP/1.1.
+2. **HTTP/2**: Insert a `Protocol` extension into the request and use `CONNECT` method. The server must have `SETTINGS_ENABLE_CONNECT_PROTOCOL` enabled.
+3. Send the request and check for `101` (H1) or `200` (H2 CONNECT).
+4. Call `.upgrade()` on the `Response` to consume it and obtain an `Upgraded` stream.
+5. The connection is **not** returned to the pool — it's exclusively yours.
 
 ## The Upgraded Type
 
@@ -57,7 +88,8 @@ let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
 
 ## Notes
 
-- HTTP upgrades only work over HTTP/1.1 (not HTTP/2 or HTTP/3)
-- The `.upgrade()` method on `RequestBuilder` forces `Version::HTTP_11`
-- After upgrade, the TCP connection is consumed — it won't be returned to the connection pool
+- HTTP/1.1 upgrades use `Connection: Upgrade` + `Upgrade: websocket` headers → 101
+- HTTP/2 extended CONNECT uses `CONNECT` method + `:protocol` pseudo-header → 200
+- After upgrade, the connection/stream is consumed — it won't be returned to the pool
 - You can set additional WebSocket-specific headers (like `Sec-WebSocket-Key`) manually via `.header_str()`
+
