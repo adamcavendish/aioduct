@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - Unreleased
+
+### Added
+- Request forwarding via `Client::forward(req)` — proxy/gateway builder that strips hop-by-hop headers, rewrites the URI to an upstream, streams the body without buffering, and bypasses all client middleware (redirects, cookies, cache, decompression). Supports path prefix stripping, host preservation, custom header injection/removal, and `on_request`/`on_response` hooks for escape-hatch mutations.
+
 ## [0.1.5] - 2026-04-30
 
 ### Fixed
