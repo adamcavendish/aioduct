@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 aioduct = { workspace = true, features = ["tokio", "otel", "rustls", "rustls-ring"] }
-tokio = { version = "1", features = ["full"] }
-opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
-opentelemetry-stdout.workspace = true
+tokio = { workspace = true, features = ["full"] }
+opentelemetry = { workspace = true, features = ["trace"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "rt-tokio"] }
+opentelemetry-stdout = { workspace = true, features = ["trace"] }

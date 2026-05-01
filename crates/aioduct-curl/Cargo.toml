@@ -23,6 +23,6 @@ aioduct = { workspace = true, features = [
     "deflate",
     "json",
 ] }
-clap.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 http.workspace = true

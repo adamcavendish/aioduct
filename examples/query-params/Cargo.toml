@@ -6,5 +6,5 @@ publish = false
 
 [dependencies]
 aioduct = { workspace = true, features = ["tokio", "json"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 serde.workspace = true

@@ -10,88 +10,56 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/adamcavendish/aioduct"
 
 [workspace.dependencies]
-# Internal
 aioduct = { path = "crates/aioduct" }
 
-# Core
-hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
+async-io = "2"
+base64 = "0.22"
+brotli = { version = "8", default-features = false }
+bytes = "1"
+clap = "4"
+compio-driver = { version = "0.11", default-features = false }
+compio-runtime = "0.11"
+encoding_rs = "0.8"
+flate2 = "1"
+futures-core = "0.3"
+futures-io = "0.3"
+futures-util = "0.3"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+hickory-resolver = "0.26"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
-bytes = "1"
-pin-project-lite = "0.2"
-thiserror = "2"
-base64 = "0.22"
+hyper = "1"
+indicatif = "0.18"
+js-sys = "0.3"
+mime = "0.3"
+opentelemetry = { version = "0.31", default-features = false }
+opentelemetry-http = "0.31"
+opentelemetry-stdout = "0.31"
+opentelemetry_sdk = "0.31"
 percent-encoding = "2"
-url = "2"
-socket2 = "0.6"
-futures-core = "0.3"
-futures-util = "0.3"
-
-# Serialization / JSON
-serde = { version = "1", features = ["derive"] }
+pin-project-lite = "0.2"
+quinn = { version = "0.11", default-features = false }
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+serde = "1"
 serde_json = "1"
 serde_urlencoded = "0.7"
-
-# Charset decoding
-encoding_rs = "0.8"
-mime = "0.3"
-
-# TLS
-rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
-webpki-roots = "1"
-rustls-pemfile = "2"
-rustls-native-certs = "0.8"
-
-# DNS
-hickory-resolver = "0.26"
-
-# Runtime: tokio
-tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "time", "macros", "io-util", "sync"] }
-
-# Runtime: smol
 smol = "2"
-async-io = "2"
-futures-io = "0.3"
-
-# Runtime: compio
-compio-runtime = { version = "0.11", features = ["time"] }
-compio-driver = { version = "0.11", default-features = false, features = ["polling"] }
-
-# HTTP/3
-h3 = "0.0.8"
-h3-quinn = "0.0.10"
-quinn = { version = "0.11", default-features = false }
-
-# Decompression
-flate2 = "1"
-brotli = { version = "8", default-features = false, features = ["std"] }
-zstd = { version = "0.13", default-features = false }
-
-# Tower integration
-tower-service = "0.3"
+socket2 = "0.6"
+thiserror = "2"
+tokio = "1"
+tokio-rustls = "0.26"
 tower-layer = "0.3"
-
-# Tracing
-tracing = { version = "0.1", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# OpenTelemetry
-opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
-opentelemetry-http = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["trace", "rt-tokio"] }
-opentelemetry-stdout = { version = "0.31", features = ["trace"] }
-
-# WASM/browser
+tower-service = "0.3"
+tracing = { version = "0.1", default-features = false }
+tracing-subscriber = "0.3"
+url = "2"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
 web-sys = "0.3"
-
-# Test utilities
-rcgen = "0.14"
-tokio-rustls = "0.26"
-
-# CLI
-clap = { version = "4", features = ["derive"] }
-indicatif = { version = "0.18", features = ["tokio"] }
+webpki-roots = "1"
+zstd = { version = "0.13", default-features = false }

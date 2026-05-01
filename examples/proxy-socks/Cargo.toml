@@ -6,4 +6,4 @@ publish = false
 
 [dependencies]
 aioduct = { workspace = true, features = ["tokio", "rustls", "rustls-ring"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }

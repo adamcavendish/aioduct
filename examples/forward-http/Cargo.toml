@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 aioduct = { workspace = true, features = ["tokio"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 hyper = { workspace = true, features = ["server", "http1"] }
 http-body-util.workspace = true
 bytes.workspace = true
