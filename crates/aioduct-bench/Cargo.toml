@@ -10,12 +10,12 @@ bytes.workspace = true
 criterion = { version = "0.8", features = ["async_tokio"] }
 http.workspace = true
 http-body-util.workspace = true
-hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper = { workspace = true, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
 isahc = "1"
 reqwest = { version = "0.13", features = ["json", "gzip", "multipart"] }
-serde.workspace = true
-tokio = { version = "1", features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
 
 [[bench]]
 name = "h1"

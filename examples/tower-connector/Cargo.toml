@@ -6,6 +6,6 @@ publish = false
 
 [dependencies]
 aioduct = { workspace = true, features = ["tokio", "tower"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 tower-service.workspace = true
 tower-layer.workspace = true
