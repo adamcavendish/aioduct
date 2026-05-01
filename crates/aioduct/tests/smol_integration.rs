@@ -186,3 +186,90 @@ fn test_smol_custom_header() {
         assert_eq!(body, "smol-value");
     });
 }
+
+async fn start_h2_server_with<F, Fut>(handler: F) -> SocketAddr
+where
+    F: Fn(Request<hyper::body::Incoming>) -> Fut + Send + Clone + 'static,
+    Fut: std::future::Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
+{
+    use hyper::server::conn::http2 as server_http2;
+
+    #[derive(Clone)]
+    struct SmolExec;
+    impl<F> hyper::rt::Executor<F> for SmolExec
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        fn execute(&self, fut: F) {
+            smol::spawn(fut).detach();
+        }
+    }
+
+    let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    smol::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = SmolIo::new(stream);
+            let handler = handler.clone();
+            smol::spawn(async move {
+                let _ = server_http2::Builder::new(SmolExec)
+                    .serve_connection(io, service_fn(handler))
+                    .await;
+            })
+            .detach();
+        }
+    })
+    .detach();
+
+    addr
+}
+
+#[test]
+fn test_smol_h2_prior_knowledge() {
+    smol::block_on(async {
+        let addr = start_h2_server_with(|_req| async {
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("h2 smol"))))
+        })
+        .await;
+
+        let client = Client::<SmolRuntime>::builder()
+            .http2_prior_knowledge()
+            .build();
+
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "h2 smol");
+    });
+}
+
+#[test]
+fn test_smol_h2_multiple_requests() {
+    smol::block_on(async {
+        let addr = start_h2_server_with(|_req| async {
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("h2 ok"))))
+        })
+        .await;
+
+        let client = Client::<SmolRuntime>::builder()
+            .http2_prior_knowledge()
+            .build();
+        let url = format!("http://{addr}/");
+
+        let resp1 = client.get(&url).unwrap().send().await.unwrap();
+        assert_eq!(resp1.status(), http::StatusCode::OK);
+        assert_eq!(resp1.text().await.unwrap(), "h2 ok");
+
+        let resp2 = client.get(&url).unwrap().send().await.unwrap();
+        assert_eq!(resp2.status(), http::StatusCode::OK);
+        assert_eq!(resp2.text().await.unwrap(), "h2 ok");
+    });
+}

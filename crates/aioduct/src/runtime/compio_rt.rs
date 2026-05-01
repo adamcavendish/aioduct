@@ -73,7 +73,7 @@ impl Runtime for CompioRuntime {
 
     fn sleep(duration: Duration) -> Self::Sleep {
         CompioSleep {
-            inner: Box::pin(compio_runtime::time::sleep(duration)),
+            inner: async_io::Timer::after(duration),
         }
     }
 
@@ -209,20 +209,22 @@ impl Runtime for CompioRuntime {
     }
 }
 
-/// Compio-backed sleep future.
-pub struct CompioSleep {
-    inner: Pin<Box<dyn Future<Output = ()>>>,
+pin_project! {
+    /// Compio-backed sleep future using async_io::Timer (avoids boxing).
+    pub struct CompioSleep {
+        #[pin]
+        inner: async_io::Timer,
+    }
 }
-
-// Safety: see AssertSend rationale above.
-unsafe impl Send for CompioSleep {}
-unsafe impl Sync for CompioSleep {}
 
 impl Future for CompioSleep {
     type Output = ();
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.as_mut().poll(cx)
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.project().inner.poll(cx) {
+            Poll::Ready(_instant) => Poll::Ready(()),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -292,5 +294,121 @@ where
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         futures_io::AsyncWrite::poll_close(self.project().inner, cx)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        futures_io::AsyncWrite::poll_write_vectored(self.project().inner, cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Runtime;
+
+    #[test]
+    fn resolve_all_localhost() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let addrs = CompioRuntime::resolve_all("localhost", 80).await.unwrap();
+            assert!(!addrs.is_empty());
+        });
+    }
+
+    #[test]
+    fn connect_and_set_keepalive() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect(addr).await.unwrap();
+            let result = CompioRuntime::set_tcp_keepalive(
+                &stream,
+                Duration::from_secs(60),
+                Some(Duration::from_secs(10)),
+                Some(3),
+            );
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn from_std_tcp_succeeds() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let std_stream = std::net::TcpStream::connect(addr).unwrap();
+        let compio_stream = CompioRuntime::from_std_tcp(std_stream).unwrap();
+        assert!(compio_stream.inner().get_ref().peer_addr().is_ok());
+    }
+
+    #[test]
+    fn is_write_vectored_returns_true() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect(addr).await.unwrap();
+            assert!(Write::is_write_vectored(&stream));
+        });
+    }
+
+    #[test]
+    fn write_vectored_delivers_data() {
+        use std::future::poll_fn;
+        use std::io::Read as _;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let mut client = CompioRuntime::connect(addr).await.unwrap();
+
+            let bufs = [
+                io::IoSlice::new(b"hello"),
+                io::IoSlice::new(b" "),
+                io::IoSlice::new(b"world"),
+            ];
+            let n = poll_fn(|cx| Pin::new(&mut client).poll_write_vectored(cx, &bufs))
+                .await
+                .unwrap();
+            assert_eq!(n, 11);
+        });
+
+        let (mut server, _) = listener.accept().unwrap();
+        let mut buf = vec![0u8; 11];
+        server.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"hello world");
+    }
+
+    #[test]
+    fn sleep_completes() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let start = std::time::Instant::now();
+            CompioRuntime::sleep(Duration::from_millis(10)).await;
+            assert!(start.elapsed() >= Duration::from_millis(10));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_unix_succeeds() {
+        let dir = std::env::temp_dir().join("aioduct_compio_rt_unix_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let sock_path = dir.join("rt_test.sock");
+        let _ = std::fs::remove_file(&sock_path);
+
+        let _listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect_unix(&sock_path).await.unwrap();
+            drop(stream);
+        });
+
+        let _ = std::fs::remove_file(&sock_path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
