@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -271,5 +271,165 @@ fn test_smol_h2_multiple_requests() {
         let resp2 = client.get(&url).unwrap().send().await.unwrap();
         assert_eq!(resp2.status(), http::StatusCode::OK);
         assert_eq!(resp2.text().await.unwrap(), "h2 ok");
+    });
+}
+
+#[test]
+fn test_smol_large_body() {
+    smol::block_on(async {
+        let addr = start_server_with(|req| async move {
+            let body = req.collect().await.unwrap().to_bytes();
+            let len = body.len();
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!("{len}")))))
+        })
+        .await;
+
+        let client = Client::<SmolRuntime>::new();
+        let payload = "x".repeat(1024 * 1024);
+        let resp = client
+            .post(&format!("http://{addr}/"))
+            .unwrap()
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "1048576");
+    });
+}
+
+#[test]
+fn test_smol_h2_large_body() {
+    smol::block_on(async {
+        let addr = start_h2_server_with(|req| async move {
+            let body = req.collect().await.unwrap().to_bytes();
+            let len = body.len();
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!("{len}")))))
+        })
+        .await;
+
+        let client = Client::<SmolRuntime>::builder()
+            .http2_prior_knowledge()
+            .build();
+        let payload = "x".repeat(1024 * 1024);
+        let resp = client
+            .post(&format!("http://{addr}/"))
+            .unwrap()
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "1048576");
+    });
+}
+
+#[test]
+fn test_smol_large_response_body() {
+    smol::block_on(async {
+        let addr = start_server_with(|_req| async move {
+            let body = "y".repeat(512 * 1024);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+        })
+        .await;
+
+        let client = Client::<SmolRuntime>::new();
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert_eq!(body.len(), 512 * 1024);
+    });
+}
+
+#[test]
+fn test_smol_connection_pool_reuse_after_body_consumed() {
+    smol::block_on(async {
+        let addr = start_server_with(|_req| async move {
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("pool test"))))
+        })
+        .await;
+
+        let client = Client::<SmolRuntime>::new();
+        let url = format!("http://{addr}/");
+
+        for _ in 0..5 {
+            let resp = client.get(&url).unwrap().send().await.unwrap();
+            assert_eq!(resp.status(), http::StatusCode::OK);
+            assert_eq!(resp.text().await.unwrap(), "pool test");
+        }
+    });
+}
+
+#[test]
+fn test_smol_head_request() {
+    smol::block_on(async {
+        let addr = start_server_with(|_req| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-length", "1000")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        })
+        .await;
+
+        let client = Client::<SmolRuntime>::new();
+        let resp = client
+            .request(http::Method::HEAD, &format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-length")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "1000"
+        );
+        assert_eq!(resp.text().await.unwrap(), "");
+    });
+}
+
+#[test]
+fn test_smol_multiple_headers_same_name() {
+    smol::block_on(async {
+        let addr = start_server_with(|req| async move {
+            let vals: Vec<&str> = req
+                .headers()
+                .get_all("x-multi")
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect();
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(vals.join(",")))))
+        })
+        .await;
+
+        let client = Client::<SmolRuntime>::new();
+        let mut headers = http::HeaderMap::new();
+        headers.append("x-multi", "a".parse().unwrap());
+        headers.append("x-multi", "b".parse().unwrap());
+
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .headers(headers)
+            .send()
+            .await
+            .unwrap();
+
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "a,b");
     });
 }
