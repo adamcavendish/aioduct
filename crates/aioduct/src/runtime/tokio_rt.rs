@@ -285,6 +285,40 @@ mod tests {
         assert!(tokio_stream.inner().peer_addr().is_ok());
     }
 
+    #[tokio::test]
+    async fn is_write_vectored_returns_true() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TokioRuntime::connect(addr).await.unwrap();
+        assert!(Write::is_write_vectored(&stream));
+    }
+
+    #[tokio::test]
+    async fn write_vectored_delivers_data() {
+        use std::future::poll_fn;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut client = TokioRuntime::connect(addr).await.unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+
+        let bufs = [
+            io::IoSlice::new(b"hello"),
+            io::IoSlice::new(b" "),
+            io::IoSlice::new(b"world"),
+        ];
+        let n = poll_fn(|cx| Pin::new(&mut client).poll_write_vectored(cx, &bufs))
+            .await
+            .unwrap();
+        assert_eq!(n, 11);
+
+        let mut buf = vec![0u8; 11];
+        use tokio::io::AsyncReadExt;
+        server.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"hello world");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn connect_unix_succeeds() {
