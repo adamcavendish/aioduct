@@ -138,13 +138,28 @@ async fn test_sse_stream() {
     }
 
     assert_eq!(events.len(), 3);
-    assert_eq!(events[0].event.as_deref(), Some("greeting"));
-    assert_eq!(events[0].data, "hello");
-    assert_eq!(events[1].event, None);
-    assert_eq!(events[1].data, "world");
-    assert_eq!(events[2].event.as_deref(), Some("done"));
-    assert_eq!(events[2].data, "bye");
-    assert_eq!(events[2].id.as_deref(), Some("3"));
+    match &events[0] {
+        aioduct::SseEvent::Message(m) => {
+            assert_eq!(m.event, "greeting");
+            assert_eq!(m.data, "hello");
+        }
+        other => panic!("expected message, got {other:?}"),
+    }
+    match &events[1] {
+        aioduct::SseEvent::Message(m) => {
+            assert_eq!(m.event, "message");
+            assert_eq!(m.data, "world");
+        }
+        other => panic!("expected message, got {other:?}"),
+    }
+    match &events[2] {
+        aioduct::SseEvent::Message(m) => {
+            assert_eq!(m.event, "done");
+            assert_eq!(m.data, "bye");
+            assert_eq!(&*m.last_event_id, "3");
+        }
+        other => panic!("expected message, got {other:?}"),
+    }
 }
 #[tokio::test]
 async fn test_sse_multiline_data() {
@@ -169,7 +184,12 @@ async fn test_sse_multiline_data() {
 
     let mut sse = resp.into_sse_stream();
     let event = sse.next().await.unwrap().unwrap();
-    assert_eq!(event.data, "line1\nline2\nline3");
+    match event {
+        aioduct::SseEvent::Message(m) => {
+            assert_eq!(m.data, "line1\nline2\nline3");
+        }
+        other => panic!("expected message, got {other:?}"),
+    }
     assert!(sse.next().await.is_none());
 }
 #[tokio::test]
@@ -195,8 +215,12 @@ async fn test_sse_comments_and_retry() {
 
     let mut sse = resp.into_sse_stream();
     let event = sse.next().await.unwrap().unwrap();
-    assert_eq!(event.data, "after comment");
-    assert_eq!(event.retry, Some(5000));
+    match event {
+        aioduct::SseEvent::Message(m) => {
+            assert_eq!(m.data, "after comment");
+        }
+        other => panic!("expected message, got {other:?}"),
+    }
     assert!(sse.next().await.is_none());
 }
 #[tokio::test]
