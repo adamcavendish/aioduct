@@ -174,36 +174,7 @@ impl<R: Runtime> Client<R> {
         let mut builder =
             hyper::client::conn::http2::Builder::new(crate::runtime::hyper_executor::<R>());
         if let Some(ref h2) = self.http2 {
-            if let Some(v) = h2.initial_stream_window_size {
-                builder.initial_stream_window_size(v);
-            }
-            if let Some(v) = h2.initial_connection_window_size {
-                builder.initial_connection_window_size(v);
-            }
-            if let Some(v) = h2.max_frame_size {
-                builder.max_frame_size(v);
-            }
-            if let Some(v) = h2.adaptive_window {
-                builder.adaptive_window(v);
-            }
-            if let Some(v) = h2.keep_alive_interval {
-                builder.keep_alive_interval(v);
-            }
-            if let Some(v) = h2.keep_alive_timeout {
-                builder.keep_alive_timeout(v);
-            }
-            if let Some(v) = h2.keep_alive_while_idle {
-                builder.keep_alive_while_idle(v);
-            }
-            if let Some(v) = h2.max_header_list_size {
-                builder.max_header_list_size(v);
-            }
-            if let Some(v) = h2.max_send_buf_size {
-                builder.max_send_buf_size(v);
-            }
-            if let Some(v) = h2.max_concurrent_reset_streams {
-                builder.max_concurrent_reset_streams(v);
-            }
+            h2.apply(&mut builder);
         }
         let (sender, conn) = builder.handshake(stream).await?;
         R::spawn(async move {
@@ -260,36 +231,7 @@ impl<R: Runtime> Client<R> {
                 let mut builder =
                     hyper::client::conn::http2::Builder::new(crate::runtime::hyper_executor::<R>());
                 if let Some(ref h2) = self.http2 {
-                    if let Some(v) = h2.initial_stream_window_size {
-                        builder.initial_stream_window_size(v);
-                    }
-                    if let Some(v) = h2.initial_connection_window_size {
-                        builder.initial_connection_window_size(v);
-                    }
-                    if let Some(v) = h2.max_frame_size {
-                        builder.max_frame_size(v);
-                    }
-                    if let Some(v) = h2.adaptive_window {
-                        builder.adaptive_window(v);
-                    }
-                    if let Some(v) = h2.keep_alive_interval {
-                        builder.keep_alive_interval(v);
-                    }
-                    if let Some(v) = h2.keep_alive_timeout {
-                        builder.keep_alive_timeout(v);
-                    }
-                    if let Some(v) = h2.keep_alive_while_idle {
-                        builder.keep_alive_while_idle(v);
-                    }
-                    if let Some(v) = h2.max_header_list_size {
-                        builder.max_header_list_size(v);
-                    }
-                    if let Some(v) = h2.max_send_buf_size {
-                        builder.max_send_buf_size(v);
-                    }
-                    if let Some(v) = h2.max_concurrent_reset_streams {
-                        builder.max_concurrent_reset_streams(v);
-                    }
+                    h2.apply(&mut builder);
                 }
                 let (sender, conn) = builder.handshake(tls_stream).await?;
                 R::spawn(async move {

@@ -100,6 +100,39 @@ impl Http2Config {
         self.max_concurrent_reset_streams = Some(max);
         self
     }
+
+    pub(crate) fn apply<E: Clone>(&self, builder: &mut hyper::client::conn::http2::Builder<E>) {
+        if let Some(v) = self.initial_stream_window_size {
+            builder.initial_stream_window_size(v);
+        }
+        if let Some(v) = self.initial_connection_window_size {
+            builder.initial_connection_window_size(v);
+        }
+        if let Some(v) = self.max_frame_size {
+            builder.max_frame_size(v);
+        }
+        if let Some(v) = self.adaptive_window {
+            builder.adaptive_window(v);
+        }
+        if let Some(v) = self.keep_alive_interval {
+            builder.keep_alive_interval(v);
+        }
+        if let Some(v) = self.keep_alive_timeout {
+            builder.keep_alive_timeout(v);
+        }
+        if let Some(v) = self.keep_alive_while_idle {
+            builder.keep_alive_while_idle(v);
+        }
+        if let Some(v) = self.max_header_list_size {
+            builder.max_header_list_size(v);
+        }
+        if let Some(v) = self.max_send_buf_size {
+            builder.max_send_buf_size(v);
+        }
+        if let Some(v) = self.max_concurrent_reset_streams {
+            builder.max_concurrent_reset_streams(v);
+        }
+    }
 }
 
 #[cfg(test)]
