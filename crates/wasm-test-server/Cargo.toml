@@ -1,0 +1,13 @@
+[package]
+name = "wasm-test-server"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio"] }
+bytes.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["server", "http1"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal"] }

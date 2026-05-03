@@ -65,6 +65,13 @@ test-all:
 test-features features:
     cargo nextest run --features {{ features }}
 
+# Run WASM integration tests in headless Chrome (requires wasm-pack + Chrome)
+test-wasm:
+    cargo run -p wasm-test-server & SERVER_PID=$!; \
+    sleep 1; \
+    cd crates/aioduct && wasm-pack test --headless --chrome --features wasm,json; \
+    STATUS=$?; kill $SERVER_PID 2>/dev/null; exit $STATUS
+
 # ---------- Coverage ----------
 
 # Show coverage summary table

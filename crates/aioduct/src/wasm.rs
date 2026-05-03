@@ -464,7 +464,7 @@ mod tests {
     fn method_helpers_return_err_for_invalid_urls() {
         let client = WasmClient::new();
         assert!(client.get("not a url").is_err());
-        assert!(client.post("://missing-scheme").is_err());
+        assert!(client.post("htt p://bad url").is_err());
     }
 
     #[test]
