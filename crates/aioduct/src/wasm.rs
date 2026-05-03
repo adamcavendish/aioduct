@@ -372,10 +372,265 @@ impl WasmResponse {
     }
 }
 
-#[cfg(all(test, feature = "json"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn new_client_has_user_agent() {
+        let client = WasmClient::new();
+        assert!(
+            client
+                .default_headers
+                .contains_key(http::header::USER_AGENT)
+        );
+        let ua = client
+            .default_headers
+            .get(http::header::USER_AGENT)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ua.starts_with("aioduct/"));
+    }
+
+    #[test]
+    fn default_creates_same_as_new() {
+        let client: WasmClient = Default::default();
+        assert!(
+            client
+                .default_headers
+                .contains_key(http::header::USER_AGENT)
+        );
+    }
+
+    #[test]
+    fn builder_sets_timeout() {
+        let client = WasmClient::builder()
+            .timeout(Duration::from_secs(30))
+            .build();
+        assert_eq!(client.timeout, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn builder_sets_user_agent() {
+        let client = WasmClient::builder().user_agent("custom/1.0").build();
+        let ua = client
+            .default_headers
+            .get(http::header::USER_AGENT)
+            .unwrap();
+        assert_eq!(ua, "custom/1.0");
+    }
+
+    #[test]
+    fn builder_invalid_user_agent_ignored() {
+        let client = WasmClient::builder().user_agent("bad\x00agent").build();
+        let ua = client
+            .default_headers
+            .get(http::header::USER_AGENT)
+            .unwrap();
+        assert!(ua.to_str().unwrap().starts_with("aioduct/"));
+    }
+
+    #[test]
+    fn builder_default_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-custom", HeaderValue::from_static("value"));
+        let client = WasmClient::builder().default_headers(headers).build();
+        assert!(client.default_headers.contains_key("x-custom"));
+        assert!(
+            client
+                .default_headers
+                .contains_key(http::header::USER_AGENT)
+        );
+    }
+
+    #[test]
+    fn method_helpers_return_ok_for_valid_urls() {
+        let client = WasmClient::new();
+        assert!(client.get("https://example.com").is_ok());
+        assert!(client.head("https://example.com").is_ok());
+        assert!(client.post("https://example.com").is_ok());
+        assert!(client.put("https://example.com").is_ok());
+        assert!(client.patch("https://example.com").is_ok());
+        assert!(client.delete("https://example.com").is_ok());
+        assert!(
+            client
+                .request(Method::OPTIONS, "https://example.com")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn method_helpers_return_err_for_invalid_urls() {
+        let client = WasmClient::new();
+        assert!(client.get("not a url").is_err());
+        assert!(client.post("://missing-scheme").is_err());
+    }
+
+    #[test]
+    fn request_builder_sets_header() {
+        let client = WasmClient::new();
+        let req = client
+            .get("https://example.com")
+            .unwrap()
+            .header(http::header::ACCEPT, HeaderValue::from_static("text/html"));
+        assert_eq!(req.headers.get(http::header::ACCEPT).unwrap(), "text/html");
+    }
+
+    #[test]
+    fn request_builder_sets_multiple_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-one", HeaderValue::from_static("1"));
+        headers.insert("x-two", HeaderValue::from_static("2"));
+        let client = WasmClient::new();
+        let req = client.get("https://example.com").unwrap().headers(headers);
+        assert_eq!(req.headers.get("x-one").unwrap(), "1");
+        assert_eq!(req.headers.get("x-two").unwrap(), "2");
+    }
+
+    #[test]
+    fn request_builder_sets_body() {
+        let client = WasmClient::new();
+        let req = client.post("https://example.com").unwrap().body("hello");
+        assert_eq!(req.body.as_ref().unwrap().as_ref(), b"hello");
+    }
+
+    #[test]
+    fn request_builder_bearer_auth() {
+        let client = WasmClient::new();
+        let req = client
+            .get("https://example.com")
+            .unwrap()
+            .bearer_auth("tok123");
+        assert_eq!(
+            req.headers.get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer tok123"
+        );
+    }
+
+    #[test]
+    fn request_builder_timeout() {
+        let client = WasmClient::new();
+        let req = client
+            .get("https://example.com")
+            .unwrap()
+            .timeout(Duration::from_secs(5));
+        assert_eq!(req.timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn response_accessors() {
+        let resp = WasmResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("hello"),
+            url: "https://example.com".parse().unwrap(),
+        };
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().is_empty());
+        assert_eq!(resp.url().to_string(), "https://example.com/");
+    }
+
+    #[test]
+    fn response_bytes() {
+        let resp = WasmResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("hello"),
+            url: "https://example.com".parse().unwrap(),
+        };
+        assert_eq!(resp.bytes(), Bytes::from("hello"));
+    }
+
+    #[test]
+    fn response_text_valid_utf8() {
+        let resp = WasmResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("hello world"),
+            url: "https://example.com".parse().unwrap(),
+        };
+        assert_eq!(resp.text().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn response_text_invalid_utf8() {
+        let resp = WasmResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from_static(&[0xff, 0xfe]),
+            url: "https://example.com".parse().unwrap(),
+        };
+        assert!(resp.text().is_err());
+    }
+
+    #[test]
+    fn response_error_for_status_ok() {
+        let resp = WasmResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            url: "https://example.com".parse().unwrap(),
+        };
+        assert!(resp.error_for_status().is_ok());
+    }
+
+    #[test]
+    fn response_error_for_status_client_error() {
+        let resp = WasmResponse {
+            status: StatusCode::NOT_FOUND,
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            url: "https://example.com".parse().unwrap(),
+        };
+        let err = resp.error_for_status().unwrap_err();
+        assert!(err.is_status());
+        assert_eq!(err.status(), Some(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn response_error_for_status_server_error() {
+        let resp = WasmResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            url: "https://example.com".parse().unwrap(),
+        };
+        assert!(resp.error_for_status().is_err());
+    }
+
+    #[test]
+    fn response_error_for_status_redirect_is_ok() {
+        let resp = WasmResponse {
+            status: StatusCode::FOUND,
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            url: "https://example.com".parse().unwrap(),
+        };
+        assert!(resp.error_for_status().is_ok());
+    }
+
+    #[test]
+    fn response_debug() {
+        let resp = WasmResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+            url: "https://example.com".parse().unwrap(),
+        };
+        let dbg = format!("{resp:?}");
+        assert!(dbg.contains("WasmResponse"));
+    }
+
+    #[test]
+    fn client_debug_and_clone() {
+        let client = WasmClient::new();
+        let cloned = client.clone();
+        let dbg = format!("{cloned:?}");
+        assert!(dbg.contains("WasmClient"));
+    }
+
+    #[cfg(feature = "json")]
     #[test]
     fn json_sets_default_content_type() {
         let client = WasmClient::new();
@@ -391,6 +646,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "json")]
     #[test]
     fn json_preserves_existing_content_type() {
         let client = WasmClient::new();
@@ -408,5 +664,30 @@ mod tests {
             req.headers.get(http::header::CONTENT_TYPE).unwrap(),
             "application/vnd.api+json"
         );
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn response_json() {
+        let resp = WasmResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from(r#"{"key":"value"}"#),
+            url: "https://example.com".parse().unwrap(),
+        };
+        let val: serde_json::Value = resp.json().unwrap();
+        assert_eq!(val["key"], "value");
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn response_json_invalid() {
+        let resp = WasmResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("not json"),
+            url: "https://example.com".parse().unwrap(),
+        };
+        assert!(resp.json::<serde_json::Value>().is_err());
     }
 }

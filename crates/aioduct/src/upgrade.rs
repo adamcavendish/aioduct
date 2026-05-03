@@ -123,11 +123,95 @@ pub(crate) async fn on_upgrade(
     Ok(Upgraded::new(upgraded))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tokio"))]
 mod tests {
-    #[test]
-    fn debug_format() {
-        let dbg_str = format!("{:?}", "Upgraded");
-        assert!(dbg_str.contains("Upgraded"));
+    use super::*;
+    use crate::runtime::tokio_rt::TokioIo;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn upgraded_from_handshake() -> (Upgraded, tokio::io::DuplexStream) {
+        let (client_io, server_io) = tokio::io::duplex(1024);
+        let io = TokioIo::new(client_io);
+
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake::<_, http_body_util::Empty<bytes::Bytes>>(io)
+                .await
+                .unwrap();
+
+        tokio::spawn(async move {
+            let _ = conn.with_upgrades().await;
+        });
+
+        let server_handle = tokio::spawn(async move {
+            let mut server = server_io;
+            let mut buf = [0u8; 4096];
+            let _ = AsyncReadExt::read(&mut server, &mut buf).await;
+            let resp =
+                b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: raw\r\nConnection: Upgrade\r\n\r\n";
+            AsyncWriteExt::write_all(&mut server, resp).await.unwrap();
+            server
+        });
+
+        let req = http::Request::builder()
+            .uri("http://localhost/up")
+            .header("connection", "upgrade")
+            .header("upgrade", "raw")
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+
+        let resp = sender.send_request(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+
+        let hyper_upgraded = hyper::upgrade::on(resp).await.unwrap();
+        let server = server_handle.await.unwrap();
+        (Upgraded::new(hyper_upgraded), server)
+    }
+
+    #[tokio::test]
+    async fn debug_format() {
+        let (upgraded, _server) = upgraded_from_handshake().await;
+        let dbg = format!("{upgraded:?}");
+        assert!(dbg.contains("Upgraded"));
+    }
+
+    #[tokio::test]
+    async fn into_inner_returns_hyper_type() {
+        let (upgraded, _server) = upgraded_from_handshake().await;
+        let _inner: hyper::upgrade::Upgraded = upgraded.into_inner();
+    }
+
+    #[tokio::test]
+    async fn from_trait_impl() {
+        let (upgraded, _server) = upgraded_from_handshake().await;
+        let inner = upgraded.into_inner();
+        let _back: Upgraded = Upgraded::from(inner);
+    }
+
+    #[tokio::test]
+    async fn async_read_write_round_trip() {
+        let (mut upgraded, mut server) = upgraded_from_handshake().await;
+
+        upgraded.write_all(b"ping").await.unwrap();
+        upgraded.flush().await.unwrap();
+
+        let mut buf = [0u8; 4];
+        server.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+
+        server.write_all(b"pong").await.unwrap();
+        server.flush().await.unwrap();
+
+        let mut buf = [0u8; 4];
+        upgraded.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"pong");
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_write_side() {
+        let (mut upgraded, mut server) = upgraded_from_handshake().await;
+        upgraded.shutdown().await.unwrap();
+        let mut buf = [0u8; 1];
+        let n = server.read(&mut buf).await.unwrap();
+        assert_eq!(n, 0);
     }
 }
