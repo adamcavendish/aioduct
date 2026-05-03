@@ -320,4 +320,25 @@ mod tests {
 
         assert_eq!(addrs, vec![ipv6]);
     }
+
+    #[test]
+    fn ordered_h3_addrs_empty_input() {
+        let addrs = ordered_h3_addrs(&[], None, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+        assert!(addrs.is_empty());
+    }
+
+    #[test]
+    fn ordered_h3_addrs_all_same_family() {
+        let a1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443);
+        let a2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 443);
+        let addrs = ordered_h3_addrs(&[a1, a2], None, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(addrs, vec![a1, a2]);
+    }
+
+    #[test]
+    fn h3_ipv4_bind_addr_returns_unspecified() {
+        let addr = h3_ipv4_bind_addr();
+        assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(addr.port(), 0);
+    }
 }

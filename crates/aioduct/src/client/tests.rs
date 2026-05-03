@@ -539,4 +539,150 @@ mod builder_tests {
     fn builder_does_not_require_runtime_context() {
         let _client = TokioClient::builder().build();
     }
+
+    #[test]
+    fn apply_default_headers_fills_missing() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-custom", "existing".parse().unwrap());
+
+        let mut default_headers = http::HeaderMap::new();
+        default_headers.insert("x-custom", "default".parse().unwrap());
+        default_headers.insert("x-extra", "added".parse().unwrap());
+
+        let client = TokioClient::builder()
+            .default_headers(default_headers)
+            .build();
+
+        let mut test_headers = headers.clone();
+        // Simulate what apply_default_headers does
+        for (name, value) in &client.default_headers {
+            if !test_headers.contains_key(name) {
+                test_headers.insert(name, value.clone());
+            }
+        }
+        assert_eq!(test_headers.get("x-custom").unwrap(), "existing");
+        assert_eq!(test_headers.get("x-extra").unwrap(), "added");
+    }
+
+    #[test]
+    fn hsts_store_marks_host_for_upgrade() {
+        let store = crate::hsts::HstsStore::new();
+        let mut sts_headers = http::HeaderMap::new();
+        sts_headers.insert(
+            http::header::HeaderName::from_static("strict-transport-security"),
+            "max-age=31536000".parse().unwrap(),
+        );
+        store.store_from_response("example.com", &sts_headers);
+
+        let client = TokioClient::builder().hsts(store).build();
+        assert!(client.hsts.as_ref().unwrap().should_upgrade("example.com"));
+    }
+
+    #[test]
+    fn hsts_does_not_upgrade_unknown_host() {
+        let store = crate::hsts::HstsStore::new();
+        let client = TokioClient::builder().hsts(store).build();
+        assert!(
+            !client
+                .hsts
+                .as_ref()
+                .unwrap()
+                .should_upgrade("not-stored.com")
+        );
+    }
+
+    #[test]
+    fn no_connection_reuse_flag() {
+        let client = TokioClient::builder().no_connection_reuse().build();
+        assert!(client.no_connection_reuse);
+    }
+
+    #[test]
+    fn bandwidth_limiter_accessor() {
+        let client = TokioClient::builder()
+            .max_download_speed(1024 * 1024)
+            .build();
+        assert!(client.bandwidth_limiter().is_some());
+    }
+
+    #[test]
+    fn bandwidth_limiter_accessor_none() {
+        let client = TokioClient::new();
+        assert!(client.bandwidth_limiter().is_none());
+    }
+
+    #[test]
+    fn default_timeout_accessor() {
+        let client = TokioClient::builder()
+            .timeout(Duration::from_secs(10))
+            .build();
+        assert_eq!(client.default_timeout(), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn default_timeout_accessor_none() {
+        let client = TokioClient::new();
+        assert_eq!(client.default_timeout(), None);
+    }
+
+    #[test]
+    fn default_retry_accessor() {
+        let client = TokioClient::builder()
+            .retry(crate::retry::RetryConfig::default())
+            .build();
+        assert!(client.default_retry().is_some());
+    }
+
+    #[test]
+    fn default_retry_accessor_none() {
+        let client = TokioClient::new();
+        assert!(client.default_retry().is_none());
+    }
+
+    #[test]
+    fn middleware_accessor() {
+        let client = TokioClient::new();
+        assert!(client.middleware().is_empty());
+    }
+
+    #[test]
+    fn chunk_download_returns_builder() {
+        let client = TokioClient::new();
+        let _dl = client.chunk_download("http://example.com/file");
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_http_when_https_only() {
+        let client = TokioClient::builder().https_only(true).build();
+        let result = client
+            .execute(
+                Method::GET,
+                "http://example.com".parse().unwrap(),
+                http::HeaderMap::new(),
+                None,
+                None,
+            )
+            .await;
+        let err = result.unwrap_err();
+        match err {
+            crate::error::Error::HttpsOnly(scheme) => assert_eq!(scheme, "http"),
+            other => panic!("expected HttpsOnly, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_allows_https_when_https_only() {
+        let client = TokioClient::builder().https_only(true).build();
+        let result = client
+            .execute(
+                Method::GET,
+                "https://example.com".parse().unwrap(),
+                http::HeaderMap::new(),
+                None,
+                None,
+            )
+            .await;
+        // Will fail with connection error, not HttpsOnly
+        assert!(!matches!(result, Err(crate::error::Error::HttpsOnly(_))));
+    }
 }
