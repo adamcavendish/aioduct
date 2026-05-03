@@ -25,11 +25,18 @@ async fn main() -> Result<(), aioduct::Error> {
     while let Some(event) = stream.next().await {
         match event {
             Ok(sse) => {
-                println!(
-                    "Event: type={:?}, data={:?}, id={:?}",
-                    sse.event, sse.data, sse.id
-                );
-                count += 1;
+                match sse {
+                    aioduct::SseEvent::Message(m) => {
+                        println!(
+                            "Event: type={:?}, data={:?}, id={:?}",
+                            m.event, m.data, m.last_event_id
+                        );
+                        count += 1;
+                    }
+                    aioduct::SseEvent::Retry(ms) => {
+                        println!("Retry: {ms}ms");
+                    }
+                }
                 if count >= 5 {
                     println!("Received {count} events, stopping.");
                     break;

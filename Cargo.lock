@@ -40,6 +40,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "js-sys",
+ "memchr",
  "mime",
  "opentelemetry",
  "opentelemetry-http",

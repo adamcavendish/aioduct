@@ -55,6 +55,7 @@ http-body.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "http1", "http2"] }
 js-sys = { workspace = true, optional = true }
+memchr.workspace = true
 mime = { workspace = true, optional = true }
 opentelemetry = { workspace = true, features = ["trace"], optional = true }
 opentelemetry-http = { workspace = true, optional = true }

@@ -33,6 +33,7 @@ http-body-util = "0.1"
 hyper = "1"
 indicatif = "0.18"
 js-sys = "0.3"
+memchr = "2"
 mime = "0.3"
 opentelemetry = { version = "0.31", default-features = false }
 opentelemetry-http = "0.31"

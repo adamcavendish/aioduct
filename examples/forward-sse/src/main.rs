@@ -80,10 +80,15 @@ async fn main() -> Result<(), aioduct::Error> {
     let mut count = 0;
     while let Some(event) = stream.next().await {
         match event {
-            Ok(sse) => {
-                println!("SSE event: type={:?} data={:?}", sse.event, sse.data);
-                count += 1;
-            }
+            Ok(sse) => match sse {
+                aioduct::SseEvent::Message(m) => {
+                    println!("SSE event: type={:?} data={:?}", m.event, m.data);
+                    count += 1;
+                }
+                aioduct::SseEvent::Retry(ms) => {
+                    println!("SSE retry: {ms}ms");
+                }
+            },
             Err(e) => {
                 println!("Stream ended: {e}");
                 break;
