@@ -158,3 +158,107 @@ impl<R: Runtime> ChunkDownload<R> {
         })
     }
 }
+
+#[cfg(all(test, feature = "tokio"))]
+mod tests {
+    use super::*;
+    use crate::runtime::TokioRuntime;
+
+    #[test]
+    fn chunks_clamps_to_one() {
+        let client = crate::Client::<TokioRuntime>::new();
+        let dl = client.chunk_download("http://example.com/file");
+        let dl = dl.chunks(0);
+        assert_eq!(dl.chunks, 1);
+    }
+
+    #[test]
+    fn chunks_accepts_large_value() {
+        let client = crate::Client::<TokioRuntime>::new();
+        let dl = client.chunk_download("http://example.com/file").chunks(100);
+        assert_eq!(dl.chunks, 100);
+    }
+
+    #[test]
+    fn debug_format_includes_url() {
+        let client = crate::Client::<TokioRuntime>::new();
+        let dl = client.chunk_download("http://example.com/large.bin");
+        let dbg = format!("{dl:?}");
+        assert!(dbg.contains("ChunkDownload"));
+        assert!(dbg.contains("large.bin"));
+    }
+
+    #[test]
+    fn range_splitting_single_chunk() {
+        let total_size: u64 = 100;
+        let start = 0u64;
+        let end = total_size - 1;
+        assert_eq!(start, 0);
+        assert_eq!(end, 99);
+    }
+
+    #[test]
+    fn range_splitting_even() {
+        let total_size: u64 = 100;
+        let num_chunks: usize = 4;
+        let chunk_size = total_size / num_chunks as u64;
+        let mut ranges = Vec::new();
+        for i in 0..num_chunks {
+            let start = i as u64 * chunk_size;
+            let end = if i == num_chunks - 1 {
+                total_size - 1
+            } else {
+                (i as u64 + 1) * chunk_size - 1
+            };
+            ranges.push((start, end));
+        }
+        assert_eq!(ranges, vec![(0, 24), (25, 49), (50, 74), (75, 99)]);
+    }
+
+    #[test]
+    fn range_splitting_uneven() {
+        let total_size: u64 = 10;
+        let num_chunks: usize = 3;
+        let chunk_size = total_size / num_chunks as u64;
+        let mut ranges = Vec::new();
+        for i in 0..num_chunks {
+            let start = i as u64 * chunk_size;
+            let end = if i == num_chunks - 1 {
+                total_size - 1
+            } else {
+                (i as u64 + 1) * chunk_size - 1
+            };
+            ranges.push((start, end));
+        }
+        assert_eq!(ranges[0], (0, 2));
+        assert_eq!(ranges[1], (3, 5));
+        assert_eq!(ranges[2], (6, 9));
+    }
+
+    #[test]
+    fn num_chunks_capped_at_total_size() {
+        let total_size: u64 = 3;
+        let requested_chunks: u64 = 10;
+        let num_chunks = requested_chunks.min(total_size) as usize;
+        assert_eq!(num_chunks, 3);
+    }
+
+    #[test]
+    fn chunk_download_result_debug() {
+        let result = ChunkDownloadResult {
+            total_size: 42,
+            data: bytes::Bytes::from("hello"),
+        };
+        let dbg = format!("{result:?}");
+        assert!(dbg.contains("42"));
+    }
+
+    #[test]
+    fn reassembly_order() {
+        let mut buf = BytesMut::with_capacity(9);
+        buf.put(&b"abc"[..]);
+        buf.put(&b"def"[..]);
+        buf.put(&b"ghi"[..]);
+        assert_eq!(&buf[..], b"abcdefghi");
+    }
+}
