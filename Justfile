@@ -2,8 +2,8 @@
 default:
     @just --list
 
-all_features_ring := "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm"
-all_features_aws_lc_rs := "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm"
+all_features_ring := "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
+all_features_aws_lc_rs := "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
 
 # ---------- Build ----------
 

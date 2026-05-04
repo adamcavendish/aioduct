@@ -101,6 +101,7 @@ impl Http2Config {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn apply<E: Clone>(&self, builder: &mut hyper::client::conn::http2::Builder<E>) {
         if let Some(v) = self.initial_stream_window_size {
             builder.initial_stream_window_size(v);

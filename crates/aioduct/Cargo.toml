@@ -34,6 +34,7 @@ tower = ["dep:tower-service", "dep:tower-layer"]
 tracing = ["dep:tracing"]
 otel = ["dep:opentelemetry", "dep:opentelemetry-http"]
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
+wasi-p2 = ["dep:wasi"]
 
 [dependencies]
 async-io = { workspace = true, optional = true }
@@ -75,6 +76,7 @@ tower-layer = { workspace = true, optional = true }
 tower-service = { workspace = true, optional = true }
 tracing = { workspace = true, features = ["std"], optional = true }
 url.workspace = true
+wasi = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
@@ -128,5 +130,6 @@ features = [
     "tracing",
     "otel",
     "wasm",
+    "wasi-p2",
 ]
 rustdoc-args = ["--cfg", "docsrs"]

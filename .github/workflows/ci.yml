@@ -131,9 +131,13 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@wasm-pack
+      - name: Verify wasm32 portable modules compile
+        run: cargo check -p aioduct --target wasm32-unknown-unknown --features wasm,json
+      - name: Verify wasm32-wasip2 compilation
+        run: cargo check -p aioduct --target wasm32-wasip2 --features wasi-p2,json
       - name: Build and start test server
         run: |
           cargo run -p wasm-test-server &
