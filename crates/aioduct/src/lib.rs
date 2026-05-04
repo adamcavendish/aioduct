@@ -31,6 +31,8 @@ pub mod body;
 pub mod cache;
 /// Cookie storage and automatic cookie handling.
 pub mod cookie;
+mod decompress;
+mod digest_auth;
 /// Error types for HTTP operations.
 pub mod error;
 /// Forwarded header builder and parser (RFC 7239).
@@ -47,6 +49,8 @@ pub mod middleware;
 pub mod multipart;
 /// Netrc credential file parsing and middleware.
 pub mod netrc;
+/// HTTP and SOCKS proxy configuration.
+pub mod proxy;
 /// Redirect policy configuration.
 pub mod redirect;
 /// Automatic retry with exponential backoff.
@@ -55,6 +59,8 @@ pub mod retry;
 pub mod sse;
 /// Token-bucket rate limiter for throttling requests.
 pub mod throttle;
+/// Per-request timing breakdown (DNS, TCP, TLS, TTFB).
+pub mod timing;
 
 /// RFC 9457 Problem Details for HTTP APIs.
 #[cfg(feature = "json")]
@@ -74,10 +80,6 @@ pub mod client;
 /// Tower-based connector layer support.
 #[cfg(feature = "tower")]
 pub mod connector;
-#[cfg(not(target_arch = "wasm32"))]
-mod decompress;
-#[cfg(not(target_arch = "wasm32"))]
-mod digest_auth;
 /// Request forwarding for proxy/gateway use cases.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod forward;
@@ -89,9 +91,6 @@ pub mod hickory;
 /// Internal connection pool for HTTP keep-alive.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod pool;
-/// HTTP and SOCKS proxy configuration.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod proxy;
 /// Request builder for configuring and sending HTTP requests.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod request;
@@ -107,9 +106,6 @@ mod socks4;
 mod socks5;
 #[cfg(not(target_arch = "wasm32"))]
 mod timeout;
-/// Per-request timing breakdown (DNS, TCP, TLS, TTFB).
-#[cfg(not(target_arch = "wasm32"))]
-pub mod timing;
 /// TLS configuration and connector types.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tls;
@@ -158,10 +154,12 @@ pub use link::Link;
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
 pub use netrc::{Netrc, NetrcMiddleware};
+pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use retry::{RetryBudget, RetryConfig};
 pub use sse::{SseDecoder, SseEvent, SseMessage, SseStream};
 pub use throttle::RateLimiter;
+pub use timing::RequestTimings;
 
 #[cfg(feature = "json")]
 pub use problem::ProblemDetails;
@@ -177,15 +175,11 @@ pub use forward::ForwardBuilder;
 #[cfg(feature = "hickory-dns")]
 pub use hickory::HickoryResolver;
 #[cfg(not(target_arch = "wasm32"))]
-pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
-#[cfg(not(target_arch = "wasm32"))]
 pub use request::RequestBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 pub use response::Response;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::{Resolve, Runtime};
-#[cfg(not(target_arch = "wasm32"))]
-pub use timing::RequestTimings;
 #[cfg(not(target_arch = "wasm32"))]
 pub use upgrade::Upgraded;
 

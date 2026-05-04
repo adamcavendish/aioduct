@@ -135,9 +135,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@wasm-pack
       - name: Verify wasm32 portable modules compile
-        run: cargo check -p aioduct --target wasm32-unknown-unknown --features wasm,json
+        run: cargo check -p aioduct --target wasm32-unknown-unknown --features wasm,json,gzip,brotli,deflate
       - name: Verify wasm32-wasip2 compilation
-        run: cargo check -p aioduct --target wasm32-wasip2 --features wasi-p2,json
+        run: cargo check -p aioduct --target wasm32-wasip2 --features wasi-p2,json,gzip,brotli,deflate
       - name: Build and start test server
         run: |
           cargo run -p wasm-test-server &
