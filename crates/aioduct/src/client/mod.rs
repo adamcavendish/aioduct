@@ -21,6 +21,7 @@ use http_body_util::BodyExt;
 use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
 use crate::error::{AioductBody, Error};
+use crate::h2c_probe::H2cProbeCache;
 use crate::http2::Http2Config;
 use crate::middleware::MiddlewareStack;
 use crate::pool::ConnectionPool;
@@ -65,6 +66,7 @@ pub struct Client<R: Runtime> {
     pub(crate) digest_auth: Option<crate::digest_auth::DigestAuth>,
     pub(crate) cache: Option<HttpCache>,
     pub(crate) hsts: Option<crate::hsts::HstsStore>,
+    pub(crate) h2c_probe_cache: H2cProbeCache,
     #[cfg(feature = "tower")]
     pub(crate) connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
@@ -112,6 +114,7 @@ impl<R: Runtime> Clone for Client<R> {
             digest_auth: self.digest_auth.clone(),
             cache: self.cache.clone(),
             hsts: self.hsts.clone(),
+            h2c_probe_cache: self.h2c_probe_cache.clone(),
             #[cfg(feature = "tower")]
             connector: self.connector.clone(),
             #[cfg(feature = "rustls")]

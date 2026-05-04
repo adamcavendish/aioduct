@@ -37,6 +37,7 @@ mod digest_auth;
 pub mod error;
 /// Forwarded header builder and parser (RFC 7239).
 pub mod forwarded;
+pub(crate) mod h2c_probe;
 /// HSTS (HTTP Strict Transport Security) store.
 pub mod hsts;
 /// HTTP/2 connection configuration.

@@ -149,14 +149,25 @@ impl<R: Runtime> Client<R> {
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
-        if self.http2_prior_knowledge {
+        self.connect_plaintext_with_hint(stream, false)
+    }
+
+    pub(super) fn connect_plaintext_with_hint<S>(
+        &self,
+        stream: S,
+        force_h2c: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<R>, Error>> + Send + '_>>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
+        if self.http2_prior_knowledge || force_h2c {
             Box::pin(self.connect_h2_prior_knowledge(stream))
         } else {
             Box::pin(self.connect_h1(stream))
         }
     }
 
-    async fn connect_h1<S>(&self, stream: S) -> Result<PooledConnection<R>, Error>
+    pub(super) async fn connect_h1<S>(&self, stream: S) -> Result<PooledConnection<R>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -167,7 +178,10 @@ impl<R: Runtime> Client<R> {
         Ok(PooledConnection::new_h1(sender))
     }
 
-    async fn connect_h2_prior_knowledge<S>(&self, stream: S) -> Result<PooledConnection<R>, Error>
+    pub(super) async fn connect_h2_prior_knowledge<S>(
+        &self,
+        stream: S,
+    ) -> Result<PooledConnection<R>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {

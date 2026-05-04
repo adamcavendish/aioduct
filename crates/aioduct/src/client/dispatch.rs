@@ -3,7 +3,7 @@ use std::time::Instant;
 use http::Uri;
 
 use crate::error::{AioductBody, Error};
-use crate::pool::{HttpConnection, PooledConnection};
+use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
 use crate::response::Response;
 use crate::runtime::Runtime;
 use crate::timing::TimingCollector;
@@ -15,6 +15,16 @@ impl<R: Runtime> Client<R> {
         &self,
         request: http::Request<AioductBody>,
         original_uri: &Uri,
+    ) -> Result<Response, Error> {
+        self.execute_single_with_hint(request, original_uri, ProtocolHint::Auto)
+            .await
+    }
+
+    pub(crate) async fn execute_single_with_hint(
+        &self,
+        request: http::Request<AioductBody>,
+        original_uri: &Uri,
+        protocol: ProtocolHint,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
 
@@ -34,7 +44,31 @@ impl<R: Runtime> Client<R> {
 
         let is_https = scheme == &http::uri::Scheme::HTTPS;
 
-        let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
+        // Resolve AdaptiveH2c via the probe cache
+        let effective_protocol = match protocol {
+            ProtocolHint::AdaptiveH2c => {
+                match self.h2c_probe_cache.lookup(authority) {
+                    Some(true) => ProtocolHint::H2c,
+                    Some(false) => ProtocolHint::Auto,
+                    None => ProtocolHint::AdaptiveH2c, // needs probing
+                }
+            }
+            other => other,
+        };
+        let force_h2c = matches!(
+            effective_protocol,
+            ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
+        );
+
+        let pool_key = crate::pool::PoolKey::with_hint(
+            scheme.clone(),
+            authority.clone(),
+            if force_h2c {
+                ProtocolHint::H2c
+            } else {
+                ProtocolHint::Auto
+            },
+        );
 
         if !self.no_connection_reuse
             && let Some(mut conn) = self.pool.checkout(&pool_key)
@@ -108,7 +142,8 @@ impl<R: Runtime> Client<R> {
             {
                 let connect_fut = async {
                     let unix_stream = R::connect_unix(unix_path).await.map_err(Error::Io)?;
-                    self.connect_plaintext(unix_stream).await
+                    self.connect_plaintext_with_hint(unix_stream, force_h2c)
+                        .await
                 };
                 match self.connect_timeout {
                     Some(duration) => {
@@ -196,8 +231,33 @@ impl<R: Runtime> Client<R> {
 
                 let mut conn = if is_https {
                     self.connect_tls(tcp_stream, authority.host()).await?
+                } else if matches!(effective_protocol, ProtocolHint::AdaptiveH2c) {
+                    // Probe: try h2c, fall back to h1 on failure
+                    match self.connect_h2_prior_knowledge(tcp_stream).await {
+                        Ok(c) => {
+                            self.h2c_probe_cache.record_h2c(authority.clone());
+                            c
+                        }
+                        Err(_) => {
+                            self.h2c_probe_cache.record_h1_only(authority.clone());
+                            // Reconnect with h1 — original socket is dead
+                            let stream2 = if addrs.len() > 1 && local_address.is_none() {
+                                crate::happy_eyeballs::connect_happy_eyeballs::<R>(
+                                    &addrs,
+                                    local_address,
+                                )
+                                .await
+                                .map_err(Error::Io)?
+                                .0
+                            } else {
+                                R::connect(addrs[0]).await?
+                            };
+                            self.connect_h1(stream2).await?
+                        }
+                    }
                 } else {
-                    self.connect_plaintext(tcp_stream).await?
+                    self.connect_plaintext_with_hint(tcp_stream, force_h2c)
+                        .await?
                 };
                 conn.remote_addr = Some(addr);
                 Ok::<(PooledConnection<R>, Instant), Error>((conn, Instant::now()))

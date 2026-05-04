@@ -55,6 +55,7 @@ pub struct ClientBuilder<R: Runtime> {
     pub(super) digest_auth: Option<crate::digest_auth::DigestAuth>,
     pub(super) cache: Option<HttpCache>,
     pub(super) hsts: Option<crate::hsts::HstsStore>,
+    pub(super) h2c_probe_ttl: Option<Duration>,
     #[cfg(feature = "tower")]
     pub(super) connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
@@ -118,6 +119,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             digest_auth: None,
             cache: None,
             hsts: None,
+            h2c_probe_ttl: None,
             #[cfg(feature = "tower")]
             connector: None,
             #[cfg(feature = "rustls")]
@@ -335,6 +337,92 @@ impl<R: Runtime> ClientBuilder<R> {
     /// Configure HTTP/2 connection parameters (window sizes, keepalive, frame size).
     pub fn http2(mut self, config: Http2Config) -> Self {
         self.http2 = Some(config);
+        self
+    }
+
+    /// Set the HTTP/2 initial stream-level flow-control window size (bytes).
+    pub fn http2_initial_stream_window_size(mut self, size: u32) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .initial_stream_window_size = Some(size);
+        self
+    }
+
+    /// Set the HTTP/2 initial connection-level flow-control window size (bytes).
+    pub fn http2_initial_connection_window_size(mut self, size: u32) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .initial_connection_window_size = Some(size);
+        self
+    }
+
+    /// Set the HTTP/2 max frame size (bytes).
+    pub fn http2_max_frame_size(mut self, size: u32) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .max_frame_size = Some(size);
+        self
+    }
+
+    /// Enable HTTP/2 adaptive flow-control window sizing.
+    pub fn http2_adaptive_window(mut self, enabled: bool) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .adaptive_window = Some(enabled);
+        self
+    }
+
+    /// Set the HTTP/2 PING keep-alive interval.
+    pub fn http2_keep_alive_interval(mut self, interval: Duration) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .keep_alive_interval = Some(interval);
+        self
+    }
+
+    /// Set the HTTP/2 PING acknowledgement timeout.
+    pub fn http2_keep_alive_timeout(mut self, timeout: Duration) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .keep_alive_timeout = Some(timeout);
+        self
+    }
+
+    /// Send HTTP/2 keep-alive PINGs even when idle.
+    pub fn http2_keep_alive_while_idle(mut self, enabled: bool) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .keep_alive_while_idle = Some(enabled);
+        self
+    }
+
+    /// Set the HTTP/2 max header list size (bytes).
+    pub fn http2_max_header_list_size(mut self, size: u32) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .max_header_list_size = Some(size);
+        self
+    }
+
+    /// Set the HTTP/2 max send buffer size per stream (bytes).
+    pub fn http2_max_send_buf_size(mut self, size: usize) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .max_send_buf_size = Some(size);
+        self
+    }
+
+    /// Set the max number of HTTP/2 locally-reset streams to keep in the reset state.
+    pub fn http2_max_concurrent_reset_streams(mut self, max: usize) -> Self {
+        self.http2
+            .get_or_insert_with(Http2Config::new)
+            .max_concurrent_reset_streams = Some(max);
+        self
+    }
+
+    /// Set the TTL for adaptive h2c probe results (default: 5 minutes).
+    pub fn h2c_probe_ttl(mut self, ttl: Duration) -> Self {
+        self.h2c_probe_ttl = Some(ttl);
         self
     }
 
@@ -642,6 +730,10 @@ impl<R: Runtime> ClientBuilder<R> {
             digest_auth: self.digest_auth,
             cache: self.cache,
             hsts: self.hsts,
+            h2c_probe_cache: self
+                .h2c_probe_ttl
+                .map(crate::h2c_probe::H2cProbeCache::with_ttl)
+                .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
             #[cfg(feature = "tower")]
             connector: self.connector,
             #[cfg(feature = "rustls")]

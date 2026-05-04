@@ -12,6 +12,7 @@ use http_body_util::BodyExt;
 
 use crate::client::Client;
 use crate::error::{AioductBody, Error};
+use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::Runtime;
 
@@ -33,6 +34,7 @@ pub struct ForwardBuilder<'a, R: Runtime, B> {
     extra_headers: HeaderMap,
     remove_headers: Vec<HeaderName>,
     forward_headers: Vec<HeaderName>,
+    protocol_hint: ProtocolHint,
     on_request: Option<RequestHook>,
     on_response: Option<ResponseHook>,
 }
@@ -53,6 +55,7 @@ where
             extra_headers: HeaderMap::new(),
             remove_headers: Vec::new(),
             forward_headers: Vec::new(),
+            protocol_hint: ProtocolHint::Auto,
             on_request: None,
             on_response: None,
         }
@@ -89,6 +92,23 @@ where
     /// Set a total timeout for the forwarded request.
     pub fn timeout(mut self, duration: Duration) -> Self {
         self.timeout = Some(duration);
+        self
+    }
+
+    /// Force HTTP/2 prior knowledge (h2c) for this forward.
+    ///
+    /// Use this for gRPC upstreams over plaintext. The upstream must speak HTTP/2
+    /// — this does NOT perform adaptive fallback.
+    pub fn h2c(mut self) -> Self {
+        self.protocol_hint = ProtocolHint::H2c;
+        self
+    }
+
+    /// Try HTTP/2 prior knowledge; fall back to HTTP/1.1 if the upstream rejects it.
+    ///
+    /// The result is cached per-authority — subsequent requests skip the probe.
+    pub fn adaptive_h2c(mut self) -> Self {
+        self.protocol_hint = ProtocolHint::AdaptiveH2c;
         self
     }
 
@@ -165,6 +185,12 @@ where
             parts.version = http::Version::HTTP_11;
         }
         if is_h2_extended_connect {
+            parts.version = http::Version::HTTP_2;
+        }
+        if matches!(
+            self.protocol_hint,
+            ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
+        ) {
             parts.version = http::Version::HTTP_2;
         }
 
@@ -282,8 +308,10 @@ where
 
         let request = http::Request::from_parts(parts, boxed_body);
 
-        // 10. Send via execute_single (bypasses redirects, cookies, cache, decompression)
-        let send_fut = self.client.execute_single(request, &full_uri);
+        // 10. Send via execute_single_with_hint (bypasses redirects, cookies, cache, decompression)
+        let send_fut = self
+            .client
+            .execute_single_with_hint(request, &full_uri, self.protocol_hint);
 
         let mut resp = if let Some(duration) = self.timeout {
             crate::timeout::Timeout::WithTimeout {
