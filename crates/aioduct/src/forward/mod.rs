@@ -187,10 +187,7 @@ where
         if is_h2_extended_connect {
             parts.version = http::Version::HTTP_2;
         }
-        if matches!(
-            self.protocol_hint,
-            ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
-        ) {
+        if self.protocol_hint == ProtocolHint::H2c {
             parts.version = http::Version::HTTP_2;
         }
 
@@ -284,8 +281,13 @@ where
             hook(&mut parts);
         }
 
-        // 8. Build the request URI for hyper (path-only for HTTP/1, full for HTTP/2 CONNECT)
-        if is_h2_extended_connect {
+        // 8. Build the request URI for hyper (path-only for HTTP/1, full for HTTP/2)
+        if is_h2_extended_connect
+            || matches!(
+                self.protocol_hint,
+                ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
+            )
+        {
             parts.uri = full_uri.clone();
         } else {
             let request_uri: Uri = full_uri

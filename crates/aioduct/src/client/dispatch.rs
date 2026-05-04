@@ -60,7 +60,7 @@ impl<R: Runtime> Client<R> {
             ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
         );
 
-        let pool_key = crate::pool::PoolKey::with_hint(
+        let mut pool_key = crate::pool::PoolKey::with_hint(
             scheme.clone(),
             authority.clone(),
             if force_h2c {
@@ -232,15 +232,25 @@ impl<R: Runtime> Client<R> {
                 let mut conn = if is_https {
                     self.connect_tls(tcp_stream, authority.host()).await?
                 } else if matches!(effective_protocol, ProtocolHint::AdaptiveH2c) {
-                    // Probe: try h2c, fall back to h1 on failure
-                    match self.connect_h2_prior_knowledge(tcp_stream).await {
+                    // Probe: try h2c, fall back to h1 on failure.
+                    // The h2 handshake can "succeed" even against an h1 server
+                    // because hyper returns the sender before the server processes
+                    // the preface. Wait briefly for the connection driver to detect
+                    // a close, then check readiness.
+                    let h2c_ok = match self.connect_h2_prior_knowledge(tcp_stream).await {
                         Ok(c) => {
+                            R::sleep(std::time::Duration::from_millis(50)).await;
+                            if c.is_ready() { Some(c) } else { None }
+                        }
+                        Err(_) => None,
+                    };
+                    match h2c_ok {
+                        Some(c) => {
                             self.h2c_probe_cache.record_h2c(authority.clone());
                             c
                         }
-                        Err(_) => {
+                        None => {
                             self.h2c_probe_cache.record_h1_only(authority.clone());
-                            // Reconnect with h1 — original socket is dead
                             let stream2 = if addrs.len() > 1 && local_address.is_none() {
                                 crate::happy_eyeballs::connect_happy_eyeballs::<R>(
                                     &addrs,
@@ -286,6 +296,13 @@ impl<R: Runtime> Client<R> {
             }
             conn
         };
+
+        // Adjust pool key if adaptive probe fell back to h1
+        if matches!(protocol, ProtocolHint::AdaptiveH2c)
+            && matches!(pooled.conn, HttpConnection::H1(_))
+        {
+            pool_key.protocol = ProtocolHint::Auto;
+        }
 
         let transfer_start = Instant::now();
         let mut resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
