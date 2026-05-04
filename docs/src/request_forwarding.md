@@ -46,6 +46,8 @@ println!("status: {}", resp.status());
 | `.remove_header(name)` | Remove a header before sending |
 | `.on_request(fn)` | Mutate request parts just before sending |
 | `.on_response(fn)` | Mutate the response before returning |
+| `.h2c()` | Force HTTP/2 prior knowledge (h2c) on this forward |
+| `.adaptive_h2c()` | Probe h2c, fall back to h1; result cached per-authority |
 | `.upgrade()` | Force upgrade header preservation (usually auto-detected) |
 
 ## Hop-by-Hop Header Stripping
@@ -176,10 +178,79 @@ let resp = client
 # }
 ```
 
+## gRPC / h2c Forwarding
+
+For gRPC or other HTTP/2 cleartext (h2c) upstreams, use `.h2c()` to force HTTP/2 prior knowledge on an individual forward without requiring `http2_prior_knowledge()` on the entire client:
+
+```rust,no_run
+# use aioduct::Client;
+# use aioduct::runtime::TokioRuntime;
+# use bytes::Bytes;
+# use http_body_util::Full;
+# async fn example() -> Result<(), aioduct::Error> {
+let client = Client::<TokioRuntime>::new();
+
+let grpc_req = http::Request::builder()
+    .method("POST")
+    .uri("/grpc.UserService/GetUser")
+    .header("content-type", "application/grpc")
+    .body(Full::new(Bytes::from("\0\0\0\0\x05hello")))
+    .unwrap();
+
+let resp = client
+    .forward(grpc_req)
+    .upstream("http://grpc-backend:50051".parse::<http::Uri>().unwrap())
+    .h2c()
+    .send()
+    .await?;
+# Ok(())
+# }
+```
+
+### Adaptive h2c
+
+When you don't know whether the upstream speaks h2c, use `.adaptive_h2c()`. On the first request to a given authority, it probes with an h2 prior knowledge handshake. If the upstream rejects it, the request falls back to HTTP/1.1 transparently. The result is cached per-authority so subsequent requests skip the probe:
+
+```rust,no_run
+# use aioduct::Client;
+# use aioduct::runtime::TokioRuntime;
+# use bytes::Bytes;
+# use http_body_util::Full;
+# async fn example() -> Result<(), aioduct::Error> {
+let client = Client::<TokioRuntime>::new();
+
+let req = http::Request::builder()
+    .method("POST")
+    .uri("/api/data")
+    .body(Full::new(Bytes::new()))
+    .unwrap();
+
+// First request probes; subsequent requests use cached result
+let resp = client
+    .forward(req)
+    .upstream("http://backend:8080".parse::<http::Uri>().unwrap())
+    .adaptive_h2c()
+    .send()
+    .await?;
+# Ok(())
+# }
+```
+
+Configure the probe cache TTL (default 5 minutes) on the client:
+
+```rust,no_run
+# use aioduct::Client;
+# use aioduct::runtime::TokioRuntime;
+# use std::time::Duration;
+let client = Client::<TokioRuntime>::builder()
+    .h2c_probe_ttl(Duration::from_secs(600))
+    .build();
+```
+
 ## What ForwardBuilder Does NOT Do
 
 - **No body buffering** — the body streams through as-is
 - **No middleware** — redirects, cookies, cache, and decompression are all bypassed
 - **No WebSocket framing** — aioduct is transport-level; use a WS library for frame parsing
 - **No bidirectional splice** — the caller is responsible for splicing `Upgraded` streams
-- **No protocol negotiation** — the caller decides whether to use H1 or H2 based on their knowledge of the upstream
+- **No plaintext h2 by default** — HTTPS forwards negotiate HTTP/2 via TLS ALPN as usual; use `.h2c()` or `.adaptive_h2c()` when the upstream requires cleartext HTTP/2 (h2c)

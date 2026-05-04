@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-05-04
+
+### Added
+- Per-forward h2c mode via `ForwardBuilder::h2c()` — force HTTP/2 prior knowledge on individual forwards without setting `http2_prior_knowledge()` on the entire client
+- Adaptive h2c fallback via `ForwardBuilder::adaptive_h2c()` — probes whether the upstream speaks h2c, falls back to HTTP/1.1 on failure, and caches the result per-authority so subsequent requests skip the probe
+- `H2cProbeCache` with configurable TTL for per-authority h2c capability caching
+- Ergonomic HTTP/2 settings on `ClientBuilder`: `http2_initial_stream_window_size`, `http2_initial_connection_window_size`, `http2_max_frame_size`, `http2_adaptive_window`, `http2_keep_alive_interval`, `http2_keep_alive_timeout`, `http2_keep_alive_while_idle`, `http2_max_header_list_size`, `http2_max_send_buf_size`, `http2_max_concurrent_reset_streams`
+- `ClientBuilder::h2c_probe_ttl(duration)` for configuring adaptive h2c cache expiry
+- `ProtocolHint` pool key discriminator — h2c connections are pooled separately from h1, preventing protocol mismatch on reuse
+- SSE parser rewritten for full WHATWG spec compliance — correct field parsing, multi-line `data`, BOM handling, and last-event-id tracking
+- WASM/browser runtime support — portable modules (decompress, digest_auth, proxy, timing) ungated for `wasm32`; WASI-P2 client support
+- Vectored writes for compio and smol runtimes; eliminated boxed sleep allocations
+- WASM integration tests running in headless Chrome CI
+
+### Fixed
+- `AioductBody` no longer requires `Sync` — relaxed unnecessary bound that prevented using non-`Sync` body types
+- Adaptive h2c probe correctly detects h1-only servers — hyper's h2 handshake can "succeed" against an h1 server because it returns the sender before the server processes the preface; the probe now waits briefly and checks connection readiness
+
+### Changed
+- Dependency versions centralized in workspace root `Cargo.toml`; crate-level `Cargo.toml` files reference workspace versions
+- Large modules split for maintainability; H2 config deduplicated
+
 ## [0.1.6] - 2026-04-30
 
 ### Added

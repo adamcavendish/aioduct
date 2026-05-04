@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aioduct"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "async-io",
  "base64",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "aioduct-aria"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "clap",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "aioduct-bench"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "bytes",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "aioduct-curl"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "clap",
@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "example-basic-get"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1022,14 +1022,14 @@ dependencies = [
 
 [[package]]
 name = "example-blocking-client"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
 ]
 
 [[package]]
 name = "example-chunk-download"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "example-cookies"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "http 1.4.0",
@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "example-custom-cache-store"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "example-custom-headers"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "http 1.4.0",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "example-decompression"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "http 1.4.0",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "example-error-handling"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "example-forward-http"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "bytes",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "example-forward-sse"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "bytes",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "example-forward-websocket-h1"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "bytes",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "example-forward-websocket-h2"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "bytes",
@@ -1128,7 +1128,7 @@ dependencies = [
 
 [[package]]
 name = "example-http-cache"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "example-http2-prior"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "example-https-rustls"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "example-json-roundtrip"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "serde",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "example-middleware"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "http 1.4.0",
@@ -1171,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "example-multipart-upload"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "example-otel-spans"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "opentelemetry",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "example-post-form"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "example-proxy-socks"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "example-query-params"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "serde",
@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "example-rate-limiter"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "example-redirects"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "example-smol-runtime"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "smol",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "example-sse-stream"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "http 1.4.0",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "example-streaming-body"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1256,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "example-timeout-and-retry"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "example-tower-connector"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "example-tracing-logs"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "tokio",
@@ -1284,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "example-upgrade-websocket"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "aioduct",
  "http 1.4.0",

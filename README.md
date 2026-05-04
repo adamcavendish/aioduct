@@ -39,7 +39,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Streaming** — chunked downloads and streaming uploads without buffering
 - **Chunk download** — parallel HTTP Range requests for large files
 - **HTTP upgrade** — WebSocket and other protocol upgrades via HTTP/1.1 101 and HTTP/2 extended CONNECT (RFC 8441)
-- **Request forwarding** — proxy/gateway builder via `Client::forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, and supports H2 extended CONNECT tunneling
+- **Request forwarding** — proxy/gateway builder via `Client::forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, supports H2 extended CONNECT tunneling, per-forward h2c for gRPC upstreams, and adaptive h2c/h1 fallback with per-authority capability caching
 - **Blocking client** — synchronous wrapper for non-async contexts (requires tokio)
 - **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
