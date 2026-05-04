@@ -112,7 +112,7 @@ pub(crate) async fn send_on_h3(
         }
     });
 
-    let hyper_body: AioductBody = http_body_util::StreamBody::new(body_stream).boxed();
+    let hyper_body: AioductBody = http_body_util::StreamBody::new(body_stream).boxed_unsync();
     let http_resp = http::Response::from_parts(resp_parts, hyper_body);
 
     Ok(Response::from_boxed(http_resp, url))

@@ -81,7 +81,7 @@ mod tests {
     fn empty_body() -> AioductBody {
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
-            .boxed()
+            .boxed_unsync()
     }
 
     struct EventCollector(Arc<Mutex<Vec<String>>>);

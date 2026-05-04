@@ -25,7 +25,7 @@ impl RequestBody {
         match self {
             RequestBody::Buffered(b) => http_body_util::Full::new(b)
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
             RequestBody::Streaming(body) => body,
         }
     }
@@ -129,7 +129,7 @@ mod tests {
     fn streaming() -> RequestBody {
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         RequestBody::Streaming(body)
     }
 
@@ -199,7 +199,7 @@ mod tests {
     fn from_hyper_body_is_streaming() {
         let hyper_body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let body: RequestBody = hyper_body.into();
         assert!(body.try_clone().is_none());
     }
@@ -234,7 +234,7 @@ mod tests {
     fn body_stream_debug() {
         let hyper_body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let stream = BodyStream::new(hyper_body);
         let dbg = format!("{stream:?}");
         assert!(dbg.contains("BodyStream"));
@@ -244,7 +244,7 @@ mod tests {
     async fn body_stream_empty_returns_none() {
         let hyper_body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
         assert!(stream.next().await.is_none());
     }
@@ -253,7 +253,7 @@ mod tests {
     async fn body_stream_with_data() {
         let hyper_body: AioductBody = http_body_util::Full::new(Bytes::from("hello"))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
         let chunk = stream.next().await.unwrap().unwrap();
         assert_eq!(&chunk[..], b"hello");
@@ -264,7 +264,7 @@ mod tests {
     async fn body_stream_done_stays_none() {
         let hyper_body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
         assert!(stream.next().await.is_none());
         assert!(stream.next().await.is_none());

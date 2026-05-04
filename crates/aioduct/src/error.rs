@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use http_body_util::combinators::BoxBody;
+use http_body_util::combinators::UnsyncBoxBody;
 
 /// Boxed error type for dynamic dispatch.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -57,7 +57,7 @@ pub enum Error {
 }
 
 /// Boxed HTTP body type used throughout aioduct.
-pub type AioductBody = BoxBody<Bytes, Error>;
+pub type AioductBody = UnsyncBoxBody<Bytes, Error>;
 
 impl Error {
     /// Returns `true` if the error is a network-level failure (I/O, TLS, timeout).

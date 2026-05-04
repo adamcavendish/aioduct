@@ -144,7 +144,7 @@ mod tests {
 
         let inner: crate::error::AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let body = ReadTimeoutBody::<TokioRuntime>::new(inner, Duration::from_secs(1));
         assert!(body.is_end_stream());
     }
@@ -157,7 +157,7 @@ mod tests {
 
         let inner: crate::error::AioductBody = http_body_util::Full::new(Bytes::from("hello"))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let body = ReadTimeoutBody::<TokioRuntime>::new(inner, Duration::from_secs(1));
         assert_eq!(body.size_hint().exact(), Some(5));
     }
@@ -170,7 +170,7 @@ mod tests {
 
         let inner: crate::error::AioductBody = http_body_util::Full::new(Bytes::from("data"))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let body = ReadTimeoutBody::<TokioRuntime>::new(inner, Duration::from_secs(1));
         let mut boxed = Box::pin(body);
         let waker = std::task::Waker::noop();

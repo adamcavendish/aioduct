@@ -527,7 +527,7 @@ mod tests {
         let hyper_body: crate::error::AioductBody =
             http_body_util::Full::new(Bytes::from(body.to_vec()))
                 .map_err(|never| match never {})
-                .boxed();
+                .boxed_unsync();
         let inner_http = http::Response::builder()
             .status(status)
             .header("Content-Length", body.len().to_string())

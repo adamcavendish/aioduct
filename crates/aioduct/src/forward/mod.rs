@@ -39,7 +39,7 @@ pub struct ForwardBuilder<'a, R: Runtime, B> {
 
 impl<'a, R: Runtime, B> ForwardBuilder<'a, R, B>
 where
-    B: Body<Data = Bytes> + Send + Sync + 'static,
+    B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     pub(crate) fn new(client: &'a Client<R>, request: http::Request<B>) -> Self {
@@ -278,7 +278,7 @@ where
                 let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();
                 Error::Other(boxed)
             })
-            .boxed();
+            .boxed_unsync();
 
         let request = http::Request::from_parts(parts, boxed_body);
 
