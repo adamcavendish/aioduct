@@ -59,7 +59,7 @@ impl<R: Runtime> Client<R> {
                 None => {
                     let empty: AioductBody = http_body_util::Full::new(Bytes::new())
                         .map_err(|never| match never {})
-                        .boxed();
+                        .boxed_unsync();
                     (empty, None)
                 }
             };
@@ -130,13 +130,17 @@ impl<R: Runtime> Client<R> {
                 }
             };
 
+            let replay_bytes = match body_for_replay.as_ref() {
+                Some(RequestBody::Buffered(b)) => Some(b.clone()),
+                _ => None,
+            };
             let resp = self
                 .maybe_retry_digest(
                     resp,
                     &current_method,
                     &current_uri,
                     &mut current_headers,
-                    body_for_replay.as_ref(),
+                    replay_bytes,
                     version,
                 )
                 .await?;
@@ -267,7 +271,7 @@ impl<R: Runtime> Client<R> {
         method: &Method,
         uri: &Uri,
         headers: &mut HeaderMap,
-        body_for_replay: Option<&RequestBody>,
+        body_for_replay: Option<Bytes>,
         version: Option<http::Version>,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.digest_auth else {
@@ -283,11 +287,13 @@ impl<R: Runtime> Client<R> {
         let _ = resp.bytes().await;
         headers.insert(AUTHORIZATION, auth_value);
 
-        let retry_body = match body_for_replay.and_then(RequestBody::try_clone) {
-            Some(rb) => rb.into_hyper_body(),
+        let retry_body: AioductBody = match body_for_replay {
+            Some(b) => http_body_util::Full::new(b)
+                .map_err(|never| match never {})
+                .boxed_unsync(),
             None => http_body_util::Full::new(Bytes::new())
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         };
 
         let retry_uri: Uri = uri

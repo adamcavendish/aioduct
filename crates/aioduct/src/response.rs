@@ -32,7 +32,7 @@ impl ResponseBody {
 
     pub(crate) fn into_boxed(self) -> AioductBody {
         match self {
-            ResponseBody::Incoming { body } => body.boxed(),
+            ResponseBody::Incoming { body } => body.boxed_unsync(),
             ResponseBody::Boxed { body } => body,
         }
     }
@@ -130,7 +130,7 @@ impl Response {
             http::Response::new(ResponseBody::from_boxed(
                 http_body_util::Empty::new()
                     .map_err(|never| match never {})
-                    .boxed(),
+                    .boxed_unsync(),
             )),
         )
         .into_parts();
@@ -160,7 +160,7 @@ impl Response {
         let (parts, body) = self.inner.into_parts();
         let boxed = body.into_boxed();
         let timeout_body = crate::timeout::ReadTimeoutBody::<R>::new(boxed, duration);
-        let boxed: AioductBody = timeout_body.map_err(|e| e).boxed();
+        let boxed: AioductBody = timeout_body.map_err(|e| e).boxed_unsync();
         Self {
             inner: http::Response::from_parts(parts, ResponseBody::from_boxed(boxed)),
             url: self.url,
@@ -356,7 +356,7 @@ mod tests {
         ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::new())
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         )
     }
 
@@ -513,7 +513,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from("hello"))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let inner = http::Response::builder().body(body).unwrap();
         let resp = Response::new(inner, "http://example.com".parse().unwrap());
@@ -526,7 +526,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from("world"))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let inner = http::Response::builder().body(body).unwrap();
         let resp = Response::new(inner, "http://example.com".parse().unwrap());
@@ -557,7 +557,7 @@ mod tests {
     fn from_boxed_constructor() {
         let boxed_body: AioductBody = http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let inner = http::Response::builder().body(boxed_body).unwrap();
         let resp = Response::from_boxed(inner, "http://example.com".parse().unwrap());
         assert_eq!(resp.status(), StatusCode::OK);
@@ -580,7 +580,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Empty::new()
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         assert!(http_body::Body::is_end_stream(&body));
     }
@@ -590,7 +590,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from("data"))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         assert!(!http_body::Body::is_end_stream(&body));
     }
@@ -600,7 +600,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Empty::new()
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let hint = http_body::Body::size_hint(&body);
         assert_eq!(hint.exact(), Some(0));
@@ -611,7 +611,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from("hello"))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let hint = http_body::Body::size_hint(&body);
         assert_eq!(hint.exact(), Some(5));
@@ -642,7 +642,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from(r#"{"key":"value"}"#))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let inner = http::Response::builder().body(body).unwrap();
         let resp = Response::new(inner, "http://example.com".parse().unwrap());
@@ -657,7 +657,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from("not json"))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let inner = http::Response::builder().body(body).unwrap();
         let resp = Response::new(inner, "http://example.com".parse().unwrap());
@@ -673,7 +673,7 @@ mod tests {
                 r#"{"type":"about:blank","title":"Not Found","status":404}"#,
             ))
             .map_err(|never| match never {})
-            .boxed(),
+            .boxed_unsync(),
         );
         let inner = http::Response::builder()
             .header("content-type", "application/problem+json")
@@ -692,7 +692,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from("{}"))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let inner = http::Response::builder()
             .header("content-type", "application/json")
@@ -708,7 +708,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from("{}"))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let inner = http::Response::builder().body(body).unwrap();
         let resp = Response::new(inner, "http://example.com".parse().unwrap());
@@ -720,7 +720,7 @@ mod tests {
         let body = ResponseBody::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from(vec![0xff, 0xfe, 0x41]))
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         );
         let inner = http::Response::builder().body(body).unwrap();
         let resp = Response::new(inner, "http://example.com".parse().unwrap());
@@ -735,7 +735,7 @@ mod tests {
     fn into_boxed_roundtrip() {
         let original: AioductBody = http_body_util::Full::new(bytes::Bytes::from("data"))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let body = ResponseBody::from_boxed(original);
         let _boxed = body.into_boxed();
     }

@@ -346,7 +346,7 @@ mod imp {
                     finished: false,
                     has_data: false,
                 };
-                decompress.boxed()
+                decompress.boxed_unsync()
             }
             None => body,
         }
@@ -413,7 +413,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let ae = AcceptEncoding::none();
         let _result = maybe_decompress(&mut headers, body, &ae);
     }
@@ -424,7 +424,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         let body: AioductBody = http_body_util::Full::new(bytes::Bytes::from("hello"))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let ae = AcceptEncoding::default();
         let _result = maybe_decompress(&mut headers, body, &ae);
     }
@@ -462,7 +462,7 @@ mod tests {
 
         let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let ae = AcceptEncoding::default();
         let result_body = maybe_decompress(&mut headers, body, &ae);
 
@@ -510,7 +510,7 @@ mod tests {
 
         let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let ae = AcceptEncoding::default();
         let result_body = maybe_decompress(&mut headers, body, &ae);
 
@@ -544,7 +544,7 @@ mod tests {
 
         let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let ae = AcceptEncoding::default();
         let result_body = maybe_decompress(&mut headers, body, &ae);
 
@@ -573,7 +573,7 @@ mod tests {
 
         let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let ae = AcceptEncoding::default();
         let result_body = maybe_decompress(&mut headers, body, &ae);
 
@@ -594,7 +594,7 @@ mod tests {
 
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let ae = AcceptEncoding::default();
         let result_body = maybe_decompress(&mut headers, body, &ae);
 
@@ -614,7 +614,7 @@ mod tests {
 
         let body: AioductBody = http_body_util::Full::new(Bytes::from("raw"))
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let ae = AcceptEncoding::default();
         let result_body = maybe_decompress(&mut headers, body, &ae);
 

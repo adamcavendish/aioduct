@@ -369,7 +369,7 @@ async fn test_streaming_body_upload() {
     ];
 
     let stream = futures_util::stream::iter(chunks);
-    let stream_body: aioduct::AioductBody = http_body_util::StreamBody::new(stream).boxed();
+    let stream_body: aioduct::AioductBody = http_body_util::StreamBody::new(stream).boxed_unsync();
 
     let client = Client::<TokioRuntime>::new();
     let resp = client

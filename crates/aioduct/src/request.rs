@@ -702,7 +702,7 @@ mod tests {
         let rb = client.post("http://example.com").unwrap();
         let stream_body: crate::error::AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let rb = rb.body_stream(stream_body);
         let cloned = rb.try_clone();
         assert!(cloned.is_none());

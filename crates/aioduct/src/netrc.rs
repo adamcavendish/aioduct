@@ -318,7 +318,7 @@ mod tests {
         let uri: Uri = "http://api.example.com/path".parse().unwrap();
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
         mw.on_request(&mut req, &uri);
 
@@ -340,7 +340,7 @@ mod tests {
         let uri: Uri = "http://api.example.com/path".parse().unwrap();
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut req = http::Request::builder()
             .uri(&uri)
             .header("authorization", "Bearer existing")
@@ -367,7 +367,7 @@ mod tests {
         let uri: Uri = "http://api.example.com/path".parse().unwrap();
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
         mw.on_request(&mut req, &uri);
 
@@ -433,7 +433,7 @@ mod tests {
         let uri: Uri = "/relative/path".parse().unwrap();
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
         mw.on_request(&mut req, &uri);
         assert!(req.headers().contains_key("authorization"));
@@ -475,7 +475,7 @@ mod tests {
         let uri: http::Uri = "http://mw.example.com/test".parse().unwrap();
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
         mw.on_request(&mut req, &uri);
         assert!(req.headers().contains_key("authorization"));
@@ -613,7 +613,7 @@ mod tests {
         let uri: http::Uri = "http://mwd.example.com/test".parse().unwrap();
         let body: AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
         mw.on_request(&mut req, &uri);
         assert!(req.headers().contains_key("authorization"));

@@ -238,7 +238,7 @@ impl<R: Runtime> Client<R> {
     /// and streams the body directly to the upstream.
     pub fn forward<B>(&self, request: http::Request<B>) -> crate::forward::ForwardBuilder<'_, R, B>
     where
-        B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
+        B: http_body::Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         crate::forward::ForwardBuilder::new(self, request)
@@ -292,7 +292,7 @@ fn boxed_response_from_bytes(
         .body(
             http_body_util::Full::new(body)
                 .map_err(|never| match never {})
-                .boxed(),
+                .boxed_unsync(),
         )
         .expect("response builder with valid status cannot fail")
 }

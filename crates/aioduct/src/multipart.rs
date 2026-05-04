@@ -209,7 +209,7 @@ impl Multipart {
         };
         let body = StreamBody::new(stream);
         body.map_err(|e| crate::error::Error::Other(Box::new(e)))
-            .boxed()
+            .boxed_unsync()
     }
 }
 
@@ -380,7 +380,7 @@ mod tests {
     fn has_streaming_parts_true_for_stream() {
         let body: crate::error::AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let mp = Multipart::new().part(Part::stream("f", body));
         assert!(mp.has_streaming_parts());
     }
@@ -493,7 +493,7 @@ mod tests {
     fn part_stream_creates_streaming() {
         let body: crate::error::AioductBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
         let part = Part::stream("s", body);
         assert!(part.is_streaming());
         assert_eq!(part.name, "s");
@@ -615,7 +615,7 @@ mod streaming_tests {
         let data = bytes::Bytes::from("streamed data");
         let stream_body: crate::error::AioductBody = http_body_util::Full::new(data)
             .map_err(|never| match never {})
-            .boxed();
+            .boxed_unsync();
 
         let part = Part::stream("file", stream_body)
             .file_name("stream.bin")
@@ -633,7 +633,7 @@ mod streaming_tests {
         let stream_body: crate::error::AioductBody =
             http_body_util::Full::new(bytes::Bytes::from("stream content"))
                 .map_err(|never| match never {})
-                .boxed();
+                .boxed_unsync();
 
         let mp = Multipart::new()
             .text("text_field", "text_value")
@@ -683,7 +683,7 @@ mod streaming_tests {
             }
         }
 
-        let error_body: crate::error::AioductBody = ErrorBody.boxed();
+        let error_body: crate::error::AioductBody = ErrorBody.boxed_unsync();
         let part = Part::stream("err", error_body);
         let mp = Multipart::new().part(part);
         let body = mp.into_streaming_body();

@@ -419,7 +419,7 @@ impl CachedResponse {
             .body(
                 http_body_util::Full::new(self.body)
                     .map_err(|never| match never {})
-                    .boxed(),
+                    .boxed_unsync(),
             )
             .expect("cached response build should not fail")
     }
