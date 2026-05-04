@@ -13,19 +13,47 @@ use http::uri::{Authority, Scheme};
 
 use crate::runtime::Runtime;
 
-/// Connection pool key identifying a (scheme, authority) pair.
+/// Protocol version hint for pool key segregation.
+#[derive(Clone, Copy, Debug, Default, Hash, Eq, PartialEq)]
+pub(crate) enum ProtocolHint {
+    /// No preference — use whatever the connection negotiates.
+    #[default]
+    Auto,
+    /// Force HTTP/2 prior knowledge (h2c).
+    H2c,
+    /// Adaptive: try h2c, fall back to h1 if rejected. Caches the result.
+    AdaptiveH2c,
+}
+
+/// Connection pool key identifying a (scheme, authority, protocol) triple.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub(crate) struct PoolKey {
     /// The URI scheme (http or https).
     pub(crate) scheme: Scheme,
     /// The URI authority (host and optional port).
     pub(crate) authority: Authority,
+    /// Protocol hint for pool segregation.
+    pub(crate) protocol: ProtocolHint,
 }
 
 impl PoolKey {
-    /// Create a new pool key.
+    /// Create a new pool key with the default protocol hint (Auto).
+    #[allow(dead_code)]
     pub(crate) fn new(scheme: Scheme, authority: Authority) -> Self {
-        Self { scheme, authority }
+        Self {
+            scheme,
+            authority,
+            protocol: ProtocolHint::Auto,
+        }
+    }
+
+    /// Create a pool key that forces HTTP/2 prior knowledge.
+    pub(crate) fn with_hint(scheme: Scheme, authority: Authority, protocol: ProtocolHint) -> Self {
+        Self {
+            scheme,
+            authority,
+            protocol,
+        }
     }
 }
 
