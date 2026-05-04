@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -25,12 +27,14 @@ struct NetrcEntry {
 
 impl Netrc {
     /// Load the default netrc file (`~/.netrc` or `$NETRC`).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load_default() -> Result<Self, io::Error> {
         let path = default_netrc_path()?;
         Self::load(&path)
     }
 
     /// Load a netrc file from a specific path.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(path: &Path) -> Result<Self, io::Error> {
         let content = std::fs::read_to_string(path)?;
         Ok(Self::parse(&content))
@@ -129,6 +133,7 @@ fn parse_entry(tokens: &[&str], i: &mut usize) -> Option<NetrcEntry> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_netrc_path() -> Result<PathBuf, io::Error> {
     if let Ok(path) = std::env::var("NETRC") {
         return Ok(PathBuf::from(path));
@@ -167,6 +172,7 @@ pub struct NetrcMiddleware {
 
 impl NetrcMiddleware {
     /// Create middleware that reads the default `~/.netrc` file.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_default() -> Result<Self, io::Error> {
         Ok(Self {
             netrc: Netrc::load_default()?,
@@ -174,6 +180,7 @@ impl NetrcMiddleware {
     }
 
     /// Create middleware from a specific netrc file.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_path(path: &Path) -> Result<Self, io::Error> {
         Ok(Self {
             netrc: Netrc::load(path)?,
@@ -205,7 +212,7 @@ impl Middleware for NetrcMiddleware {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
