@@ -93,9 +93,9 @@ async fn main() -> ExitCode {
 
         let progress = tracker.add_download(url, &task.output.display().to_string());
 
-        let engine_client = DownloadEngine::new(Arc::clone(&cli));
+        let engine = engine.clone();
         handles.push(tokio::spawn(async move {
-            let result = engine_client.download(&task, &progress).await;
+            let result = engine.download(&task, &progress).await;
             if result.error.is_some() {
                 progress.finish_err(result.error.as_deref().unwrap_or("unknown"));
             } else {

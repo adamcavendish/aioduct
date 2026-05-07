@@ -15,6 +15,7 @@ use crate::progress::ProgressHandle;
 use crate::request_config::ExtraRequestConfig;
 use crate::segment;
 
+#[derive(Clone)]
 pub struct DownloadEngine {
     client: Client<TokioRuntime>,
     cli: Arc<Cli>,
@@ -55,6 +56,10 @@ impl DownloadEngine {
 
         if cli.check_certificate_false {
             builder = builder.danger_accept_invalid_certs();
+        }
+
+        if let Some(limit) = cli.max_overall_download_limit {
+            builder = builder.max_download_speed(limit);
         }
 
         if let Some(ref proxy_uri) = cli.all_proxy
