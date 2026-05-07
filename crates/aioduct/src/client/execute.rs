@@ -344,6 +344,12 @@ impl<R: Runtime> Client<R> {
             resp
         };
 
+        let resp = if let Some(ref limiter) = self.bandwidth_limiter {
+            resp.apply_bandwidth_limit(limiter.clone())
+        } else {
+            resp
+        };
+
         if let Some(ref cache) = self.cache {
             let status = resp.status();
             let headers = resp.headers().clone();

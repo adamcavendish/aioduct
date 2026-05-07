@@ -22,17 +22,17 @@ let resp = client
 
 ## How It Works
 
-The limiter uses a token-bucket algorithm:
+When `max_download_speed` is set on the client, aioduct automatically wraps every response body in a `BandwidthBody` that gates data frames through the token bucket:
 
 1. The bucket starts full — capacity equals `bytes_per_sec`.
-2. Each time data is read from a response body, the limiter checks if enough tokens are available.
-3. If tokens are available, the read proceeds immediately and tokens are consumed.
-4. If the bucket is empty, the read is delayed until tokens refill.
-5. Tokens refill continuously at the configured byte rate.
+2. When the response body is read, each data frame is checked against the bucket.
+3. If enough tokens are available, the frame is emitted immediately and tokens are consumed.
+4. If the bucket is empty, the frame is buffered and the read yields until tokens refill (the executor re-polls; tokens refill continuously based on wall-clock elapsed time).
+5. Non-data frames (trailers) pass through without consuming tokens.
 
 ## API
 
-The `BandwidthLimiter` is also available as a standalone type:
+The `BandwidthLimiter` type is also available standalone for manual use cases (e.g., upload throttling):
 
 ```rust,no_run
 use aioduct::BandwidthLimiter;

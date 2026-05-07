@@ -170,6 +170,20 @@ impl Response {
         }
     }
 
+    pub(crate) fn apply_bandwidth_limit(self, limiter: crate::bandwidth::BandwidthLimiter) -> Self {
+        let (parts, body) = self.inner.into_parts();
+        let boxed = body.into_boxed();
+        let wrapped = crate::bandwidth::BandwidthBody::new(boxed, limiter);
+        let boxed: AioductBody = wrapped.boxed_unsync();
+        Self {
+            inner: http::Response::from_parts(parts, ResponseBody::from_boxed(boxed)),
+            url: self.url,
+            remote_addr: self.remote_addr,
+            tls_info: self.tls_info,
+            timings: self.timings,
+        }
+    }
+
     /// Returns the final URL of this response, after any redirects.
     pub fn url(&self) -> &Uri {
         &self.url
