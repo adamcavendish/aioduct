@@ -438,6 +438,19 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Set a maximum number of requests per second for outgoing requests.
+    ///
+    /// Internally constructs a [`RateLimiter`](crate::RateLimiter) with a 1-second window.
+    /// For full control over the token-bucket parameters, use
+    /// [`rate_limiter`](Self::rate_limiter) directly.
+    pub fn max_requests_per_sec(mut self, n: u64) -> Self {
+        self.rate_limiter = Some(crate::throttle::RateLimiter::new(
+            n,
+            std::time::Duration::from_secs(1),
+        ));
+        self
+    }
+
     /// Set a bandwidth limiter to throttle download throughput (bytes per second).
     pub fn max_download_speed(mut self, bytes_per_sec: u64) -> Self {
         self.bandwidth_limiter = Some(crate::bandwidth::BandwidthLimiter::new(bytes_per_sec));
