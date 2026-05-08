@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["tokio", "json"] }
+aioduct = { workspace = true, features = ["tokio", "json", "rustls", "rustls-ring", "__bench"] }
 bytes.workspace = true
 criterion = { version = "0.8", features = ["async_tokio"] }
 http.workspace = true

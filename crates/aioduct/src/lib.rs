@@ -194,3 +194,83 @@ pub use tls::{Certificate, Identity};
 pub use http::{HeaderMap, Method, StatusCode, Uri, Version};
 #[cfg(not(target_arch = "wasm32"))]
 pub use hyper::ext::Protocol;
+
+#[cfg(feature = "__bench")]
+#[doc(hidden)]
+pub mod __bench {
+    use std::net::{IpAddr, SocketAddr};
+    use std::time::Duration;
+
+    use crate::pool::{ConnectionPool, PoolKey, PooledConnection};
+    use crate::runtime::TokioRuntime;
+    use http::uri::{Authority, Scheme};
+
+    pub struct BenchPool(ConnectionPool<TokioRuntime>);
+    pub struct BenchConn(Option<PooledConnection<TokioRuntime>>);
+    pub struct BenchKey(PoolKey);
+
+    pub fn new_pool(max_idle: usize, timeout: Duration) -> BenchPool {
+        BenchPool(ConnectionPool::new_no_reaper(max_idle, timeout))
+    }
+
+    pub async fn make_h2_conn() -> BenchConn {
+        use crate::runtime::tokio_rt::TokioIo;
+        let (client_io, server_io) = tokio::io::duplex(65536);
+
+        tokio::spawn(async move {
+            use hyper::server::conn::http2::Builder;
+            use hyper::service::service_fn;
+            let io = TokioIo::new(server_io);
+            let _ = Builder::new(crate::runtime::hyper_executor::<TokioRuntime>())
+                .serve_connection(
+                    io,
+                    service_fn(|_req| async {
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(
+                            http_body_util::Empty::<bytes::Bytes>::new(),
+                        ))
+                    }),
+                )
+                .await;
+        });
+
+        let io = TokioIo::new(client_io);
+        let (sender, conn) = hyper::client::conn::http2::handshake(
+            crate::runtime::hyper_executor::<TokioRuntime>(),
+            io,
+        )
+        .await
+        .expect("h2 handshake");
+
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        BenchConn(Some(PooledConnection::new_h2(sender)))
+    }
+
+    pub fn pool_key(host: &str) -> BenchKey {
+        BenchKey(PoolKey::new(Scheme::HTTPS, host.parse::<Authority>().unwrap()))
+    }
+
+    pub fn set_sans(conn: &mut BenchConn, sans: Vec<String>) {
+        if let Some(c) = conn.0.as_mut() {
+            c.sans = sans;
+        }
+    }
+
+    pub fn set_remote_addr(conn: &mut BenchConn, addr: SocketAddr) {
+        if let Some(c) = conn.0.as_mut() {
+            c.remote_addr = Some(addr);
+        }
+    }
+
+    pub fn checkin(pool: &BenchPool, key: BenchKey, conn: BenchConn) {
+        if let Some(c) = conn.0 {
+            pool.0.checkin(key.0, c);
+        }
+    }
+
+    pub fn checkout_coalesced(pool: &BenchPool, target_host: &str, resolved_ip: Option<IpAddr>) -> bool {
+        pool.0.checkout_coalesced(target_host, resolved_ip).is_some()
+    }
+}

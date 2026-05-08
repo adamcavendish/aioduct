@@ -70,6 +70,7 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "webpki-roots",
+ "x509-parser 0.17.0",
  "zstd",
 ]
 
@@ -1598,21 +1599,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c61c8db47fae51ba9f8f2a2748bd87542acfbe22f2ec9cf9c8ec72d1ee6e9a6"
 dependencies = [
  "async-trait",
+ "bytes",
  "cfg-if",
  "data-encoding",
  "futures-channel",
  "futures-io",
  "futures-util",
+ "h2",
  "hickory-proto",
+ "http 1.4.0",
  "idna",
  "ipnet",
  "jni 0.22.4",
  "rand 0.10.1",
+ "rustls",
  "thiserror 2.0.18",
  "tinyvec",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "url",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1654,11 +1661,14 @@ dependencies = [
  "parking_lot",
  "rand 0.10.1",
  "resolv-conf",
+ "rustls",
  "smallvec",
  "system-configuration",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls",
  "tracing",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -2812,7 +2822,7 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "time",
- "x509-parser",
+ "x509-parser 0.18.1",
  "yasna",
 ]
 
@@ -4392,6 +4402,23 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "x509-parser"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4569f339c0c402346d4a75a9e39cf8dad310e287eef1ff56d4c68e5067f53460"
+dependencies = [
+ "asn1-rs",
+ "data-encoding",
+ "der-parser",
+ "lazy_static",
+ "nom",
+ "oid-registry",
+ "rusticata-macros",
+ "thiserror 2.0.18",
+ "time",
+]
 
 [[package]]
 name = "x509-parser"
