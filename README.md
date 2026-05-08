@@ -41,8 +41,10 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **HTTP upgrade** — WebSocket and other protocol upgrades via HTTP/1.1 101 and HTTP/2 extended CONNECT (RFC 8441)
 - **Request forwarding** — proxy/gateway builder via `Client::forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, supports H2 extended CONNECT tunneling, per-forward h2c for gRPC upstreams, and adaptive h2c/h1 fallback with per-authority capability caching
 - **Blocking client** — synchronous wrapper for non-async contexts (requires tokio)
-- **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration
+- **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration; DNS-over-HTTPS (`doh` feature) and DNS-over-TLS (`dot` feature)
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
+- **Connection coalescing** — reuses h2/h3 connections whose TLS certificate SANs cover the target domain (RFC 7540 §9.1.1), matching browser behavior
+- **HTTP/3 0-RTT** — opt-in early data for repeat connections to known servers, with automatic fallback on rejection
 - **TCP keepalive** — configurable keepalive interval for long-lived connections
 - **TCP Fast Open** — reduced connection latency on Linux via TCP_FASTOPEN_CONNECT
 - **Local address binding** — bind outgoing connections to a specific local IP
@@ -132,6 +134,8 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 | `zstd`    | Zstd response decompression            | Stable       |
 | `blocking`| Synchronous blocking client (requires tokio) | Stable |
 | `hickory-dns` | DNS via hickory-resolver (requires tokio) | Stable |
+| `doh`     | DNS-over-HTTPS (implies `hickory-dns`)  | Stable       |
+| `dot`     | DNS-over-TLS (implies `hickory-dns`)    | Stable       |
 | `tower`   | Tower `Service` and `Layer` integration | Stable      |
 | `tracing` | Tracing spans for requests             | Stable       |
 | `otel`    | OpenTelemetry middleware               | Stable       |
@@ -389,6 +393,9 @@ pub trait Runtime: Send + Sync + 'static {
 | Bandwidth limiter | No | Built-in |
 | Netrc | No | Built-in |
 | Request timings | No | Built-in |
+| Connection coalescing | No | Built-in (RFC 7540) |
+| DNS-over-HTTPS/TLS | No | Built-in |
+| HTTP/3 0-RTT | No | Built-in |
 | Request forwarding | No | Built-in |
 
 ## MSRV

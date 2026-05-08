@@ -22,6 +22,8 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 | `zstd`   | zstd                              | Stable       | Zstd response decompression          |
 | `blocking`| tokio                            | Stable       | Synchronous blocking client wrapper  |
 | `hickory-dns` | hickory-resolver, tokio      | Stable       | DNS resolution via hickory           |
+| `doh`   | hickory-resolver (https)            | Stable       | DNS-over-HTTPS (implies `hickory-dns`) |
+| `dot`   | hickory-resolver (tls)              | Stable       | DNS-over-TLS (implies `hickory-dns`)   |
 | `tower`  | tower-service, tower-layer        | Stable       | Tower Service/Layer integration      |
 | `tracing`| tracing                           | Stable       | Tracing spans for HTTP requests      |
 | `otel`   | opentelemetry, opentelemetry-http | Stable       | OpenTelemetry middleware             |
@@ -77,6 +79,12 @@ aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring", "towe
 
 # Hickory DNS resolver
 aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring", "hickory-dns"] }
+
+# DNS-over-HTTPS
+aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring", "doh"] }
+
+# DNS-over-TLS
+aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring", "dot"] }
 
 # HTTP/3 with ring
 aioduct = { version = "0.1", features = ["tokio", "http3", "rustls", "rustls-ring"] }
