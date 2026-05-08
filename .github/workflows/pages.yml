@@ -1,4 +1,4 @@
-name: Deploy mdbook to GitHub Pages
+name: Deploy site + docs to GitHub Pages
 
 on:
   push:
@@ -21,14 +21,59 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
+
+      # --- Build mdBook docs ---
       - uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: 'latest'
       - uses: taiki-e/install-action@just
       - run: just book
+
+      # --- Build WASM demo ---
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Build WASM demo
+        run: |
+          wasm-pack build examples/wasm-demo \
+            --target web \
+            --out-dir ../../site/wasm \
+            --out-name aioduct_wasm_demo \
+            --release
+
+      - name: Clean wasm-pack metadata
+        run: rm -f site/wasm/.gitignore site/wasm/package.json
+
+      # --- Verify code snippets compile ---
+      - name: Check aioduct snippets
+        run: |
+          for snippet in site/snippets/*_aioduct.rs; do
+            # Extract features from header comment
+            features=$(head -1 "$snippet" | sed -n 's|^// features: ||p')
+            if [ -n "$features" ]; then
+              echo "Checking $snippet with features: $features"
+              cp "$snippet" /tmp/_snippet_check.rs
+              cargo check -p aioduct --features "$features" 2>&1 || {
+                echo "FAILED: $snippet"
+                exit 1
+              }
+            fi
+          done
+
+      # --- Assemble deploy artifact ---
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          # Landing page at root
+          cp site/index.html site/style.css site/app.js _site/
+          cp -r site/wasm _site/wasm
+          # mdBook docs at /docs/
+          cp -r docs/book _site/docs
+
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: docs/book
+          path: _site
           overwrite: true
+
       - id: deploy
         uses: actions/deploy-pages@v5
