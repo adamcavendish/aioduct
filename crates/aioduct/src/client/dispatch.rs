@@ -152,13 +152,33 @@ impl<R: Runtime> Client<R> {
                     .resolve_all_authority_raw(connect_host, h3_port)
                     .await?;
                 let sni_host = authority.host().to_owned();
-                let (mut pooled, addr) = crate::h3_transport::connect_h3_addrs::<R>(
-                    endpoint,
-                    &addrs,
-                    &sni_host,
-                    self.local_address,
-                )
-                .await?;
+
+                let is_idempotent = matches!(
+                    request.method(),
+                    &http::Method::GET | &http::Method::HEAD | &http::Method::OPTIONS
+                );
+                let use_0rtt = self.h3_zero_rtt && is_idempotent;
+
+                let (mut pooled, addr) = if use_0rtt {
+                    let (pooled, addr, _used_0rtt) =
+                        crate::h3_transport::connect_h3_addrs_0rtt::<R>(
+                            endpoint,
+                            &addrs,
+                            &sni_host,
+                            self.local_address,
+                        )
+                        .await?;
+                    (pooled, addr)
+                } else {
+                    crate::h3_transport::connect_h3_addrs::<R>(
+                        endpoint,
+                        &addrs,
+                        &sni_host,
+                        self.local_address,
+                    )
+                    .await?
+                };
+
                 pooled.remote_addr = Some(addr);
                 let mut resp =
                     Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;

@@ -57,6 +57,48 @@ pub(crate) async fn connect_h3_addrs<R: Runtime>(
     Err(last_err.unwrap_or_else(|| Error::Other("failed to establish HTTP/3 connection".into())))
 }
 
+/// Attempt 0-RTT connection to the first compatible address, falling back to full handshake.
+///
+/// Returns the pooled connection and whether 0-RTT was used.
+pub(crate) async fn connect_h3_addrs_0rtt<R: Runtime>(
+    endpoint: &quinn::Endpoint,
+    addrs: &[SocketAddr],
+    server_name: &str,
+    local_address: Option<IpAddr>,
+) -> Result<(PooledConnection<R>, SocketAddr, bool), Error> {
+    let endpoint_addr = endpoint.local_addr().map_err(Error::Io)?;
+    let addrs = ordered_h3_addrs(addrs, local_address, endpoint_addr.ip());
+    if addrs.is_empty() {
+        return Err(Error::InvalidUrl(
+            "no compatible HTTP/3 addresses found".into(),
+        ));
+    }
+
+    let mut last_err = None;
+    for addr in addrs {
+        match endpoint.connect(addr, server_name) {
+            Ok(connecting) => match connecting.into_0rtt() {
+                Ok((quinn_conn, _zero_rtt_accepted)) => {
+                    match connect_h3::<R>(quinn_conn).await {
+                        Ok(pooled) => return Ok((pooled, addr, true)),
+                        Err(err) => last_err = Some(err),
+                    }
+                }
+                Err(connecting) => match connecting.await {
+                    Ok(quinn_conn) => match connect_h3::<R>(quinn_conn).await {
+                        Ok(pooled) => return Ok((pooled, addr, false)),
+                        Err(err) => last_err = Some(err),
+                    },
+                    Err(err) => last_err = Some(Error::Other(Box::new(err))),
+                },
+            },
+            Err(err) => last_err = Some(Error::Other(Box::new(err))),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| Error::Other("failed to establish HTTP/3 connection".into())))
+}
+
 pub(crate) async fn send_on_h3(
     send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
     request: Request<AioductBody>,
@@ -174,11 +216,19 @@ fn ordered_h3_addrs(
 pub(crate) fn build_quinn_endpoint(
     tls_config: Arc<rustls::ClientConfig>,
     local_address: Option<std::net::IpAddr>,
+    enable_0rtt: bool,
 ) -> Result<quinn::Endpoint, Error> {
     let mut transport_config = quinn::TransportConfig::default();
     transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
 
     let tls_config = ensure_h3_alpn(tls_config);
+    let tls_config = if enable_0rtt {
+        let mut config = (*tls_config).clone();
+        config.enable_early_data = true;
+        Arc::new(config)
+    } else {
+        tls_config
+    };
     let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
         .map_err(|e| Error::Tls(Box::new(e)))?;
 

@@ -77,6 +77,8 @@ pub struct Client<R: Runtime> {
     #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) prefer_h3: bool,
     #[cfg(all(feature = "http3", feature = "rustls"))]
+    pub(crate) h3_zero_rtt: bool,
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) alt_svc_cache: crate::alt_svc::AltSvcCache,
     pub(crate) _runtime: PhantomData<R>,
 }
@@ -125,6 +127,8 @@ impl<R: Runtime> Clone for Client<R> {
             h3_endpoint: self.h3_endpoint.clone(),
             #[cfg(all(feature = "http3", feature = "rustls"))]
             prefer_h3: self.prefer_h3,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            h3_zero_rtt: self.h3_zero_rtt,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             alt_svc_cache: self.alt_svc_cache.clone(),
             _runtime: PhantomData,
