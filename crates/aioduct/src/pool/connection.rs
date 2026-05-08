@@ -21,6 +21,9 @@ pub(crate) struct PooledConnection<R: Runtime> {
     pub(crate) remote_addr: Option<SocketAddr>,
     pub(crate) tls_info: Option<crate::tls::TlsInfo>,
     pub(crate) tls_handshake_duration: Option<Duration>,
+    /// Subject Alternative Names from peer cert (for connection coalescing).
+    #[allow(dead_code)]
+    pub(crate) sans: Vec<String>,
     _runtime: PhantomData<R>,
 }
 
@@ -34,6 +37,7 @@ impl<R: Runtime> PooledConnection<R> {
             remote_addr: None,
             tls_info: None,
             tls_handshake_duration: None,
+            sans: Vec::new(),
             _runtime: PhantomData,
         }
     }
@@ -47,6 +51,7 @@ impl<R: Runtime> PooledConnection<R> {
             remote_addr: None,
             tls_info: None,
             tls_handshake_duration: None,
+            sans: Vec::new(),
             _runtime: PhantomData,
         }
     }
@@ -61,6 +66,7 @@ impl<R: Runtime> PooledConnection<R> {
             remote_addr: None,
             tls_info: None,
             tls_handshake_duration: None,
+            sans: Vec::new(),
             _runtime: PhantomData,
         }
     }

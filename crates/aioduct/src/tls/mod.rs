@@ -126,6 +126,28 @@ impl TlsInfo {
     }
 }
 
+/// Extract DNS Subject Alternative Names from a DER-encoded certificate.
+#[cfg(feature = "rustls")]
+#[allow(dead_code)]
+pub(crate) fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
+    use x509_parser::prelude::*;
+    let Ok((_, cert)) = X509Certificate::from_der(der) else {
+        return Vec::new();
+    };
+    let Some(san_ext) = cert.subject_alternative_name().ok().flatten() else {
+        return Vec::new();
+    };
+    san_ext
+        .value
+        .general_names
+        .iter()
+        .filter_map(|name| match name {
+            GeneralName::DNSName(dns) => Some(dns.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Async TLS handshake abstraction.
 pub trait TlsConnect<R: Runtime>: Send + Sync + 'static {
     /// The TLS-wrapped stream type returned after handshake.
@@ -344,5 +366,34 @@ mod tests {
     fn crl_from_pem_empty() {
         let crls = CertificateRevocationList::from_pem(b"").unwrap();
         assert!(crls.is_empty());
+    }
+
+    #[test]
+    fn extract_sans_from_self_signed_cert() {
+        install_crypto();
+        let names = vec![
+            "example.com".into(),
+            "www.example.com".into(),
+            "api.example.com".into(),
+        ];
+        let cert = rcgen::generate_simple_self_signed(names).unwrap();
+        let der = cert.cert.der();
+        let sans = extract_sans_from_der(der.as_ref());
+        assert!(sans.contains(&"example.com".to_string()));
+        assert!(sans.contains(&"www.example.com".to_string()));
+        assert!(sans.contains(&"api.example.com".to_string()));
+        assert_eq!(sans.len(), 3);
+    }
+
+    #[test]
+    fn extract_sans_from_invalid_der_returns_empty() {
+        let sans = extract_sans_from_der(&[0x00, 0x01, 0x02]);
+        assert!(sans.is_empty());
+    }
+
+    #[test]
+    fn extract_sans_from_empty_returns_empty() {
+        let sans = extract_sans_from_der(&[]);
+        assert!(sans.is_empty());
     }
 }
