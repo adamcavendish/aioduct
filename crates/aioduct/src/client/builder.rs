@@ -357,11 +357,7 @@ impl<R: Runtime> ClientBuilder<R> {
     #[cfg(feature = "doh")]
     pub fn dns_over_https(self, server_ip: std::net::IpAddr, server_name: &str) -> Self {
         use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
-        let ns = NameServerConfig::https(
-            server_ip,
-            std::sync::Arc::from(server_name),
-            None,
-        );
+        let ns = NameServerConfig::https(server_ip, std::sync::Arc::from(server_name), None);
         let config = ResolverConfig::from_parts(None, vec![], vec![ns]);
         let resolver = crate::HickoryResolver::from_config(config, ResolverOpts::default());
         self.resolver(resolver)
@@ -384,10 +380,7 @@ impl<R: Runtime> ClientBuilder<R> {
     #[cfg(feature = "dot")]
     pub fn dns_over_tls(self, server_ip: std::net::IpAddr, server_name: &str) -> Self {
         use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
-        let ns = NameServerConfig::tls(
-            server_ip,
-            std::sync::Arc::from(server_name),
-        );
+        let ns = NameServerConfig::tls(server_ip, std::sync::Arc::from(server_name));
         let config = ResolverConfig::from_parts(None, vec![], vec![ns]);
         let resolver = crate::HickoryResolver::from_config(config, ResolverOpts::default());
         self.resolver(resolver)

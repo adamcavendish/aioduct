@@ -136,9 +136,7 @@ fn bench_coalescing_checkout(c: &mut Criterion) {
                             &mut conn,
                             std::net::SocketAddr::from(([10, 0, 0, 1], 443)),
                         );
-                        let key = aioduct::__bench::pool_key(
-                            &format!("origin{i}.example.com:443"),
-                        );
+                        let key = aioduct::__bench::pool_key(&format!("origin{i}.example.com:443"));
                         aioduct::__bench::checkin(&p, key, conn);
                     }
                     p
@@ -148,9 +146,11 @@ fn bench_coalescing_checkout(c: &mut Criterion) {
                 let target = format!("e{}.example.com", size - 1);
                 let ip: std::net::IpAddr = [10, 0, 0, 1].into();
                 b.iter(|| {
-                    std::hint::black_box(
-                        aioduct::__bench::checkout_coalesced(&pool, &target, Some(ip)),
-                    );
+                    std::hint::black_box(aioduct::__bench::checkout_coalesced(
+                        &pool,
+                        &target,
+                        Some(ip),
+                    ));
                 });
             },
         );
