@@ -47,18 +47,27 @@ jobs:
       # --- Verify code snippets compile ---
       - name: Check aioduct snippets
         run: |
+          failed=0
           for snippet in site/snippets/*_aioduct.rs; do
             # Extract features from header comment
             features=$(head -1 "$snippet" | sed -n 's|^// features: ||p')
-            if [ -n "$features" ]; then
-              echo "Checking $snippet with features: $features"
-              cp "$snippet" /tmp/_snippet_check.rs
-              cargo check -p aioduct --features "$features" 2>&1 || {
-                echo "FAILED: $snippet"
-                exit 1
-              }
+            if [ -z "$features" ]; then
+              continue
+            fi
+            # Skip WASM snippets (need wasm32 target, not native)
+            if echo "$features" | grep -q "wasm"; then
+              echo "SKIP (wasm target): $snippet"
+              continue
+            fi
+            echo "Checking $snippet with features: $features"
+            if ! cargo check -p aioduct --features "$features" 2>&1; then
+              echo "FAILED: $snippet"
+              failed=1
             fi
           done
+          if [ "$failed" -eq 1 ]; then
+            exit 1
+          fi
 
       # --- Assemble deploy artifact ---
       - name: Assemble site
@@ -73,7 +82,6 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
-          overwrite: true
 
       - id: deploy
         uses: actions/deploy-pages@v5
