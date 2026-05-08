@@ -94,6 +94,19 @@ body {
     letter-spacing: -0.05px;
 }
 
+/* Hero Links */
+.hero-links {
+    display: flex;
+    justify-content: center;
+    gap: var(--sm);
+    margin-top: var(--lg);
+    flex-wrap: wrap;
+}
+
+.hero-links .btn {
+    text-decoration: none;
+}
+
 /* Demo Panel — charcoal surface-1 card */
 .demo-panel {
     margin-top: var(--xxl);
