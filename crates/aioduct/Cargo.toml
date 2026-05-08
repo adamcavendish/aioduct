@@ -38,6 +38,8 @@ tracing = ["dep:tracing"]
 otel = ["dep:opentelemetry", "dep:opentelemetry-http"]
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 wasi-p2 = ["dep:wasi"]
+# Internal: expose pool internals for benchmarking (not part of public API)
+__bench = []
 
 [dependencies]
 async-io = { workspace = true, optional = true }

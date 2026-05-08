@@ -3,7 +3,7 @@ pub(crate) mod connection;
 
 pub(crate) use connection::{HttpConnection, PooledConnection};
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,6 +66,8 @@ struct IdleConnection<R: Runtime> {
 
 struct PoolInner<R: Runtime> {
     idle: HashMap<PoolKey, VecDeque<IdleConnection<R>>>,
+    /// Reverse index: SAN → set of pool keys whose connections cover that name.
+    san_index: HashMap<String, HashSet<PoolKey>>,
     max_idle_per_host: usize,
     idle_timeout: Duration,
     _runtime: PhantomData<R>,
@@ -92,6 +94,7 @@ impl<R: Runtime> ConnectionPool<R> {
         Self {
             inner: Arc::new(Mutex::new(PoolInner::<R> {
                 idle: HashMap::new(),
+                san_index: HashMap::new(),
                 max_idle_per_host,
                 idle_timeout,
                 _runtime: PhantomData,
@@ -104,11 +107,12 @@ impl<R: Runtime> ConnectionPool<R> {
     ///
     /// This is useful for unit tests that don't need the reaper and may not
     /// have a full async runtime available.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "__bench"))]
     pub(crate) fn new_no_reaper(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
         Self {
             inner: Arc::new(Mutex::new(PoolInner::<R> {
                 idle: HashMap::new(),
+                san_index: HashMap::new(),
                 max_idle_per_host,
                 idle_timeout,
                 _runtime: PhantomData,
@@ -150,6 +154,11 @@ impl<R: Runtime> ConnectionPool<R> {
         self.ensure_reaper();
         let mut inner = self.inner.lock().unwrap();
         let max = inner.max_idle_per_host;
+
+        for san in &connection.sans {
+            inner.san_index.entry(san.clone()).or_default().insert(key.clone());
+        }
+
         let queue = inner.idle.entry(key).or_default();
 
         if queue.len() >= max {
@@ -166,6 +175,7 @@ impl<R: Runtime> ConnectionPool<R> {
     /// the target host and whose remote IP matches the resolved address.
     ///
     /// This enables connection coalescing per RFC 7540 §9.1.1.
+    /// Uses a SAN→PoolKey reverse index for O(1) candidate lookup.
     pub(crate) fn checkout_coalesced(
         &self,
         target_host: &str,
@@ -175,10 +185,22 @@ impl<R: Runtime> ConnectionPool<R> {
         let now = Instant::now();
         let idle_timeout = inner.idle_timeout;
 
+        let candidate_keys: Vec<PoolKey> = match inner.san_index.get(target_host) {
+            Some(keys) => keys.iter().cloned().collect(),
+            None => return None,
+        };
+
         let mut found_key = None;
         let mut found_conn = None;
 
-        for (key, queue) in inner.idle.iter_mut() {
+        for key in &candidate_keys {
+            let queue = match inner.idle.get_mut(key) {
+                Some(q) => q,
+                None => {
+                    continue;
+                }
+            };
+
             let mut i = queue.len();
             while i > 0 {
                 i -= 1;
@@ -216,6 +238,19 @@ impl<R: Runtime> ConnectionPool<R> {
         if let Some(key) = found_key {
             inner.idle.remove(&key);
         }
+
+        // Clean up stale index entries for keys that no longer have connections
+        for key in &candidate_keys {
+            if !inner.idle.contains_key(key) {
+                if let Some(keys) = inner.san_index.get_mut(target_host) {
+                    keys.remove(key);
+                    if keys.is_empty() {
+                        inner.san_index.remove(target_host);
+                    }
+                }
+            }
+        }
+
         found_conn
     }
 
@@ -241,6 +276,11 @@ impl<R: Runtime> ConnectionPool<R> {
                 guard.idle.retain(|_, queue| {
                     queue.retain(|entry| now.duration_since(entry.idle_since) < idle_timeout);
                     !queue.is_empty()
+                });
+                let live_keys: HashSet<PoolKey> = guard.idle.keys().cloned().collect();
+                guard.san_index.retain(|_, keys| {
+                    keys.retain(|k| live_keys.contains(k));
+                    !keys.is_empty()
                 });
             }
         });
