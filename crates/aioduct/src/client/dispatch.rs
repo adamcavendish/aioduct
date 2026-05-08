@@ -11,6 +11,23 @@ use crate::timing::TimingCollector;
 use super::Client;
 
 impl<R: Runtime> Client<R> {
+    /// Populate SANs on a connection before returning it to the pool.
+    #[cfg(feature = "rustls")]
+    fn populate_sans(conn: &mut PooledConnection<R>) {
+        if conn.is_h2_or_h3() && conn.sans.is_empty() {
+            if let Some(der) = conn.tls_info.as_ref().and_then(|t| t.peer_certificate()) {
+                conn.sans = crate::tls::extract_sans_from_der(der);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "rustls"))]
+    fn populate_sans(_conn: &mut PooledConnection<R>) {}
+
+    fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection<R>) {
+        Self::populate_sans(&mut conn);
+        self.pool.checkin(key, conn);
+    }
     pub(crate) async fn execute_single(
         &self,
         request: http::Request<AioductBody>,
@@ -86,9 +103,39 @@ impl<R: Runtime> Client<R> {
                 TimingCollector::default().into_timings(Some(transfer), request_start.elapsed()),
             ));
             if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                self.pool.checkin(pool_key, conn);
+                self.checkin_connection(pool_key, conn);
             }
             return Ok(resp);
+        }
+
+        // Connection coalescing: try to reuse an h2/h3 connection whose TLS cert
+        // covers the target domain via SANs (RFC 7540 §9.1.1).
+        if self.connection_coalescing && is_https && !self.no_connection_reuse {
+            let port = authority.port_u16().unwrap_or(443);
+            let resolved_ip = self
+                .resolve_all_authority_raw(authority.host(), port)
+                .await
+                .ok()
+                .and_then(|addrs| addrs.first().map(|a| a.ip()));
+            if let Some(mut conn) = self.pool.checkout_coalesced(authority.host(), resolved_ip) {
+                #[cfg(feature = "tracing")]
+                tracing::trace!(host = authority.host(), "connection.pool.coalesced");
+
+                let transfer_start = Instant::now();
+                let mut resp =
+                    Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
+                let transfer = transfer_start.elapsed();
+                resp.set_remote_addr(conn.remote_addr);
+                resp.set_tls_info(conn.tls_info.clone());
+                resp.set_timings(Some(
+                    TimingCollector::default()
+                        .into_timings(Some(transfer), request_start.elapsed()),
+                ));
+                if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                    self.checkin_connection(pool_key, conn);
+                }
+                return Ok(resp);
+            }
         }
 
         #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -118,7 +165,7 @@ impl<R: Runtime> Client<R> {
                 resp.set_remote_addr(pooled.remote_addr);
                 resp.set_tls_info(pooled.tls_info.clone());
                 if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                    self.pool.checkin(pool_key, pooled);
+                    self.checkin_connection(pool_key, pooled);
                 }
                 return Ok(resp);
             }
@@ -313,7 +360,7 @@ impl<R: Runtime> Client<R> {
             timing.into_timings(Some(transfer), request_start.elapsed()),
         ));
         if !self.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-            self.pool.checkin(pool_key, pooled);
+            self.checkin_connection(pool_key, pooled);
         }
 
         Ok(resp)
