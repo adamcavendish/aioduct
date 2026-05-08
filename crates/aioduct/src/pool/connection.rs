@@ -22,7 +22,6 @@ pub(crate) struct PooledConnection<R: Runtime> {
     pub(crate) tls_info: Option<crate::tls::TlsInfo>,
     pub(crate) tls_handshake_duration: Option<Duration>,
     /// Subject Alternative Names from peer cert (for connection coalescing).
-    #[allow(dead_code)]
     pub(crate) sans: Vec<String>,
     _runtime: PhantomData<R>,
 }
@@ -76,6 +75,16 @@ impl<R: Runtime> PooledConnection<R> {
         match &self.conn {
             HttpConnection::H1(s) => s.is_ready(),
             HttpConnection::H2(s) => s.is_ready(),
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => true,
+        }
+    }
+
+    /// Returns true if this is an HTTP/2 or HTTP/3 multiplexed connection.
+    pub(crate) fn is_h2_or_h3(&self) -> bool {
+        match &self.conn {
+            HttpConnection::H1(_) => false,
+            HttpConnection::H2(_) => true,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(_) => true,
         }

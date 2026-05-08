@@ -167,3 +167,133 @@ async fn reaper_removes_expired_connections() {
         "reaper should have removed the expired connection"
     );
 }
+
+// --- Connection coalescing tests ---
+
+use std::net::IpAddr;
+
+/// Helper: perform an HTTP/2 handshake over a duplex stream.
+async fn make_h2_conn() -> PooledConnection<TokioRuntime> {
+    let (client_io, server_io) = tokio::io::duplex(65536);
+
+    // Spawn server-side h2 connection handler
+    tokio::spawn(async move {
+        use hyper::server::conn::http2::Builder;
+        use hyper::service::service_fn;
+        let io = TokioIo::new(server_io);
+        let _ = Builder::new(crate::runtime::hyper_executor::<TokioRuntime>())
+            .serve_connection(
+                io,
+                service_fn(|_req| async {
+                    Ok::<_, std::convert::Infallible>(hyper::Response::new(
+                        http_body_util::Empty::<bytes::Bytes>::new(),
+                    ))
+                }),
+            )
+            .await;
+    });
+
+    let io = TokioIo::new(client_io);
+    let (sender, conn) = hyper::client::conn::http2::handshake(
+        crate::runtime::hyper_executor::<TokioRuntime>(),
+        io,
+    )
+    .await
+    .expect("h2 handshake should succeed on duplex");
+
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    PooledConnection::new_h2(sender)
+}
+
+fn key_https(host: &str) -> PoolKey {
+    PoolKey::new(
+        Scheme::HTTPS,
+        host.parse::<Authority>().expect("valid authority"),
+    )
+}
+
+#[tokio::test]
+async fn checkout_coalesced_finds_by_san() {
+    let pool = ConnectionPool::<TokioRuntime>::new_no_reaper(8, Duration::from_secs(30));
+    let k = key_https("origin.example.com:443");
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = vec![
+        "origin.example.com".into(),
+        "cdn.example.com".into(),
+        "api.example.com".into(),
+    ];
+    conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
+    pool.checkin(k, conn);
+
+    tokio::task::yield_now().await;
+
+    let ip: IpAddr = [10, 0, 0, 1].into();
+    let result = pool.checkout_coalesced("cdn.example.com", Some(ip));
+    assert!(result.is_some(), "should find coalesced connection via SAN");
+}
+
+#[tokio::test]
+async fn checkout_coalesced_rejects_h1() {
+    let pool = ConnectionPool::<TokioRuntime>::new_no_reaper(8, Duration::from_secs(30));
+    let k = key_https("origin.example.com:443");
+
+    let mut conn = make_h1_conn().await;
+    conn.sans = vec!["origin.example.com".into(), "cdn.example.com".into()];
+    conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
+    pool.checkin(k, conn);
+
+    tokio::task::yield_now().await;
+
+    let ip: IpAddr = [10, 0, 0, 1].into();
+    let result = pool.checkout_coalesced("cdn.example.com", Some(ip));
+    assert!(result.is_none(), "h1 connections should not be coalesced");
+}
+
+#[tokio::test]
+async fn checkout_coalesced_rejects_different_ip() {
+    let pool = ConnectionPool::<TokioRuntime>::new_no_reaper(8, Duration::from_secs(30));
+    let k = key_https("origin.example.com:443");
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = vec!["origin.example.com".into(), "cdn.example.com".into()];
+    conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
+    pool.checkin(k, conn);
+
+    tokio::task::yield_now().await;
+
+    let different_ip: IpAddr = [10, 0, 0, 2].into();
+    let result = pool.checkout_coalesced("cdn.example.com", Some(different_ip));
+    assert!(
+        result.is_none(),
+        "different IP should prevent coalescing"
+    );
+}
+
+#[tokio::test]
+async fn checkout_coalesced_skips_expired() {
+    let pool = ConnectionPool::<TokioRuntime>::new_no_reaper(8, Duration::from_millis(50));
+    let k = key_https("origin.example.com:443");
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = vec!["origin.example.com".into(), "cdn.example.com".into()];
+    conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
+    pool.checkin(k, conn);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let ip: IpAddr = [10, 0, 0, 1].into();
+    let result = pool.checkout_coalesced("cdn.example.com", Some(ip));
+    assert!(result.is_none(), "expired connection should not be returned");
+}
+
+#[test]
+fn checkout_coalesced_empty_pool_returns_none() {
+    let pool = ConnectionPool::<TokioRuntime>::new_no_reaper(8, Duration::from_secs(30));
+    let ip: IpAddr = [10, 0, 0, 1].into();
+    let result = pool.checkout_coalesced("cdn.example.com", Some(ip));
+    assert!(result.is_none(), "empty pool should return None");
+}

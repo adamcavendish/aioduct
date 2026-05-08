@@ -5,6 +5,7 @@ pub(crate) use connection::{HttpConnection, PooledConnection};
 
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -159,6 +160,63 @@ impl<R: Runtime> ConnectionPool<R> {
             idle_since: Instant::now(),
             _runtime: PhantomData,
         });
+    }
+
+    /// Find a coalesced connection: an idle h2/h3 connection whose SANs cover
+    /// the target host and whose remote IP matches the resolved address.
+    ///
+    /// This enables connection coalescing per RFC 7540 §9.1.1.
+    pub(crate) fn checkout_coalesced(
+        &self,
+        target_host: &str,
+        resolved_ip: Option<IpAddr>,
+    ) -> Option<PooledConnection<R>> {
+        let mut inner = self.inner.lock().unwrap();
+        let now = Instant::now();
+        let idle_timeout = inner.idle_timeout;
+
+        let mut found_key = None;
+        let mut found_conn = None;
+
+        for (key, queue) in inner.idle.iter_mut() {
+            let mut i = queue.len();
+            while i > 0 {
+                i -= 1;
+                let entry = &queue[i];
+
+                if now.duration_since(entry.idle_since) >= idle_timeout {
+                    continue;
+                }
+                if !entry.connection.is_h2_or_h3() {
+                    continue;
+                }
+                if !entry.connection.sans.iter().any(|s| s == target_host) {
+                    continue;
+                }
+                if let Some(ip) = resolved_ip {
+                    if entry.connection.remote_addr.map(|a| a.ip()) != Some(ip) {
+                        continue;
+                    }
+                }
+
+                let entry = queue.remove(i).unwrap();
+                if entry.connection.is_ready() {
+                    if queue.is_empty() {
+                        found_key = Some(key.clone());
+                    }
+                    found_conn = Some(entry.connection);
+                    break;
+                }
+            }
+            if found_conn.is_some() {
+                break;
+            }
+        }
+
+        if let Some(key) = found_key {
+            inner.idle.remove(&key);
+        }
+        found_conn
     }
 
     fn ensure_reaper(&self) {

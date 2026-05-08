@@ -128,7 +128,6 @@ impl TlsInfo {
 
 /// Extract DNS Subject Alternative Names from a DER-encoded certificate.
 #[cfg(feature = "rustls")]
-#[allow(dead_code)]
 pub(crate) fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
     use x509_parser::prelude::*;
     let Ok((_, cert)) = X509Certificate::from_der(der) else {

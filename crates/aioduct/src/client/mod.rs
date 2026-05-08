@@ -67,6 +67,7 @@ pub struct Client<R: Runtime> {
     pub(crate) cache: Option<HttpCache>,
     pub(crate) hsts: Option<crate::hsts::HstsStore>,
     pub(crate) h2c_probe_cache: H2cProbeCache,
+    pub(crate) connection_coalescing: bool,
     #[cfg(feature = "tower")]
     pub(crate) connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
@@ -115,6 +116,7 @@ impl<R: Runtime> Clone for Client<R> {
             cache: self.cache.clone(),
             hsts: self.hsts.clone(),
             h2c_probe_cache: self.h2c_probe_cache.clone(),
+            connection_coalescing: self.connection_coalescing,
             #[cfg(feature = "tower")]
             connector: self.connector.clone(),
             #[cfg(feature = "rustls")]

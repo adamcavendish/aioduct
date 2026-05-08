@@ -56,6 +56,7 @@ pub struct ClientBuilder<R: Runtime> {
     pub(super) cache: Option<HttpCache>,
     pub(super) hsts: Option<crate::hsts::HstsStore>,
     pub(super) h2c_probe_ttl: Option<Duration>,
+    pub(super) connection_coalescing: bool,
     #[cfg(feature = "tower")]
     pub(super) connector: Option<crate::connector::LayeredConnector<R>>,
     #[cfg(feature = "rustls")]
@@ -120,6 +121,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             cache: None,
             hsts: None,
             h2c_probe_ttl: None,
+            connection_coalescing: true,
             #[cfg(feature = "tower")]
             connector: None,
             #[cfg(feature = "rustls")]
@@ -479,6 +481,16 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Enable or disable HTTP/2 and HTTP/3 connection coalescing (default: enabled).
+    ///
+    /// When enabled, reuses connections whose TLS certificate SANs cover the
+    /// target domain, provided DNS resolves to the same IP address.
+    /// Matches browser behavior (RFC 7540 §9.1.1).
+    pub fn connection_coalescing(mut self, enabled: bool) -> Self {
+        self.connection_coalescing = enabled;
+        self
+    }
+
     /// Add a middleware layer that can inspect or modify requests and responses.
     pub fn middleware(mut self, middleware: impl Middleware) -> Self {
         self.middleware.push(Arc::new(middleware));
@@ -800,6 +812,7 @@ impl<R: Runtime> ClientBuilder<R> {
                 .h2c_probe_ttl
                 .map(crate::h2c_probe::H2cProbeCache::with_ttl)
                 .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
+            connection_coalescing: self.connection_coalescing,
             #[cfg(feature = "tower")]
             connector: self.connector,
             #[cfg(feature = "rustls")]
