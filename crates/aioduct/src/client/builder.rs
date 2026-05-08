@@ -79,6 +79,8 @@ pub struct ClientBuilder<R: Runtime> {
     pub(super) h3_endpoint: Option<quinn::Endpoint>,
     #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(super) prefer_h3: bool,
+    #[cfg(all(feature = "http3", feature = "rustls"))]
+    pub(super) h3_zero_rtt: bool,
     pub(super) _runtime: PhantomData<R>,
 }
 
@@ -144,6 +146,8 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             h3_endpoint: None,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             prefer_h3: false,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            h3_zero_rtt: false,
             _runtime: PhantomData,
         }
     }
@@ -670,6 +674,19 @@ impl<R: Runtime> ClientBuilder<R> {
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
+    /// Enable HTTP/3 0-RTT (early data) for repeat connections.
+    ///
+    /// When enabled, idempotent requests (GET, HEAD, OPTIONS) may be sent
+    /// before the TLS handshake completes on reconnection to a previously-visited
+    /// server. Non-idempotent requests always wait for the full handshake.
+    ///
+    /// Opt-in because 0-RTT data is replayable by a network attacker.
+    pub fn h3_zero_rtt(mut self, enable: bool) -> Self {
+        self.h3_zero_rtt = enable;
+        self
+    }
+
+    #[cfg(all(feature = "http3", feature = "rustls"))]
     fn ensure_h3_endpoint(mut self) -> Self {
         if self.h3_endpoint.is_none() {
             let tls_config = self
@@ -678,9 +695,12 @@ impl<R: Runtime> ClientBuilder<R> {
                 .expect("HTTP/3 requires a TLS connector — call .tls() before .http3(true)")
                 .config()
                 .clone();
-            let endpoint =
-                crate::h3_transport::build_quinn_endpoint(tls_config, self.local_address)
-                    .expect("failed to build QUIC endpoint");
+            let endpoint = crate::h3_transport::build_quinn_endpoint(
+                tls_config,
+                self.local_address,
+                self.h3_zero_rtt,
+            )
+            .expect("failed to build QUIC endpoint");
             self.h3_endpoint = Some(endpoint);
         }
         self
@@ -821,6 +841,8 @@ impl<R: Runtime> ClientBuilder<R> {
             h3_endpoint: self.h3_endpoint,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             prefer_h3: self.prefer_h3,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            h3_zero_rtt: self.h3_zero_rtt,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             _runtime: PhantomData,
