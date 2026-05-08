@@ -150,3 +150,27 @@ publish:
 
 # Run the full CI pipeline locally
 ci: fmt-check clippy-all doc-check book msrv test-all coverage-lcov
+
+# ---------- Site ----------
+
+# Build the landing page WASM demo (requires wasm-pack)
+site-wasm:
+    wasm-pack build examples/wasm-demo \
+        --target web \
+        --out-dir ../../site/wasm \
+        --out-name aioduct_wasm_demo \
+        --release
+    rm -f site/wasm/.gitignore site/wasm/package.json
+
+# Assemble the full site (landing page + mdBook docs)
+site-build: book site-wasm
+    rm -rf _site
+    mkdir -p _site
+    cp site/index.html site/style.css site/app.js _site/
+    cp -r site/wasm _site/wasm
+    cp -r docs/book _site/docs
+
+# Serve the site locally on port 8080 (requires: cargo install miniserve)
+site-serve: site-build
+    @echo "Serving at http://localhost:8080"
+    miniserve _site --port 8080 --index index.html

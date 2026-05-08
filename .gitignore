@@ -1,2 +1,4 @@
 /target/
 /docs/book/
+/site/wasm/
+/_site/

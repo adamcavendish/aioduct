@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>aioduct — The HTTP client that runs everywhere</title>
+    <meta name="description" content="Async-native Rust HTTP client with HTTP/3, WASM, multi-runtime support, and more. Built on hyper 1.x.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Hero Section -->
+    <header class="hero">
+        <div class="container">
+            <h1>aioduct</h1>
+            <p class="tagline">The HTTP client that runs everywhere — even right here.</p>
+            <p class="subtitle">Async-native Rust HTTP client built on hyper 1.x. Multi-runtime, HTTP/3, WASM, bandwidth limiting, connection coalescing, and more.</p>
+
+            <div class="demo-panel">
+                <div class="demo-header">
+                    <span class="demo-title">Live WASM Demo</span>
+                    <span class="demo-status" id="wasm-status">Loading WASM…</span>
+                </div>
+                <div class="demo-code">
+                    <pre><code id="demo-code">let client = WasmClient::new();
+let resp = client.get("https://httpbin.org/get")?
+    .send().await?;
+let data: serde_json::Value = resp.json()?;</code></pre>
+                </div>
+                <div class="demo-controls">
+                    <button id="run-btn" class="btn btn-primary" disabled>Run</button>
+                    <select id="demo-select">
+                        <optgroup label="GET Requests">
+                            <option value="fetch_json" data-url="https://httpbin.org/get">GET JSON</option>
+                            <option value="fetch_url" data-url="https://httpbin.org/ip">GET plain text (IP)</option>
+                            <option value="fetch_ip_info" data-url="https://httpbin.org/ip">Your IP address</option>
+                            <option value="fetch_html" data-url="https://httpbin.org/html">GET HTML content</option>
+                            <option value="fetch_utf8" data-url="https://httpbin.org/encoding/utf8">GET UTF-8 content</option>
+                            <option value="fetch_large_response" data-url="https://httpbin.org/bytes/10000">Large response (10KB)</option>
+                        </optgroup>
+                        <optgroup label="Headers &amp; Auth">
+                            <option value="fetch_with_headers" data-url="https://httpbin.org/headers">Custom headers</option>
+                            <option value="fetch_with_bearer" data-url="https://httpbin.org/bearer">Bearer auth</option>
+                            <option value="fetch_basic_auth" data-url="https://httpbin.org/basic-auth/demo/secret">Basic auth</option>
+                            <option value="fetch_user_agent" data-url="https://httpbin.org/user-agent">Custom User-Agent</option>
+                            <option value="fetch_cookies" data-url="https://httpbin.org/anything">Send cookies</option>
+                            <option value="fetch_response_headers" data-url="https://httpbin.org/response-headers?X-Custom=hello&X-Powered-By=aioduct">Response headers</option>
+                        </optgroup>
+                        <optgroup label="Other Methods">
+                            <option value="post_json" data-url="https://httpbin.org/post">POST JSON body</option>
+                            <option value="put_json" data-url="https://httpbin.org/put">PUT JSON body</option>
+                            <option value="patch_json" data-url="https://httpbin.org/patch">PATCH JSON body</option>
+                            <option value="delete_request" data-url="https://httpbin.org/delete">DELETE</option>
+                            <option value="head_request" data-url="https://httpbin.org/get">HEAD (no body)</option>
+                            <option value="post_form" data-url="https://httpbin.org/post">POST form-urlencoded</option>
+                            <option value="post_binary" data-url="https://httpbin.org/post">POST binary data</option>
+                            <option value="fetch_anything" data-url="https://httpbin.org/anything">Custom method (OPTIONS)</option>
+                        </optgroup>
+                        <optgroup label="Advanced">
+                            <option value="fetch_with_timeout" data-url="https://httpbin.org/delay/1">Timeout (3s limit, 1s delay)</option>
+                            <option value="fetch_timeout_fail" data-url="https://httpbin.org/delay/10">Timeout (triggers error)</option>
+                            <option value="error_handling" data-url="https://httpbin.org/status/404">Error handling (404)</option>
+                            <option value="error_handling_500" data-url="https://httpbin.org/status/500">Error handling (500)</option>
+                            <option value="fetch_redirect" data-url="https://httpbin.org/redirect/3">Follow redirects (3 hops)</option>
+                            <option value="fetch_status_codes" data-url="https://httpbin.org/status">Status code tour</option>
+                            <option value="fetch_conditional" data-url="https://httpbin.org/etag/test123">Conditional requests (ETag)</option>
+                            <option value="fetch_cache_headers" data-url="https://httpbin.org/cache/60">Cache headers</option>
+                            <option value="fetch_gzip" data-url="https://httpbin.org/gzip">Gzip encoding</option>
+                            <option value="fetch_content_negotiation" data-url="https://httpbin.org/anything">Content negotiation</option>
+                            <option value="fetch_multiple" data-url="https://httpbin.org/ip,https://httpbin.org/get,https://httpbin.org/user-agent">Sequential requests (3x)</option>
+                        </optgroup>
+                    </select>
+                </div>
+                <div class="demo-output" id="demo-output">
+                    <span class="placeholder">Click "Run" to fire a real HTTP request from WASM</span>
+                </div>
+                <noscript>
+                    <div class="demo-fallback">
+                        <p>This demo requires JavaScript and WebAssembly. Here's what it looks like:</p>
+                        <pre>HTTP 200 OK
+
+{
+  "origin": "1.2.3.4",
+  "url": "https://httpbin.org/get",
+  ...
+}</pre>
+                    </div>
+                </noscript>
+            </div>
+        </div>
+    </header>
+
+    <!-- Feature-Flag Configurator -->
+    <section class="configurator" id="configurator">
+        <div class="container">
+            <h2>Feature-Flag Configurator</h2>
+            <p class="section-intro">Pick the features you need. We'll generate your <code>Cargo.toml</code> with exactly the right dependencies.</p>
+
+            <div class="config-grid">
+                <div class="config-features">
+                    <h3>Runtime</h3>
+                    <div class="feature-group" data-group="runtime">
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="tokio" checked>
+                            <span class="feature-name">tokio</span>
+                            <span class="feature-desc">Most popular async runtime</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="smol">
+                            <span class="feature-name">smol</span>
+                            <span class="feature-desc">Lightweight alternative runtime</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="compio">
+                            <span class="feature-name">compio</span>
+                            <span class="feature-desc">io_uring-based runtime</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="wasm">
+                            <span class="feature-name">wasm</span>
+                            <span class="feature-desc">Browser via web_sys::fetch</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="wasi-p2">
+                            <span class="feature-name">wasi-p2</span>
+                            <span class="feature-desc">WASI Preview 2 sockets</span>
+                        </label>
+                    </div>
+
+                    <h3>TLS &amp; Transport</h3>
+                    <div class="feature-group">
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="rustls" checked>
+                            <span class="feature-name">rustls</span>
+                            <span class="feature-desc">TLS via rustls (recommended)</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="rustls-ring">
+                            <span class="feature-name">rustls-ring</span>
+                            <span class="feature-desc">ring crypto backend</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="rustls-aws-lc-rs">
+                            <span class="feature-name">rustls-aws-lc-rs</span>
+                            <span class="feature-desc">AWS-LC crypto backend</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="http3">
+                            <span class="feature-name">http3</span>
+                            <span class="feature-desc">HTTP/3 via QUIC (requires rustls)</span>
+                        </label>
+                    </div>
+
+                    <h3>DNS</h3>
+                    <div class="feature-group">
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="hickory-dns">
+                            <span class="feature-name">hickory-dns</span>
+                            <span class="feature-desc">Custom DNS resolver</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="doh">
+                            <span class="feature-name">doh</span>
+                            <span class="feature-desc">DNS-over-HTTPS</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="dot">
+                            <span class="feature-name">dot</span>
+                            <span class="feature-desc">DNS-over-TLS</span>
+                        </label>
+                    </div>
+
+                    <h3>Compression</h3>
+                    <div class="feature-group">
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="gzip">
+                            <span class="feature-name">gzip</span>
+                            <span class="feature-desc">Gzip decompression</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="brotli">
+                            <span class="feature-name">brotli</span>
+                            <span class="feature-desc">Brotli decompression</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="zstd">
+                            <span class="feature-name">zstd</span>
+                            <span class="feature-desc">Zstandard decompression</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="deflate">
+                            <span class="feature-name">deflate</span>
+                            <span class="feature-desc">Deflate decompression</span>
+                        </label>
+                    </div>
+
+                    <h3>Extras</h3>
+                    <div class="feature-group">
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="json" checked>
+                            <span class="feature-name">json</span>
+                            <span class="feature-desc">JSON ser/de via serde</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="blocking">
+                            <span class="feature-name">blocking</span>
+                            <span class="feature-desc">Synchronous client wrapper</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="tower">
+                            <span class="feature-name">tower</span>
+                            <span class="feature-desc">Tower middleware compatibility</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="tracing">
+                            <span class="feature-name">tracing</span>
+                            <span class="feature-desc">Structured logging</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="otel">
+                            <span class="feature-name">otel</span>
+                            <span class="feature-desc">OpenTelemetry spans</span>
+                        </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="charset">
+                            <span class="feature-name">charset</span>
+                            <span class="feature-desc">Non-UTF8 response decoding</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="config-output">
+                    <div class="output-header">
+                        <span>Cargo.toml</span>
+                        <button id="copy-btn" class="btn btn-small">Copy</button>
+                    </div>
+                    <pre><code id="cargo-output">[dependencies]
+aioduct = { version = "0.1.7", features = ["tokio", "rustls", "json"] }</code></pre>
+                    <div id="config-warnings"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Livery Band — accent divider with key stats -->
+    <section class="livery-band">
+        <div class="container">
+            <div class="livery-stats">
+                <div class="livery-stat">
+                    <div class="stat">5</div>
+                    <div class="stat-label">Async Runtimes</div>
+                </div>
+                <div class="livery-stat">
+                    <div class="stat">113</div>
+                    <div class="stat-label">KB WASM (gzipped)</div>
+                </div>
+                <div class="livery-stat">
+                    <div class="stat">0</div>
+                    <div class="stat-label">Unsafe Code</div>
+                </div>
+                <div class="livery-stat">
+                    <div class="stat">20+</div>
+                    <div class="stat-label">Feature Flags</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Comparison Section -->
+    <section class="comparison" id="comparison">
+        <div class="container">
+            <h2>aioduct vs reqwest</h2>
+            <p class="section-intro">Same tasks, side by side. See what aioduct gives you out of the box.</p>
+
+            <div class="comparison-tabs">
+                <button class="tab active" data-tab="retries">Retries</button>
+                <button class="tab" data-tab="streaming">Bandwidth</button>
+                <button class="tab" data-tab="http3">HTTP/3</button>
+                <button class="tab" data-tab="timing">Timing</button>
+                <button class="tab" data-tab="cache">Cache</button>
+                <button class="tab" data-tab="multiruntime">Multi-Runtime</button>
+                <button class="tab" data-tab="otel">Observability</button>
+                <button class="tab" data-tab="doh">DoH/DoT</button>
+            </div>
+
+            <div class="comparison-panels">
+                <div class="comparison-panel active" data-tab="retries">
+                    <div class="panel-side">
+                        <h4>aioduct</h4>
+                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
+    .retry(RetryConfig::default().max_retries(3))
+    .build();
+
+let resp = client.get("https://httpbin.org/get")?
+    .send().await?;
+let data: serde_json::Value = resp.json().await?;</code></pre>
+                    </div>
+                    <div class="panel-side panel-alt">
+                        <h4>reqwest</h4>
+                        <pre><code>// reqwest has no built-in retry.
+// You need reqwest-middleware + reqwest-retry crates.
+let client = reqwest::Client::new();
+
+let resp = client.get("https://httpbin.org/get")
+    .send().await?;
+let data: serde_json::Value = resp.json().await?;</code></pre>
+                        <span class="panel-note">No built-in retry — requires extra crates</span>
+                    </div>
+                </div>
+
+                <div class="comparison-panel" data-tab="streaming">
+                    <div class="panel-side">
+                        <h4>aioduct</h4>
+                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
+    .bandwidth_limit(1_048_576) // 1 MB/s
+    .build();
+
+let resp = client
+    .get("https://example.com/large-file")?
+    .send().await?;
+let bytes = resp.bytes().await?;</code></pre>
+                        <span class="panel-highlight">Built-in bandwidth limiting</span>
+                    </div>
+                    <div class="panel-side panel-alt">
+                        <h4>reqwest</h4>
+                        <pre><code>let client = reqwest::Client::new();
+
+let resp = client
+    .get("https://example.com/large-file")
+    .send().await?;
+
+// No bandwidth limiting available.
+// Must manually throttle the byte stream.
+let mut stream = resp.bytes_stream();
+while let Some(chunk) = stream.next().await {
+    // manual throttle logic here...
+}</code></pre>
+                        <span class="panel-note">No bandwidth limiting — manual stream throttle needed</span>
+                    </div>
+                </div>
+
+                <div class="comparison-panel" data-tab="http3">
+                    <div class="panel-side">
+                        <h4>aioduct</h4>
+                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
+    .tls(RustlsConnector::with_webpki_roots())
+    .http3(true)
+    .build();
+
+// Automatically upgrades to HTTP/3 via Alt-Svc
+let resp = client.get("https://cloudflare.com/")?
+    .send().await?;
+println!("{:?}", resp.version()); // HTTP/3</code></pre>
+                        <span class="panel-highlight">Native HTTP/3 with automatic Alt-Svc upgrade</span>
+                    </div>
+                    <div class="panel-side panel-alt">
+                        <h4>reqwest</h4>
+                        <pre><code>// HTTP/3 is not available in reqwest.
+//
+// You'd need to use h3 + quinn directly,
+// which requires hundreds of lines of manual
+// connection management, TLS config, and
+// stream handling.
+
+let client = reqwest::Client::new();
+// Always HTTP/1.1 or HTTP/2 — never HTTP/3</code></pre>
+                        <span class="panel-note">HTTP/3 not supported</span>
+                    </div>
+                </div>
+
+                <div class="comparison-panel" data-tab="timing">
+                    <div class="panel-side">
+                        <h4>aioduct</h4>
+                        <pre><code>let resp = client.get(url)?.send().await?;
+let timings = resp.timings();
+
+println!("DNS:   {:?}", timings.dns());
+println!("TCP:   {:?}", timings.tcp());
+println!("TLS:   {:?}", timings.tls());
+println!("TTFB:  {:?}", timings.ttfb());
+println!("Total: {:?}", timings.total());</code></pre>
+                        <span class="panel-highlight">Built-in per-request timing breakdown (DNS/TCP/TLS/TTFB)</span>
+                    </div>
+                    <div class="panel-side panel-alt">
+                        <h4>reqwest</h4>
+                        <pre><code>let start = Instant::now();
+let resp = client.get(url).send().await?;
+let elapsed = start.elapsed();
+
+// Only total time available
+// No DNS/TCP/TLS/TTFB breakdown
+println!("Total: {elapsed:?}");</code></pre>
+                        <span class="panel-note">No timing breakdown — total elapsed only</span>
+                    </div>
+                </div>
+
+                <div class="comparison-panel" data-tab="cache">
+                    <div class="panel-side">
+                        <h4>aioduct</h4>
+                        <pre><code>let cache = HttpCache::new(
+    InMemoryCacheStore::new(),
+    CacheConfig::default(),
+);
+let client = Client::&lt;TokioRuntime&gt;::builder()
+    .cache(cache)
+    .build();
+
+// Second request served from cache
+let r1 = client.get(url)?.send().await?;
+let r2 = client.get(url)?.send().await?;</code></pre>
+                        <span class="panel-highlight">Built-in HTTP cache with pluggable stores</span>
+                    </div>
+                    <div class="panel-side panel-alt">
+                        <h4>reqwest</h4>
+                        <pre><code>// reqwest has no built-in HTTP caching.
+// Options:
+// 1. http-cache-reqwest (third-party)
+// 2. Manual Cache-Control/ETag handling
+// 3. External caching proxy
+
+let client = reqwest::Client::new();
+// Every request hits the network
+let r1 = client.get(url).send().await?;
+let r2 = client.get(url).send().await?;</code></pre>
+                        <span class="panel-note">No built-in cache — third-party or manual</span>
+                    </div>
+                </div>
+
+                <div class="comparison-panel" data-tab="multiruntime">
+                    <div class="panel-side">
+                        <h4>aioduct</h4>
+                        <pre><code>// Same API, any runtime — just change the type parameter
+use aioduct::runtime::{TokioRuntime, SmolRuntime};
+
+// With tokio:
+let client = Client::&lt;TokioRuntime&gt;::builder().build();
+
+// With smol (zero code changes):
+let client = Client::&lt;SmolRuntime&gt;::builder().build();
+
+// Also: CompioRuntime, WasmClient, WasiP2Client</code></pre>
+                        <span class="panel-highlight">tokio / smol / compio / WASM / WASI-P2</span>
+                    </div>
+                    <div class="panel-side panel-alt">
+                        <h4>reqwest</h4>
+                        <pre><code>// reqwest is hard-coded to tokio.
+// If your project uses smol or async-std,
+// you must also pull in tokio as a dependency.
+
+let client = reqwest::Client::new();
+// No way to use smol, compio, or any other runtime</code></pre>
+                        <span class="panel-note">Locked to tokio — no other runtime support</span>
+                    </div>
+                </div>
+
+                <div class="comparison-panel" data-tab="otel">
+                    <div class="panel-side">
+                        <h4>aioduct</h4>
+                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
+    .middleware(TracingMiddleware)
+    .middleware(OtelMiddleware::default())
+    .build();
+
+// Every request automatically emits:
+// - tracing spans (method, url, status, duration)
+// - OpenTelemetry spans (Jaeger/Zipkin/OTLP)
+let resp = client.get(url)?.send().await?;</code></pre>
+                        <span class="panel-highlight">Built-in tracing + OpenTelemetry middleware</span>
+                    </div>
+                    <div class="panel-side panel-alt">
+                        <h4>reqwest</h4>
+                        <pre><code>// reqwest has no built-in observability.
+//
+// For tracing: use reqwest-tracing (third-party)
+// For OpenTelemetry: no official integration
+// Manual span creation around each request:
+
+let span = tracing::info_span!("http", ...);
+let resp = client.get(url).send()
+    .instrument(span).await?;</code></pre>
+                        <span class="panel-note">Manual instrumentation or third-party crates</span>
+                    </div>
+                </div>
+
+                <div class="comparison-panel" data-tab="doh">
+                    <div class="panel-side">
+                        <h4>aioduct</h4>
+                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
+    .tls(RustlsConnector::with_webpki_roots())
+    .dns_over_https(
+        "1.1.1.1".parse().unwrap(),
+        "cloudflare-dns.com",
+    )
+    .build();
+
+// All DNS queries encrypted via HTTPS
+let resp = client.get(url)?.send().await?;</code></pre>
+                        <span class="panel-highlight">Built-in DNS-over-HTTPS and DNS-over-TLS</span>
+                    </div>
+                    <div class="panel-side panel-alt">
+                        <h4>reqwest</h4>
+                        <pre><code>// reqwest does not support DoH/DoT.
+// You'd need to:
+// 1. Add hickory-resolver as a dependency
+// 2. Configure it for HTTPS transport
+// 3. Implement reqwest's Resolve trait
+// 4. Wire the resolver into the client builder
+//
+// ~50 lines of glue code for something aioduct
+// does with a single builder method.</code></pre>
+                        <span class="panel-note">Not available — manual hickory-resolver integration needed</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Feature comparison table -->
+            <h3 class="table-title">Feature Comparison</h3>
+            <div class="table-wrapper">
+                <table class="feature-table">
+                    <thead>
+                        <tr>
+                            <th>Feature</th>
+                            <th>aioduct</th>
+                            <th>reqwest</th>
+                            <th>ureq</th>
+                            <th>hyper</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>HTTP/1.1</td>
+                            <td class="yes">Yes</td>
+                            <td class="yes">Yes</td>
+                            <td class="yes">Yes</td>
+                            <td class="yes">Yes</td>
+                        </tr>
+                        <tr>
+                            <td>HTTP/2</td>
+                            <td class="yes">Yes</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No</td>
+                            <td class="yes">Yes</td>
+                        </tr>
+                        <tr>
+                            <td>HTTP/3 (QUIC)</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>Multi-runtime</td>
+                            <td class="yes">tokio / smol / compio</td>
+                            <td class="partial">tokio only</td>
+                            <td class="partial">blocking only</td>
+                            <td class="partial">tokio only</td>
+                        </tr>
+                        <tr>
+                            <td>WASM (browser)</td>
+                            <td class="yes">Yes</td>
+                            <td class="partial">Limited</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>WASI Preview 2</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>Connection coalescing</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>Built-in retry</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No (plugin)</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>Bandwidth limiting</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>DoH / DoT</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>HTTP cache</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>0-RTT reconnection</td>
+                            <td class="yes">Yes</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                        <tr>
+                            <td>Tower middleware</td>
+                            <td class="yes">Yes</td>
+                            <td class="partial">Via plugin</td>
+                            <td class="no">No</td>
+                            <td class="yes">Yes</td>
+                        </tr>
+                        <tr>
+                            <td>OpenTelemetry</td>
+                            <td class="yes">Built-in</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                            <td class="no">No</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-links">
+                <a href="docs/">Documentation (mdBook)</a>
+                <a href="https://docs.rs/aioduct">API Reference (docs.rs)</a>
+                <a href="https://github.com/adamcavendish/aioduct">GitHub</a>
+                <a href="https://crates.io/crates/aioduct">crates.io</a>
+            </div>
+            <div class="footer-quick">
+                <h4>Get started in 30 seconds</h4>
+                <pre><code>cargo add aioduct --features tokio,rustls,rustls-ring,json</code></pre>
+            </div>
+        </div>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
