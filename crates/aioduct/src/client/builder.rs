@@ -334,6 +334,59 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
+    /// Use DNS-over-HTTPS for name resolution.
+    ///
+    /// Requires the `doh` feature. The `server_ip` should be the resolver's IP
+    /// address (e.g., `"1.1.1.1"` for Cloudflare, `"8.8.8.8"` for Google).
+    /// The `server_name` is the TLS hostname (e.g., `"cloudflare-dns.com"`).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use aioduct::{Client, runtime::TokioRuntime};
+    /// let client = Client::<TokioRuntime>::builder()
+    ///     .dns_over_https("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
+    ///     .build();
+    /// ```
+    #[cfg(feature = "doh")]
+    pub fn dns_over_https(self, server_ip: std::net::IpAddr, server_name: &str) -> Self {
+        use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
+        let ns = NameServerConfig::https(
+            server_ip,
+            std::sync::Arc::from(server_name),
+            None,
+        );
+        let config = ResolverConfig::from_parts(None, vec![], vec![ns]);
+        let resolver = crate::HickoryResolver::from_config(config, ResolverOpts::default());
+        self.resolver(resolver)
+    }
+
+    /// Use DNS-over-TLS for name resolution.
+    ///
+    /// Requires the `dot` feature. The `server_ip` should be the resolver's IP
+    /// address (e.g., `"1.1.1.1"` for Cloudflare, `"8.8.8.8"` for Google).
+    /// The `server_name` is the TLS hostname for certificate verification.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use aioduct::{Client, runtime::TokioRuntime};
+    /// let client = Client::<TokioRuntime>::builder()
+    ///     .dns_over_tls("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
+    ///     .build();
+    /// ```
+    #[cfg(feature = "dot")]
+    pub fn dns_over_tls(self, server_ip: std::net::IpAddr, server_name: &str) -> Self {
+        use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
+        let ns = NameServerConfig::tls(
+            server_ip,
+            std::sync::Arc::from(server_name),
+        );
+        let config = ResolverConfig::from_parts(None, vec![], vec![ns]);
+        let resolver = crate::HickoryResolver::from_config(config, ResolverOpts::default());
+        self.resolver(resolver)
+    }
+
     /// Configure HTTP/2 connection parameters (window sizes, keepalive, frame size).
     pub fn http2(mut self, config: Http2Config) -> Self {
         self.http2 = Some(config);
