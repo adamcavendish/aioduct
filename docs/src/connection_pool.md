@@ -52,3 +52,31 @@ let client = Client::<TokioRuntime>::builder()
 ## Connection Health
 
 On checkout, the pool verifies each candidate connection is still ready using hyper's `SendRequest::is_ready()`. If a connection has been closed by the server (e.g., due to keep-alive timeout), it's discarded and the next pooled connection is tried. If no ready connection is found, a new one is established.
+
+## Connection Coalescing
+
+When enabled (default), aioduct reuses h2/h3 connections for different hostnames that share the same TLS certificate, matching browser behavior per [RFC 7540 §9.1.1](https://www.rfc-editor.org/rfc/rfc7540#section-9.1.1).
+
+### How It Works
+
+1. When a new request has no pooled connection for its origin, the pool scans existing h2/h3 connections.
+2. If a connection's TLS certificate includes the target hostname in its Subject Alternative Names (SANs), **and** the resolved IP address matches the connection's remote address, the connection is reused.
+3. This avoids a redundant TLS handshake and TCP/QUIC connection for hosts that share infrastructure (e.g., `api.example.com` and `cdn.example.com` on the same certificate).
+
+### Configuration
+
+```rust,no_run
+use aioduct::Client;
+use aioduct::runtime::TokioRuntime;
+
+// Enabled by default; disable if needed:
+let client = Client::<TokioRuntime>::builder()
+    .connection_coalescing(false)
+    .build();
+```
+
+### Requirements
+
+- Only applies to **h2 and h3** connections (HTTP/1.1 doesn't multiplex).
+- Requires the `rustls` feature (SANs are extracted from the peer certificate).
+- Both SAN match and IP match are required — this prevents coalescing across servers that happen to share a wildcard certificate but serve different content.

@@ -98,6 +98,32 @@ When HTTP/3 is enabled (either mode):
 
 When HTTP/3 is **not** enabled (default), the client uses TCP with HTTP/1.1 or HTTP/2 negotiated via ALPN, even for HTTPS.
 
+## 0-RTT (Early Data)
+
+For repeat connections to servers that support session tickets, aioduct can send the first request immediately without waiting for a full QUIC handshake:
+
+```rust,no_run
+use aioduct::Client;
+use aioduct::runtime::TokioRuntime;
+
+let client = Client::<TokioRuntime>::builder()
+    .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
+    .http3(true)
+    .h3_zero_rtt(true)
+    .build();
+```
+
+### Safety
+
+0-RTT is only used for **idempotent methods** (GET, HEAD, OPTIONS) because early data can be replayed by an attacker. POST, PUT, DELETE, and PATCH always wait for the full handshake.
+
+If the server rejects 0-RTT, the client transparently falls back to a full handshake with no user intervention required.
+
+### When to Enable
+
+- **Enable** for latency-sensitive read-heavy workloads (API polling, CDN fetches) where the server is known to support session tickets.
+- **Leave disabled** (default) if your application has strict non-replay requirements or the server doesn't benefit from it.
+
 ## Limitations
 
 - **Experimental** — the h3 ecosystem (h3 0.0.8, h3-quinn 0.0.10) is pre-1.0.

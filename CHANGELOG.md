@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-05-09
+
+### Added
+- HTTP/3 0-RTT (early data) support — opt-in via `ClientBuilder::h3_zero_rtt(true)`, used only for idempotent methods (GET, HEAD, OPTIONS) with automatic fallback to full handshake on rejection
+- Connection coalescing (RFC 7540 §9.1.1) — reuses existing h2/h3 connections whose TLS certificate SANs cover the target domain and whose remote IP matches DNS resolution, matching browser behavior
+- DNS-over-HTTPS via `ClientBuilder::dns_over_https(server_ip, server_name)` — encrypted name resolution through DoH endpoints (requires `doh` feature)
+- DNS-over-TLS via `ClientBuilder::dns_over_tls(server_ip, server_name)` — encrypted name resolution through DoT endpoints (requires `dot` feature)
+- Bandwidth limiter auto-wired into response bodies and aria download engine with per-client isolation
+- Interactive landing page with live WASM demo at project GitHub Pages
+
+### Fixed
+- Enable `socket2/all` feature unconditionally — `TcpKeepalive::with_retries()` and `SockRef::bind_device()` now compile on smol-only and compio-only builds (tokio was enabling it transitively, masking the issue)
+- Include tests in published crate to silence cargo packaging warnings
+
+### Changed
+- CI: added isolated-runtime clippy job that checks tokio, smol, and compio individually to catch transitive-dep masking
+- CI: pages workflow skips wasm-target snippets during native compilation check
+- Deps: bump hickory-proto and hickory-net from 0.26.0 to 0.26.1
+
 ## [0.1.7] - 2026-05-04
 
 ### Added
