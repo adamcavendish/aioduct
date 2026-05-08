@@ -78,12 +78,10 @@ pub(crate) async fn connect_h3_addrs_0rtt<R: Runtime>(
     for addr in addrs {
         match endpoint.connect(addr, server_name) {
             Ok(connecting) => match connecting.into_0rtt() {
-                Ok((quinn_conn, _zero_rtt_accepted)) => {
-                    match connect_h3::<R>(quinn_conn).await {
-                        Ok(pooled) => return Ok((pooled, addr, true)),
-                        Err(err) => last_err = Some(err),
-                    }
-                }
+                Ok((quinn_conn, _zero_rtt_accepted)) => match connect_h3::<R>(quinn_conn).await {
+                    Ok(pooled) => return Ok((pooled, addr, true)),
+                    Err(err) => last_err = Some(err),
+                },
                 Err(connecting) => match connecting.await {
                     Ok(quinn_conn) => match connect_h3::<R>(quinn_conn).await {
                         Ok(pooled) => return Ok((pooled, addr, false)),

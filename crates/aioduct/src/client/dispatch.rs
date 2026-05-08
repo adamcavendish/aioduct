@@ -14,10 +14,11 @@ impl<R: Runtime> Client<R> {
     /// Populate SANs on a connection before returning it to the pool.
     #[cfg(feature = "rustls")]
     fn populate_sans(conn: &mut PooledConnection<R>) {
-        if conn.is_h2_or_h3() && conn.sans.is_empty() {
-            if let Some(der) = conn.tls_info.as_ref().and_then(|t| t.peer_certificate()) {
-                conn.sans = crate::tls::extract_sans_from_der(der);
-            }
+        if conn.is_h2_or_h3()
+            && conn.sans.is_empty()
+            && let Some(der) = conn.tls_info.as_ref().and_then(|t| t.peer_certificate())
+        {
+            conn.sans = crate::tls::extract_sans_from_der(der);
         }
     }
 

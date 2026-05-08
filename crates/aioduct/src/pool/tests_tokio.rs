@@ -194,12 +194,10 @@ async fn make_h2_conn() -> PooledConnection<TokioRuntime> {
     });
 
     let io = TokioIo::new(client_io);
-    let (sender, conn) = hyper::client::conn::http2::handshake(
-        crate::runtime::hyper_executor::<TokioRuntime>(),
-        io,
-    )
-    .await
-    .expect("h2 handshake should succeed on duplex");
+    let (sender, conn) =
+        hyper::client::conn::http2::handshake(crate::runtime::hyper_executor::<TokioRuntime>(), io)
+            .await
+            .expect("h2 handshake should succeed on duplex");
 
     tokio::spawn(async move {
         let _ = conn.await;
@@ -267,10 +265,7 @@ async fn checkout_coalesced_rejects_different_ip() {
 
     let different_ip: IpAddr = [10, 0, 0, 2].into();
     let result = pool.checkout_coalesced("cdn.example.com", Some(different_ip));
-    assert!(
-        result.is_none(),
-        "different IP should prevent coalescing"
-    );
+    assert!(result.is_none(), "different IP should prevent coalescing");
 }
 
 #[tokio::test]
@@ -287,7 +282,10 @@ async fn checkout_coalesced_skips_expired() {
 
     let ip: IpAddr = [10, 0, 0, 1].into();
     let result = pool.checkout_coalesced("cdn.example.com", Some(ip));
-    assert!(result.is_none(), "expired connection should not be returned");
+    assert!(
+        result.is_none(),
+        "expired connection should not be returned"
+    );
 }
 
 #[test]

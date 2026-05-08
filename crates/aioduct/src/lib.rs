@@ -249,7 +249,10 @@ pub mod __bench {
     }
 
     pub fn pool_key(host: &str) -> BenchKey {
-        BenchKey(PoolKey::new(Scheme::HTTPS, host.parse::<Authority>().unwrap()))
+        BenchKey(PoolKey::new(
+            Scheme::HTTPS,
+            host.parse::<Authority>().unwrap(),
+        ))
     }
 
     pub fn set_sans(conn: &mut BenchConn, sans: Vec<String>) {
@@ -270,7 +273,13 @@ pub mod __bench {
         }
     }
 
-    pub fn checkout_coalesced(pool: &BenchPool, target_host: &str, resolved_ip: Option<IpAddr>) -> bool {
-        pool.0.checkout_coalesced(target_host, resolved_ip).is_some()
+    pub fn checkout_coalesced(
+        pool: &BenchPool,
+        target_host: &str,
+        resolved_ip: Option<IpAddr>,
+    ) -> bool {
+        pool.0
+            .checkout_coalesced(target_host, resolved_ip)
+            .is_some()
     }
 }

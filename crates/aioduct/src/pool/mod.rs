@@ -156,7 +156,11 @@ impl<R: Runtime> ConnectionPool<R> {
         let max = inner.max_idle_per_host;
 
         for san in &connection.sans {
-            inner.san_index.entry(san.clone()).or_default().insert(key.clone());
+            inner
+                .san_index
+                .entry(san.clone())
+                .or_default()
+                .insert(key.clone());
         }
 
         let queue = inner.idle.entry(key).or_default();
@@ -215,10 +219,10 @@ impl<R: Runtime> ConnectionPool<R> {
                 if !entry.connection.sans.iter().any(|s| s == target_host) {
                     continue;
                 }
-                if let Some(ip) = resolved_ip {
-                    if entry.connection.remote_addr.map(|a| a.ip()) != Some(ip) {
-                        continue;
-                    }
+                if let Some(ip) = resolved_ip
+                    && entry.connection.remote_addr.map(|a| a.ip()) != Some(ip)
+                {
+                    continue;
                 }
 
                 let entry = queue.remove(i).unwrap();
@@ -241,12 +245,12 @@ impl<R: Runtime> ConnectionPool<R> {
 
         // Clean up stale index entries for keys that no longer have connections
         for key in &candidate_keys {
-            if !inner.idle.contains_key(key) {
-                if let Some(keys) = inner.san_index.get_mut(target_host) {
-                    keys.remove(key);
-                    if keys.is_empty() {
-                        inner.san_index.remove(target_host);
-                    }
+            if !inner.idle.contains_key(key)
+                && let Some(keys) = inner.san_index.get_mut(target_host)
+            {
+                keys.remove(key);
+                if keys.is_empty() {
+                    inner.san_index.remove(target_host);
                 }
             }
         }
