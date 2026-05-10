@@ -87,6 +87,38 @@ impl Error {
     pub fn is_redirect(&self) -> bool {
         matches!(self, Error::Redirect(_) | Error::TooManyRedirects(_))
     }
+
+    /// Returns `true` if the error indicates a reused connection was closed by the peer.
+    ///
+    /// This covers both TCP-level closes (RST, FIN) and HTTP-level closes
+    /// (GOAWAY, canceled requests). Useful for distinguishing "stale pool
+    /// connection" errors from genuine server-side failures.
+    pub fn is_closed(&self) -> bool {
+        use std::error::Error as _;
+        match self {
+            Error::Hyper(e) => {
+                if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
+                    return true;
+                }
+                if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
+                    return matches!(
+                        io_err.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionAborted
+                    );
+                }
+                false
+            }
+            Error::Io(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionAborted
+            ),
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]

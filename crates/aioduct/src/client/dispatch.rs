@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use http::Uri;
+use http_body_util::BodyExt;
 
 use crate::error::{AioductBody, Error};
 use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
@@ -40,7 +41,7 @@ impl<R: Runtime> Client<R> {
 
     pub(crate) async fn execute_single_with_hint(
         &self,
-        request: http::Request<AioductBody>,
+        mut request: http::Request<AioductBody>,
         original_uri: &Uri,
         protocol: ProtocolHint,
     ) -> Result<Response, Error> {
@@ -88,25 +89,64 @@ impl<R: Runtime> Client<R> {
             },
         );
 
+        // Determine if we can transparently retry on a stale pool connection.
+        // Only safe for empty-body requests (GET/HEAD/DELETE etc.) — non-empty
+        // bodies are consumed by send and cannot be replayed.
+        let can_stale_retry =
+            !self.no_connection_reuse && http_body::Body::is_end_stream(request.body());
+
         if !self.no_connection_reuse
             && let Some(mut conn) = self.pool.checkout(&pool_key)
         {
             #[cfg(feature = "tracing")]
             tracing::trace!(host = authority.host(), "connection.pool.hit");
 
+            let saved_parts = if can_stale_retry {
+                Some((
+                    request.method().clone(),
+                    request.uri().clone(),
+                    request.headers().clone(),
+                    request.version(),
+                ))
+            } else {
+                None
+            };
+
             let transfer_start = Instant::now();
-            let mut resp =
-                Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
-            let transfer = transfer_start.elapsed();
-            resp.set_remote_addr(conn.remote_addr);
-            resp.set_tls_info(conn.tls_info.clone());
-            resp.set_timings(Some(
-                TimingCollector::default().into_timings(Some(transfer), request_start.elapsed()),
-            ));
-            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                self.checkin_connection(pool_key, conn);
+            match Self::send_on_connection(&mut conn, request, original_uri.clone()).await {
+                Ok(mut resp) => {
+                    let transfer = transfer_start.elapsed();
+                    resp.set_remote_addr(conn.remote_addr);
+                    resp.set_tls_info(conn.tls_info.clone());
+                    resp.set_timings(Some(
+                        TimingCollector::default()
+                            .into_timings(Some(transfer), request_start.elapsed()),
+                    ));
+                    if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                        self.checkin_connection(pool_key, conn);
+                    }
+                    return Ok(resp);
+                }
+                Err(e) if saved_parts.is_some() && Self::is_stale_connection_error(&e) => {
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        host = authority.host(),
+                        error = %e,
+                        "connection.pool.stale — retrying on fresh connection"
+                    );
+                    let (method, uri, headers, version) = saved_parts.unwrap();
+                    let empty: AioductBody = http_body_util::Full::new(bytes::Bytes::new())
+                        .map_err(|never| match never {})
+                        .boxed_unsync();
+                    let mut retry_req = http::Request::new(empty);
+                    *retry_req.method_mut() = method;
+                    *retry_req.uri_mut() = uri;
+                    *retry_req.headers_mut() = headers;
+                    *retry_req.version_mut() = version;
+                    request = retry_req;
+                }
+                Err(e) => return Err(e),
             }
-            return Ok(resp);
         }
 
         // Connection coalescing: try to reuse an h2/h3 connection whose TLS cert
@@ -122,20 +162,52 @@ impl<R: Runtime> Client<R> {
                 #[cfg(feature = "tracing")]
                 tracing::trace!(host = authority.host(), "connection.pool.coalesced");
 
+                let saved_parts = if can_stale_retry {
+                    Some((
+                        request.method().clone(),
+                        request.uri().clone(),
+                        request.headers().clone(),
+                        request.version(),
+                    ))
+                } else {
+                    None
+                };
+
                 let transfer_start = Instant::now();
-                let mut resp =
-                    Self::send_on_connection(&mut conn, request, original_uri.clone()).await?;
-                let transfer = transfer_start.elapsed();
-                resp.set_remote_addr(conn.remote_addr);
-                resp.set_tls_info(conn.tls_info.clone());
-                resp.set_timings(Some(
-                    TimingCollector::default()
-                        .into_timings(Some(transfer), request_start.elapsed()),
-                ));
-                if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                    self.checkin_connection(pool_key, conn);
+                match Self::send_on_connection(&mut conn, request, original_uri.clone()).await {
+                    Ok(mut resp) => {
+                        let transfer = transfer_start.elapsed();
+                        resp.set_remote_addr(conn.remote_addr);
+                        resp.set_tls_info(conn.tls_info.clone());
+                        resp.set_timings(Some(
+                            TimingCollector::default()
+                                .into_timings(Some(transfer), request_start.elapsed()),
+                        ));
+                        if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                            self.checkin_connection(pool_key, conn);
+                        }
+                        return Ok(resp);
+                    }
+                    Err(e) if saved_parts.is_some() && Self::is_stale_connection_error(&e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!(
+                            host = authority.host(),
+                            error = %e,
+                            "connection.pool.coalesced.stale — retrying on fresh connection"
+                        );
+                        let (method, uri, headers, version) = saved_parts.unwrap();
+                        let empty: AioductBody = http_body_util::Full::new(bytes::Bytes::new())
+                            .map_err(|never| match never {})
+                            .boxed_unsync();
+                        let mut retry_req = http::Request::new(empty);
+                        *retry_req.method_mut() = method;
+                        *retry_req.uri_mut() = uri;
+                        *retry_req.headers_mut() = headers;
+                        *retry_req.version_mut() = version;
+                        request = retry_req;
+                    }
+                    Err(e) => return Err(e),
                 }
-                return Ok(resp);
             }
         }
 
@@ -429,5 +501,34 @@ impl<R: Runtime> Client<R> {
         }
 
         result
+    }
+
+    fn is_stale_connection_error(err: &Error) -> bool {
+        match err {
+            Error::Hyper(e) => {
+                if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
+                    return true;
+                }
+                // Hyper wraps IO errors (ConnectionReset, BrokenPipe) when the
+                // underlying socket fails mid-send on a reused connection.
+                use std::error::Error as _;
+                if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
+                    return matches!(
+                        io_err.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionAborted
+                    );
+                }
+                false
+            }
+            Error::Io(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionAborted
+            ),
+            _ => false,
+        }
     }
 }
