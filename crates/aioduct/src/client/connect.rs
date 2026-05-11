@@ -4,43 +4,48 @@ use std::pin::Pin;
 use crate::error::Error;
 use crate::pool::PooledConnection;
 use crate::proxy::ProxyConfig;
-use crate::runtime::Runtime;
+use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 
-use super::Client;
+use super::HttpEngine;
 
-impl<R: Runtime> Client<R> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     pub(super) async fn connect_via_proxy(
         &self,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
-    ) -> Result<PooledConnection<R>, Error> {
+    ) -> Result<PooledConnection, Error> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
         let proxy_addr = self
             .resolve_authority(proxy_authority, default_port)
             .await?;
         let mut tcp_stream = if let Some(local_addr) = self.local_address {
-            R::connect_bound(proxy_addr, local_addr)
+            self.connector
+                .connect_bound(proxy_addr, local_addr)
                 .await
                 .map_err(Error::Io)?
         } else {
-            R::connect(proxy_addr).await?
+            self.connector
+                .connect(proxy_addr)
+                .await
+                .map_err(Error::Io)?
         };
         #[cfg(target_os = "linux")]
         if let Some(ref iface) = self.interface {
-            R::bind_device(&tcp_stream, iface)?;
+            tcp_stream.bind_device(iface).map_err(Error::Io)?;
         }
         if let Some(time) = self.tcp_keepalive {
-            R::set_tcp_keepalive(
-                &tcp_stream,
-                time,
-                self.tcp_keepalive_interval,
-                self.tcp_keepalive_retries,
-            )?;
+            tcp_stream
+                .set_keepalive(
+                    time,
+                    self.tcp_keepalive_interval,
+                    self.tcp_keepalive_retries,
+                )
+                .map_err(Error::Io)?;
         }
         if self.tcp_fast_open {
-            let _ = R::set_tcp_fast_open(&tcp_stream);
+            let _ = tcp_stream.set_fast_open();
         }
 
         if proxy.scheme == crate::proxy::ProxyScheme::Socks5 {
@@ -79,10 +84,10 @@ impl<R: Runtime> Client<R> {
 
     async fn connect_tunnel(
         &self,
-        mut tcp_stream: R::TcpStream,
+        mut tcp_stream: C::Stream,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
-    ) -> Result<PooledConnection<R>, Error> {
+    ) -> Result<PooledConnection, Error> {
         use hyper::rt::{Read, Write};
 
         let target = target_authority.as_str();
@@ -145,7 +150,7 @@ impl<R: Runtime> Client<R> {
     pub(super) fn connect_plaintext<S>(
         &self,
         stream: S,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<R>, Error>> + Send + '_>>
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection, Error>> + Send + '_>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -156,7 +161,7 @@ impl<R: Runtime> Client<R> {
         &self,
         stream: S,
         force_h2c: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<R>, Error>> + Send + '_>>
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection, Error>> + Send + '_>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -167,12 +172,12 @@ impl<R: Runtime> Client<R> {
         }
     }
 
-    pub(super) async fn connect_h1<S>(&self, stream: S) -> Result<PooledConnection<R>, Error>
+    pub(super) async fn connect_h1<S>(&self, stream: S) -> Result<PooledConnection, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
         let (sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
-        R::spawn(async move {
+        R::spawn_send(async move {
             let _ = conn.with_upgrades().await;
         });
         Ok(PooledConnection::new_h1(sender))
@@ -181,17 +186,18 @@ impl<R: Runtime> Client<R> {
     pub(super) async fn connect_h2_prior_knowledge<S>(
         &self,
         stream: S,
-    ) -> Result<PooledConnection<R>, Error>
+    ) -> Result<PooledConnection, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
-        let mut builder =
-            hyper::client::conn::http2::Builder::new(crate::runtime::hyper_executor::<R>());
+        let mut builder = hyper::client::conn::http2::Builder::new(
+            crate::runtime::executor::poll_executor::<R>(),
+        );
         if let Some(ref h2) = self.http2 {
             h2.apply(&mut builder);
         }
         let (sender, conn) = builder.handshake(stream).await?;
-        R::spawn(async move {
+        R::spawn_send(async move {
             let _ = conn.await;
         });
         Ok(PooledConnection::new_h2(sender))
@@ -200,9 +206,9 @@ impl<R: Runtime> Client<R> {
     #[cfg(feature = "rustls")]
     pub(super) async fn connect_tls(
         &self,
-        tcp_stream: R::TcpStream,
+        tcp_stream: C::Stream,
         host: &str,
-    ) -> Result<PooledConnection<R>, Error> {
+    ) -> Result<PooledConnection, Error> {
         use crate::tls::TlsConnect;
         use std::time::Instant;
 
@@ -216,7 +222,7 @@ impl<R: Runtime> Client<R> {
             .as_ref()
             .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
 
-        let tls_stream = <crate::tls::RustlsConnector as TlsConnect<R>>::connect(
+        let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
             tls_connector,
             host,
             tcp_stream,
@@ -242,13 +248,14 @@ impl<R: Runtime> Client<R> {
 
         match alpn {
             Some(crate::tls::AlpnProtocol::H2) => {
-                let mut builder =
-                    hyper::client::conn::http2::Builder::new(crate::runtime::hyper_executor::<R>());
+                let mut builder = hyper::client::conn::http2::Builder::new(
+                    crate::runtime::executor::poll_executor::<R>(),
+                );
                 if let Some(ref h2) = self.http2 {
                     h2.apply(&mut builder);
                 }
                 let (sender, conn) = builder.handshake(tls_stream).await?;
-                R::spawn(async move {
+                R::spawn_send(async move {
                     let _ = conn.await;
                 });
                 let mut pooled = PooledConnection::new_h2(sender);
@@ -258,7 +265,7 @@ impl<R: Runtime> Client<R> {
             }
             _ => {
                 let (sender, conn) = hyper::client::conn::http1::handshake(tls_stream).await?;
-                R::spawn(async move {
+                R::spawn_send(async move {
                     let _ = conn.await;
                 });
                 let mut pooled = PooledConnection::new_h1(sender);
@@ -272,9 +279,9 @@ impl<R: Runtime> Client<R> {
     #[cfg(not(feature = "rustls"))]
     pub(super) async fn connect_tls(
         &self,
-        _tcp_stream: R::TcpStream,
+        _tcp_stream: C::Stream,
         _host: &str,
-    ) -> Result<PooledConnection<R>, Error> {
+    ) -> Result<PooledConnection, Error> {
         Err(Error::Tls(
             "HTTPS requires the `rustls` TLS backend feature".into(),
         ))

@@ -7,31 +7,31 @@ use http_body_util::BodyExt;
 use crate::error::{AioductBody, Error};
 use crate::pool::PooledConnection;
 use crate::response::Response;
-use crate::runtime::Runtime;
+use crate::runtime::RuntimePoll;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-pub(crate) async fn connect_h3<R: Runtime>(
+pub(crate) async fn connect_h3<R: RuntimePoll>(
     quinn_conn: quinn::Connection,
-) -> Result<PooledConnection<R>, Error> {
+) -> Result<PooledConnection, Error> {
     let h3_conn = h3_quinn::Connection::new(quinn_conn);
     let (mut driver, send_request) = h3::client::new(h3_conn)
         .await
         .map_err(|e| Error::Other(Box::new(e)))?;
 
-    R::spawn(async move {
+    R::spawn_send(async move {
         let _ = futures_util::future::poll_fn(|cx| driver.poll_close(cx)).await;
     });
 
     Ok(PooledConnection::new_h3(send_request))
 }
 
-pub(crate) async fn connect_h3_addrs<R: Runtime>(
+pub(crate) async fn connect_h3_addrs<R: RuntimePoll>(
     endpoint: &quinn::Endpoint,
     addrs: &[SocketAddr],
     server_name: &str,
     local_address: Option<IpAddr>,
-) -> Result<(PooledConnection<R>, SocketAddr), Error> {
+) -> Result<(PooledConnection, SocketAddr), Error> {
     let endpoint_addr = endpoint.local_addr().map_err(Error::Io)?;
     let addrs = ordered_h3_addrs(addrs, local_address, endpoint_addr.ip());
     if addrs.is_empty() {
@@ -60,12 +60,12 @@ pub(crate) async fn connect_h3_addrs<R: Runtime>(
 /// Attempt 0-RTT connection to the first compatible address, falling back to full handshake.
 ///
 /// Returns the pooled connection and whether 0-RTT was used.
-pub(crate) async fn connect_h3_addrs_0rtt<R: Runtime>(
+pub(crate) async fn connect_h3_addrs_0rtt<R: RuntimePoll>(
     endpoint: &quinn::Endpoint,
     addrs: &[SocketAddr],
     server_name: &str,
     local_address: Option<IpAddr>,
-) -> Result<(PooledConnection<R>, SocketAddr, bool), Error> {
+) -> Result<(PooledConnection, SocketAddr, bool), Error> {
     let endpoint_addr = endpoint.local_addr().map_err(Error::Io)?;
     let addrs = ordered_h3_addrs(addrs, local_address, endpoint_addr.ip());
     if addrs.is_empty() {

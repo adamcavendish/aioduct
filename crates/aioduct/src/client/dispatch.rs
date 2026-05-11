@@ -7,15 +7,15 @@ use http_body_util::BodyExt;
 use crate::error::{AioductBody, Error};
 use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
 use crate::response::Response;
-use crate::runtime::Runtime;
+use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 use crate::timing::TimingCollector;
 
-use super::Client;
+use super::HttpEngine;
 
-impl<R: Runtime> Client<R> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     /// Populate SANs on a connection before returning it to the pool.
     #[cfg(feature = "rustls")]
-    fn populate_sans(conn: &mut PooledConnection<R>) {
+    fn populate_sans(conn: &mut PooledConnection) {
         if conn.is_h2_or_h3()
             && conn.sans.is_empty()
             && let Some(der) = conn.tls_info.as_ref().and_then(|t| t.peer_certificate())
@@ -25,9 +25,9 @@ impl<R: Runtime> Client<R> {
     }
 
     #[cfg(not(feature = "rustls"))]
-    fn populate_sans(_conn: &mut PooledConnection<R>) {}
+    fn populate_sans(_conn: &mut PooledConnection) {}
 
-    fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection<R>) {
+    fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection) {
         Self::populate_sans(&mut conn);
         self.pool.checkin(key, conn);
     }
@@ -286,12 +286,32 @@ impl<R: Runtime> Client<R> {
 
         let mut pooled = if let Some(unix_path) = unix_socket {
             let _ = &proxy; // suppress unused warning when unix_socket is set
+            let _ = unix_path; // suppress unused warning during v0.2 migration
             #[cfg(unix)]
             {
+                #[allow(unreachable_code)]
                 let connect_fut = async {
-                    let unix_stream = R::connect_unix(unix_path).await.map_err(Error::Io)?;
-                    self.connect_plaintext_with_hint(unix_stream, force_h2c)
-                        .await
+                    #[cfg(feature = "tokio")]
+                    {
+                        let std_stream = std::os::unix::net::UnixStream::connect(unix_path)
+                            .map_err(Error::Io)?;
+                        std_stream.set_nonblocking(true).map_err(Error::Io)?;
+                        let unix_stream =
+                            tokio::net::UnixStream::from_std(std_stream).map_err(Error::Io)?;
+                        let io = crate::runtime::tokio_rt::TokioIo::new(unix_stream);
+                        return self.connect_plaintext_with_hint(io, force_h2c).await;
+                    }
+                    #[cfg(feature = "smol")]
+                    {
+                        let unix_stream = smol::net::unix::UnixStream::connect(unix_path)
+                            .await
+                            .map_err(Error::Io)?;
+                        let io = crate::runtime::smol_rt::SmolIo::new(unix_stream);
+                        return self.connect_plaintext_with_hint(io, force_h2c).await;
+                    }
+                    Err::<PooledConnection, Error>(Error::Other(
+                        "unix socket support requires tokio or smol feature".into(),
+                    ))
                 };
                 match self.connect_timeout {
                     Some(duration) => {
@@ -333,46 +353,48 @@ impl<R: Runtime> Client<R> {
                 let (tcp_stream, addr) = if addrs.len() > 1 && local_address.is_none() {
                     #[cfg(feature = "tower")]
                     let _ = original_uri;
-                    crate::happy_eyeballs::connect_happy_eyeballs::<R>(&addrs, local_address)
-                        .await
-                        .map_err(Error::Io)?
+                    crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
+                        &self.connector,
+                        &addrs,
+                        local_address,
+                    )
+                    .await
+                    .map_err(Error::Io)?
                 } else {
                     let addr = addrs[0];
                     let stream = if let Some(local_addr) = local_address {
-                        R::connect_bound(addr, local_addr)
+                        self.connector
+                            .connect_bound(addr, local_addr)
                             .await
                             .map_err(Error::Io)?
                     } else {
                         #[cfg(feature = "tower")]
-                        if let Some(ref connector) = self.connector {
+                        if let Some(ref tower_conn) = self.tower_connector {
                             let info = crate::connector::ConnectInfo {
                                 uri: original_uri.clone(),
                                 addr,
                             };
-                            connector.connect(info).await.map_err(Error::Io)?
+                            tower_conn.connect(info).await.map_err(Error::Io)?
                         } else {
-                            R::connect(addr).await?
+                            self.connector.connect(addr).await.map_err(Error::Io)?
                         }
                         #[cfg(not(feature = "tower"))]
-                        R::connect(addr).await?
+                        self.connector.connect(addr).await.map_err(Error::Io)?
                     };
                     (stream, addr)
                 };
 
                 #[cfg(target_os = "linux")]
                 if let Some(iface) = interface {
-                    R::bind_device(&tcp_stream, iface)?;
+                    tcp_stream.bind_device(iface).map_err(Error::Io)?;
                 }
                 if let Some(time) = tcp_keepalive {
-                    R::set_tcp_keepalive(
-                        &tcp_stream,
-                        time,
-                        tcp_keepalive_interval,
-                        tcp_keepalive_retries,
-                    )?;
+                    tcp_stream
+                        .set_keepalive(time, tcp_keepalive_interval, tcp_keepalive_retries)
+                        .map_err(Error::Io)?;
                 }
                 if tcp_fast_open {
-                    let _ = R::set_tcp_fast_open(&tcp_stream);
+                    let _ = tcp_stream.set_fast_open();
                 }
                 #[cfg(feature = "tracing")]
                 tracing::trace!(addr = %addr, "tcp.connect.done");
@@ -400,7 +422,8 @@ impl<R: Runtime> Client<R> {
                         None => {
                             self.h2c_probe_cache.record_h1_only(authority.clone());
                             let stream2 = if addrs.len() > 1 && local_address.is_none() {
-                                crate::happy_eyeballs::connect_happy_eyeballs::<R>(
+                                crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
+                                    &self.connector,
                                     &addrs,
                                     local_address,
                                 )
@@ -408,7 +431,7 @@ impl<R: Runtime> Client<R> {
                                 .map_err(Error::Io)?
                                 .0
                             } else {
-                                R::connect(addrs[0]).await?
+                                self.connector.connect(addrs[0]).await.map_err(Error::Io)?
                             };
                             self.connect_h1(stream2).await?
                         }
@@ -418,7 +441,7 @@ impl<R: Runtime> Client<R> {
                         .await?
                 };
                 conn.remote_addr = Some(addr);
-                Ok::<(PooledConnection<R>, Instant), Error>((conn, Instant::now()))
+                Ok::<(PooledConnection, Instant), Error>((conn, Instant::now()))
             };
 
             let (conn, connect_done) = match self.connect_timeout {
@@ -468,7 +491,7 @@ impl<R: Runtime> Client<R> {
     }
 
     pub(super) async fn send_on_connection(
-        conn: &mut PooledConnection<R>,
+        conn: &mut PooledConnection,
         request: http::Request<AioductBody>,
         url: Uri,
     ) -> Result<Response, Error> {
