@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 use std::net::SocketAddr;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::runtime::Runtime;
@@ -80,6 +81,11 @@ impl<R: Runtime> PooledConnection<R> {
         }
     }
 
+    /// Returns true if this is an HTTP/1.1 connection.
+    pub(crate) fn is_h1(&self) -> bool {
+        matches!(&self.conn, HttpConnection::H1(_))
+    }
+
     /// Returns true if this is an HTTP/2 or HTTP/3 multiplexed connection.
     pub(crate) fn is_h2_or_h3(&self) -> bool {
         match &self.conn {
@@ -87,6 +93,26 @@ impl<R: Runtime> PooledConnection<R> {
             HttpConnection::H2(_) => true,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(_) => true,
+        }
+    }
+
+    /// Poll the H1 sender for readiness. Returns `Poll::Ready(true)` when
+    /// the connection is ready for a new request, or `Poll::Ready(false)` if
+    /// the connection has been closed/errored. For H2/H3 this always returns
+    /// `Poll::Ready(true)` immediately.
+    pub(crate) fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
+        match &mut self.conn {
+            HttpConnection::H1(s) => match s.poll_ready(cx) {
+                Poll::Ready(Ok(())) => Poll::Ready(true),
+                Poll::Ready(Err(_)) => Poll::Ready(false),
+                Poll::Pending => Poll::Pending,
+            },
+            HttpConnection::H2(s) => {
+                let _ = s;
+                Poll::Ready(true)
+            }
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => Poll::Ready(true),
         }
     }
 }
