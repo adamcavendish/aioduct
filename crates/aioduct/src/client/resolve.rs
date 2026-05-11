@@ -1,9 +1,9 @@
 use crate::error::Error;
-use crate::runtime::Runtime;
+use crate::runtime::{ConnectorSend, RuntimePoll};
 
-use super::Client;
+use super::HttpEngine;
 
-impl<R: Runtime> Client<R> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     pub(super) async fn resolve_authority(
         &self,
         authority: &http::uri::Authority,
@@ -42,9 +42,9 @@ impl<R: Runtime> Client<R> {
                 .await
                 .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
         } else {
-            R::resolve_all(host, port)
-                .await
-                .map_err(|e| Error::InvalidUrl(format!("cannot resolve {host}:{port}: {e}")))
+            Err(Error::InvalidUrl(format!(
+                "no DNS resolver configured for {host}:{port} — use .resolver() on the builder"
+            )))
         };
 
         #[cfg(feature = "tracing")]

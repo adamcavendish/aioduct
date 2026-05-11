@@ -4,14 +4,15 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::runtime::Runtime;
+use crate::runtime::{ConnectorSend, RuntimePoll};
 
 const HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(250);
 
-pub(crate) async fn connect_happy_eyeballs<R: Runtime>(
+pub(crate) async fn connect_happy_eyeballs<R: RuntimePoll, C: ConnectorSend>(
+    connector: &C,
     addrs: &[SocketAddr],
     local_address: Option<std::net::IpAddr>,
-) -> io::Result<(R::TcpStream, SocketAddr)> {
+) -> io::Result<(C::Stream, SocketAddr)> {
     if addrs.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -20,12 +21,12 @@ pub(crate) async fn connect_happy_eyeballs<R: Runtime>(
     }
 
     if addrs.len() == 1 {
-        let stream = connect_one::<R>(addrs[0], local_address).await?;
+        let stream = connect_one::<C>(connector, addrs[0], local_address).await?;
         return Ok((stream, addrs[0]));
     }
 
     let interleaved = interleave_addrs(addrs);
-    race_connect::<R>(&interleaved, local_address).await
+    race_connect::<R, C>(connector, &interleaved, local_address).await
 }
 
 fn interleave_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
@@ -49,22 +50,23 @@ fn interleave_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
     result
 }
 
-async fn race_connect<R: Runtime>(
+async fn race_connect<R: RuntimePoll, C: ConnectorSend>(
+    connector: &C,
     addrs: &[SocketAddr],
     local_address: Option<std::net::IpAddr>,
-) -> io::Result<(R::TcpStream, SocketAddr)> {
+) -> io::Result<(C::Stream, SocketAddr)> {
     let mut last_err = io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses");
 
     for (i, &addr) in addrs.iter().enumerate() {
         let is_last = i == addrs.len() - 1;
 
         if is_last {
-            match connect_one::<R>(addr, local_address).await {
+            match connect_one::<C>(connector, addr, local_address).await {
                 Ok(stream) => return Ok((stream, addr)),
                 Err(e) => last_err = e,
             }
         } else {
-            match connect_with_deadline::<R>(addr, local_address).await {
+            match connect_with_deadline::<R, C>(connector, addr, local_address).await {
                 ConnectResult::Connected(stream) => return Ok((stream, addr)),
                 ConnectResult::Failed(e) => last_err = e,
                 ConnectResult::DeadlineReached => {}
@@ -81,28 +83,33 @@ enum ConnectResult<T> {
     DeadlineReached,
 }
 
-async fn connect_with_deadline<R: Runtime>(
+async fn connect_with_deadline<R: RuntimePoll, C: ConnectorSend>(
+    connector: &C,
     addr: SocketAddr,
     local_address: Option<std::net::IpAddr>,
-) -> ConnectResult<R::TcpStream> {
-    SelectConnect::<R> {
-        connect: Box::pin(connect_one::<R>(addr, local_address)),
+) -> ConnectResult<C::Stream> {
+    let connector_clone = connector.clone();
+    SelectConnect::<C> {
+        connect: Box::pin(
+            async move { connect_one::<C>(&connector_clone, addr, local_address).await },
+        ),
         sleep: Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY)),
         done: false,
     }
     .await
 }
 
-struct SelectConnect<R: Runtime> {
-    connect: Pin<Box<dyn std::future::Future<Output = io::Result<R::TcpStream>> + Send>>,
+struct SelectConnect<C: ConnectorSend> {
+    connect: Pin<Box<dyn std::future::Future<Output = io::Result<C::Stream>> + Send>>,
     sleep: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     done: bool,
 }
 
-impl<R: Runtime> std::future::Future for SelectConnect<R> {
-    type Output = ConnectResult<R::TcpStream>;
+impl<C: ConnectorSend> std::future::Future for SelectConnect<C> {
+    type Output = ConnectResult<C::Stream>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: we never move fields out of `self`; only poll pinned sub-futures in place.
         let this = unsafe { self.get_unchecked_mut() };
 
         if this.done {
@@ -126,14 +133,15 @@ impl<R: Runtime> std::future::Future for SelectConnect<R> {
     }
 }
 
-async fn connect_one<R: Runtime>(
+async fn connect_one<C: ConnectorSend>(
+    connector: &C,
     addr: SocketAddr,
     local_address: Option<std::net::IpAddr>,
-) -> io::Result<R::TcpStream> {
+) -> io::Result<C::Stream> {
     if let Some(local) = local_address {
-        R::connect_bound(addr, local).await
+        connector.connect_bound(addr, local).await
     } else {
-        R::connect(addr).await
+        connector.connect(addr).await
     }
 }
 
@@ -249,8 +257,10 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn connect_empty_addrs_errors() {
-        use crate::runtime::TokioRuntime;
-        let result = connect_happy_eyeballs::<TokioRuntime>(&[], None).await;
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+        let connector = TcpConnector;
+        let result =
+            connect_happy_eyeballs::<TokioRuntime, TcpConnector>(&connector, &[], None).await;
         let err = result.err().expect("should be an error");
         assert_eq!(err.kind(), io::ErrorKind::AddrNotAvailable);
     }
@@ -258,12 +268,14 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn connect_single_addr_succeeds() {
-        use crate::runtime::TokioRuntime;
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+        let connector = TcpConnector;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let (stream, connected_addr) = connect_happy_eyeballs::<TokioRuntime>(&[addr], None)
-            .await
-            .unwrap();
+        let (stream, connected_addr) =
+            connect_happy_eyeballs::<TokioRuntime, TcpConnector>(&connector, &[addr], None)
+                .await
+                .unwrap();
         assert_eq!(connected_addr, addr);
         drop(stream);
     }
@@ -271,14 +283,18 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn connect_multi_addrs_first_succeeds() {
-        use crate::runtime::TokioRuntime;
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+        let connector = TcpConnector;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let good_addr = listener.local_addr().unwrap();
         let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let (stream, connected_addr) =
-            connect_happy_eyeballs::<TokioRuntime>(&[good_addr, bad_addr], None)
-                .await
-                .unwrap();
+        let (stream, connected_addr) = connect_happy_eyeballs::<TokioRuntime, TcpConnector>(
+            &connector,
+            &[good_addr, bad_addr],
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(connected_addr, good_addr);
         drop(stream);
     }
@@ -286,14 +302,18 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn connect_multi_addrs_second_succeeds() {
-        use crate::runtime::TokioRuntime;
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+        let connector = TcpConnector;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let good_addr = listener.local_addr().unwrap();
         let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let (stream, connected_addr) =
-            connect_happy_eyeballs::<TokioRuntime>(&[bad_addr, good_addr], None)
-                .await
-                .unwrap();
+        let (stream, connected_addr) = connect_happy_eyeballs::<TokioRuntime, TcpConnector>(
+            &connector,
+            &[bad_addr, good_addr],
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(connected_addr, good_addr);
         drop(stream);
     }
@@ -301,10 +321,13 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn connect_all_fail() {
-        use crate::runtime::TokioRuntime;
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+        let connector = TcpConnector;
         let bad1: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let bad2: SocketAddr = "127.0.0.1:2".parse().unwrap();
-        let result = connect_happy_eyeballs::<TokioRuntime>(&[bad1, bad2], None).await;
+        let result =
+            connect_happy_eyeballs::<TokioRuntime, TcpConnector>(&connector, &[bad1, bad2], None)
+                .await;
         assert!(result.is_err());
     }
 }

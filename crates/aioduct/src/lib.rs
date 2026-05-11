@@ -62,6 +62,8 @@ pub mod sse;
 pub mod throttle;
 /// Per-request timing breakdown (DNS, TCP, TLS, TTFB).
 pub mod timing;
+/// Consumer-facing client trait and extension traits.
+pub mod traits;
 
 /// RFC 9457 Problem Details for HTTP APIs.
 #[cfg(feature = "json")]
@@ -161,6 +163,7 @@ pub use retry::{RetryBudget, RetryConfig};
 pub use sse::{SseDecoder, SseEvent, SseMessage, SseStream};
 pub use throttle::RateLimiter;
 pub use timing::RequestTimings;
+pub use traits::{HttpClient, RequestBuilderExt, ResponseExt};
 
 #[cfg(feature = "json")]
 pub use problem::ProblemDetails;
@@ -170,7 +173,10 @@ pub use problem::ProblemDetails;
 #[cfg(not(target_arch = "wasm32"))]
 pub use chunk_download::ChunkDownload;
 #[cfg(not(target_arch = "wasm32"))]
-pub use client::Client;
+pub use client::HttpEngine;
+#[cfg(not(target_arch = "wasm32"))]
+pub use client::HttpEngineBuilder;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use forward::ForwardBuilder;
 #[cfg(feature = "hickory-dns")]
@@ -180,9 +186,36 @@ pub use request::RequestBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 pub use response::Response;
 #[cfg(not(target_arch = "wasm32"))]
-pub use runtime::{Resolve, Runtime};
+#[allow(deprecated)]
+pub use runtime::Runtime;
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::{
+    Connector, ConnectorSend, Resolve, RuntimeCompletion, RuntimeLocal, RuntimePoll, SocketConfig,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use traits::OwnedRequestBuilder;
+#[cfg(feature = "wasi-p2")]
+pub use traits::OwnedWasiRequestBuilder;
+#[cfg(feature = "wasm")]
+pub use traits::OwnedWasmRequestBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 pub use upgrade::Upgraded;
+
+/// Convenience alias for [`HttpEngine`] using the Tokio runtime.
+#[cfg(feature = "tokio")]
+pub type TokioClient = HttpEngine<runtime::tokio_rt::TokioRuntime, runtime::tokio_rt::TcpConnector>;
+
+/// Alias for [`TokioClient`].
+#[cfg(feature = "tokio")]
+pub type TokioEngine = TokioClient;
+
+/// Convenience alias for [`HttpEngine`] using the smol runtime.
+#[cfg(feature = "smol")]
+pub type SmolClient = HttpEngine<runtime::smol_rt::SmolRuntime, runtime::smol_rt::TcpConnector>;
+
+/// Alias for [`SmolClient`].
+#[cfg(feature = "smol")]
+pub type SmolEngine = SmolClient;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use tls::TlsInfo;
@@ -205,8 +238,8 @@ pub mod __bench {
     use crate::runtime::TokioRuntime;
     use http::uri::{Authority, Scheme};
 
-    pub struct BenchPool(ConnectionPool<TokioRuntime>);
-    pub struct BenchConn(Option<PooledConnection<TokioRuntime>>);
+    pub struct BenchPool(ConnectionPool);
+    pub struct BenchConn(Option<PooledConnection>);
     pub struct BenchKey(PoolKey);
 
     pub fn new_pool(max_idle: usize, timeout: Duration) -> BenchPool {
@@ -221,7 +254,7 @@ pub mod __bench {
             use hyper::server::conn::http2::Builder;
             use hyper::service::service_fn;
             let io = TokioIo::new(server_io);
-            let _ = Builder::new(crate::runtime::hyper_executor::<TokioRuntime>())
+            let _ = Builder::new(crate::runtime::executor::poll_executor::<TokioRuntime>())
                 .serve_connection(
                     io,
                     service_fn(|_req| async {
@@ -235,7 +268,7 @@ pub mod __bench {
 
         let io = TokioIo::new(client_io);
         let (sender, conn) = hyper::client::conn::http2::handshake(
-            crate::runtime::hyper_executor::<TokioRuntime>(),
+            crate::runtime::executor::poll_executor::<TokioRuntime>(),
             io,
         )
         .await

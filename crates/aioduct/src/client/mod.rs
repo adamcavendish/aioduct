@@ -4,7 +4,7 @@ mod dispatch;
 mod execute;
 mod resolve;
 
-pub use builder::ClientBuilder;
+pub use builder::HttpEngineBuilder;
 
 use std::marker::PhantomData;
 use std::net::IpAddr;
@@ -29,13 +29,14 @@ use crate::proxy::ProxySettings;
 use crate::redirect::RedirectPolicy;
 use crate::request::RequestBuilder;
 use crate::retry::RetryConfig;
-use crate::runtime::{Resolve, Runtime};
+use crate::runtime::{ConnectorSend, Resolve, RuntimePoll};
 
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
 /// HTTP client with connection pooling, TLS, and automatic redirect handling.
-pub struct Client<R: Runtime> {
-    pub(crate) pool: ConnectionPool<R>,
+pub struct HttpEngine<R: RuntimePoll, C: ConnectorSend> {
+    pub(crate) pool: ConnectionPool,
+    pub(crate) connector: C,
     pub(crate) redirect_policy: RedirectPolicy,
     pub(crate) timeout: Option<Duration>,
     pub(crate) connect_timeout: Option<Duration>,
@@ -69,7 +70,7 @@ pub struct Client<R: Runtime> {
     pub(crate) h2c_probe_cache: H2cProbeCache,
     pub(crate) connection_coalescing: bool,
     #[cfg(feature = "tower")]
-    pub(crate) connector: Option<crate::connector::LayeredConnector<R>>,
+    pub(crate) tower_connector: Option<crate::connector::LayeredConnector<C>>,
     #[cfg(feature = "rustls")]
     pub(crate) tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -80,13 +81,14 @@ pub struct Client<R: Runtime> {
     pub(crate) h3_zero_rtt: bool,
     #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) alt_svc_cache: crate::alt_svc::AltSvcCache,
-    pub(crate) _runtime: PhantomData<R>,
+    pub(crate) _phantom: PhantomData<(R, C)>,
 }
 
-impl<R: Runtime> Clone for Client<R> {
+impl<R: RuntimePoll, C: ConnectorSend> Clone for HttpEngine<R, C> {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
+            connector: self.connector.clone(),
             redirect_policy: self.redirect_policy.clone(),
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
@@ -120,7 +122,7 @@ impl<R: Runtime> Clone for Client<R> {
             h2c_probe_cache: self.h2c_probe_cache.clone(),
             connection_coalescing: self.connection_coalescing,
             #[cfg(feature = "tower")]
-            connector: self.connector.clone(),
+            tower_connector: self.tower_connector.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -131,54 +133,54 @@ impl<R: Runtime> Clone for Client<R> {
             h3_zero_rtt: self.h3_zero_rtt,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             alt_svc_cache: self.alt_svc_cache.clone(),
-            _runtime: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<R: Runtime> std::fmt::Debug for Client<R> {
+impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for HttpEngine<R, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Client").finish()
+        f.debug_struct("HttpEngine").finish()
     }
 }
 
-impl<R: Runtime> Default for Client<R> {
+impl<R: RuntimePoll, C: ConnectorSend + Default> Default for HttpEngine<R, C> {
     fn default() -> Self {
-        Self::new()
+        Self::new(C::default())
     }
 }
 
-impl<R: Runtime> Client<R> {
-    /// Create a new [`ClientBuilder`] with default settings.
-    pub fn builder() -> ClientBuilder<R> {
-        ClientBuilder::default()
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
+    /// Create a new [`HttpEngineBuilder`] with default settings.
+    pub fn builder(connector: C) -> HttpEngineBuilder<R, C> {
+        HttpEngineBuilder::new(connector)
     }
 
     /// Create a new client with default settings.
-    pub fn new() -> Self {
-        Self::builder().build()
+    pub fn new(connector: C) -> Self {
+        Self::builder(connector).build()
     }
 
     #[cfg(feature = "rustls")]
     /// Create a client with rustls TLS using WebPKI root certificates.
-    pub fn with_rustls() -> Self {
-        Self::builder()
+    pub fn with_rustls(connector: C) -> Self {
+        Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .build()
     }
 
     #[cfg(feature = "rustls-native-roots")]
     /// Create a client with rustls TLS using the system's native root certificates.
-    pub fn with_native_roots() -> Self {
-        Self::builder()
+    pub fn with_native_roots(connector: C) -> Self {
+        Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_native_roots())
             .build()
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Create a client configured for HTTP/3 with rustls.
-    pub fn with_http3() -> Self {
-        Self::builder()
+    pub fn with_http3(connector: C) -> Self {
+        Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .http3(true)
             .build()
@@ -186,57 +188,57 @@ impl<R: Runtime> Client<R> {
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Create a client that upgrades to HTTP/3 via Alt-Svc discovery.
-    pub fn with_alt_svc_h3() -> Self {
-        Self::builder()
+    pub fn with_alt_svc_h3(connector: C) -> Self {
+        Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .alt_svc_h3(true)
             .build()
     }
 
     /// Start a GET request to the given URL.
-    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
+    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::GET, uri))
     }
 
     /// Start a HEAD request to the given URL.
-    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
+    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::HEAD, uri))
     }
 
     /// Start a POST request to the given URL.
-    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
+    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::POST, uri))
     }
 
     /// Start a PUT request to the given URL.
-    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
+    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::PUT, uri))
     }
 
     /// Start a PATCH request to the given URL.
-    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
+    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::PATCH, uri))
     }
 
     /// Start a DELETE request to the given URL.
-    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
+    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, Method::DELETE, uri))
     }
 
     /// Start a request with the given method and URL.
-    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R>, Error> {
+    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(RequestBuilder::new(self, method, uri))
     }
 
     /// Start a parallel chunk download for the given URL.
-    pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownload<R> {
+    pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownload<R, C> {
         crate::chunk_download::ChunkDownload::new(self.clone(), url.to_owned())
     }
 
@@ -245,7 +247,10 @@ impl<R: Runtime> Client<R> {
     /// This is the entry point for proxy/gateway use cases. The forwarded request
     /// bypasses all client middleware (redirects, cookies, cache, decompression)
     /// and streams the body directly to the upstream.
-    pub fn forward<B>(&self, request: http::Request<B>) -> crate::forward::ForwardBuilder<'_, R, B>
+    pub fn forward<B>(
+        &self,
+        request: http::Request<B>,
+    ) -> crate::forward::ForwardBuilder<'_, R, C, B>
     where
         B: http_body::Body<Data = Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -265,7 +270,7 @@ impl<R: Runtime> Client<R> {
         &self.middleware
     }
 
-    /// Returns the bandwidth limiter if one was configured via [`ClientBuilder::max_download_speed`].
+    /// Returns the bandwidth limiter if one was configured via [`HttpEngineBuilder::max_download_speed`].
     pub fn bandwidth_limiter(&self) -> Option<&crate::bandwidth::BandwidthLimiter> {
         self.bandwidth_limiter.as_ref()
     }

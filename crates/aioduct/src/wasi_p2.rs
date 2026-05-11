@@ -99,7 +99,7 @@ impl WasiClient {
     pub fn request(&self, method: Method, uri: &str) -> Result<WasiRequestBuilder<'_>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasiRequestBuilder {
-            client: self,
+            client: WasiClientRef::Borrowed(self),
             method,
             uri,
             headers: HeaderMap::new(),
@@ -118,7 +118,7 @@ impl Default for WasiClient {
 /// A request being built before sending.
 #[derive(Debug)]
 pub struct WasiRequestBuilder<'a> {
-    client: &'a WasiClient,
+    client: WasiClientRef<'a>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -126,7 +126,38 @@ pub struct WasiRequestBuilder<'a> {
     timeout: Option<Duration>,
 }
 
+#[derive(Debug)]
+enum WasiClientRef<'a> {
+    Borrowed(&'a WasiClient),
+    Owned(WasiClient),
+}
+
+impl std::ops::Deref for WasiClientRef<'_> {
+    type Target = WasiClient;
+    fn deref(&self) -> &WasiClient {
+        match self {
+            WasiClientRef::Borrowed(r) => r,
+            WasiClientRef::Owned(o) => o,
+        }
+    }
+}
+
 impl<'a> WasiRequestBuilder<'a> {
+    pub(crate) fn new_owned(
+        client: WasiClient,
+        method: Method,
+        uri: Uri,
+    ) -> WasiRequestBuilder<'static> {
+        WasiRequestBuilder {
+            client: WasiClientRef::Owned(client),
+            method,
+            uri,
+            headers: HeaderMap::new(),
+            body: None,
+            timeout: None,
+        }
+    }
+
     /// Set a request header.
     pub fn header(mut self, name: http::header::HeaderName, value: HeaderValue) -> Self {
         self.headers.insert(name, value);

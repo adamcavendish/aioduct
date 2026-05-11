@@ -6,12 +6,12 @@ use http::header::{
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
-use super::Client;
+use super::HttpEngine;
 use crate::body::RequestBody;
 use crate::error::{AioductBody, Error};
 use crate::redirect::{RedirectAction, RedirectPolicy};
 use crate::response::Response;
-use crate::runtime::Runtime;
+use crate::runtime::{ConnectorSend, RuntimePoll};
 
 pub(crate) enum CacheLookupOutcome {
     Fresh(Box<Response>),
@@ -19,7 +19,7 @@ pub(crate) enum CacheLookupOutcome {
     Miss,
 }
 
-impl<R: Runtime> Client<R> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     pub(crate) async fn execute(
         &self,
         method: Method,
