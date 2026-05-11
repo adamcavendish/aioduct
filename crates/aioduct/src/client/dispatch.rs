@@ -27,9 +27,29 @@ impl<R: Runtime> Client<R> {
     #[cfg(not(feature = "rustls"))]
     fn populate_sans(_conn: &mut PooledConnection<R>) {}
 
-    fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection<R>) {
+    /// Check in a connection, deferring for H1 until the response body is
+    /// fully consumed so the connection is genuinely ready for reuse.
+    ///
+    /// For H2/H3 (multiplexed) connections, check-in is immediate since they
+    /// can handle concurrent streams. For H1, a background task polls
+    /// `poll_ready` and only returns the connection to the pool once it is
+    /// ready. This prevents concurrent checkouts from finding (and destroying)
+    /// not-ready connections in the pool.
+    fn checkin_when_ready(&self, key: crate::pool::PoolKey, mut conn: PooledConnection<R>) {
         Self::populate_sans(&mut conn);
-        self.pool.checkin(key, conn);
+
+        if !conn.is_h1() || conn.is_ready() {
+            self.pool.checkin(key, conn);
+            return;
+        }
+
+        let pool = self.pool.clone();
+        R::spawn(async move {
+            let ready = std::future::poll_fn(|cx| conn.poll_ready(cx)).await;
+            if ready {
+                pool.checkin(key, conn);
+            }
+        });
     }
     pub(crate) async fn execute_single(
         &self,
@@ -123,7 +143,7 @@ impl<R: Runtime> Client<R> {
                             .into_timings(Some(transfer), request_start.elapsed()),
                     ));
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                        self.checkin_connection(pool_key, conn);
+                        self.checkin_when_ready(pool_key, conn);
                     }
                     return Ok(resp);
                 }
@@ -188,7 +208,7 @@ impl<R: Runtime> Client<R> {
                                 .into_timings(Some(transfer), request_start.elapsed()),
                         ));
                         if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                            self.checkin_connection(pool_key, conn);
+                            self.checkin_when_ready(pool_key, conn);
                         }
                         return Ok(resp);
                     }
@@ -266,7 +286,7 @@ impl<R: Runtime> Client<R> {
                 resp.set_remote_addr(pooled.remote_addr);
                 resp.set_tls_info(pooled.tls_info.clone());
                 if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                    self.checkin_connection(pool_key, pooled);
+                    self.checkin_when_ready(pool_key, pooled);
                 }
                 return Ok(resp);
             }
@@ -461,7 +481,7 @@ impl<R: Runtime> Client<R> {
             timing.into_timings(Some(transfer), request_start.elapsed()),
         ));
         if !self.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-            self.checkin_connection(pool_key, pooled);
+            self.checkin_when_ready(pool_key, pooled);
         }
 
         Ok(resp)
