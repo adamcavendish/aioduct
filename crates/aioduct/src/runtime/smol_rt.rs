@@ -8,54 +8,40 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::Runtime;
+use super::{Connector, RuntimeCompletion, RuntimePoll};
 
 /// Smol async runtime implementation.
 pub struct SmolRuntime;
 
-impl Runtime for SmolRuntime {
-    type TcpStream = SmolIo<smol::net::TcpStream>;
+// ── New trait impls (v0.2) ──────────────────────────────────────────────────
+
+impl RuntimeCompletion for SmolRuntime {
     type Sleep = SmolSleep;
-
-    async fn connect(addr: SocketAddr) -> io::Result<Self::TcpStream> {
-        let stream = smol::net::TcpStream::connect(addr).await?;
-        stream.set_nodelay(true)?;
-        Ok(SmolIo::new(stream))
-    }
-
-    async fn resolve_all(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
-        let addr = format!("{host}:{port}");
-        let addrs: Vec<SocketAddr> = smol::net::resolve(addr).await?;
-        if addrs.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrNotAvailable,
-                "no addresses found",
-            ));
-        }
-        Ok(addrs)
-    }
 
     fn sleep(duration: Duration) -> Self::Sleep {
         SmolSleep {
             inner: async_io::Timer::after(duration),
         }
     }
+}
 
-    fn spawn<F>(future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
+impl RuntimePoll for SmolRuntime {
+    fn spawn_send<F: Future<Output = ()> + Send + 'static>(future: F) {
         smol::spawn(future).detach();
     }
+}
 
-    fn set_tcp_keepalive(
-        stream: &Self::TcpStream,
+// ── SocketConfig ──────────────────────────────────────────────────────────
+
+impl super::SocketConfig for SmolIo<smol::net::TcpStream> {
+    fn set_keepalive(
+        &self,
         time: Duration,
         interval: Option<Duration>,
         retries: Option<u32>,
     ) -> io::Result<()> {
         use socket2::SockRef;
-        let sock_ref = SockRef::from(stream.inner());
+        let sock_ref = SockRef::from(self.inner());
         let mut keepalive = socket2::TcpKeepalive::new().with_time(time);
         if let Some(interval) = interval {
             keepalive = keepalive.with_interval(interval);
@@ -82,7 +68,7 @@ impl Runtime for SmolRuntime {
     }
 
     #[cfg(target_os = "linux")]
-    fn set_tcp_fast_open(stream: &Self::TcpStream) -> io::Result<()> {
+    fn set_fast_open(&self) -> io::Result<()> {
         use socket2::SockRef;
         use std::os::unix::io::AsRawFd;
 
@@ -96,7 +82,7 @@ impl Runtime for SmolRuntime {
             ) -> std::ffi::c_int;
         }
 
-        let sock_ref = SockRef::from(stream.inner());
+        let sock_ref = SockRef::from(self.inner());
         let fd = sock_ref.as_raw_fd();
         const IPPROTO_TCP: std::ffi::c_int = 6;
         const TCP_FASTOPEN_CONNECT: std::ffi::c_int = 30;
@@ -117,23 +103,33 @@ impl Runtime for SmolRuntime {
     }
 
     #[cfg(target_os = "linux")]
-    fn bind_device(stream: &Self::TcpStream, interface: &str) -> io::Result<()> {
+    fn bind_device(&self, interface: &str) -> io::Result<()> {
         use socket2::SockRef;
-        let sock_ref = SockRef::from(stream.inner());
+        let sock_ref = SockRef::from(self.inner());
         sock_ref.bind_device(Some(interface.as_bytes()))
     }
+}
 
-    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
-        stream.set_nonblocking(true)?;
+// ── TcpConnector ──────────────────────────────────────────────────────────
+
+/// TCP connector for the Smol runtime.
+#[derive(Clone, Copy, Default)]
+pub struct TcpConnector;
+
+impl Connector for TcpConnector {
+    type Stream = SmolIo<smol::net::TcpStream>;
+
+    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
+        let stream = smol::net::TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
-        let async_stream = smol::net::TcpStream::try_from(stream)?;
-        Ok(SmolIo::new(async_stream))
+        Ok(SmolIo::new(stream))
     }
 
     async fn connect_bound(
+        &self,
         addr: SocketAddr,
         local: std::net::IpAddr,
-    ) -> io::Result<Self::TcpStream> {
+    ) -> io::Result<Self::Stream> {
         use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
         let std_stream = smol::unblock(move || {
@@ -154,13 +150,97 @@ impl Runtime for SmolRuntime {
         Ok(SmolIo::new(smol_stream))
     }
 
-    #[cfg(unix)]
-    type UnixStream = SmolIo<smol::net::unix::UnixStream>;
+    fn from_std_tcp(&self, stream: std::net::TcpStream) -> io::Result<Self::Stream> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let async_stream = smol::net::TcpStream::try_from(stream)?;
+        Ok(SmolIo::new(async_stream))
+    }
+}
 
-    #[cfg(unix)]
-    async fn connect_unix(path: &std::path::Path) -> io::Result<Self::UnixStream> {
-        let stream = smol::net::unix::UnixStream::connect(path).await?;
-        Ok(SmolIo::new(stream))
+#[allow(clippy::manual_async_fn)]
+impl super::ConnectorSend for TcpConnector {
+    type Stream = SmolIo<smol::net::TcpStream>;
+
+    fn connect(&self, addr: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        async move {
+            let stream = smol::net::TcpStream::connect(addr).await?;
+            stream.set_nodelay(true)?;
+            Ok(SmolIo::new(stream))
+        }
+    }
+
+    fn connect_bound(
+        &self,
+        addr: SocketAddr,
+        local: std::net::IpAddr,
+    ) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        async move {
+            use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
+            let std_stream = smol::unblock(move || {
+                let domain = if addr.is_ipv4() {
+                    Domain::IPV4
+                } else {
+                    Domain::IPV6
+                };
+                let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+                socket.bind(&SockAddr::from(std::net::SocketAddr::new(local, 0)))?;
+                socket.connect(&SockAddr::from(addr))?;
+                socket.set_tcp_nodelay(true)?;
+                Ok::<std::net::TcpStream, io::Error>(socket.into())
+            })
+            .await?;
+            std_stream.set_nonblocking(true)?;
+            let smol_stream = smol::net::TcpStream::try_from(std_stream)?;
+            Ok(SmolIo::new(smol_stream))
+        }
+    }
+
+    fn from_std_tcp(&self, stream: std::net::TcpStream) -> io::Result<Self::Stream> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let async_stream = smol::net::TcpStream::try_from(stream)?;
+        Ok(SmolIo::new(async_stream))
+    }
+}
+
+// ── DefaultResolver ───────────────────────────────────────────────────────
+
+/// Default DNS resolver using smol's `net::resolve`.
+pub struct DefaultResolver;
+
+impl super::Resolve for DefaultResolver {
+    fn resolve(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+        let addr = format!("{host}:{port}");
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = smol::net::resolve(addr).await?;
+            addrs.into_iter().next().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found")
+            })
+        })
+    }
+
+    fn resolve_all(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send>> {
+        let addr = format!("{host}:{port}");
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = smol::net::resolve(addr).await?;
+            if addrs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    "no addresses found",
+                ));
+            }
+            Ok(addrs)
+        })
     }
 }
 
@@ -171,6 +251,13 @@ pin_project! {
     pub struct SmolSleep {
         #[pin]
         inner: async_io::Timer,
+    }
+}
+
+impl SmolSleep {
+    /// Create a new sleep future from an async-io timer.
+    pub(crate) fn new(inner: async_io::Timer) -> Self {
+        Self { inner }
     }
 }
 
@@ -267,6 +354,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::runtime::Runtime;
@@ -354,7 +442,7 @@ mod tests {
     fn sleep_completes() {
         smol::block_on(async {
             let start = std::time::Instant::now();
-            SmolRuntime::sleep(Duration::from_millis(10)).await;
+            <SmolRuntime as Runtime>::sleep(Duration::from_millis(10)).await;
             assert!(start.elapsed() >= Duration::from_millis(10));
         });
     }
@@ -374,6 +462,46 @@ mod tests {
 
             let _ = std::fs::remove_file(&sock_path);
             let _ = std::fs::remove_dir(&dir);
+        });
+    }
+
+    // ── New trait tests (v0.2) ──────────────────────────────────────────────
+
+    #[test]
+    fn runtime_completion_sleep() {
+        use crate::runtime::RuntimeCompletion;
+        smol::block_on(async {
+            let start = std::time::Instant::now();
+            <SmolRuntime as RuntimeCompletion>::sleep(Duration::from_millis(10)).await;
+            assert!(start.elapsed() >= Duration::from_millis(10));
+        });
+    }
+
+    #[test]
+    fn runtime_poll_spawn_send() {
+        use crate::runtime::RuntimePoll;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        smol::block_on(async {
+            let flag = Arc::new(AtomicBool::new(false));
+            let flag2 = flag.clone();
+            SmolRuntime::spawn_send(async move {
+                flag2.store(true, Ordering::SeqCst);
+            });
+            // smol needs a timer yield to run detached tasks
+            async_io::Timer::after(Duration::from_millis(10)).await;
+            assert!(flag.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn connector_connect_works() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let connector = super::TcpConnector;
+            let stream = connector.connect(addr).await.unwrap();
+            assert!(Write::is_write_vectored(&stream));
         });
     }
 }
