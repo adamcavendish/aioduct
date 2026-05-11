@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use aioduct::runtime::TokioRuntime;
-use aioduct::{Client, Middleware};
+use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{HttpEngine, Middleware};
 
 struct LoggingMiddleware;
 
@@ -54,7 +55,7 @@ async fn main() -> Result<(), aioduct::Error> {
         request_count: request_count.clone(),
     };
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(LoggingMiddleware)
         .middleware(metrics)
         .build();
@@ -71,7 +72,7 @@ async fn main() -> Result<(), aioduct::Error> {
     );
 
     // Closure as middleware (request-only)
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(
             |req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
                 req.headers_mut().insert(

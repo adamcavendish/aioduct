@@ -1,11 +1,12 @@
 // features: tokio,rustls,rustls-ring
 // runtime: tokio
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .connection_coalescing(true)
         .build();

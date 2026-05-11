@@ -1,7 +1,8 @@
 // features: tokio,json
 // runtime: tokio
-use aioduct::{CacheConfig, Client, HttpCache, InMemoryCacheStore};
+use aioduct::{CacheConfig, HttpEngine, HttpCache, InMemoryCacheStore};
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
@@ -10,7 +11,7 @@ async fn main() -> Result<(), aioduct::Error> {
         CacheConfig::default(),
     );
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
         .build();
 

@@ -1,11 +1,12 @@
 use std::time::Duration;
 
 use aioduct::runtime::TokioRuntime;
-use aioduct::{Client, RetryConfig};
+use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{HttpEngine, RetryConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         // Connection timeout: max time to establish TCP + TLS
         .connect_timeout(Duration::from_secs(5))
         // Request timeout: max total time per request attempt

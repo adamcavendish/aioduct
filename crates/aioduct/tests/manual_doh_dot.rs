@@ -8,11 +8,12 @@
     feature = "rustls"
 ))]
 
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 fn builder() -> aioduct::client::ClientBuilder<TokioRuntime> {
-    Client::<TokioRuntime>::builder()
+    HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .timeout(std::time::Duration::from_secs(15))
 }

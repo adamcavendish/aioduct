@@ -1,9 +1,10 @@
 use aioduct::runtime::TokioRuntime;
-use aioduct::{Client, Multipart, Part};
+use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{HttpEngine, Multipart, Part};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder().build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
 
     // Build a multipart form with text and file parts
     let form = Multipart::new()

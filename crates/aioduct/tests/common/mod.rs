@@ -13,8 +13,9 @@ pub use hyper::service::service_fn;
 pub use hyper::{Request, Response};
 pub use tokio::net::TcpListener;
 
-pub use aioduct::Client;
+pub use aioduct::HttpEngine;
 pub use aioduct::runtime::TokioRuntime;
+pub use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[cfg(feature = "rustls")]
 pub fn rustls_crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {

@@ -1,11 +1,12 @@
 use aioduct::runtime::TokioRuntime;
-use aioduct::{Client, Error};
+use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{Error, HttpEngine};
 
-type TokioClient = Client<TokioRuntime>;
+type TokioClient = HttpEngine<TokioRuntime, TcpConnector>;
 
 #[tokio::main]
 async fn main() {
-    let client = TokioClient::builder().build();
+    let client = TokioClient::builder(TcpConnector).build();
 
     // error_for_status() converts 4xx/5xx into errors
     match fetch_with_status_check(&client).await {
