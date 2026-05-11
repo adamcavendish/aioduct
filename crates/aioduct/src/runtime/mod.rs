@@ -1,89 +1,18 @@
+pub(crate) mod executor;
+mod legacy;
+mod traits;
+
+pub use traits::{
+    Connector, ConnectorSend, RuntimeCompletion, RuntimeLocal, RuntimePoll, SocketConfig,
+};
+
+#[allow(deprecated)]
+pub use legacy::Runtime;
+
 use std::future::Future;
 use std::io;
-use std::marker::PhantomData;
 use std::net::SocketAddr;
-#[cfg(unix)]
-use std::path::Path;
 use std::pin::Pin;
-use std::time::Duration;
-
-/// Abstraction over async runtimes (tokio, smol, compio).
-#[allow(async_fn_in_trait)]
-pub trait Runtime: Send + Sync + 'static {
-    /// The runtime's TCP stream type.
-    type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
-    /// A sleep future returned by the runtime.
-    type Sleep: Future<Output = ()> + Send + Sync;
-
-    /// Connect to a remote address over TCP.
-    fn connect(addr: SocketAddr) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
-    /// Resolve a hostname to a socket address.
-    ///
-    /// The default implementation delegates to [`Runtime::resolve_all`] and
-    /// returns the first address.
-    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr> {
-        let addrs = Self::resolve_all(host, port).await?;
-        addrs
-            .into_iter()
-            .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses resolved"))
-    }
-    /// Resolve a hostname to all available socket addresses.
-    fn resolve_all(
-        host: &str,
-        port: u16,
-    ) -> impl Future<Output = io::Result<Vec<SocketAddr>>> + Send;
-    /// Sleep for the given duration.
-    fn sleep(duration: Duration) -> Self::Sleep;
-    /// Spawn a background task.
-    fn spawn<F>(future: F)
-    where
-        F: Future<Output = ()> + Send + 'static;
-
-    /// Configure TCP keepalive on a stream.
-    fn set_tcp_keepalive(
-        _stream: &Self::TcpStream,
-        _time: Duration,
-        _interval: Option<Duration>,
-        _retries: Option<u32>,
-    ) -> io::Result<()> {
-        Ok(())
-    }
-
-    /// Enable TCP Fast Open on a connected stream (RFC 7413).
-    ///
-    /// On Linux this sets `TCP_FASTOPEN_CONNECT`, which causes the kernel to
-    /// use TFO for subsequent connections to the same destination.
-    fn set_tcp_fast_open(_stream: &Self::TcpStream) -> io::Result<()> {
-        Ok(())
-    }
-
-    /// Bind a TCP stream to a network interface (Linux only).
-    #[cfg(target_os = "linux")]
-    fn bind_device(_stream: &Self::TcpStream, _interface: &str) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "interface binding not supported by this runtime",
-        ))
-    }
-
-    /// Convert a `std::net::TcpStream` into the runtime's stream type.
-    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream>;
-
-    /// Connect to a remote address, binding to a specific local IP.
-    fn connect_bound(
-        addr: SocketAddr,
-        local: std::net::IpAddr,
-    ) -> impl Future<Output = io::Result<Self::TcpStream>> + Send;
-
-    /// The runtime's Unix domain socket stream type.
-    #[cfg(unix)]
-    type UnixStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
-
-    /// Connect to a Unix domain socket.
-    #[cfg(unix)]
-    fn connect_unix(path: &Path) -> impl Future<Output = io::Result<Self::UnixStream>> + Send;
-}
 
 /// Custom DNS resolver trait.
 ///
@@ -126,44 +55,24 @@ where
     }
 }
 
-/// Executor adapter that delegates to `R::spawn` for hyper's HTTP/2 handshake.
-pub(crate) struct HyperExecutor<R>(PhantomData<fn() -> R>);
-
-impl<R> Clone for HyperExecutor<R> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<R> Copy for HyperExecutor<R> {}
-
-impl<R, F> hyper::rt::Executor<F> for HyperExecutor<R>
-where
-    R: Runtime,
-    F: Future<Output = ()> + Send + 'static,
-{
-    fn execute(&self, fut: F) {
-        R::spawn(fut);
-    }
-}
-
-/// Create a [`HyperExecutor`] for the given runtime.
-pub(crate) fn hyper_executor<R: Runtime>() -> HyperExecutor<R> {
-    HyperExecutor(PhantomData)
-}
-
+#[cfg(feature = "tokio")]
+mod tokio_legacy;
 /// Tokio runtime implementation.
 #[cfg(feature = "tokio")]
 pub mod tokio_rt;
 #[cfg(feature = "tokio")]
 pub use tokio_rt::TokioRuntime;
 
+#[cfg(feature = "smol")]
+mod smol_legacy;
 /// Smol runtime implementation.
 #[cfg(feature = "smol")]
 pub mod smol_rt;
 #[cfg(feature = "smol")]
 pub use smol_rt::SmolRuntime;
 
+#[cfg(feature = "compio")]
+mod compio_legacy;
 /// Compio runtime implementation.
 #[cfg(feature = "compio")]
 pub mod compio_rt;
@@ -174,6 +83,7 @@ pub use compio_rt::CompioRuntime;
 mod tests {
     use super::*;
     use std::net::SocketAddr;
+    use std::task::Poll;
 
     #[tokio::test]
     async fn resolve_default_resolve_all_wraps_single() {
@@ -218,24 +128,150 @@ mod tests {
     }
 
     #[test]
-    fn hyper_executor_clone_and_copy() {
-        let exec = hyper_executor::<tokio_rt::TokioRuntime>();
+    fn poll_executor_clone_and_copy() {
+        let exec = executor::poll_executor::<tokio_rt::TokioRuntime>();
         #[allow(clippy::clone_on_copy)]
         let _cloned = exec.clone();
         let _copied = exec;
     }
 
     #[tokio::test]
-    async fn hyper_executor_execute_runs_future() {
+    async fn poll_executor_execute_runs_future() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
         let flag = Arc::new(AtomicBool::new(false));
         let flag2 = flag.clone();
-        let exec = hyper_executor::<tokio_rt::TokioRuntime>();
+        let exec = executor::poll_executor::<tokio_rt::TokioRuntime>();
         hyper::rt::Executor::execute(&exec, async move {
             flag2.store(true, Ordering::SeqCst);
         });
         tokio::task::yield_now().await;
         assert!(flag.load(Ordering::SeqCst));
+    }
+
+    // ── Shared helpers for default-method tests ───────────────────────────
+
+    struct MinimalSocketConfig;
+
+    impl SocketConfig for MinimalSocketConfig {
+        fn set_keepalive(
+            &self,
+            _time: std::time::Duration,
+            _interval: Option<std::time::Duration>,
+            _retries: Option<u32>,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct DummyStream;
+
+    impl hyper::rt::Read for DummyStream {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hyper::rt::Write for DummyStream {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(0))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl Unpin for DummyStream {}
+
+    impl SocketConfig for DummyStream {
+        fn set_keepalive(
+            &self,
+            _time: std::time::Duration,
+            _interval: Option<std::time::Duration>,
+            _retries: Option<u32>,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct DummyConnectorSend;
+
+    #[allow(clippy::manual_async_fn)]
+    impl ConnectorSend for DummyConnectorSend {
+        type Stream = DummyStream;
+
+        fn connect(
+            &self,
+            _addr: SocketAddr,
+        ) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+            async { Err(io::Error::other("dummy")) }
+        }
+    }
+
+    struct DummyLocalConnector;
+
+    impl Connector for DummyLocalConnector {
+        type Stream = DummyStream;
+
+        async fn connect(&self, _addr: SocketAddr) -> io::Result<Self::Stream> {
+            Err(io::Error::other("dummy"))
+        }
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn socket_config_default_set_fast_open_is_ok() {
+        let cfg = MinimalSocketConfig;
+        assert!(cfg.set_fast_open().is_ok());
+    }
+
+    #[tokio::test]
+    async fn connector_send_default_connect_bound_returns_unsupported() {
+        let connector = DummyConnectorSend;
+        let addr: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let err = connector.connect_bound(addr, ip).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn connector_send_default_from_std_tcp_returns_unsupported() {
+        let connector = DummyConnectorSend;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        let stream = std::net::TcpStream::connect(local_addr).unwrap();
+        let err = connector.from_std_tcp(stream).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn connector_default_connect_bound_returns_unsupported() {
+        let connector = DummyLocalConnector;
+        let addr: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let err = connector.connect_bound(addr, ip).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
     }
 }
