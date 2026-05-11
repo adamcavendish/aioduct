@@ -27,7 +27,7 @@ dot = ["hickory-dns", "hickory-resolver/tls-ring", "hickory-resolver/webpki-root
 blocking = ["tokio"]
 tokio = ["dep:tokio"]
 smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
-compio = ["dep:compio-runtime", "dep:compio-driver", "dep:async-io", "dep:futures-io"]
+compio = ["dep:compio-runtime", "dep:compio-driver", "dep:compio-net", "dep:compio-io", "dep:async-io", "dep:futures-io"]
 http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:futures-util"]
 gzip = ["dep:flate2"]
 brotli = ["dep:brotli"]
@@ -47,6 +47,8 @@ base64.workspace = true
 brotli = { workspace = true, features = ["std"], optional = true }
 bytes.workspace = true
 compio-driver = { workspace = true, features = ["polling"], optional = true }
+compio-io = { workspace = true, features = ["compat"], optional = true }
+compio-net = { workspace = true, optional = true }
 compio-runtime = { workspace = true, features = ["time"], optional = true }
 encoding_rs = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
