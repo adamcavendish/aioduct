@@ -15,14 +15,15 @@ use crate::pool::ConnectionPool;
 use crate::proxy::{ProxyConfig, ProxySettings};
 use crate::redirect::RedirectPolicy;
 use crate::retry::RetryConfig;
-use crate::runtime::{Resolve, Runtime};
+use crate::runtime::{ConnectorSend, Resolve, RuntimePoll};
 #[cfg(feature = "rustls")]
 use crate::tls::TlsVersion;
 
-use super::{Client, DEFAULT_USER_AGENT};
+use super::{DEFAULT_USER_AGENT, HttpEngine};
 
-/// Builder for configuring a [`Client`].
-pub struct ClientBuilder<R: Runtime> {
+/// Builder for configuring an [`HttpEngine`].
+pub struct HttpEngineBuilder<R: RuntimePoll, C: ConnectorSend> {
+    pub(super) connector: C,
     pub(super) pool_idle_timeout: Duration,
     pub(super) pool_max_idle_per_host: usize,
     pub(super) no_connection_reuse: bool,
@@ -58,7 +59,7 @@ pub struct ClientBuilder<R: Runtime> {
     pub(super) h2c_probe_ttl: Option<Duration>,
     pub(super) connection_coalescing: bool,
     #[cfg(feature = "tower")]
-    pub(super) connector: Option<crate::connector::LayeredConnector<R>>,
+    pub(super) tower_connector: Option<crate::connector::LayeredConnector<C>>,
     #[cfg(feature = "rustls")]
     pub(super) tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "rustls")]
@@ -81,15 +82,17 @@ pub struct ClientBuilder<R: Runtime> {
     pub(super) prefer_h3: bool,
     #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(super) h3_zero_rtt: bool,
-    pub(super) _runtime: PhantomData<R>,
+    pub(super) _phantom: PhantomData<(R, C)>,
 }
 
-impl<R: Runtime> Default for ClientBuilder<R> {
-    fn default() -> Self {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
+    /// Create a new builder with the given connector and default settings.
+    pub fn new(connector: C) -> Self {
         let mut default_headers = HeaderMap::new();
         default_headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
 
         Self {
+            connector,
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_idle_per_host: 10,
             no_connection_reuse: false,
@@ -125,7 +128,7 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             h2c_probe_ttl: None,
             connection_coalescing: true,
             #[cfg(feature = "tower")]
-            connector: None,
+            tower_connector: None,
             #[cfg(feature = "rustls")]
             tls: None,
             #[cfg(feature = "rustls")]
@@ -148,18 +151,18 @@ impl<R: Runtime> Default for ClientBuilder<R> {
             prefer_h3: false,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             h3_zero_rtt: false,
-            _runtime: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<R: Runtime> std::fmt::Debug for ClientBuilder<R> {
+impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for HttpEngineBuilder<R, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClientBuilder").finish()
+        f.debug_struct("HttpEngineBuilder").finish()
     }
 }
 
-impl<R: Runtime> ClientBuilder<R> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
     /// Set the idle connection timeout (default: 90s).
     pub fn pool_idle_timeout(mut self, timeout: Duration) -> Self {
         self.pool_idle_timeout = timeout;
@@ -349,8 +352,8 @@ impl<R: Runtime> ClientBuilder<R> {
     /// # Example
     ///
     /// ```no_run
-    /// # use aioduct::{Client, runtime::TokioRuntime};
-    /// let client = Client::<TokioRuntime>::builder()
+    /// # use aioduct::{HttpEngine, runtime::TokioRuntime};
+    /// let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
     ///     .dns_over_https("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
     ///     .build();
     /// ```
@@ -372,8 +375,8 @@ impl<R: Runtime> ClientBuilder<R> {
     /// # Example
     ///
     /// ```no_run
-    /// # use aioduct::{Client, runtime::TokioRuntime};
-    /// let client = Client::<TokioRuntime>::builder()
+    /// # use aioduct::{HttpEngine, runtime::TokioRuntime};
+    /// let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
     ///     .dns_over_tls("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
     ///     .build();
     /// ```
@@ -554,10 +557,10 @@ impl<R: Runtime> ClientBuilder<R> {
     /// like metrics, tracing, or connection-level rate limiting.
     pub fn connector_layer<L>(mut self, layer: L) -> Self
     where
-        L: tower_layer::Layer<crate::connector::RuntimeConnector<R>>,
+        L: tower_layer::Layer<crate::connector::ConnectorService<C>>,
         L::Service: tower_service::Service<
                 crate::connector::ConnectInfo,
-                Response = R::TcpStream,
+                Response = C::Stream,
                 Error = std::io::Error,
             > + Send
             + Sync
@@ -566,7 +569,7 @@ impl<R: Runtime> ClientBuilder<R> {
         <L::Service as tower_service::Service<crate::connector::ConnectInfo>>::Future:
             Send + 'static,
     {
-        self.connector = Some(crate::connector::apply_layer(layer));
+        self.tower_connector = Some(crate::connector::apply_layer(self.connector.clone(), layer));
         self
     }
 
@@ -699,8 +702,21 @@ impl<R: Runtime> ClientBuilder<R> {
         self
     }
 
-    /// Build the configured [`Client`].
-    pub fn build(self) -> Client<R> {
+    #[allow(unreachable_code)]
+    fn default_resolver() -> Option<Arc<dyn crate::runtime::Resolve>> {
+        #[cfg(feature = "tokio")]
+        {
+            return Some(Arc::new(crate::runtime::tokio_rt::DefaultResolver));
+        }
+        #[cfg(feature = "smol")]
+        {
+            return Some(Arc::new(crate::runtime::smol_rt::DefaultResolver));
+        }
+        None
+    }
+
+    /// Build the configured [`HttpEngine`].
+    pub fn build(self) -> HttpEngine<R, C> {
         let pool = if self.no_connection_reuse {
             ConnectionPool::new(0, Duration::from_secs(0))
         } else {
@@ -789,8 +805,9 @@ impl<R: Runtime> ClientBuilder<R> {
             connector
         };
 
-        Client {
+        HttpEngine {
             pool,
+            connector: self.connector,
             redirect_policy: self.redirect_policy,
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
@@ -813,7 +830,7 @@ impl<R: Runtime> ClientBuilder<R> {
             retry: self.retry,
             cookie_jar: self.cookie_jar,
             proxy: self.proxy,
-            resolver: self.resolver,
+            resolver: self.resolver.or_else(|| Self::default_resolver()),
             http2: self.http2,
             middleware: self.middleware,
             rate_limiter: self.rate_limiter,
@@ -827,7 +844,7 @@ impl<R: Runtime> ClientBuilder<R> {
                 .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
             connection_coalescing: self.connection_coalescing,
             #[cfg(feature = "tower")]
-            connector: self.connector,
+            tower_connector: self.tower_connector,
             #[cfg(feature = "rustls")]
             tls,
             #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -838,7 +855,7 @@ impl<R: Runtime> ClientBuilder<R> {
             h3_zero_rtt: self.h3_zero_rtt,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
-            _runtime: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }

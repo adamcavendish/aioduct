@@ -127,7 +127,7 @@ impl WasmClientBuilder {
 
 /// A request builder for the WASM client.
 pub struct WasmRequestBuilder<'a> {
-    client: &'a WasmClient,
+    client: WasmClientRef<'a>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -135,10 +135,40 @@ pub struct WasmRequestBuilder<'a> {
     timeout: Option<Duration>,
 }
 
+enum WasmClientRef<'a> {
+    Borrowed(&'a WasmClient),
+    Owned(WasmClient),
+}
+
+impl std::ops::Deref for WasmClientRef<'_> {
+    type Target = WasmClient;
+    fn deref(&self) -> &WasmClient {
+        match self {
+            WasmClientRef::Borrowed(r) => r,
+            WasmClientRef::Owned(o) => o,
+        }
+    }
+}
+
 impl<'a> WasmRequestBuilder<'a> {
     fn new(client: &'a WasmClient, method: Method, uri: Uri) -> Self {
         Self {
-            client,
+            client: WasmClientRef::Borrowed(client),
+            method,
+            uri,
+            headers: HeaderMap::new(),
+            body: None,
+            timeout: None,
+        }
+    }
+
+    pub(crate) fn new_owned(
+        client: WasmClient,
+        method: Method,
+        uri: Uri,
+    ) -> WasmRequestBuilder<'static> {
+        WasmRequestBuilder {
+            client: WasmClientRef::Owned(client),
             method,
             uri,
             headers: HeaderMap::new(),

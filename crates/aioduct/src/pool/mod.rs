@@ -4,7 +4,6 @@ pub(crate) mod connection;
 pub(crate) use connection::{HttpConnection, PooledConnection};
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use http::uri::{Authority, Scheme};
 
-use crate::runtime::Runtime;
+use crate::runtime::RuntimePoll;
 
 /// Protocol version hint for pool key segregation.
 #[derive(Clone, Copy, Debug, Default, Hash, Eq, PartialEq)]
@@ -58,28 +57,26 @@ impl PoolKey {
     }
 }
 
-struct IdleConnection<R: Runtime> {
-    connection: PooledConnection<R>,
+struct IdleConnection {
+    connection: PooledConnection,
     idle_since: Instant,
-    _runtime: PhantomData<R>,
 }
 
-struct PoolInner<R: Runtime> {
-    idle: HashMap<PoolKey, VecDeque<IdleConnection<R>>>,
+struct PoolInner {
+    idle: HashMap<PoolKey, VecDeque<IdleConnection>>,
     /// Reverse index: SAN → set of pool keys whose connections cover that name.
     san_index: HashMap<String, HashSet<PoolKey>>,
     max_idle_per_host: usize,
     idle_timeout: Duration,
-    _runtime: PhantomData<R>,
 }
 
 /// Thread-safe pool of idle HTTP connections keyed by origin.
-pub(crate) struct ConnectionPool<R: Runtime> {
-    inner: Arc<Mutex<PoolInner<R>>>,
+pub(crate) struct ConnectionPool {
+    inner: Arc<Mutex<PoolInner>>,
     reaper_spawned: Arc<AtomicBool>,
 }
 
-impl<R: Runtime> Clone for ConnectionPool<R> {
+impl Clone for ConnectionPool {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -88,16 +85,15 @@ impl<R: Runtime> Clone for ConnectionPool<R> {
     }
 }
 
-impl<R: Runtime> ConnectionPool<R> {
+impl ConnectionPool {
     /// Create a pool with the given capacity and timeout settings.
     pub(crate) fn new(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(PoolInner::<R> {
+            inner: Arc::new(Mutex::new(PoolInner {
                 idle: HashMap::new(),
                 san_index: HashMap::new(),
                 max_idle_per_host,
                 idle_timeout,
-                _runtime: PhantomData,
             })),
             reaper_spawned: Arc::new(AtomicBool::new(false)),
         }
@@ -110,12 +106,11 @@ impl<R: Runtime> ConnectionPool<R> {
     #[cfg(any(test, feature = "__bench"))]
     pub(crate) fn new_no_reaper(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(PoolInner::<R> {
+            inner: Arc::new(Mutex::new(PoolInner {
                 idle: HashMap::new(),
                 san_index: HashMap::new(),
                 max_idle_per_host,
                 idle_timeout,
-                _runtime: PhantomData,
             })),
             reaper_spawned: Arc::new(AtomicBool::new(true)),
         }
@@ -125,7 +120,7 @@ impl<R: Runtime> ConnectionPool<R> {
     ///
     /// Uses LIFO ordering (most recently returned first) and checks readiness
     /// on each candidate, trying all pooled connections before giving up.
-    pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection<R>> {
+    pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection> {
         let mut inner = self.inner.lock().unwrap();
         let idle_timeout = inner.idle_timeout;
         let queue = inner.idle.get_mut(key)?;
@@ -150,8 +145,7 @@ impl<R: Runtime> ConnectionPool<R> {
     /// Return a connection to the pool for future reuse.
     ///
     /// When at capacity, evicts the oldest idle connection to make room.
-    pub(crate) fn checkin(&self, key: PoolKey, connection: PooledConnection<R>) {
-        self.ensure_reaper();
+    pub(crate) fn checkin(&self, key: PoolKey, connection: PooledConnection) {
         let mut inner = self.inner.lock().unwrap();
         let max = inner.max_idle_per_host;
 
@@ -168,10 +162,9 @@ impl<R: Runtime> ConnectionPool<R> {
         if queue.len() >= max {
             queue.pop_front();
         }
-        queue.push_back(IdleConnection::<R> {
+        queue.push_back(IdleConnection {
             connection,
             idle_since: Instant::now(),
-            _runtime: PhantomData,
         });
     }
 
@@ -184,7 +177,7 @@ impl<R: Runtime> ConnectionPool<R> {
         &self,
         target_host: &str,
         resolved_ip: Option<IpAddr>,
-    ) -> Option<PooledConnection<R>> {
+    ) -> Option<PooledConnection> {
         let mut inner = self.inner.lock().unwrap();
         let now = Instant::now();
         let idle_timeout = inner.idle_timeout;
@@ -258,15 +251,16 @@ impl<R: Runtime> ConnectionPool<R> {
         found_conn
     }
 
-    fn ensure_reaper(&self) {
+    #[allow(dead_code)]
+    pub(crate) fn ensure_reaper<R: RuntimePoll>(&self) {
         if !self.reaper_spawned.swap(true, Ordering::AcqRel) {
-            self.spawn_reaper();
+            self.spawn_reaper::<R>();
         }
     }
 
-    fn spawn_reaper(&self) {
+    fn spawn_reaper<R: RuntimePoll>(&self) {
         let inner = Arc::clone(&self.inner);
-        R::spawn(async move {
+        R::spawn_send(async move {
             loop {
                 let timeout = {
                     let guard = inner.lock().unwrap();

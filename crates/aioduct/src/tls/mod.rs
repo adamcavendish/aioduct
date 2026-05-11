@@ -22,8 +22,6 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 
-use crate::runtime::Runtime;
-
 #[cfg(feature = "rustls")]
 pub(crate) fn crypto_provider() -> std::sync::Arc<rustls::crypto::CryptoProvider> {
     std::sync::Arc::new(crypto_provider_value())
@@ -148,7 +146,7 @@ pub(crate) fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
 }
 
 /// Async TLS handshake abstraction.
-pub trait TlsConnect<R: Runtime>: Send + Sync + 'static {
+pub trait TlsConnect<S>: Send + Sync + 'static {
     /// The TLS-wrapped stream type returned after handshake.
     type Stream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
 
@@ -156,7 +154,7 @@ pub trait TlsConnect<R: Runtime>: Send + Sync + 'static {
     fn connect(
         &self,
         server_name: &str,
-        stream: R::TcpStream,
+        stream: S,
     ) -> Pin<Box<dyn Future<Output = io::Result<Self::Stream>> + Send + '_>>;
 }
 

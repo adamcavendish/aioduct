@@ -41,7 +41,7 @@ where
 
 pin_project! {
     /// Body wrapper that enforces a timeout between data chunks.
-    pub struct ReadTimeoutBody<S: crate::runtime::Runtime> {
+    pub struct ReadTimeoutBody<S: crate::runtime::RuntimeCompletion> {
         #[pin]
         inner: crate::error::AioductBody,
         duration: Duration,
@@ -50,7 +50,7 @@ pin_project! {
     }
 }
 
-impl<S: crate::runtime::Runtime> ReadTimeoutBody<S> {
+impl<S: crate::runtime::RuntimeCompletion> ReadTimeoutBody<S> {
     pub fn new(inner: crate::error::AioductBody, duration: Duration) -> Self {
         Self {
             inner,
@@ -60,7 +60,7 @@ impl<S: crate::runtime::Runtime> ReadTimeoutBody<S> {
     }
 }
 
-impl<S: crate::runtime::Runtime> http_body::Body for ReadTimeoutBody<S> {
+impl<S: crate::runtime::RuntimeCompletion> http_body::Body for ReadTimeoutBody<S> {
     type Data = Bytes;
     type Error = crate::error::Error;
 

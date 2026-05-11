@@ -10,22 +10,22 @@ use http::uri::{Parts as UriParts, PathAndQuery, Scheme, Uri};
 use http_body::Body;
 use http_body_util::BodyExt;
 
-use crate::client::Client;
+use crate::client::HttpEngine;
 use crate::error::{AioductBody, Error};
 use crate::pool::ProtocolHint;
 use crate::response::Response;
-use crate::runtime::Runtime;
+use crate::runtime::{ConnectorSend, RuntimePoll};
 
 type RequestHook = Box<dyn FnOnce(&mut http::request::Parts) + Send>;
 type ResponseHook = Box<dyn FnOnce(&mut Response) + Send>;
 
 /// Builder for forwarding an incoming HTTP request to an upstream server.
 ///
-/// Created via [`Client::forward`]. Strips hop-by-hop headers, rewrites the URI
+/// Created via [`HttpEngine::forward`]. Strips hop-by-hop headers, rewrites the URI
 /// to target the upstream, and streams the body through without buffering.
 /// Skips all client middleware (redirects, cookies, cache, decompression).
-pub struct ForwardBuilder<'a, R: Runtime, B> {
-    client: &'a Client<R>,
+pub struct ForwardBuilder<'a, R: RuntimePoll, C: ConnectorSend, B> {
+    client: &'a HttpEngine<R, C>,
     request: http::Request<B>,
     upstream: Option<Uri>,
     strip_prefix: Option<String>,
@@ -39,12 +39,12 @@ pub struct ForwardBuilder<'a, R: Runtime, B> {
     on_response: Option<ResponseHook>,
 }
 
-impl<'a, R: Runtime, B> ForwardBuilder<'a, R, B>
+impl<'a, R: RuntimePoll, C: ConnectorSend, B> ForwardBuilder<'a, R, C, B>
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    pub(crate) fn new(client: &'a Client<R>, request: http::Request<B>) -> Self {
+    pub(crate) fn new(client: &'a HttpEngine<R, C>, request: http::Request<B>) -> Self {
         Self {
             client,
             request,

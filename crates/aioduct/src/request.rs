@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -7,16 +8,41 @@ use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, StatusCode, Uri, Version};
 
 use crate::body::RequestBody;
-use crate::client::Client;
+use crate::client::HttpEngine;
 use crate::error::{AioductBody, Error};
 use crate::response::Response;
 use crate::retry::RetryConfig;
-use crate::runtime::Runtime;
+use crate::runtime::{ConnectorSend, RuntimePoll};
 use crate::timeout::Timeout;
 
+pub(crate) enum ClientRef<'a, R: RuntimePoll, C: ConnectorSend> {
+    Borrowed(&'a HttpEngine<R, C>),
+    Owned(Box<HttpEngine<R, C>>),
+}
+
+impl<'a, R: RuntimePoll, C: ConnectorSend> ClientRef<'a, R, C> {
+    fn try_clone_for_lifetime(&self) -> ClientRef<'a, R, C> {
+        match self {
+            ClientRef::Borrowed(r) => ClientRef::Borrowed(r),
+            ClientRef::Owned(o) => ClientRef::Owned(o.clone()),
+        }
+    }
+}
+
+impl<R: RuntimePoll, C: ConnectorSend> Deref for ClientRef<'_, R, C> {
+    type Target = HttpEngine<R, C>;
+
+    fn deref(&self) -> &HttpEngine<R, C> {
+        match self {
+            ClientRef::Borrowed(r) => r,
+            ClientRef::Owned(o) => o,
+        }
+    }
+}
+
 /// Builder for configuring and sending an HTTP request.
-pub struct RequestBuilder<'a, R: Runtime> {
-    client: &'a Client<R>,
+pub struct RequestBuilder<'a, R: RuntimePoll, C: ConnectorSend> {
+    client: ClientRef<'a, R, C>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -24,10 +50,10 @@ pub struct RequestBuilder<'a, R: Runtime> {
     version: Option<Version>,
     timeout: Option<Duration>,
     retry: Option<RetryConfig>,
-    _runtime: PhantomData<R>,
+    _runtime: PhantomData<(R, C)>,
 }
 
-impl<R: Runtime> std::fmt::Debug for RequestBuilder<'_, R> {
+impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilder<'_, R, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RequestBuilder")
             .field("method", &self.method)
@@ -36,10 +62,24 @@ impl<R: Runtime> std::fmt::Debug for RequestBuilder<'_, R> {
     }
 }
 
-impl<'a, R: Runtime> RequestBuilder<'a, R> {
-    pub(crate) fn new(client: &'a Client<R>, method: Method, uri: Uri) -> Self {
+impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilder<'a, R, C> {
+    pub(crate) fn new(client: &'a HttpEngine<R, C>, method: Method, uri: Uri) -> Self {
         Self {
-            client,
+            client: ClientRef::Borrowed(client),
+            method,
+            uri,
+            headers: HeaderMap::new(),
+            body: None,
+            version: None,
+            timeout: None,
+            retry: None,
+            _runtime: PhantomData,
+        }
+    }
+
+    pub(crate) fn new_owned(client: HttpEngine<R, C>, method: Method, uri: Uri) -> Self {
+        Self {
+            client: ClientRef::Owned(Box::new(client)),
             method,
             uri,
             headers: HeaderMap::new(),
@@ -286,7 +326,7 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
             None => None,
         };
         Some(Self {
-            client: self.client,
+            client: self.client.try_clone_for_lifetime(),
             method: self.method.clone(),
             uri: self.uri.clone(),
             headers: self.headers.clone(),
@@ -450,10 +490,10 @@ impl<'a, R: Runtime> RequestBuilder<'a, R> {
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
-    use crate::runtime::tokio_rt::TokioRuntime;
+    use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
-    fn test_client() -> Client<TokioRuntime> {
-        Client::new()
+    fn test_client() -> HttpEngine<TokioRuntime, TcpConnector> {
+        HttpEngine::new(TcpConnector)
     }
 
     #[tokio::test]
