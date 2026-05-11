@@ -1,8 +1,5 @@
-use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::time::Duration;
-
-use crate::runtime::Runtime;
 
 /// An established HTTP connection at a specific protocol version.
 pub(crate) enum HttpConnection {
@@ -16,17 +13,16 @@ pub(crate) enum HttpConnection {
 }
 
 /// A pooled HTTP connection wrapper.
-pub(crate) struct PooledConnection<R: Runtime> {
+pub(crate) struct PooledConnection {
     pub(crate) conn: HttpConnection,
     pub(crate) remote_addr: Option<SocketAddr>,
     pub(crate) tls_info: Option<crate::tls::TlsInfo>,
     pub(crate) tls_handshake_duration: Option<Duration>,
     /// Subject Alternative Names from peer cert (for connection coalescing).
     pub(crate) sans: Vec<String>,
-    _runtime: PhantomData<R>,
 }
 
-impl<R: Runtime> PooledConnection<R> {
+impl PooledConnection {
     /// Wrap an HTTP/1.1 connection.
     pub(crate) fn new_h1(
         sender: hyper::client::conn::http1::SendRequest<crate::error::AioductBody>,
@@ -37,7 +33,6 @@ impl<R: Runtime> PooledConnection<R> {
             tls_info: None,
             tls_handshake_duration: None,
             sans: Vec::new(),
-            _runtime: PhantomData,
         }
     }
 
@@ -51,7 +46,6 @@ impl<R: Runtime> PooledConnection<R> {
             tls_info: None,
             tls_handshake_duration: None,
             sans: Vec::new(),
-            _runtime: PhantomData,
         }
     }
 
@@ -66,7 +60,6 @@ impl<R: Runtime> PooledConnection<R> {
             tls_info: None,
             tls_handshake_duration: None,
             sans: Vec::new(),
-            _runtime: PhantomData,
         }
     }
 

@@ -6,15 +6,15 @@ use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode, Uri, Version};
 
 use crate::error::Error;
-use crate::runtime::tokio_rt::TokioRuntime;
+use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
-/// A blocking HTTP client that wraps the async [`Client`](crate::Client).
+/// A blocking HTTP client that wraps the async [`HttpEngine`](crate::HttpEngine).
 ///
 /// Internally creates a tokio runtime to execute requests synchronously.
 /// Requires the `blocking` feature (which enables `tokio`).
 #[derive(Clone)]
 pub struct Client {
-    inner: crate::Client<TokioRuntime>,
+    inner: crate::HttpEngine<TokioRuntime, TcpConnector>,
     rt: Arc<tokio::runtime::Runtime>,
 }
 
@@ -27,13 +27,13 @@ impl Client {
     /// Create a blocking client builder.
     pub fn builder() -> ClientBuilder {
         ClientBuilder {
-            inner: crate::Client::<TokioRuntime>::builder(),
+            inner: crate::HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector),
         }
     }
 
     fn request_builder<'a>(
         &'a self,
-        rb: crate::request::RequestBuilder<'a, TokioRuntime>,
+        rb: crate::request::RequestBuilder<'a, TokioRuntime, TcpConnector>,
     ) -> RequestBuilder<'a> {
         RequestBuilder {
             inner: rb,
@@ -85,7 +85,7 @@ impl Default for Client {
 
 /// Builder for configuring a blocking [`Client`].
 pub struct ClientBuilder {
-    inner: crate::client::ClientBuilder<TokioRuntime>,
+    inner: crate::client::HttpEngineBuilder<TokioRuntime, TcpConnector>,
 }
 
 impl ClientBuilder {
@@ -235,7 +235,7 @@ impl ClientBuilder {
 
 /// A blocking request builder.
 pub struct RequestBuilder<'a> {
-    inner: crate::request::RequestBuilder<'a, TokioRuntime>,
+    inner: crate::request::RequestBuilder<'a, TokioRuntime, TcpConnector>,
     rt: Arc<tokio::runtime::Runtime>,
 }
 

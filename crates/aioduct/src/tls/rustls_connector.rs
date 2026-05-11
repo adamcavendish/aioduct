@@ -8,7 +8,6 @@ use hyper::rt::{self, Read, Write};
 use rustls::pki_types::ServerName;
 
 use super::{TlsConnect, crypto_provider};
-use crate::runtime::Runtime;
 
 /// TLS connector backed by rustls.
 #[derive(Clone)]
@@ -245,13 +244,16 @@ pub enum AlpnProtocol {
     H2,
 }
 
-impl<R: Runtime> TlsConnect<R> for RustlsConnector {
-    type Stream = TlsStream<R::TcpStream>;
+impl<S> TlsConnect<S> for RustlsConnector
+where
+    S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+{
+    type Stream = TlsStream<S>;
 
     fn connect(
         &self,
         server_name: &str,
-        stream: R::TcpStream,
+        stream: S,
     ) -> Pin<Box<dyn std::future::Future<Output = io::Result<Self::Stream>> + Send + '_>> {
         let server_name = server_name.to_owned();
         let config = Arc::clone(&self.config);

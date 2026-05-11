@@ -153,7 +153,7 @@ impl Response {
         }
     }
 
-    pub(crate) fn apply_read_timeout<R: crate::runtime::Runtime>(
+    pub(crate) fn apply_read_timeout<R: crate::runtime::RuntimePoll>(
         self,
         duration: std::time::Duration,
     ) -> Self {
