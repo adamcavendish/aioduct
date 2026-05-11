@@ -1,0 +1,41 @@
+[package]
+name = "aioduct-load-testing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "General-purpose API load testing framework built on aioduct"
+publish = false
+
+[dependencies]
+aioduct = { workspace = true }
+async-channel = { workspace = true }
+futures-util = { workspace = true }
+pin-project-lite = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+chrono = { workspace = true, features = ["serde", "clock"] }
+indicatif = { workspace = true }
+thiserror = { workspace = true }
+csv = { workspace = true }
+
+# Optional runtime deps
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs"], optional = true }
+smol = { workspace = true, optional = true }
+compio-runtime = { workspace = true, optional = true }
+
+[features]
+default = []
+tokio = ["dep:tokio", "aioduct/tokio", "indicatif/tokio"]
+smol = ["dep:smol", "aioduct/smol"]
+compio = ["dep:compio-runtime", "aioduct/compio"]
+wasm = ["aioduct/wasm"]
+wasi-p2 = ["aioduct/wasi-p2"]
+rustls = ["aioduct/rustls"]
+rustls-ring = ["aioduct/rustls-ring"]
+rustls-aws-lc-rs = ["aioduct/rustls-aws-lc-rs"]
+json = ["aioduct/json"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

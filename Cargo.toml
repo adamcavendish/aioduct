@@ -12,15 +12,18 @@ repository = "https://github.com/adamcavendish/aioduct"
 [workspace.dependencies]
 aioduct = { path = "crates/aioduct" }
 
+async-channel = "2"
 async-io = "2"
 base64 = "0.22"
 brotli = { version = "8", default-features = false }
 bytes = "1"
+chrono = { version = "0.4", default-features = false }
 clap = "4"
 compio-driver = { version = "0.11", default-features = false }
 compio-io = { version = "0.9", default-features = false }
 compio-net = "0.11"
 compio-runtime = "0.11"
+csv = "1"
 encoding_rs = "0.8"
 flate2 = "1"
 futures-core = "0.3"

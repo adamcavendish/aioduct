@@ -35,6 +35,7 @@ clippy:
 
 # Run clippy with every compatible all-feature provider set
 clippy-all:
+    cargo check --workspace --all-targets
     cargo clippy -p aioduct --features {{ all_features_ring }} --all-targets -- -D warnings
     cargo clippy -p aioduct --features {{ all_features_aws_lc_rs }} --all-targets -- -D warnings
     cargo check --workspace --all-targets
