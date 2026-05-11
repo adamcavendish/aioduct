@@ -105,7 +105,15 @@ impl<R: Runtime> Client<R> {
                 self.middleware.apply_request(&mut request, &current_uri);
             }
 
-            let resp = match self.execute_single(request, &current_uri).await {
+            let replay_bytes_for_stale = match body_for_replay.as_ref() {
+                Some(RequestBody::Buffered(b)) => Some(b.clone()),
+                _ => None,
+            };
+
+            let resp = match self
+                .execute_single(request, &current_uri, replay_bytes_for_stale)
+                .await
+            {
                 Ok(resp) => {
                     if resp.status().is_server_error()
                         && let Some(sie_duration) = stale_if_error
@@ -287,6 +295,8 @@ impl<R: Runtime> Client<R> {
         let _ = resp.bytes().await;
         headers.insert(AUTHORIZATION, auth_value);
 
+        let replay_for_stale = body_for_replay.clone();
+
         let retry_body: AioductBody = match body_for_replay {
             Some(b) => http_body_util::Full::new(b)
                 .map_err(|never| match never {})
@@ -315,7 +325,8 @@ impl<R: Runtime> Client<R> {
         if !self.middleware.is_empty() {
             self.middleware.apply_request(&mut retry_request, uri);
         }
-        self.execute_single(retry_request, uri).await
+        self.execute_single(retry_request, uri, replay_for_stale)
+            .await
     }
 
     pub(super) async fn finalize_response(

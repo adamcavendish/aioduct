@@ -311,9 +311,9 @@ where
         let request = http::Request::from_parts(parts, boxed_body);
 
         // 10. Send via execute_single_with_hint (bypasses redirects, cookies, cache, decompression)
-        let send_fut = self
-            .client
-            .execute_single_with_hint(request, &full_uri, self.protocol_hint);
+        let send_fut =
+            self.client
+                .execute_single_with_hint(request, &full_uri, self.protocol_hint, None);
 
         let mut resp = if let Some(duration) = self.timeout {
             crate::timeout::Timeout::WithTimeout {

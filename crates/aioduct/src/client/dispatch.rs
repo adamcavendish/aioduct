@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use bytes::Bytes;
 use http::Uri;
 use http_body_util::BodyExt;
 
@@ -34,8 +35,9 @@ impl<R: Runtime> Client<R> {
         &self,
         request: http::Request<AioductBody>,
         original_uri: &Uri,
+        replay_body: Option<Bytes>,
     ) -> Result<Response, Error> {
-        self.execute_single_with_hint(request, original_uri, ProtocolHint::Auto)
+        self.execute_single_with_hint(request, original_uri, ProtocolHint::Auto, replay_body)
             .await
     }
 
@@ -44,6 +46,7 @@ impl<R: Runtime> Client<R> {
         mut request: http::Request<AioductBody>,
         original_uri: &Uri,
         protocol: ProtocolHint,
+        replay_body: Option<Bytes>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
 
@@ -89,11 +92,8 @@ impl<R: Runtime> Client<R> {
             },
         );
 
-        // Determine if we can transparently retry on a stale pool connection.
-        // Only safe for empty-body requests (GET/HEAD/DELETE etc.) — non-empty
-        // bodies are consumed by send and cannot be replayed.
-        let can_stale_retry =
-            !self.no_connection_reuse && http_body::Body::is_end_stream(request.body());
+        let can_stale_retry = !self.no_connection_reuse
+            && (http_body::Body::is_end_stream(request.body()) || replay_body.is_some());
 
         if !self.no_connection_reuse
             && let Some(mut conn) = self.pool.checkout(&pool_key)
@@ -135,10 +135,14 @@ impl<R: Runtime> Client<R> {
                         "connection.pool.stale — retrying on fresh connection"
                     );
                     let (method, uri, headers, version) = saved_parts.unwrap();
-                    let empty: AioductBody = http_body_util::Full::new(bytes::Bytes::new())
+                    let retry_body_bytes = replay_body
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(bytes::Bytes::new);
+                    let body: AioductBody = http_body_util::Full::new(retry_body_bytes)
                         .map_err(|never| match never {})
                         .boxed_unsync();
-                    let mut retry_req = http::Request::new(empty);
+                    let mut retry_req = http::Request::new(body);
                     *retry_req.method_mut() = method;
                     *retry_req.uri_mut() = uri;
                     *retry_req.headers_mut() = headers;
@@ -196,10 +200,14 @@ impl<R: Runtime> Client<R> {
                             "connection.pool.coalesced.stale — retrying on fresh connection"
                         );
                         let (method, uri, headers, version) = saved_parts.unwrap();
-                        let empty: AioductBody = http_body_util::Full::new(bytes::Bytes::new())
+                        let retry_body_bytes = replay_body
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(bytes::Bytes::new);
+                        let body: AioductBody = http_body_util::Full::new(retry_body_bytes)
                             .map_err(|never| match never {})
                             .boxed_unsync();
-                        let mut retry_req = http::Request::new(empty);
+                        let mut retry_req = http::Request::new(body);
                         *retry_req.method_mut() = method;
                         *retry_req.uri_mut() = uri;
                         *retry_req.headers_mut() = headers;
