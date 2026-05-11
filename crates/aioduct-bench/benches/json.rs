@@ -11,7 +11,10 @@ fn bench_json_parse(c: &mut Criterion) {
     let body = Bytes::from(JSON_BODY);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::new();
+        let client = aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new(aioduct::runtime::tokio_rt::TcpConnector);
         (addr, client)
     });
     let url = format!("http://{addr}/");

@@ -6,7 +6,7 @@ use common::*;
 #[tokio::test]
 async fn test_get_request() {
     let addr = start_server().await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -23,7 +23,7 @@ async fn test_get_request() {
 #[tokio::test]
 async fn test_post_request() {
     let addr = start_server().await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
         .post(&format!("http://{addr}/"))
@@ -39,7 +39,7 @@ async fn test_post_request() {
 #[tokio::test]
 async fn test_connection_reuse() {
     let addr = start_server().await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let url = format!("http://{addr}/");
 
     let resp1 = client.get(&url).unwrap().send().await.unwrap();
@@ -55,7 +55,7 @@ async fn test_connection_reuse() {
 #[tokio::test]
 async fn test_host_header_and_path() {
     let addr = start_server_with(echo_headers).await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
         .get(&format!("http://{addr}/some/path?key=value"))
@@ -87,7 +87,7 @@ async fn test_custom_header() {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(custom.to_string()))))
     })
     .await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -104,13 +104,13 @@ async fn test_custom_header() {
 
 #[tokio::test]
 async fn test_invalid_url() {
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     assert!(client.get("not a url").is_err());
 }
 
 #[tokio::test]
 async fn test_missing_scheme() {
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     assert!(client.get("127.0.0.1/path").is_err());
 }
 #[tokio::test]
@@ -121,7 +121,7 @@ async fn test_query_params() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/search"))
         .unwrap()
@@ -146,7 +146,7 @@ async fn test_default_user_agent() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -175,7 +175,7 @@ async fn test_custom_default_headers() {
 
     let mut headers = http::HeaderMap::new();
     headers.insert("x-default", "from-client".parse().unwrap());
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .default_headers(headers)
         .build();
 
@@ -202,7 +202,7 @@ async fn test_request_headers_override_defaults() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -228,7 +228,7 @@ async fn test_put_request() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .put(&format!("http://{addr}/"))
         .unwrap()
@@ -253,7 +253,7 @@ async fn test_patch_request() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .patch(&format!("http://{addr}/"))
         .unwrap()
@@ -272,7 +272,7 @@ async fn test_delete_request() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .delete(&format!("http://{addr}/"))
         .unwrap()
@@ -297,7 +297,7 @@ async fn test_head_request() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .head(&format!("http://{addr}/"))
         .unwrap()
@@ -321,7 +321,7 @@ async fn test_query_params_with_existing_query() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/?existing=1"))
         .unwrap()
@@ -350,7 +350,7 @@ async fn test_no_default_headers() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_default_headers()
         .build();
 
@@ -373,7 +373,7 @@ async fn test_custom_method() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .request(http::Method::OPTIONS, &format!("http://{addr}/"))
         .unwrap()
@@ -398,7 +398,7 @@ async fn test_multiple_headers_same_name() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let mut headers = http::HeaderMap::new();
     headers.append("x-multi", "value1".parse().unwrap());
     headers.append("x-multi", "value2".parse().unwrap());

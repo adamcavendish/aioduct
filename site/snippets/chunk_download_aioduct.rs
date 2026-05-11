@@ -1,11 +1,12 @@
 // features: tokio,json
 // runtime: tokio
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder().build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
 
     let download = client
         .chunk_download("https://releases.ubuntu.com/24.04/ubuntu-24.04-live-server-amd64.iso")

@@ -5,14 +5,14 @@ use common::*;
 
 #[tokio::test]
 async fn test_connection_refused() {
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let result = client.get("http://127.0.0.1:1/").unwrap().send().await;
     assert!(result.is_err());
 }
 #[tokio::test]
 async fn test_client_clone_shares_pool() {
     let addr = start_server().await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let cloned = client.clone();
 
     let resp1 = client
@@ -37,7 +37,7 @@ async fn test_client_clone_shares_pool() {
 #[tokio::test]
 async fn test_concurrent_requests() {
     let addr = start_server().await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let mut handles = Vec::new();
     for _ in 0..10 {
@@ -75,7 +75,7 @@ async fn test_no_connection_reuse() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_connection_reuse()
         .build();
 
@@ -94,7 +94,7 @@ async fn test_no_connection_reuse() {
 #[tokio::test]
 async fn test_remote_addr_is_set() {
     let addr = start_server().await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -117,7 +117,7 @@ async fn test_response_content_length() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -130,7 +130,7 @@ async fn test_response_content_length() {
 #[tokio::test]
 async fn test_response_version() {
     let addr = start_server().await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -153,7 +153,7 @@ async fn test_error_for_status_integration() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/missing"))
         .unwrap()
@@ -182,7 +182,7 @@ async fn test_response_url_after_redirect() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{redirect_addr}/start"))
         .unwrap()
@@ -199,15 +199,15 @@ async fn test_response_url_after_redirect() {
 }
 #[tokio::test]
 async fn test_client_debug() {
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let dbg = format!("{client:?}");
-    assert!(dbg.contains("Client"));
+    assert!(dbg.contains("HttpEngine"));
 }
 #[tokio::test]
 async fn test_rate_limiter_throttles() {
     let addr = start_server().await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .rate_limiter(aioduct::RateLimiter::new(100, Duration::from_secs(1)))
         .build();
 
@@ -230,7 +230,7 @@ async fn test_rate_limiter_throttles() {
 async fn test_rate_limiter_sleep_path() {
     let addr = start_server().await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .rate_limiter(aioduct::RateLimiter::new(1, Duration::from_millis(200)))
         .build();
 
@@ -266,7 +266,7 @@ async fn test_bandwidth_limiter_download() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .max_download_speed(100_000)
         .build();
 
@@ -284,7 +284,9 @@ async fn test_bandwidth_limiter_download() {
 }
 #[tokio::test]
 async fn test_https_only_rejects_http() {
-    let client = Client::<TokioRuntime>::builder().https_only(true).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .https_only(true)
+        .build();
 
     let result = client.get("http://example.com/").unwrap().send().await;
     assert!(result.is_err());

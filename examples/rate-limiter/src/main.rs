@@ -1,12 +1,13 @@
 use std::time::Duration;
 
 use aioduct::runtime::TokioRuntime;
-use aioduct::{Client, RateLimiter};
+use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{HttpEngine, RateLimiter};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // Rate limit to 5 requests per second
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .rate_limiter(RateLimiter::new(5, Duration::from_secs(1)))
         .build();
 

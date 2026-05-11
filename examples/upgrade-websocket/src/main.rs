@@ -1,9 +1,10 @@
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder().build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
 
     // Build an upgrade request (e.g., for WebSocket)
     let resp = client

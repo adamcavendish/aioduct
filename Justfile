@@ -37,6 +37,7 @@ clippy:
 clippy-all:
     cargo clippy -p aioduct --features {{ all_features_ring }} --all-targets -- -D warnings
     cargo clippy -p aioduct --features {{ all_features_aws_lc_rs }} --all-targets -- -D warnings
+    cargo check --workspace --all-targets
 
 # Run clippy with a specific feature set
 clippy-features features:

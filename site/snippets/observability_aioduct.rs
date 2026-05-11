@@ -1,11 +1,12 @@
 // features: tokio,tracing,otel
 // runtime: tokio
-use aioduct::{Client, TracingMiddleware, OtelMiddleware};
+use aioduct::{HttpEngine, TracingMiddleware, OtelMiddleware};
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(TracingMiddleware)
         .middleware(OtelMiddleware::default())
         .build();

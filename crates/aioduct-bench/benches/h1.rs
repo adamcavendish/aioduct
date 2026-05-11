@@ -12,7 +12,10 @@ fn bench_h1_get(c: &mut Criterion) {
     let body = Bytes::from(JSON_BODY);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::new();
+        let client = aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new(aioduct::runtime::tokio_rt::TcpConnector);
         (addr, client)
     });
     let url = format!("http://{addr}/");
@@ -80,7 +83,10 @@ fn bench_h1_get_text(c: &mut Criterion) {
     let body = Bytes::from(JSON_BODY);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::new();
+        let client = aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new(aioduct::runtime::tokio_rt::TcpConnector);
         (addr, client)
     });
     let url = format!("http://{addr}/");
@@ -119,7 +125,10 @@ fn bench_h1_post_4k(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_echo_server().await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::new();
+        let client = aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new(aioduct::runtime::tokio_rt::TcpConnector);
         (addr, client)
     });
     let url = format!("http://{addr}/");
@@ -182,7 +191,10 @@ fn bench_h1_download_64k(c: &mut Criterion) {
     let body = Bytes::from(vec![b'x'; BODY_64K]);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::new();
+        let client = aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new(aioduct::runtime::tokio_rt::TcpConnector);
         (addr, client)
     });
     let url = format!("http://{addr}/");
@@ -240,7 +252,10 @@ fn bench_h1_download_1m(c: &mut Criterion) {
     let body = Bytes::from(vec![b'x'; BODY_1M]);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::new();
+        let client = aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new(aioduct::runtime::tokio_rt::TcpConnector);
         (addr, client)
     });
     let url = format!("http://{addr}/");
@@ -281,7 +296,10 @@ fn bench_h1_concurrent_10(c: &mut Criterion) {
     let body = Bytes::from(JSON_BODY);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::new();
+        let client = aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new(aioduct::runtime::tokio_rt::TcpConnector);
         (addr, client)
     });
     let url = format!("http://{addr}/");
@@ -344,9 +362,12 @@ fn bench_h1_concurrent_50(c: &mut Criterion) {
     let body = Bytes::from(JSON_BODY);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .pool_max_idle_per_host(100)
-            .build();
+        let client = aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::builder(aioduct::runtime::tokio_rt::TcpConnector)
+        .pool_max_idle_per_host(100)
+        .build();
         (addr, client)
     });
     let url = format!("http://{addr}/");

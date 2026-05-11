@@ -1,4 +1,5 @@
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 use crate::cli::Cli;
 
@@ -34,8 +35,8 @@ impl ExtraRequestConfig {
 
     pub fn apply_to<'a>(
         &self,
-        mut req: aioduct::RequestBuilder<'a, TokioRuntime>,
-    ) -> aioduct::RequestBuilder<'a, TokioRuntime> {
+        mut req: aioduct::RequestBuilder<'a, TokioRuntime, TcpConnector>,
+    ) -> aioduct::RequestBuilder<'a, TokioRuntime, TcpConnector> {
         for (name, value) in &self.headers {
             req = req.header(name.clone(), value.clone());
         }
