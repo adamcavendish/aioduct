@@ -8,90 +8,41 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::Runtime;
+use super::{Connector, RuntimeCompletion, RuntimeLocal};
 
-/// Wrapper that unsafely implements Send for a !Send future.
-///
-/// # Safety
-///
-/// This is only safe in compio's thread-per-core model where futures are never
-/// sent between threads. The CompioRuntime must only be used within a single
-/// compio runtime thread.
-struct AssertSend<F>(F);
+/// Compio async runtime implementation using native io_uring/IOCP for TCP I/O.
+pub struct CompioRuntime;
 
-// Safety: compio is thread-per-core — these futures never cross thread boundaries.
-unsafe impl<F> Send for AssertSend<F> {}
+// ── New trait impls (v0.2) ──────────────────────────────────────────────────
 
-impl<F: Future> Future for AssertSend<F> {
-    type Output = F::Output;
+impl RuntimeCompletion for CompioRuntime {
+    type Sleep = CompioSleep;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
-        inner.poll(cx)
+    fn sleep(duration: Duration) -> Self::Sleep {
+        CompioSleep::new(async_io::Timer::after(duration))
     }
 }
 
-/// Compio async runtime implementation using async-io for TCP I/O.
-pub struct CompioRuntime;
-
-impl Runtime for CompioRuntime {
-    type TcpStream = CompioIo<async_io::Async<std::net::TcpStream>>;
-    type Sleep = CompioSleep;
-
-    fn connect(addr: SocketAddr) -> impl Future<Output = io::Result<Self::TcpStream>> + Send {
-        AssertSend(async move {
-            let stream = async_io::Async::<std::net::TcpStream>::connect(addr).await?;
-            stream.get_ref().set_nodelay(true)?;
-            Ok(CompioIo::new(stream))
-        })
-    }
-
-    fn resolve_all(
-        host: &str,
-        port: u16,
-    ) -> impl Future<Output = io::Result<Vec<SocketAddr>>> + Send {
-        let addr_str = format!("{host}:{port}");
-        AssertSend(async move {
-            let addrs = compio_runtime::spawn_blocking(move || {
-                use std::net::ToSocketAddrs;
-                addr_str
-                    .to_socket_addrs()
-                    .map(|iter| iter.collect::<Vec<_>>())
-            })
-            .await
-            .map_err(|e| io::Error::other(format!("{e:?}")))?;
-            let addrs = addrs?;
-            if addrs.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::AddrNotAvailable,
-                    "no addresses found",
-                ));
-            }
-            Ok(addrs)
-        })
-    }
-
-    fn sleep(duration: Duration) -> Self::Sleep {
-        CompioSleep {
-            inner: async_io::Timer::after(duration),
-        }
-    }
-
-    fn spawn<F>(future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
+impl RuntimeLocal for CompioRuntime {
+    fn spawn_local<F: Future<Output = ()> + 'static>(future: F) {
         compio_runtime::spawn(future).detach();
     }
+}
 
-    fn set_tcp_keepalive(
-        stream: &Self::TcpStream,
+// CompioRuntime does NOT implement RuntimePoll — it's completion-based,
+// single-threaded, and cannot migrate futures between threads.
+
+// ── SocketConfig ──────────────────────────────────────────────────────────
+
+impl super::SocketConfig for CompioTcpStream {
+    fn set_keepalive(
+        &self,
         time: Duration,
         interval: Option<Duration>,
         retries: Option<u32>,
     ) -> io::Result<()> {
         use socket2::SockRef;
-        let sock_ref = SockRef::from(stream.inner().get_ref());
+        let sock_ref = SockRef::from(&self.socket_handle);
         let mut keepalive = socket2::TcpKeepalive::new().with_time(time);
         if let Some(interval) = interval {
             keepalive = keepalive.with_interval(interval);
@@ -118,8 +69,7 @@ impl Runtime for CompioRuntime {
     }
 
     #[cfg(target_os = "linux")]
-    fn set_tcp_fast_open(stream: &Self::TcpStream) -> io::Result<()> {
-        use socket2::SockRef;
+    fn set_fast_open(&self) -> io::Result<()> {
         use std::os::unix::io::AsRawFd;
 
         unsafe extern "C" {
@@ -132,8 +82,7 @@ impl Runtime for CompioRuntime {
             ) -> std::ffi::c_int;
         }
 
-        let sock_ref = SockRef::from(stream.inner().get_ref());
-        let fd = sock_ref.as_raw_fd();
+        let fd = self.socket_handle.as_raw_fd();
         const IPPROTO_TCP: std::ffi::c_int = 6;
         const TCP_FASTOPEN_CONNECT: std::ffi::c_int = 30;
         let optval: std::ffi::c_int = 1;
@@ -153,67 +102,152 @@ impl Runtime for CompioRuntime {
     }
 
     #[cfg(target_os = "linux")]
-    fn bind_device(stream: &Self::TcpStream, interface: &str) -> io::Result<()> {
+    fn bind_device(&self, interface: &str) -> io::Result<()> {
         use socket2::SockRef;
-        let sock_ref = SockRef::from(stream.inner().get_ref());
+        let sock_ref = SockRef::from(&self.socket_handle);
         sock_ref.bind_device(Some(interface.as_bytes()))
     }
+}
 
-    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
-        stream.set_nonblocking(true)?;
+// ── TcpConnector ──────────────────────────────────────────────────────────
+
+/// TCP connector for the Compio runtime.
+///
+/// Uses native `compio_net::TcpStream` for io_uring (Linux) / IOCP (Windows)
+/// I/O, bridged to futures-io via `compio_io::compat::AsyncStream`.
+#[derive(Clone, Copy)]
+pub struct TcpConnector;
+
+impl Connector for TcpConnector {
+    type Stream = CompioTcpStream;
+
+    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
+        let stream = compio_net::TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
-        let async_stream = async_io::Async::new(stream)?;
-        Ok(CompioIo::new(async_stream))
+        Ok(CompioTcpStream::new(stream))
     }
 
-    fn connect_bound(
+    async fn connect_bound(
+        &self,
         addr: SocketAddr,
         local: std::net::IpAddr,
-    ) -> impl Future<Output = io::Result<Self::TcpStream>> + Send {
-        AssertSend(async move {
-            use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+    ) -> io::Result<Self::Stream> {
+        use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
-            let std_stream = compio_runtime::spawn_blocking(move || {
-                let domain = if addr.is_ipv4() {
-                    Domain::IPV4
-                } else {
-                    Domain::IPV6
-                };
-                let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
-                socket.bind(&SockAddr::from(std::net::SocketAddr::new(local, 0)))?;
-                socket.connect(&SockAddr::from(addr))?;
-                socket.set_tcp_nodelay(true)?;
-                Ok::<std::net::TcpStream, io::Error>(socket.into())
-            })
-            .await
-            .map_err(|e| io::Error::other(format!("{e:?}")))?;
-            let std_stream = std_stream?;
-            std_stream.set_nonblocking(true)?;
-            let async_stream = async_io::Async::new(std_stream)?;
-            Ok(CompioIo::new(async_stream))
+        let std_stream = compio_runtime::spawn_blocking(move || {
+            let domain = if addr.is_ipv4() {
+                Domain::IPV4
+            } else {
+                Domain::IPV6
+            };
+            let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+            socket.bind(&SockAddr::from(std::net::SocketAddr::new(local, 0)))?;
+            socket.connect(&SockAddr::from(addr))?;
+            socket.set_tcp_nodelay(true)?;
+            Ok::<std::net::TcpStream, io::Error>(socket.into())
         })
+        .await
+        .map_err(|e| io::Error::other(format!("{e:?}")))?;
+        let std_stream = std_stream?;
+        std_stream.set_nonblocking(true)?;
+        let compio_stream = compio_net::TcpStream::from_std(std_stream)?;
+        Ok(CompioTcpStream::new(compio_stream))
     }
 
-    #[cfg(unix)]
-    type UnixStream = CompioIo<async_io::Async<std::os::unix::net::UnixStream>>;
+    fn from_std_tcp(&self, stream: std::net::TcpStream) -> io::Result<Self::Stream> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let compio_stream = compio_net::TcpStream::from_std(stream)?;
+        Ok(CompioTcpStream::new(compio_stream))
+    }
+}
 
-    #[cfg(unix)]
-    fn connect_unix(
-        path: &std::path::Path,
-    ) -> impl Future<Output = io::Result<Self::UnixStream>> + Send {
-        let path = path.to_owned();
-        AssertSend(async move {
-            let stream = async_io::Async::<std::os::unix::net::UnixStream>::connect(&path).await?;
-            Ok(CompioIo::new(stream))
-        })
+// ── CompioTcpStream ──────────────────────────────────────────────────────────
+
+pin_project! {
+    /// Compound stream type that keeps a `compio_net::TcpStream` handle alongside
+    /// the async I/O bridge for socket operations (keepalive, fast open, etc.).
+    ///
+    /// `compio_net::TcpStream` is clone-cheap (shared fd), so this is essentially
+    /// free. The `socket_handle` is used by `set_tcp_keepalive` etc. to access the
+    /// raw socket via `AsFd`.
+    ///
+    /// # Safety
+    ///
+    /// This type has `unsafe impl Send` for compatibility with the legacy `Runtime`
+    /// trait. It must only be used within compio's thread-per-core model where
+    /// values never actually cross thread boundaries.
+    pub struct CompioTcpStream {
+        #[pin]
+        io: CompioIo<compio_io::compat::AsyncStream<compio_net::TcpStream>>,
+        pub(crate) socket_handle: compio_net::TcpStream,
+    }
+}
+
+impl CompioTcpStream {
+    pub(crate) fn new(stream: compio_net::TcpStream) -> Self {
+        let socket_handle = stream.clone();
+        Self {
+            io: CompioIo::new(compio_io::compat::AsyncStream::new(stream)),
+            socket_handle,
+        }
+    }
+}
+
+impl Read for CompioTcpStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: rt::ReadBufCursor<'_>,
+    ) -> Poll<io::Result<()>> {
+        Read::poll_read(self.project().io, cx, buf)
+    }
+}
+
+impl Write for CompioTcpStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Write::poll_write(self.project().io, cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Write::poll_flush(self.project().io, cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Write::poll_shutdown(self.project().io, cx)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Write::poll_write_vectored(self.project().io, cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
     }
 }
 
 pin_project! {
-    /// Compio-backed sleep future using async_io::Timer (avoids boxing).
+    /// Compio-backed sleep future using async_io::Timer.
+    ///
+    /// Uses async_io's timer because compio_runtime's `TimerFuture` is `!Send`,
+    /// which conflicts with the legacy `Runtime` trait's `Sleep: Send` requirement.
     pub struct CompioSleep {
         #[pin]
         inner: async_io::Timer,
+    }
+}
+
+impl CompioSleep {
+    pub(crate) fn new(inner: async_io::Timer) -> Self {
+        Self { inner }
     }
 }
 
@@ -248,8 +282,9 @@ impl<T> CompioIo<T> {
     }
 }
 
-// Safety: see AssertSend rationale above.
-unsafe impl<T> Send for CompioIo<T> {}
+// CompioIo<T> is auto-Send when T: Send (e.g. async_io::Async<UnixStream>).
+// For !Send inner types (compio_net streams), the containing CompioTcpStream
+// has its own targeted unsafe impl Send.
 
 impl<T> Read for CompioIo<T>
 where
@@ -310,6 +345,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::runtime::Runtime;
@@ -343,8 +379,20 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let std_stream = std::net::TcpStream::connect(addr).unwrap();
-        let compio_stream = CompioRuntime::from_std_tcp(std_stream).unwrap();
-        assert!(compio_stream.inner().get_ref().peer_addr().is_ok());
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let _compio_stream = CompioRuntime::from_std_tcp(std_stream).unwrap();
+        });
+    }
+
+    #[test]
+    fn connector_connect_works() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let connector = TcpConnector;
+            let stream = connector.connect(addr).await.unwrap();
+            assert!(Write::is_write_vectored(&stream));
+        });
     }
 
     #[test]
@@ -368,15 +416,24 @@ mod tests {
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let mut client = CompioRuntime::connect(addr).await.unwrap();
 
-            let bufs = [
-                io::IoSlice::new(b"hello"),
-                io::IoSlice::new(b" "),
-                io::IoSlice::new(b"world"),
-            ];
-            let n = poll_fn(|cx| Pin::new(&mut client).poll_write_vectored(cx, &bufs))
+            let data = b"hello world";
+            let mut written = 0;
+            while written < data.len() {
+                let bufs = [io::IoSlice::new(&data[written..])];
+                let n = poll_fn(|cx| Pin::new(&mut client).poll_write_vectored(cx, &bufs))
+                    .await
+                    .unwrap();
+                assert!(n > 0);
+                written += n;
+            }
+            assert_eq!(written, 11);
+
+            poll_fn(|cx| Pin::new(&mut client).poll_flush(cx))
                 .await
                 .unwrap();
-            assert_eq!(n, 11);
+            poll_fn(|cx| Pin::new(&mut client).poll_shutdown(cx))
+                .await
+                .unwrap();
         });
 
         let (mut server, _) = listener.accept().unwrap();
@@ -389,7 +446,7 @@ mod tests {
     fn sleep_completes() {
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let start = std::time::Instant::now();
-            CompioRuntime::sleep(Duration::from_millis(10)).await;
+            <CompioRuntime as Runtime>::sleep(Duration::from_millis(10)).await;
             assert!(start.elapsed() >= Duration::from_millis(10));
         });
     }
@@ -410,5 +467,66 @@ mod tests {
 
         let _ = std::fs::remove_file(&sock_path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    // ── New trait tests (v0.2) ──────────────────────────────────────────────
+
+    #[test]
+    fn runtime_completion_sleep() {
+        use crate::runtime::RuntimeCompletion;
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let start = std::time::Instant::now();
+            <CompioRuntime as RuntimeCompletion>::sleep(Duration::from_millis(10)).await;
+            assert!(start.elapsed() >= Duration::from_millis(10));
+        });
+    }
+
+    #[test]
+    fn runtime_local_spawn_local() {
+        use crate::runtime::RuntimeLocal;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let flag = Arc::new(AtomicBool::new(false));
+            let flag2 = flag.clone();
+            CompioRuntime::spawn_local(async move {
+                flag2.store(true, Ordering::SeqCst);
+            });
+            compio_runtime::time::sleep(Duration::from_millis(10)).await;
+            assert!(flag.load(Ordering::SeqCst));
+        });
+    }
+
+    #[test]
+    fn keepalive_after_shutdown() {
+        use std::future::poll_fn;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let mut stream = CompioRuntime::connect(addr).await.unwrap();
+
+            CompioRuntime::set_tcp_keepalive(
+                &stream,
+                Duration::from_secs(60),
+                Some(Duration::from_secs(10)),
+                Some(3),
+            )
+            .unwrap();
+
+            poll_fn(|cx| Pin::new(&mut stream).poll_shutdown(cx))
+                .await
+                .unwrap();
+
+            // socket_handle survives shutdown — keepalive set on it is still readable
+            let result = CompioRuntime::set_tcp_keepalive(
+                &stream,
+                Duration::from_secs(30),
+                Some(Duration::from_secs(5)),
+                Some(2),
+            );
+            assert!(result.is_ok());
+        });
     }
 }

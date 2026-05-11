@@ -8,54 +8,40 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::Runtime;
+use super::{Connector, RuntimeCompletion, RuntimePoll};
 
 /// Tokio async runtime implementation.
 pub struct TokioRuntime;
 
-impl Runtime for TokioRuntime {
-    type TcpStream = TokioIo<tokio::net::TcpStream>;
+// ── New trait impls (v0.2) ──────────────────────────────────────────────────
+
+impl RuntimeCompletion for TokioRuntime {
     type Sleep = TokioSleep;
-
-    async fn connect(addr: SocketAddr) -> io::Result<Self::TcpStream> {
-        let stream = tokio::net::TcpStream::connect(addr).await?;
-        stream.set_nodelay(true)?;
-        Ok(TokioIo::new(stream))
-    }
-
-    async fn resolve_all(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
-        let addr = format!("{host}:{port}");
-        let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
-        if addrs.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrNotAvailable,
-                "no addresses found",
-            ));
-        }
-        Ok(addrs)
-    }
 
     fn sleep(duration: Duration) -> Self::Sleep {
         TokioSleep {
             inner: tokio::time::sleep(duration),
         }
     }
+}
 
-    fn spawn<F>(future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
+impl RuntimePoll for TokioRuntime {
+    fn spawn_send<F: Future<Output = ()> + Send + 'static>(future: F) {
         tokio::spawn(future);
     }
+}
 
-    fn set_tcp_keepalive(
-        stream: &Self::TcpStream,
+// ── SocketConfig ──────────────────────────────────────────────────────────
+
+impl super::SocketConfig for TokioIo<tokio::net::TcpStream> {
+    fn set_keepalive(
+        &self,
         time: Duration,
         interval: Option<Duration>,
         retries: Option<u32>,
     ) -> io::Result<()> {
         use socket2::SockRef;
-        let sock_ref = SockRef::from(stream.inner());
+        let sock_ref = SockRef::from(self.inner());
         let mut keepalive = socket2::TcpKeepalive::new().with_time(time);
         if let Some(interval) = interval {
             keepalive = keepalive.with_interval(interval);
@@ -82,7 +68,7 @@ impl Runtime for TokioRuntime {
     }
 
     #[cfg(target_os = "linux")]
-    fn set_tcp_fast_open(stream: &Self::TcpStream) -> io::Result<()> {
+    fn set_fast_open(&self) -> io::Result<()> {
         use socket2::SockRef;
         use std::os::unix::io::AsRawFd;
 
@@ -96,7 +82,7 @@ impl Runtime for TokioRuntime {
             ) -> std::ffi::c_int;
         }
 
-        let sock_ref = SockRef::from(stream.inner());
+        let sock_ref = SockRef::from(self.inner());
         let fd = sock_ref.as_raw_fd();
         const IPPROTO_TCP: std::ffi::c_int = 6;
         const TCP_FASTOPEN_CONNECT: std::ffi::c_int = 30;
@@ -117,23 +103,33 @@ impl Runtime for TokioRuntime {
     }
 
     #[cfg(target_os = "linux")]
-    fn bind_device(stream: &Self::TcpStream, interface: &str) -> io::Result<()> {
+    fn bind_device(&self, interface: &str) -> io::Result<()> {
         use socket2::SockRef;
-        let sock_ref = SockRef::from(stream.inner());
+        let sock_ref = SockRef::from(self.inner());
         sock_ref.bind_device(Some(interface.as_bytes()))
     }
+}
 
-    fn from_std_tcp(stream: std::net::TcpStream) -> io::Result<Self::TcpStream> {
-        stream.set_nonblocking(true)?;
+// ── TcpConnector ──────────────────────────────────────────────────────────
+
+/// TCP connector for the Tokio runtime.
+#[derive(Clone, Copy, Default)]
+pub struct TcpConnector;
+
+impl Connector for TcpConnector {
+    type Stream = TokioIo<tokio::net::TcpStream>;
+
+    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
+        let stream = tokio::net::TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
-        let tokio_stream = tokio::net::TcpStream::from_std(stream)?;
-        Ok(TokioIo::new(tokio_stream))
+        Ok(TokioIo::new(stream))
     }
 
     async fn connect_bound(
+        &self,
         addr: SocketAddr,
         local: std::net::IpAddr,
-    ) -> io::Result<Self::TcpStream> {
+    ) -> io::Result<Self::Stream> {
         let socket = if addr.is_ipv4() {
             tokio::net::TcpSocket::new_v4()?
         } else {
@@ -145,13 +141,87 @@ impl Runtime for TokioRuntime {
         Ok(TokioIo::new(stream))
     }
 
-    #[cfg(unix)]
-    type UnixStream = TokioIo<tokio::net::UnixStream>;
+    fn from_std_tcp(&self, stream: std::net::TcpStream) -> io::Result<Self::Stream> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let tokio_stream = tokio::net::TcpStream::from_std(stream)?;
+        Ok(TokioIo::new(tokio_stream))
+    }
+}
 
-    #[cfg(unix)]
-    async fn connect_unix(path: &std::path::Path) -> io::Result<Self::UnixStream> {
-        let stream = tokio::net::UnixStream::connect(path).await?;
-        Ok(TokioIo::new(stream))
+#[allow(clippy::manual_async_fn)]
+impl super::ConnectorSend for TcpConnector {
+    type Stream = TokioIo<tokio::net::TcpStream>;
+
+    fn connect(&self, addr: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        async move {
+            let stream = tokio::net::TcpStream::connect(addr).await?;
+            stream.set_nodelay(true)?;
+            Ok(TokioIo::new(stream))
+        }
+    }
+
+    fn connect_bound(
+        &self,
+        addr: SocketAddr,
+        local: std::net::IpAddr,
+    ) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        async move {
+            let socket = if addr.is_ipv4() {
+                tokio::net::TcpSocket::new_v4()?
+            } else {
+                tokio::net::TcpSocket::new_v6()?
+            };
+            socket.bind(std::net::SocketAddr::new(local, 0))?;
+            let stream = socket.connect(addr).await?;
+            stream.set_nodelay(true)?;
+            Ok(TokioIo::new(stream))
+        }
+    }
+
+    fn from_std_tcp(&self, stream: std::net::TcpStream) -> io::Result<Self::Stream> {
+        stream.set_nonblocking(true)?;
+        stream.set_nodelay(true)?;
+        let tokio_stream = tokio::net::TcpStream::from_std(stream)?;
+        Ok(TokioIo::new(tokio_stream))
+    }
+}
+
+// ── DefaultResolver ───────────────────────────────────────────────────────
+
+/// Default DNS resolver using Tokio's `lookup_host`.
+pub struct DefaultResolver;
+
+impl super::Resolve for DefaultResolver {
+    fn resolve(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+        let addr = format!("{host}:{port}");
+        Box::pin(async move {
+            tokio::net::lookup_host(addr).await?.next().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found")
+            })
+        })
+    }
+
+    fn resolve_all(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send>> {
+        let addr = format!("{host}:{port}");
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
+            if addrs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    "no addresses found",
+                ));
+            }
+            Ok(addrs)
+        })
     }
 }
 
@@ -170,6 +240,13 @@ impl Future for TokioSleep {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.project().inner.poll(cx)
+    }
+}
+
+impl TokioSleep {
+    /// Create a new sleep future from a tokio sleep.
+    pub(crate) fn new(inner: tokio::time::Sleep) -> Self {
+        Self { inner }
     }
 }
 
@@ -252,6 +329,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::runtime::Runtime;
@@ -333,5 +411,146 @@ mod tests {
 
         let _ = std::fs::remove_file(&sock_path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    // ── New trait tests (v0.2) ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn runtime_completion_sleep() {
+        use crate::runtime::RuntimeCompletion;
+        let start = std::time::Instant::now();
+        <TokioRuntime as RuntimeCompletion>::sleep(Duration::from_millis(10)).await;
+        assert!(start.elapsed() >= Duration::from_millis(10));
+    }
+
+    #[tokio::test]
+    async fn runtime_poll_spawn_send() {
+        use crate::runtime::RuntimePoll;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag2 = flag.clone();
+        TokioRuntime::spawn_send(async move {
+            flag2.store(true, Ordering::SeqCst);
+        });
+        tokio::task::yield_now().await;
+        assert!(flag.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn connector_connect_works() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connector = super::TcpConnector;
+        let stream = connector.connect(addr).await.unwrap();
+        assert!(Write::is_write_vectored(&stream));
+    }
+
+    // ── ConnectorSend & SocketConfig & Resolver trait tests ────────────────
+
+    #[tokio::test]
+    async fn connector_send_connect_works() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connector = TcpConnector;
+        let stream = <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, addr)
+            .await
+            .unwrap();
+        drop(stream);
+    }
+
+    #[tokio::test]
+    async fn connector_send_connect_bound_works() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connector = TcpConnector;
+        let stream = <TcpConnector as crate::runtime::ConnectorSend>::connect_bound(
+            &connector,
+            addr,
+            "127.0.0.1".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        drop(stream);
+    }
+
+    #[tokio::test]
+    async fn connector_send_from_std_tcp_works() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let std_stream = std::net::TcpStream::connect(addr).unwrap();
+        std_stream.set_nonblocking(true).unwrap();
+        let connector = TcpConnector;
+        let result =
+            <TcpConnector as crate::runtime::ConnectorSend>::from_std_tcp(&connector, std_stream);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn connector_send_connect_future_is_send() {
+        fn assert_send<T: Send>(_: &T) {}
+        let connector = TcpConnector;
+        let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let fut = <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, addr);
+        assert_send(&fut);
+    }
+
+    #[tokio::test]
+    async fn socket_config_set_keepalive_via_trait() {
+        use crate::runtime::SocketConfig;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connector = TcpConnector;
+        let stream = <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, addr)
+            .await
+            .unwrap();
+        let result = stream.set_keepalive(
+            Duration::from_secs(60),
+            Some(Duration::from_secs(10)),
+            Some(3),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn socket_config_set_fast_open_via_trait() {
+        use crate::runtime::SocketConfig;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connector = TcpConnector;
+        let stream = <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, addr)
+            .await
+            .unwrap();
+        // On Linux this calls setsockopt(TCP_FASTOPEN_CONNECT) which may return
+        // ENOPROTOOPT if the kernel doesn't support TFO. On other platforms the
+        // default trait impl returns Ok. Either way, it must not panic.
+        let _ = stream.set_fast_open();
+    }
+
+    #[tokio::test]
+    async fn default_resolver_resolves_localhost() {
+        use crate::runtime::Resolve;
+        let resolver = DefaultResolver;
+        let addr = resolver.resolve("localhost", 80).await.unwrap();
+        assert!(addr.ip().is_loopback());
+    }
+
+    #[tokio::test]
+    async fn default_resolver_resolve_all_localhost() {
+        use crate::runtime::Resolve;
+        let resolver = DefaultResolver;
+        let addrs = resolver.resolve_all("localhost", 80).await.unwrap();
+        assert!(!addrs.is_empty());
+        assert!(addrs.iter().all(|a| a.ip().is_loopback()));
+    }
+
+    #[tokio::test]
+    async fn default_resolver_invalid_host_errors() {
+        use crate::runtime::Resolve;
+        let resolver = DefaultResolver;
+        let result = resolver
+            .resolve("this.host.does.not.exist.invalid", 80)
+            .await;
+        assert!(result.is_err());
     }
 }
