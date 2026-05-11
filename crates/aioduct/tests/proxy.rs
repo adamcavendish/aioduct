@@ -17,7 +17,7 @@ async fn test_http_proxy() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .build();
 
@@ -56,7 +56,7 @@ async fn test_proxy_settings_no_proxy_bypass() {
     )
     .no_proxy(aioduct::NoProxy::new(&format!("{}", target_addr.ip())));
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(settings)
         .build();
 
@@ -90,7 +90,7 @@ async fn test_no_proxy_wildcard_bypasses_all() {
         aioduct::ProxySettings::all(aioduct::ProxyConfig::http("http://127.0.0.1:9999").unwrap())
             .no_proxy(aioduct::NoProxy::new("*"));
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(settings)
         .build();
 
@@ -175,7 +175,7 @@ async fn test_socks5_proxy() {
         }
     });
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}")).unwrap())
         .build();
 
@@ -248,7 +248,7 @@ async fn test_socks5_proxy_with_auth() {
         }
     });
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(
             aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}"))
                 .unwrap()

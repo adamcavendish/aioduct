@@ -7,17 +7,22 @@ use tokio::runtime::Runtime;
 
 use aioduct_bench::*;
 
-fn make_aioduct_h2_client(rt: &Runtime) -> aioduct::Client<aioduct::runtime::TokioRuntime> {
+fn make_aioduct_h2_client(
+    rt: &Runtime,
+) -> aioduct::HttpEngine<aioduct::runtime::TokioRuntime, aioduct::runtime::tokio_rt::TcpConnector> {
     rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .http2_prior_knowledge()
-            .http2(
-                aioduct::Http2Config::new()
-                    .initial_stream_window_size(2 * 1024 * 1024)
-                    .initial_connection_window_size(4 * 1024 * 1024)
-                    .max_concurrent_reset_streams(1024),
-            )
-            .build()
+        aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::builder(aioduct::runtime::tokio_rt::TcpConnector)
+        .http2_prior_knowledge()
+        .http2(
+            aioduct::Http2Config::new()
+                .initial_stream_window_size(2 * 1024 * 1024)
+                .initial_connection_window_size(4 * 1024 * 1024)
+                .max_concurrent_reset_streams(1024),
+        )
+        .build()
     })
 }
 

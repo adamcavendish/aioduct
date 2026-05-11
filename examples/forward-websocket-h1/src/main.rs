@@ -1,8 +1,9 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::service::service_fn;
@@ -74,7 +75,7 @@ async fn main() -> Result<(), aioduct::Error> {
     let upstream_addr = start_ws_upstream().await;
     println!("WebSocket upstream running on {upstream_addr}");
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     // Build a WebSocket upgrade request (as a gateway would receive from a client)
     let incoming_req = http::Request::builder()

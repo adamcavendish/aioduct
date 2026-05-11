@@ -2,8 +2,9 @@ use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::Arc;
 
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
@@ -44,7 +45,7 @@ pub fn split_range(start: u64, end: u64, count: usize) -> Vec<SegmentInfo> {
 }
 
 pub async fn download_segment(
-    client: &Client<TokioRuntime>,
+    client: &HttpEngine<TokioRuntime, TcpConnector>,
     url: &str,
     output: &Path,
     seg: &SegmentInfo,

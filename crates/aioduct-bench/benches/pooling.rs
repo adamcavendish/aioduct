@@ -12,11 +12,19 @@ fn bench_h1_pool_vs_no_pool(c: &mut Criterion) {
     let addr = rt.block_on(start_http1_server(body));
     let url = format!("http://{addr}/");
 
-    let pooled = rt.block_on(async { aioduct::Client::<aioduct::runtime::TokioRuntime>::new() });
+    let pooled = rt.block_on(async {
+        aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new(aioduct::runtime::tokio_rt::TcpConnector)
+    });
     let no_pool = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .no_connection_reuse()
-            .build()
+        aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::builder(aioduct::runtime::tokio_rt::TcpConnector)
+        .no_connection_reuse()
+        .build()
     });
 
     let mut group = c.benchmark_group("h1_connection_pool");
@@ -60,22 +68,28 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
         .initial_connection_window_size(4 * 1024 * 1024)
         .max_concurrent_reset_streams(1024);
     let pooled = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .http2_prior_knowledge()
-            .http2(h2_config.clone())
-            .build()
+        aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::builder(aioduct::runtime::tokio_rt::TcpConnector)
+        .http2_prior_knowledge()
+        .http2(h2_config.clone())
+        .build()
     });
     let no_pool = rt.block_on(async {
-        aioduct::Client::<aioduct::runtime::TokioRuntime>::builder()
-            .http2_prior_knowledge()
-            .http2(
-                aioduct::Http2Config::new()
-                    .initial_stream_window_size(2 * 1024 * 1024)
-                    .initial_connection_window_size(4 * 1024 * 1024)
-                    .max_concurrent_reset_streams(1024),
-            )
-            .no_connection_reuse()
-            .build()
+        aioduct::HttpEngine::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::builder(aioduct::runtime::tokio_rt::TcpConnector)
+        .http2_prior_knowledge()
+        .http2(
+            aioduct::Http2Config::new()
+                .initial_stream_window_size(2 * 1024 * 1024)
+                .initial_connection_window_size(4 * 1024 * 1024)
+                .max_concurrent_reset_streams(1024),
+        )
+        .no_connection_reuse()
+        .build()
     });
 
     let mut group = c.benchmark_group("h2_connection_pool");

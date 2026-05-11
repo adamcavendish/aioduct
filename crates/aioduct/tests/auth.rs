@@ -15,7 +15,7 @@ async fn test_bearer_auth() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -39,7 +39,7 @@ async fn test_basic_auth() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -89,7 +89,7 @@ async fn test_digest_auth_flow() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("testuser", "testpass")
         .build();
 
@@ -145,7 +145,7 @@ async fn test_digest_auth_post_replays_buffered_body() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("testuser", "testpass")
         .build();
 
@@ -176,7 +176,7 @@ async fn test_digest_auth_post_replays_buffered_body() {
 async fn test_digest_auth_no_challenge() {
     let addr = start_server().await;
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("user", "pass")
         .build();
 

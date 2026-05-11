@@ -23,7 +23,9 @@ async fn test_cache_stores_and_returns_fresh() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
 
     // First request: hits the server, stores in cache
     let resp = client
@@ -82,7 +84,9 @@ async fn test_cacheable_gzip_response_is_decompressed_before_return_and_cache_hi
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
     let url = format!("http://{addr}/gzip-cache");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -145,7 +149,9 @@ async fn test_cache_304_revalidation() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
 
     // First: populate cache
     let resp = client
@@ -196,7 +202,9 @@ async fn test_cache_stale_if_error_serves_stale_on_5xx() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
 
     let resp = client
         .get(&format!("http://{addr}/sie"))
@@ -237,7 +245,7 @@ async fn test_cache_stale_if_error_serves_stale_on_connection_error() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache.clone())
         .build();
 
@@ -256,7 +264,7 @@ async fn test_cache_stale_if_error_serves_stale_on_connection_error() {
         drop(listener);
         port
     };
-    let client2 = Client::<TokioRuntime>::builder()
+    let client2 = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
         .resolver(move |_host: &str, _port: u16| {
             let addr = std::net::SocketAddr::from(([127, 0, 0, 1], dead_port));
@@ -304,7 +312,9 @@ async fn test_cache_stale_if_error_not_applied_without_directive() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
 
     let resp = client
         .get(&format!("http://{addr}/no-sie"))
@@ -371,7 +381,9 @@ async fn test_custom_cache_store_with_client() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
 
     let resp = client
         .get(&format!("http://{addr}/custom"))
@@ -437,7 +449,9 @@ async fn test_custom_cache_store_304_revalidation() {
     .await;
 
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
-    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
 
     let resp = client
         .get(&format!("http://{addr}/cs-reval"))
@@ -476,7 +490,9 @@ async fn test_custom_cache_store_invalidation_on_post() {
     .await;
 
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
-    let client = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
 
     let resp = client
         .get(&format!("http://{addr}/inv"))
@@ -534,10 +550,12 @@ async fn test_custom_cache_store_shared_across_cloned_clients() {
     .await;
 
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
-    let client1 = Client::<TokioRuntime>::builder()
+    let client1 = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache.clone())
         .build();
-    let client2 = Client::<TokioRuntime>::builder().cache(cache).build();
+    let client2 = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .build();
 
     let resp = client1
         .get(&format!("http://{addr}/shared"))
