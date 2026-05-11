@@ -1,5 +1,6 @@
 use aioduct::runtime::TokioRuntime;
-use aioduct::{Client, NoProxy, ProxyConfig, ProxySettings};
+use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{HttpEngine, NoProxy, ProxyConfig, ProxySettings};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
@@ -7,7 +8,7 @@ async fn main() -> Result<(), aioduct::Error> {
     println!("=== Proxy Configuration Examples ===\n");
 
     // Single HTTP proxy for all traffic
-    let _client = Client::<TokioRuntime>::builder()
+    let _client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(ProxySettings::all(
             ProxyConfig::http("http://proxy.example.com:8080").unwrap(),
         ))
@@ -16,7 +17,7 @@ async fn main() -> Result<(), aioduct::Error> {
     println!("1. HTTP proxy: http://proxy.example.com:8080");
 
     // SOCKS5 proxy (e.g., via SSH tunnel or Tor)
-    let _client = Client::<TokioRuntime>::builder()
+    let _client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(ProxySettings::all(
             ProxyConfig::socks5("socks5://127.0.0.1:1080").unwrap(),
         ))
@@ -25,7 +26,7 @@ async fn main() -> Result<(), aioduct::Error> {
     println!("2. SOCKS5 proxy: socks5://127.0.0.1:1080");
 
     // Separate proxies for HTTP and HTTPS
-    let _client = Client::<TokioRuntime>::builder()
+    let _client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(
             ProxySettings::default()
                 .http(ProxyConfig::http("http://http-proxy:3128").unwrap())
@@ -36,7 +37,7 @@ async fn main() -> Result<(), aioduct::Error> {
     println!("3. Split HTTP/HTTPS proxies");
 
     // Proxy with authentication
-    let _client = Client::<TokioRuntime>::builder()
+    let _client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(ProxySettings::all(
             ProxyConfig::http("http://user:password@proxy.example.com:8080").unwrap(),
         ))
@@ -45,7 +46,7 @@ async fn main() -> Result<(), aioduct::Error> {
     println!("4. Authenticated proxy");
 
     // No-proxy list: bypass proxy for certain hosts
-    let _client = Client::<TokioRuntime>::builder()
+    let _client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(
             ProxySettings::all(ProxyConfig::http("http://proxy.example.com:8080").unwrap())
                 .no_proxy(NoProxy::new("localhost,127.0.0.1,.internal.corp")),

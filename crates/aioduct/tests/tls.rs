@@ -78,7 +78,7 @@ async fn test_https_local_tls_server() {
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
-    let client: Client<TokioRuntime> = Client::builder()
+    let client: HttpEngine<TokioRuntime, TcpConnector> = HttpEngine::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build();
@@ -167,7 +167,7 @@ async fn test_https_h1_local_tls_server() {
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
-    let client: Client<TokioRuntime> = Client::builder()
+    let client: HttpEngine<TokioRuntime, TcpConnector> = HttpEngine::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build();
@@ -254,7 +254,7 @@ async fn test_https_no_alpn_server() {
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
-    let client: Client<TokioRuntime> = Client::builder()
+    let client: HttpEngine<TokioRuntime, TcpConnector> = HttpEngine::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build();
@@ -335,7 +335,7 @@ async fn test_https_with_webpki_roots_local() {
     // (default ALPN) but against self-signed cert
     let connector = aioduct::tls::RustlsConnector::danger_accept_invalid_certs();
 
-    let client: Client<TokioRuntime> = Client::builder()
+    let client: HttpEngine<TokioRuntime, TcpConnector> = HttpEngine::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build();

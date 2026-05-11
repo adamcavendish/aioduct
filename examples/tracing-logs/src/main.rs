@@ -1,5 +1,6 @@
 use aioduct::runtime::TokioRuntime;
-use aioduct::{Client, TracingMiddleware};
+use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{HttpEngine, TracingMiddleware};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
@@ -10,7 +11,7 @@ async fn main() -> Result<(), aioduct::Error> {
 
     tracing::info!("starting tracing example");
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(TracingMiddleware)
         .build();
 

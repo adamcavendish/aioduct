@@ -1,11 +1,12 @@
 // features: tokio
 // runtime: tokio
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http("http://proxy.corp:8080"))
         .proxy(aioduct::ProxyConfig::https("http://proxy.corp:8080"))
         .build();

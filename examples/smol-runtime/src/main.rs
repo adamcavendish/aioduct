@@ -1,9 +1,12 @@
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::SmolRuntime;
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = Client::<SmolRuntime>::builder().build();
+        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+            aioduct::runtime::smol_rt::TcpConnector,
+        )
+        .build();
 
         let resp = client.get("https://httpbin.org/get")?.send().await?;
 

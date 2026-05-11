@@ -1,5 +1,6 @@
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
@@ -7,7 +8,7 @@ async fn main() -> Result<(), aioduct::Error> {
     let mut default_headers = http::HeaderMap::new();
     default_headers.insert("x-custom-global", "from-client".parse().unwrap());
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .user_agent("my-app/1.0")
         .default_headers(default_headers)
         .build();

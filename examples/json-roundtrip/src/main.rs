@@ -1,5 +1,6 @@
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -18,7 +19,7 @@ struct PostResponse {
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder().build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
 
     // POST JSON and deserialize the response
     let payload = CreatePost {

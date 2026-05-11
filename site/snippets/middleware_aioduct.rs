@@ -1,7 +1,8 @@
 // features: tokio,tower
 // runtime: tokio
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::middleware::Middleware;
 
 struct LoggingMiddleware;
@@ -18,7 +19,7 @@ impl Middleware for LoggingMiddleware {
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(LoggingMiddleware)
         .build();
 

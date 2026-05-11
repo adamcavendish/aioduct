@@ -5,13 +5,14 @@
 
 use std::time::Instant;
 
-use aioduct::Client;
+use aioduct::HttpEngine;
 use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn h3_0rtt_reconnection_latency() {
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .http3(true)
         .h3_zero_rtt(true)
@@ -87,7 +88,7 @@ async fn h3_0rtt_reconnection_latency() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn h3_without_0rtt_baseline() {
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .http3(true)
         .h3_zero_rtt(false)

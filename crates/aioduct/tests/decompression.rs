@@ -22,7 +22,7 @@ async fn test_gzip_decompression() {
         Ok::<_, Infallible>(resp)
     };
     let addr = start_server_with(handler).await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -46,7 +46,7 @@ async fn test_gzip_accept_encoding_header() {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(accept))))
     };
     let addr = start_server_with(handler).await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let text = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -78,7 +78,9 @@ async fn test_no_decompression_passthrough() {
         Ok::<_, Infallible>(resp)
     };
     let addr = start_server_with(handler).await;
-    let client = Client::<TokioRuntime>::builder().no_decompression().build();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .no_decompression()
+        .build();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -110,7 +112,7 @@ async fn test_deflate_decompression() {
         Ok::<_, Infallible>(resp)
     };
     let addr = start_server_with(handler).await;
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let text = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -143,7 +145,7 @@ async fn test_get_no_content_headers() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -166,7 +168,7 @@ async fn test_gzip_empty_body_head_request() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .head(&format!("http://{addr}/gzip"))
         .unwrap()
@@ -190,7 +192,7 @@ async fn test_custom_accept_encoding_preserved() {
     })
     .await;
 
-    let client = Client::<TokioRuntime>::new();
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
