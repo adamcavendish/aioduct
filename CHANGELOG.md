@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-05-11
+
+### Fixed
+- Stale connection retry now works for buffered POST bodies — non-streaming request bodies are transparently replayed when a pooled connection turns out to be stale, fixing "connection closed" errors for POST+JSON requests that previously only retried for empty-body methods (GET, HEAD, DELETE)
+
 ## [0.1.9] - 2026-05-10
 
 ### Fixed
