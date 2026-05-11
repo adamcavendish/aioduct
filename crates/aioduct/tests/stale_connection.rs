@@ -345,6 +345,142 @@ async fn stale_retry_skipped_for_streaming_body() {
     );
 }
 
+/// POST with buffered JSON body (.json()) on a stale connection.
+/// Now that buffered bodies are replayed on stale connection retry,
+/// this should succeed transparently — the exact fix for the scheduler
+/// "connection closed" errors on POST + .json(&data).
+#[tokio::test]
+async fn stale_retry_works_for_post_json_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let conn_count = Arc::new(AtomicUsize::new(0));
+    let conn_count2 = conn_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let n = conn_count2.fetch_add(1, Ordering::SeqCst);
+
+            tokio::spawn(async move {
+                if n == 0 {
+                    // First connection: serve one GET, then RST on next request.
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream.write_all(http_200_keepalive()).await;
+                    let _ = stream.flush().await;
+
+                    // Wait for second request to begin.
+                    let mut peek = [0u8; 1];
+                    match stream.read(&mut peek).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) => {}
+                    }
+                    // RST.
+                    let raw = stream.into_std().unwrap();
+                    let sock = socket2::SockRef::from(&raw);
+                    let _ = sock.set_linger(Some(Duration::from_secs(0)));
+                    drop(raw);
+                } else {
+                    // Subsequent connections: serve normally.
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream.write_all(http_200_keepalive()).await;
+                    let _ = stream.flush().await;
+                }
+            });
+        }
+    });
+
+    let client = Client::<TokioRuntime>::builder()
+        .pool_idle_timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(2))
+        .build();
+
+    let url = format!("http://{addr}/");
+
+    // First request (GET) succeeds; connection pooled.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    // POST with JSON body on the stale connection.
+    // This is the exact pattern used by the scheduler:
+    //   client.post(&url).and_then(|b| b.json(&data)).send().await
+    let payload = serde_json::json!({"prompt": "hello", "max_tokens": 100});
+    let result = client
+        .post(&url)
+        .unwrap()
+        .json(&payload)
+        .unwrap()
+        .send()
+        .await;
+
+    // POST with buffered JSON body → replay_body available → retried → succeeds.
+    let resp = result.expect("POST with buffered JSON body should be retried on stale connection");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "ok");
+}
+
+/// Contrast test: GET (empty body) on the same stale connection IS retried
+/// and succeeds. This proves the retry mechanism works but is gated on body.
+#[tokio::test]
+async fn stale_retry_works_for_get_empty_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let conn_count = Arc::new(AtomicUsize::new(0));
+    let conn_count2 = conn_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let n = conn_count2.fetch_add(1, Ordering::SeqCst);
+
+            tokio::spawn(async move {
+                if n == 0 {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream.write_all(http_200_keepalive()).await;
+                    let _ = stream.flush().await;
+
+                    let mut peek = [0u8; 1];
+                    match stream.read(&mut peek).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) => {}
+                    }
+                    let raw = stream.into_std().unwrap();
+                    let sock = socket2::SockRef::from(&raw);
+                    let _ = sock.set_linger(Some(Duration::from_secs(0)));
+                    drop(raw);
+                } else {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream.write_all(http_200_keepalive()).await;
+                    let _ = stream.flush().await;
+                }
+            });
+        }
+    });
+
+    let client = Client::<TokioRuntime>::builder()
+        .pool_idle_timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(2))
+        .build();
+
+    let url = format!("http://{addr}/");
+
+    // First request: pooled.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    // Second request: GET (empty body) on stale connection → retried → succeeds.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "ok");
+}
+
 /// Probabilistic test: send many requests through a server that randomly
 /// closes connections. Without transparent retry some will fail; with the
 /// fix all should succeed.
