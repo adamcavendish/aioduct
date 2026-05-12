@@ -150,7 +150,7 @@ impl BodyStream {
                 }
                 Some(Err(e)) => {
                     self.done = true;
-                    self.fire_transfer_complete();
+                    self.fire_transfer_aborted(&e);
                     return Some(Err(e));
                 }
                 None => {
@@ -166,7 +166,7 @@ impl BodyStream {
         if let Some(ctx) = &self.observer_ctx {
             let transfer_duration = self.transfer_start.elapsed();
             let throughput = if transfer_duration.as_secs_f64() > 0.0 {
-                self.cumulative_bytes as f64 / transfer_duration.as_secs_f64()
+                (self.cumulative_bytes as f64 / transfer_duration.as_secs_f64()) as f32
             } else {
                 0.0
             };
@@ -178,6 +178,22 @@ impl BodyStream {
                     total_bytes: self.cumulative_bytes,
                     transfer_duration,
                     throughput_bytes_per_sec: throughput,
+                },
+                at: observer::Instant::now(),
+            });
+        }
+    }
+
+    fn fire_transfer_aborted(&self, error: &crate::error::Error) {
+        if let Some(ctx) = &self.observer_ctx {
+            ctx.observer.on_event(&RequestEvent {
+                method: ctx.method.clone(),
+                uri: ctx.uri.clone(),
+                phase: RequestPhase::TransferAborted {
+                    direction: TransferDirection::Download,
+                    bytes_transferred: self.cumulative_bytes,
+                    elapsed: self.transfer_start.elapsed(),
+                    error: error.to_string(),
                 },
                 at: observer::Instant::now(),
             });

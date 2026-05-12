@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use aioduct::HttpEngine;
 use aioduct::observer::{
-    NegotiatedProtocol, PoolOutcome, RequestEvent, RequestObserver, RequestPhase, TransferDirection,
+    ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
+    RequestObserver, RequestPhase, TransferDirection,
 };
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
@@ -41,7 +42,7 @@ impl TracingObserver {
         }
     }
 
-    fn format_throughput(bytes_per_sec: f64) -> String {
+    fn format_throughput(bytes_per_sec: f32) -> String {
         if bytes_per_sec >= 1_000_000_000.0 {
             format!("{:.1} GB/s", bytes_per_sec / 1_000_000_000.0)
         } else if bytes_per_sec >= 1_000_000.0 {
@@ -200,7 +201,27 @@ impl RequestObserver for TracingObserver {
                 );
             }
 
-            RequestPhase::ConnectionMetrics {
+            RequestPhase::TransferAborted {
+                direction,
+                bytes_transferred,
+                elapsed,
+                error,
+            } => {
+                tracing::warn!(
+                    %method, %uri,
+                    direction = Self::direction_str(direction),
+                    transferred = Self::format_bytes(*bytes_transferred).as_str(),
+                    elapsed_ms = format_args!("{:.2}", elapsed.as_secs_f64() * 1000.0),
+                    %error,
+                    "✗ transfer.aborted"
+                );
+            }
+        }
+    }
+
+    fn on_connection_event(&self, event: &ConnectionEvent) {
+        match &event.phase {
+            ConnectionPhase::Metrics {
                 remote_addr,
                 protocol,
                 bytes_sent,

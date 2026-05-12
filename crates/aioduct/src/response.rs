@@ -302,30 +302,50 @@ impl Response {
     /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes, Error> {
         let observer_ctx = self.observer_ctx;
+        let response_started = observer_ctx.as_ref().map(|c| c.response_started);
         let body = self.inner.into_body();
-        let collected = body.collect().await?;
-        let bytes = collected.to_bytes();
-        if let Some(ctx) = &observer_ctx {
-            let total_bytes = bytes.len() as u64;
-            let transfer_duration = ctx.response_started.elapsed();
-            let throughput = if transfer_duration.as_secs_f64() > 0.0 {
-                total_bytes as f64 / transfer_duration.as_secs_f64()
-            } else {
-                0.0
-            };
-            ctx.observer.on_event(&RequestEvent {
-                method: ctx.method.clone(),
-                uri: ctx.uri.clone(),
-                phase: RequestPhase::TransferComplete {
-                    direction: TransferDirection::Download,
-                    total_bytes,
-                    transfer_duration,
-                    throughput_bytes_per_sec: throughput,
-                },
-                at: observer::Instant::now(),
-            });
+        match body.collect().await {
+            Ok(collected) => {
+                let bytes = collected.to_bytes();
+                if let Some(ctx) = &observer_ctx {
+                    let total_bytes = bytes.len() as u64;
+                    let transfer_duration = ctx.response_started.elapsed();
+                    let throughput = if transfer_duration.as_secs_f64() > 0.0 {
+                        (total_bytes as f64 / transfer_duration.as_secs_f64()) as f32
+                    } else {
+                        0.0
+                    };
+                    ctx.observer.on_event(&RequestEvent {
+                        method: ctx.method.clone(),
+                        uri: ctx.uri.clone(),
+                        phase: RequestPhase::TransferComplete {
+                            direction: TransferDirection::Download,
+                            total_bytes,
+                            transfer_duration,
+                            throughput_bytes_per_sec: throughput,
+                        },
+                        at: observer::Instant::now(),
+                    });
+                }
+                Ok(bytes)
+            }
+            Err(e) => {
+                if let Some(ctx) = &observer_ctx {
+                    ctx.observer.on_event(&RequestEvent {
+                        method: ctx.method.clone(),
+                        uri: ctx.uri.clone(),
+                        phase: RequestPhase::TransferAborted {
+                            direction: TransferDirection::Download,
+                            bytes_transferred: 0,
+                            elapsed: response_started.unwrap().elapsed(),
+                            error: e.to_string(),
+                        },
+                        at: observer::Instant::now(),
+                    });
+                }
+                Err(e)
+            }
         }
-        Ok(bytes)
     }
 
     /// Consume the response body and return it as a UTF-8 string.
