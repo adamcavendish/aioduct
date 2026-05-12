@@ -318,6 +318,7 @@ async fn test_happy_eyeballs_multi_addrs_integration() {
     assert_eq!(body, "he-ok");
 }
 #[tokio::test]
+#[allow(deprecated)]
 async fn test_timings_http_direct() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -362,6 +363,7 @@ async fn test_timings_http_direct() {
 }
 #[cfg(feature = "rustls")]
 #[tokio::test]
+#[allow(deprecated)]
 async fn test_timings_https_with_tls() {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());

@@ -5,6 +5,10 @@ use std::time::Duration;
 /// Captures the duration of each connection phase (DNS, TCP, TLS, transfer).
 /// Phases that were skipped (e.g. no DNS for literal IPs, no TLS for HTTP,
 /// pool hit that skips all connection phases) are `None`.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use `observer::RequestObserver` for detailed per-phase timing"
+)]
 #[derive(Debug, Clone)]
 pub struct RequestTimings {
     pub(crate) dns: Option<Duration>,
@@ -14,6 +18,7 @@ pub struct RequestTimings {
     pub(crate) total: Duration,
 }
 
+#[allow(deprecated)]
 impl RequestTimings {
     /// Time spent resolving the hostname. `None` if the address was a literal
     /// IP, the connection came from the pool, or DNS was handled by a proxy.
@@ -44,6 +49,10 @@ impl RequestTimings {
     }
 }
 
+#[deprecated(
+    since = "0.2.0",
+    note = "Use `observer::RequestObserver` for detailed per-phase timing"
+)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TimingCollector {
     pub(crate) dns: Option<Duration>,
@@ -51,6 +60,7 @@ pub(crate) struct TimingCollector {
     pub(crate) tls_handshake: Option<Duration>,
 }
 
+#[allow(deprecated)]
 impl TimingCollector {
     pub(crate) fn into_timings(
         self,
@@ -68,6 +78,7 @@ impl TimingCollector {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

@@ -69,6 +69,7 @@ pub struct HttpEngine<R: RuntimePoll, C: ConnectorSend> {
     pub(crate) hsts: Option<crate::hsts::HstsStore>,
     pub(crate) h2c_probe_cache: H2cProbeCache,
     pub(crate) connection_coalescing: bool,
+    pub(crate) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
     #[cfg(feature = "tower")]
     pub(crate) tower_connector: Option<crate::connector::LayeredConnector<C>>,
     #[cfg(feature = "rustls")]
@@ -121,6 +122,7 @@ impl<R: RuntimePoll, C: ConnectorSend> Clone for HttpEngine<R, C> {
             hsts: self.hsts.clone(),
             h2c_probe_cache: self.h2c_probe_cache.clone(),
             connection_coalescing: self.connection_coalescing,
+            observer: self.observer.clone(),
             #[cfg(feature = "tower")]
             tower_connector: self.tower_connector.clone(),
             #[cfg(feature = "rustls")]
