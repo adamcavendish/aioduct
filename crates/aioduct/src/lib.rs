@@ -163,7 +163,8 @@ pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
 pub use netrc::{Netrc, NetrcMiddleware};
 pub use observer::{
-    NegotiatedProtocol, PoolOutcome, RequestEvent, RequestObserver, RequestPhase, TransferDirection,
+    ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
+    RequestObserver, RequestPhase, TransferDirection,
 };
 pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};

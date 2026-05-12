@@ -39,10 +39,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         if let Some(ref obs) = self.observer
             && let Some(remote_addr) = conn.remote_addr
         {
-            obs.on_event(&RequestEvent {
-                method: http::Method::GET,
-                uri: Uri::default(),
-                phase: RequestPhase::ConnectionMetrics {
+            obs.on_connection_event(&observer::ConnectionEvent {
+                phase: observer::ConnectionPhase::Metrics {
                     remote_addr,
                     protocol: Self::connection_protocol(conn),
                     bytes_sent: conn.bytes_sent,

@@ -70,7 +70,7 @@ pub enum TransferDirection {
 /// Each variant represents a phase transition in the request lifecycle.
 /// Phases that are skipped (e.g., DNS for pool hits, TLS for plain HTTP)
 /// simply don't fire.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RequestPhase {
     /// Request execution has started (after rate limiting, if any).
@@ -166,25 +166,19 @@ pub enum RequestPhase {
         /// Total transfer duration.
         transfer_duration: Duration,
         /// Observed throughput in bytes/sec.
-        throughput_bytes_per_sec: f64,
+        throughput_bytes_per_sec: f32,
     },
 
-    /// Connection-level metrics (fires at pool checkin or connection close).
-    ConnectionMetrics {
-        /// Remote address of the connection.
-        remote_addr: SocketAddr,
-        /// Protocol version.
-        protocol: NegotiatedProtocol,
-        /// Total bytes sent on this connection across all requests.
-        bytes_sent: u64,
-        /// Total bytes received on this connection.
-        bytes_received: u64,
-        /// Connection lifetime.
-        connection_age: Duration,
-        /// Number of requests served by this connection.
-        requests_served: u32,
-        /// Whether the connection was closed (vs returned to pool).
-        closed: bool,
+    /// Transfer aborted due to an error before completion.
+    TransferAborted {
+        /// Direction of the aborted transfer.
+        direction: TransferDirection,
+        /// Bytes successfully transferred before the error.
+        bytes_transferred: u64,
+        /// Time elapsed since transfer started.
+        elapsed: Duration,
+        /// Error that caused the abort.
+        error: String,
     },
 }
 
@@ -220,6 +214,43 @@ pub struct RequestEvent {
 pub trait RequestObserver: Send + Sync + 'static {
     /// Called at each phase transition during request execution.
     fn on_event(&self, event: &RequestEvent);
+
+    /// Called for connection-level lifecycle events (not tied to a specific request).
+    fn on_connection_event(&self, event: &ConnectionEvent);
+}
+
+/// Connection-level event (not tied to a specific request).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ConnectionPhase {
+    /// Connection-level metrics (fires at pool checkin or connection close).
+    Metrics {
+        /// Remote address of the connection.
+        remote_addr: SocketAddr,
+        /// Protocol version.
+        protocol: NegotiatedProtocol,
+        /// Approximate bytes sent (from body size hints). Exact counts
+        /// are available via per-request `TransferComplete` events.
+        bytes_sent: u64,
+        /// Approximate bytes received (from Content-Length header). Exact
+        /// counts are available via per-request `TransferComplete` events.
+        bytes_received: u64,
+        /// Connection lifetime.
+        connection_age: Duration,
+        /// Number of requests served by this connection.
+        requests_served: u32,
+        /// Whether the connection was closed (vs returned to pool).
+        closed: bool,
+    },
+}
+
+/// Event fired for connection-level lifecycle transitions.
+#[derive(Debug, Clone)]
+pub struct ConnectionEvent {
+    /// The phase that completed.
+    pub phase: ConnectionPhase,
+    /// Monotonic timestamp.
+    pub at: Instant,
 }
 
 #[cfg(test)]
@@ -294,7 +325,13 @@ mod tests {
             transfer_duration: Duration::from_millis(500),
             throughput_bytes_per_sec: 16384.0,
         };
-        let _ = RequestPhase::ConnectionMetrics {
+        let _ = RequestPhase::TransferAborted {
+            direction: TransferDirection::Download,
+            bytes_transferred: 2048,
+            elapsed: Duration::from_millis(100),
+            error: "connection reset".into(),
+        };
+        let _ = ConnectionPhase::Metrics {
             remote_addr: "10.0.0.1:443".parse().unwrap(),
             protocol: NegotiatedProtocol::Http2,
             bytes_sent: 1024,
@@ -326,6 +363,8 @@ mod tests {
         fn on_event(&self, event: &RequestEvent) {
             self.events.lock().unwrap().push(event.phase.clone());
         }
+
+        fn on_connection_event(&self, _event: &ConnectionEvent) {}
     }
 
     #[test]
