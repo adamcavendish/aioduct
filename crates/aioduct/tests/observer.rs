@@ -99,6 +99,30 @@ async fn observer_fires_full_lifecycle_on_fresh_connection() {
 }
 
 #[tokio::test]
+async fn observer_connection_metrics_fires_on_checkin() {
+    let addr = start_server().await;
+    let obs = RecordingObserver::default();
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .request_observer(obs.clone())
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    let phases = obs.phases();
+    assert!(
+        phases.contains(&"ConnectionMetrics".to_string()),
+        "Expected ConnectionMetrics on pool checkin: {phases:?}"
+    );
+}
+
+#[tokio::test]
 async fn observer_fires_pool_hit_on_reused_connection() {
     let addr = start_server().await;
     let obs = RecordingObserver::default();
