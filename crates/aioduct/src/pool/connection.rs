@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// An established HTTP connection at a specific protocol version.
 pub(crate) enum HttpConnection {
@@ -20,6 +20,14 @@ pub(crate) struct PooledConnection {
     pub(crate) tls_handshake_duration: Option<Duration>,
     /// Subject Alternative Names from peer cert (for connection coalescing).
     pub(crate) sans: Vec<String>,
+    /// When this connection was established.
+    pub(crate) created_at: Instant,
+    /// Number of request/response cycles served on this connection.
+    pub(crate) requests_served: u32,
+    /// Cumulative bytes sent (request bodies) on this connection.
+    pub(crate) bytes_sent: u64,
+    /// Cumulative bytes received (response bodies) on this connection.
+    pub(crate) bytes_received: u64,
 }
 
 impl PooledConnection {
@@ -33,6 +41,10 @@ impl PooledConnection {
             tls_info: None,
             tls_handshake_duration: None,
             sans: Vec::new(),
+            created_at: Instant::now(),
+            requests_served: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
         }
     }
 
@@ -46,6 +58,10 @@ impl PooledConnection {
             tls_info: None,
             tls_handshake_duration: None,
             sans: Vec::new(),
+            created_at: Instant::now(),
+            requests_served: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
         }
     }
 
@@ -60,6 +76,10 @@ impl PooledConnection {
             tls_info: None,
             tls_handshake_duration: None,
             sans: Vec::new(),
+            created_at: Instant::now(),
+            requests_served: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
         }
     }
 
