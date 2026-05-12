@@ -1,15 +1,18 @@
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use bytes::Bytes;
 #[cfg(feature = "json")]
 use http::header::CONTENT_TYPE;
 use http::header::{CONTENT_LENGTH, HeaderMap};
-use http::{StatusCode, Uri, Version};
+use http::{Method, StatusCode, Uri, Version};
 use http_body_util::BodyExt;
 
 use crate::error::{AioductBody, Error};
+use crate::observer::{self, RequestEvent, RequestObserver, RequestPhase, TransferDirection};
 
 pin_project_lite::pin_project! {
     #[project = ResponseBodyProj]
@@ -73,7 +76,17 @@ pub struct Response {
     url: Uri,
     remote_addr: Option<SocketAddr>,
     tls_info: Option<crate::tls::TlsInfo>,
+    #[allow(deprecated)]
     timings: Option<crate::timing::RequestTimings>,
+    observer_ctx: Option<BodyObserverCtx>,
+}
+
+#[derive(Clone)]
+pub(crate) struct BodyObserverCtx {
+    pub(crate) observer: Arc<dyn RequestObserver>,
+    pub(crate) method: Method,
+    pub(crate) uri: Uri,
+    pub(crate) response_started: Instant,
 }
 
 impl std::fmt::Debug for Response {
@@ -94,6 +107,7 @@ impl Response {
             remote_addr: None,
             tls_info: None,
             timings: None,
+            observer_ctx: None,
         }
     }
 
@@ -105,6 +119,7 @@ impl Response {
             remote_addr: None,
             tls_info: None,
             timings: None,
+            observer_ctx: None,
         }
     }
 
@@ -116,6 +131,11 @@ impl Response {
         self.tls_info = info;
     }
 
+    pub(crate) fn set_observer_ctx(&mut self, ctx: BodyObserverCtx) {
+        self.observer_ctx = Some(ctx);
+    }
+
+    #[allow(deprecated)]
     pub(crate) fn set_timings(&mut self, timings: Option<crate::timing::RequestTimings>) {
         self.timings = timings;
     }
@@ -150,6 +170,7 @@ impl Response {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             timings: self.timings,
+            observer_ctx: self.observer_ctx,
         }
     }
 
@@ -167,6 +188,7 @@ impl Response {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             timings: self.timings,
+            observer_ctx: self.observer_ctx,
         }
     }
 
@@ -181,6 +203,7 @@ impl Response {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             timings: self.timings,
+            observer_ctx: self.observer_ctx,
         }
     }
 
@@ -200,6 +223,11 @@ impl Response {
     }
 
     /// Returns per-request timing breakdown (DNS, TCP, TLS, TTFB, total).
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `RequestObserver` for detailed per-phase timing"
+    )]
+    #[allow(deprecated)]
     pub fn timings(&self) -> Option<&crate::timing::RequestTimings> {
         self.timings.as_ref()
     }
@@ -272,9 +300,31 @@ impl Response {
 
     /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes, Error> {
+        let observer_ctx = self.observer_ctx;
         let body = self.inner.into_body();
         let collected = body.collect().await?;
-        Ok(collected.to_bytes())
+        let bytes = collected.to_bytes();
+        if let Some(ctx) = &observer_ctx {
+            let total_bytes = bytes.len() as u64;
+            let transfer_duration = ctx.response_started.elapsed();
+            let throughput = if transfer_duration.as_secs_f64() > 0.0 {
+                total_bytes as f64 / transfer_duration.as_secs_f64()
+            } else {
+                0.0
+            };
+            ctx.observer.on_event(&RequestEvent {
+                method: ctx.method.clone(),
+                uri: ctx.uri.clone(),
+                phase: RequestPhase::TransferComplete {
+                    direction: TransferDirection::Download,
+                    total_bytes,
+                    transfer_duration,
+                    throughput_bytes_per_sec: throughput,
+                },
+                at: observer::Instant::now(),
+            });
+        }
+        Ok(bytes)
     }
 
     /// Consume the response body and return it as a UTF-8 string.
@@ -347,7 +397,10 @@ impl Response {
 
     /// Convert the response into an async byte stream.
     pub fn into_bytes_stream(self) -> crate::body::BodyStream {
-        crate::body::BodyStream::new(self.inner.into_body().into_boxed())
+        crate::body::BodyStream::with_observer(
+            self.inner.into_body().into_boxed(),
+            self.observer_ctx,
+        )
     }
 
     /// Convert the response into a Server-Sent Events stream.
