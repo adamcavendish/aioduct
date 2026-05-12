@@ -14,8 +14,24 @@ pub use coarsetime::Instant;
 #[cfg(feature = "precise-timing")]
 pub use std::time::Instant;
 
+#[cfg(feature = "serde")]
+mod serde_status_code {
+    use http::StatusCode;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(status: &StatusCode, s: S) -> Result<S::Ok, S::Error> {
+        status.as_u16().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<StatusCode, D::Error> {
+        let code = u16::deserialize(d)?;
+        StatusCode::from_u16(code).map_err(serde::de::Error::custom)
+    }
+}
+
 /// How the connection was obtained for this request.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PoolOutcome {
     /// Exact pool key match — connection reused.
     Hit,
@@ -29,6 +45,7 @@ pub enum PoolOutcome {
 
 /// The HTTP protocol negotiated on the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NegotiatedProtocol {
     /// HTTP/1.0 or HTTP/1.1.
     Http1,
@@ -40,6 +57,7 @@ pub enum NegotiatedProtocol {
 
 /// Direction of data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TransferDirection {
     /// Client → Server (request body, WebSocket send).
     Upload,
@@ -53,6 +71,7 @@ pub enum TransferDirection {
 /// Phases that are skipped (e.g., DNS for pool hits, TLS for plain HTTP)
 /// simply don't fire.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RequestPhase {
     /// Request execution has started (after rate limiting, if any).
     Started,
@@ -108,6 +127,7 @@ pub enum RequestPhase {
     /// Response headers fully received.
     ResponseComplete {
         /// HTTP status code.
+        #[cfg_attr(feature = "serde", serde(with = "serde_status_code"))]
         status: StatusCode,
         /// Protocol used for the response.
         protocol: NegotiatedProtocol,

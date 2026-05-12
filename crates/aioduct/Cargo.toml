@@ -14,7 +14,8 @@ exclude = ["docs/", "target/"]
 [features]
 default = []
 precise-timing = []
-json = ["dep:serde", "dep:serde_json", "dep:serde_urlencoded"]
+serde = ["dep:serde"]
+json = ["serde", "dep:serde_json", "dep:serde_urlencoded"]
 charset = ["dep:encoding_rs", "dep:mime"]
 rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile", "dep:x509-parser"]
 rustls-ring = ["rustls?/ring", "quinn?/rustls-ring"]
@@ -121,6 +122,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [package.metadata.docs.rs]
 features = [
+    "serde",
     "json",
     "charset",
     "rustls",
