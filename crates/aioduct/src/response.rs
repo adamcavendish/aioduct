@@ -2,7 +2,8 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Instant;
+
+use crate::clock::Instant;
 
 use bytes::Bytes;
 #[cfg(feature = "json")]
