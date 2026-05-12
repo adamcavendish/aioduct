@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use aioduct::HttpEngine;
 use aioduct::observer::{
-    NegotiatedProtocol, PoolOutcome, RequestEvent, RequestObserver, RequestPhase, TransferDirection,
+    ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
+    RequestObserver, RequestPhase, TransferDirection,
 };
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
@@ -217,13 +218,38 @@ impl RequestObserver for OtelObserver {
                         ),
                         KeyValue::new(
                             "transfer.throughput_bytes_per_sec",
-                            *throughput_bytes_per_sec,
+                            *throughput_bytes_per_sec as f64,
                         ),
                     ],
                 );
             }
 
-            RequestPhase::ConnectionMetrics {
+            RequestPhase::TransferAborted {
+                direction,
+                bytes_transferred,
+                elapsed,
+                error,
+            } => {
+                span.add_event(
+                    "http.transfer.aborted",
+                    vec![
+                        KeyValue::new("transfer.direction", Self::direction_str(direction)),
+                        KeyValue::new("transfer.bytes_transferred", *bytes_transferred as i64),
+                        KeyValue::new("transfer.elapsed_ms", elapsed.as_secs_f64() * 1000.0),
+                        KeyValue::new("error.type", error.clone()),
+                    ],
+                );
+                span.set_status(Status::error(error.clone()));
+            }
+        }
+    }
+
+    fn on_connection_event(&self, event: &ConnectionEvent) {
+        let cx = opentelemetry::Context::current();
+        let span = cx.span();
+
+        match &event.phase {
+            ConnectionPhase::Metrics {
                 remote_addr,
                 protocol,
                 bytes_sent,
