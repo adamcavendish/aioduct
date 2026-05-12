@@ -29,6 +29,7 @@ pub mod bandwidth;
 pub mod body;
 /// HTTP response caching with conditional validation.
 pub mod cache;
+mod clock;
 /// Cookie storage and automatic cookie handling.
 pub mod cookie;
 mod decompress;

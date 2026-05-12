@@ -18,6 +18,7 @@ pub enum RedirectPolicy {
 
 /// Decision returned by a redirect policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RedirectAction {
     /// Follow the redirect.
     Follow,

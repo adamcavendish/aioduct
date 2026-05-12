@@ -54,6 +54,7 @@ pub(crate) fn install_default_crypto_provider() {
 
 /// TLS protocol version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TlsVersion {
     /// TLS 1.2
     Tls1_2,
@@ -102,6 +103,7 @@ impl TlsVersion {
 
 /// Information about the TLS connection, available after handshake.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TlsInfo {
     peer_certificate: Option<Vec<u8>>,
 }
