@@ -105,6 +105,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         replay_body: Option<Bytes>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
+        #[allow(deprecated)]
+        let timing_start = std::time::Instant::now();
 
         if let Some(ref limiter) = self.rate_limiter {
             while !limiter.try_acquire() {
@@ -213,7 +215,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                     resp.set_tls_info(conn.tls_info.clone());
                     resp.set_timings(Some(
                         TimingCollector::default()
-                            .into_timings(Some(transfer), request_start.elapsed()),
+                            .into_timings(Some(transfer), timing_start.elapsed()),
                     ));
                     self.attach_observer(&mut resp, &req_method, original_uri);
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
@@ -342,7 +344,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                         resp.set_tls_info(conn.tls_info.clone());
                         resp.set_timings(Some(
                             TimingCollector::default()
-                                .into_timings(Some(transfer), request_start.elapsed()),
+                                .into_timings(Some(transfer), timing_start.elapsed()),
                         ));
                         self.attach_observer(&mut resp, &req_method, original_uri);
                         if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
@@ -817,7 +819,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         resp.set_remote_addr(pooled.remote_addr);
         resp.set_tls_info(pooled.tls_info.clone());
         resp.set_timings(Some(
-            timing.into_timings(Some(transfer), request_start.elapsed()),
+            timing.into_timings(Some(transfer), timing_start.elapsed()),
         ));
         self.attach_observer(&mut resp, &req_method, original_uri);
         if !self.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
