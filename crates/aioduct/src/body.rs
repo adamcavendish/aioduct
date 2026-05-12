@@ -1,7 +1,11 @@
+use std::time::Instant;
+
 use bytes::Bytes;
 use http_body_util::BodyExt;
 
 use crate::error::{AioductBody, Error};
+use crate::observer::{self, RequestEvent, RequestPhase, TransferDirection};
+use crate::response::BodyObserverCtx;
 
 /// HTTP request body, either buffered in memory or streaming.
 pub enum RequestBody {
@@ -79,6 +83,9 @@ impl From<AioductBody> for RequestBody {
 pub struct BodyStream {
     body: AioductBody,
     done: bool,
+    observer_ctx: Option<BodyObserverCtx>,
+    cumulative_bytes: u64,
+    transfer_start: Instant,
 }
 
 impl std::fmt::Debug for BodyStream {
@@ -88,8 +95,29 @@ impl std::fmt::Debug for BodyStream {
 }
 
 impl BodyStream {
+    #[cfg(test)]
     pub(crate) fn new(body: AioductBody) -> Self {
-        Self { body, done: false }
+        Self {
+            body,
+            done: false,
+            observer_ctx: None,
+            cumulative_bytes: 0,
+            transfer_start: Instant::now(),
+        }
+    }
+
+    pub(crate) fn with_observer(body: AioductBody, ctx: Option<BodyObserverCtx>) -> Self {
+        let transfer_start = ctx
+            .as_ref()
+            .map(|c| c.response_started)
+            .unwrap_or_else(Instant::now);
+        Self {
+            body,
+            done: false,
+            observer_ctx: ctx,
+            cumulative_bytes: 0,
+            transfer_start,
+        }
     }
 
     /// Returns the next chunk of body data, or `None` when complete.
@@ -102,18 +130,57 @@ impl BodyStream {
             match self.body.frame().await {
                 Some(Ok(frame)) => {
                     if let Ok(data) = frame.into_data() {
+                        let chunk_bytes = data.len() as u64;
+                        self.cumulative_bytes += chunk_bytes;
+                        if let Some(ctx) = &self.observer_ctx {
+                            ctx.observer.on_event(&RequestEvent {
+                                method: ctx.method.clone(),
+                                uri: ctx.uri.clone(),
+                                phase: RequestPhase::BytesTransferred {
+                                    direction: TransferDirection::Download,
+                                    chunk_bytes,
+                                    cumulative_bytes: self.cumulative_bytes,
+                                    elapsed: self.transfer_start.elapsed(),
+                                },
+                                at: observer::Instant::now(),
+                            });
+                        }
                         return Some(Ok(data));
                     }
                 }
                 Some(Err(e)) => {
                     self.done = true;
+                    self.fire_transfer_complete();
                     return Some(Err(e));
                 }
                 None => {
                     self.done = true;
+                    self.fire_transfer_complete();
                     return None;
                 }
             }
+        }
+    }
+
+    fn fire_transfer_complete(&self) {
+        if let Some(ctx) = &self.observer_ctx {
+            let transfer_duration = self.transfer_start.elapsed();
+            let throughput = if transfer_duration.as_secs_f64() > 0.0 {
+                self.cumulative_bytes as f64 / transfer_duration.as_secs_f64()
+            } else {
+                0.0
+            };
+            ctx.observer.on_event(&RequestEvent {
+                method: ctx.method.clone(),
+                uri: ctx.uri.clone(),
+                phase: RequestPhase::TransferComplete {
+                    direction: TransferDirection::Download,
+                    total_bytes: self.cumulative_bytes,
+                    transfer_duration,
+                    throughput_bytes_per_sec: throughput,
+                },
+                at: observer::Instant::now(),
+            });
         }
     }
 }

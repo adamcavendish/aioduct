@@ -13,6 +13,7 @@ exclude = ["docs/", "target/"]
 
 [features]
 default = []
+precise-timing = []
 json = ["dep:serde", "dep:serde_json", "dep:serde_urlencoded"]
 charset = ["dep:encoding_rs", "dep:mime"]
 rustls = ["dep:rustls", "dep:webpki-roots", "dep:rustls-pemfile", "dep:x509-parser"]
@@ -46,6 +47,7 @@ async-io = { workspace = true, optional = true }
 base64.workspace = true
 brotli = { workspace = true, features = ["std"], optional = true }
 bytes.workspace = true
+coarsetime.workspace = true
 compio-driver = { workspace = true, features = ["polling"], optional = true }
 compio-io = { workspace = true, features = ["compat"], optional = true }
 compio-net = { workspace = true, optional = true }

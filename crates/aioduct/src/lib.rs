@@ -50,6 +50,8 @@ pub mod middleware;
 pub mod multipart;
 /// Netrc credential file parsing and middleware.
 pub mod netrc;
+/// Real-time request lifecycle observer for load testing and tracing.
+pub mod observer;
 /// HTTP and SOCKS proxy configuration.
 pub mod proxy;
 /// Redirect policy configuration.
@@ -61,6 +63,8 @@ pub mod sse;
 /// Token-bucket rate limiter for throttling requests.
 pub mod throttle;
 /// Per-request timing breakdown (DNS, TCP, TLS, TTFB).
+///
+/// Deprecated: Use [`observer::RequestObserver`] for detailed per-phase timing.
 pub mod timing;
 /// Consumer-facing client trait and extension traits.
 pub mod traits;
@@ -157,11 +161,15 @@ pub use link::Link;
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
 pub use netrc::{Netrc, NetrcMiddleware};
+pub use observer::{
+    NegotiatedProtocol, PoolOutcome, RequestEvent, RequestObserver, RequestPhase, TransferDirection,
+};
 pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use retry::{RetryBudget, RetryConfig};
 pub use sse::{SseDecoder, SseEvent, SseMessage, SseStream};
 pub use throttle::RateLimiter;
+#[allow(deprecated)]
 pub use timing::RequestTimings;
 pub use traits::{HttpClient, RequestBuilderExt, ResponseExt};
 
