@@ -1,10 +1,13 @@
+#[cfg(not(target_arch = "wasm32"))]
 use crate::clock::Instant;
 
 use bytes::Bytes;
 use http_body_util::BodyExt;
 
 use crate::error::{AioductBody, Error};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::observer::{self, RequestEvent, RequestPhase, TransferDirection};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::response::BodyObserverCtx;
 
 /// HTTP request body, either buffered in memory or streaming.
@@ -83,8 +86,11 @@ impl From<AioductBody> for RequestBody {
 pub struct BodyStream {
     body: AioductBody,
     done: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     observer_ctx: Option<BodyObserverCtx>,
+    #[cfg(not(target_arch = "wasm32"))]
     cumulative_bytes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
     transfer_start: Instant,
 }
 
@@ -100,12 +106,16 @@ impl BodyStream {
         Self {
             body,
             done: false,
+            #[cfg(not(target_arch = "wasm32"))]
             observer_ctx: None,
+            #[cfg(not(target_arch = "wasm32"))]
             cumulative_bytes: 0,
+            #[cfg(not(target_arch = "wasm32"))]
             transfer_start: Instant::now(),
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_observer(body: AioductBody, ctx: Option<BodyObserverCtx>) -> Self {
         let transfer_start = ctx
             .as_ref()
@@ -130,31 +140,36 @@ impl BodyStream {
             match self.body.frame().await {
                 Some(Ok(frame)) => {
                     if let Ok(data) = frame.into_data() {
-                        let chunk_bytes = data.len() as u64;
-                        self.cumulative_bytes += chunk_bytes;
-                        if let Some(ctx) = &self.observer_ctx {
-                            ctx.observer.on_event(&RequestEvent {
-                                method: ctx.method.clone(),
-                                uri: ctx.uri.clone(),
-                                phase: RequestPhase::BytesTransferred {
-                                    direction: TransferDirection::Download,
-                                    chunk_bytes,
-                                    cumulative_bytes: self.cumulative_bytes,
-                                    elapsed: self.transfer_start.elapsed(),
-                                },
-                                at: observer::Instant::now(),
-                            });
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            let chunk_bytes = data.len() as u64;
+                            self.cumulative_bytes += chunk_bytes;
+                            if let Some(ctx) = &self.observer_ctx {
+                                ctx.observer.on_event(&RequestEvent {
+                                    method: ctx.method.clone(),
+                                    uri: ctx.uri.clone(),
+                                    phase: RequestPhase::BytesTransferred {
+                                        direction: TransferDirection::Download,
+                                        chunk_bytes,
+                                        cumulative_bytes: self.cumulative_bytes,
+                                        elapsed: self.transfer_start.elapsed(),
+                                    },
+                                    at: observer::Instant::now(),
+                                });
+                            }
                         }
                         return Some(Ok(data));
                     }
                 }
                 Some(Err(e)) => {
                     self.done = true;
+                    #[cfg(not(target_arch = "wasm32"))]
                     self.fire_transfer_aborted(&e);
                     return Some(Err(e));
                 }
                 None => {
                     self.done = true;
+                    #[cfg(not(target_arch = "wasm32"))]
                     self.fire_transfer_complete();
                     return None;
                 }
@@ -162,6 +177,7 @@ impl BodyStream {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn fire_transfer_complete(&self) {
         if let Some(ctx) = &self.observer_ctx {
             let transfer_duration = self.transfer_start.elapsed();
@@ -184,6 +200,7 @@ impl BodyStream {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn fire_transfer_aborted(&self, error: &crate::error::Error) {
         if let Some(ctx) = &self.observer_ctx {
             ctx.observer.on_event(&RequestEvent {
