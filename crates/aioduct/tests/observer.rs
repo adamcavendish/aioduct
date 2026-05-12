@@ -5,16 +5,26 @@ use common::*;
 
 use std::sync::Mutex;
 
-use aioduct::observer::{RequestEvent, RequestObserver, RequestPhase};
+use aioduct::observer::{
+    ConnectionEvent, ConnectionPhase, RequestEvent, RequestObserver, RequestPhase,
+};
 
 #[derive(Default, Clone)]
 struct RecordingObserver {
     events: Arc<Mutex<Vec<RequestPhase>>>,
+    connection_events: Arc<Mutex<Vec<ConnectionPhase>>>,
 }
 
 impl RequestObserver for RecordingObserver {
     fn on_event(&self, event: &RequestEvent) {
         self.events.lock().unwrap().push(event.phase.clone());
+    }
+
+    fn on_connection_event(&self, event: &ConnectionEvent) {
+        self.connection_events
+            .lock()
+            .unwrap()
+            .push(event.phase.clone());
     }
 }
 
@@ -38,9 +48,13 @@ impl RecordingObserver {
                 RequestPhase::Failed { .. } => "Failed".into(),
                 RequestPhase::BytesTransferred { .. } => "BytesTransferred".into(),
                 RequestPhase::TransferComplete { .. } => "TransferComplete".into(),
-                RequestPhase::ConnectionMetrics { .. } => "ConnectionMetrics".into(),
+                RequestPhase::TransferAborted { .. } => "TransferAborted".into(),
             })
             .collect()
+    }
+
+    fn has_connection_metrics(&self) -> bool {
+        !self.connection_events.lock().unwrap().is_empty()
     }
 }
 
@@ -115,10 +129,9 @@ async fn observer_connection_metrics_fires_on_checkin() {
         .unwrap();
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 
-    let phases = obs.phases();
     assert!(
-        phases.contains(&"ConnectionMetrics".to_string()),
-        "Expected ConnectionMetrics on pool checkin: {phases:?}"
+        obs.has_connection_metrics(),
+        "Expected ConnectionMetrics on pool checkin"
     );
 }
 
@@ -221,6 +234,8 @@ async fn observer_captures_method_and_uri() {
                     .push((event.method.clone(), event.uri.clone()));
             }
         }
+
+        fn on_connection_event(&self, _event: &ConnectionEvent) {}
     }
 
     let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
