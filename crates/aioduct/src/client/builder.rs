@@ -58,6 +58,7 @@ pub struct HttpEngineBuilder<R: RuntimePoll, C: ConnectorSend> {
     pub(super) hsts: Option<crate::hsts::HstsStore>,
     pub(super) h2c_probe_ttl: Option<Duration>,
     pub(super) connection_coalescing: bool,
+    pub(super) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
     #[cfg(feature = "tower")]
     pub(super) tower_connector: Option<crate::connector::LayeredConnector<C>>,
     #[cfg(feature = "rustls")]
@@ -127,6 +128,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
             hsts: None,
             h2c_probe_ttl: None,
             connection_coalescing: true,
+            observer: None,
             #[cfg(feature = "tower")]
             tower_connector: None,
             #[cfg(feature = "rustls")]
@@ -497,6 +499,20 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Set a request observer for real-time phase transition callbacks.
+    ///
+    /// The observer fires at each connection phase (pool checkout, DNS, TCP,
+    /// TLS, request sent, response received) with monotonic timestamps and
+    /// diagnostic data. Useful for load testing frameworks, detailed performance
+    /// tracing, and custom instrumentation.
+    ///
+    /// Only one observer is supported per engine. Setting a new observer
+    /// replaces the previous one.
+    pub fn request_observer(mut self, observer: impl crate::observer::RequestObserver) -> Self {
+        self.observer = Some(Arc::new(observer));
+        self
+    }
+
     /// Set a rate limiter to throttle outgoing requests.
     pub fn rate_limiter(mut self, limiter: crate::throttle::RateLimiter) -> Self {
         self.rate_limiter = Some(limiter);
@@ -843,6 +859,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 .map(crate::h2c_probe::H2cProbeCache::with_ttl)
                 .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
             connection_coalescing: self.connection_coalescing,
+            observer: self.observer,
             #[cfg(feature = "tower")]
             tower_connector: self.tower_connector,
             #[cfg(feature = "rustls")]

@@ -5,9 +5,11 @@ use http::Uri;
 use http_body_util::BodyExt;
 
 use crate::error::{AioductBody, Error};
+use crate::observer::{self, RequestEvent, RequestPhase};
 use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
-use crate::response::Response;
+use crate::response::{BodyObserverCtx, Response};
 use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
+#[allow(deprecated)]
 use crate::timing::TimingCollector;
 
 use super::HttpEngine;
@@ -31,6 +33,39 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         Self::populate_sans(&mut conn);
         self.pool.checkin(key, conn);
     }
+
+    #[inline]
+    fn notify(&self, method: &http::Method, uri: &Uri, phase: RequestPhase) {
+        if let Some(ref obs) = self.observer {
+            obs.on_event(&RequestEvent {
+                method: method.clone(),
+                uri: uri.clone(),
+                phase,
+                at: observer::Instant::now(),
+            });
+        }
+    }
+
+    fn attach_observer(&self, resp: &mut Response, method: &http::Method, uri: &Uri) {
+        if let Some(ref obs) = self.observer {
+            resp.set_observer_ctx(BodyObserverCtx {
+                observer: obs.clone(),
+                method: method.clone(),
+                uri: uri.clone(),
+                response_started: Instant::now(),
+            });
+        }
+    }
+
+    fn connection_protocol(conn: &PooledConnection) -> observer::NegotiatedProtocol {
+        match &conn.conn {
+            HttpConnection::H1(_) => observer::NegotiatedProtocol::Http1,
+            HttpConnection::H2(_) => observer::NegotiatedProtocol::Http2,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => observer::NegotiatedProtocol::Http3,
+        }
+    }
+
     pub(crate) async fn execute_single(
         &self,
         request: http::Request<AioductBody>,
@@ -41,6 +76,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
             .await
     }
 
+    #[allow(deprecated)] // TimingCollector usage — will be removed when observer replaces it
     pub(crate) async fn execute_single_with_hint(
         &self,
         mut request: http::Request<AioductBody>,
@@ -56,6 +92,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 R::sleep(wait).await;
             }
         }
+
+        self.notify(request.method(), original_uri, RequestPhase::Started);
+        let pool_checkout_start = Instant::now();
 
         let scheme = original_uri
             .scheme()
@@ -101,6 +140,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
             #[cfg(feature = "tracing")]
             tracing::trace!(host = authority.host(), "connection.pool.hit");
 
+            self.notify(
+                request.method(),
+                original_uri,
+                RequestPhase::PoolCheckoutComplete {
+                    outcome: observer::PoolOutcome::Hit,
+                    blocked_duration: pool_checkout_start.elapsed(),
+                },
+            );
+
             let saved_parts = if can_stale_retry {
                 Some((
                     request.method().clone(),
@@ -112,16 +160,42 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 None
             };
 
+            let req_method = request.method().clone();
             let transfer_start = Instant::now();
+            self.notify(
+                &req_method,
+                original_uri,
+                RequestPhase::RequestSent {
+                    duration: transfer_start.duration_since(pool_checkout_start),
+                },
+            );
             match Self::send_on_connection(&mut conn, request, original_uri.clone()).await {
                 Ok(mut resp) => {
                     let transfer = transfer_start.elapsed();
+                    self.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::ResponseStarted {
+                            waiting_duration: transfer,
+                        },
+                    );
+                    let protocol = Self::connection_protocol(&conn);
+                    self.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::ResponseComplete {
+                            status: resp.status(),
+                            protocol,
+                            total_duration: request_start.elapsed(),
+                        },
+                    );
                     resp.set_remote_addr(conn.remote_addr);
                     resp.set_tls_info(conn.tls_info.clone());
                     resp.set_timings(Some(
                         TimingCollector::default()
                             .into_timings(Some(transfer), request_start.elapsed()),
                     ));
+                    self.attach_observer(&mut resp, &req_method, original_uri);
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                         self.checkin_connection(pool_key, conn);
                     }
@@ -133,6 +207,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                         host = authority.host(),
                         error = %e,
                         "connection.pool.stale — retrying on fresh connection"
+                    );
+                    self.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::Failed {
+                            error: e.to_string(),
+                            will_retry: true,
+                            elapsed: request_start.elapsed(),
+                        },
+                    );
+                    self.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::PoolCheckoutComplete {
+                            outcome: observer::PoolOutcome::StaleRetry,
+                            blocked_duration: pool_checkout_start.elapsed(),
+                        },
                     );
                     let (method, uri, headers, version) = saved_parts.unwrap();
                     let retry_body_bytes = replay_body
@@ -149,7 +240,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                     *retry_req.version_mut() = version;
                     request = retry_req;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    self.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::Failed {
+                            error: e.to_string(),
+                            will_retry: false,
+                            elapsed: request_start.elapsed(),
+                        },
+                    );
+                    return Err(e);
+                }
             }
         }
 
@@ -166,6 +268,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 #[cfg(feature = "tracing")]
                 tracing::trace!(host = authority.host(), "connection.pool.coalesced");
 
+                self.notify(
+                    request.method(),
+                    original_uri,
+                    RequestPhase::PoolCheckoutComplete {
+                        outcome: observer::PoolOutcome::Coalesced,
+                        blocked_duration: pool_checkout_start.elapsed(),
+                    },
+                );
+
                 let saved_parts = if can_stale_retry {
                     Some((
                         request.method().clone(),
@@ -177,16 +288,42 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                     None
                 };
 
+                let req_method = request.method().clone();
                 let transfer_start = Instant::now();
+                self.notify(
+                    &req_method,
+                    original_uri,
+                    RequestPhase::RequestSent {
+                        duration: transfer_start.duration_since(pool_checkout_start),
+                    },
+                );
                 match Self::send_on_connection(&mut conn, request, original_uri.clone()).await {
                     Ok(mut resp) => {
                         let transfer = transfer_start.elapsed();
+                        self.notify(
+                            &req_method,
+                            original_uri,
+                            RequestPhase::ResponseStarted {
+                                waiting_duration: transfer,
+                            },
+                        );
+                        let protocol = Self::connection_protocol(&conn);
+                        self.notify(
+                            &req_method,
+                            original_uri,
+                            RequestPhase::ResponseComplete {
+                                status: resp.status(),
+                                protocol,
+                                total_duration: request_start.elapsed(),
+                            },
+                        );
                         resp.set_remote_addr(conn.remote_addr);
                         resp.set_tls_info(conn.tls_info.clone());
                         resp.set_timings(Some(
                             TimingCollector::default()
                                 .into_timings(Some(transfer), request_start.elapsed()),
                         ));
+                        self.attach_observer(&mut resp, &req_method, original_uri);
                         if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                             self.checkin_connection(pool_key, conn);
                         }
@@ -198,6 +335,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                             host = authority.host(),
                             error = %e,
                             "connection.pool.coalesced.stale — retrying on fresh connection"
+                        );
+                        self.notify(
+                            &req_method,
+                            original_uri,
+                            RequestPhase::Failed {
+                                error: e.to_string(),
+                                will_retry: true,
+                                elapsed: request_start.elapsed(),
+                            },
+                        );
+                        self.notify(
+                            &req_method,
+                            original_uri,
+                            RequestPhase::PoolCheckoutComplete {
+                                outcome: observer::PoolOutcome::StaleRetry,
+                                blocked_duration: pool_checkout_start.elapsed(),
+                            },
                         );
                         let (method, uri, headers, version) = saved_parts.unwrap();
                         let retry_body_bytes = replay_body
@@ -214,7 +368,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                         *retry_req.version_mut() = version;
                         request = retry_req;
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        self.notify(
+                            &req_method,
+                            original_uri,
+                            RequestPhase::Failed {
+                                error: e.to_string(),
+                                will_retry: false,
+                                elapsed: request_start.elapsed(),
+                            },
+                        );
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -223,15 +388,33 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         if is_https && let Some(endpoint) = &self.h3_endpoint {
             let use_h3 = self.prefer_h3 || self.alt_svc_cache.lookup_h3(authority).is_some();
             if use_h3 {
+                self.notify(
+                    request.method(),
+                    original_uri,
+                    RequestPhase::PoolCheckoutComplete {
+                        outcome: observer::PoolOutcome::Miss,
+                        blocked_duration: pool_checkout_start.elapsed(),
+                    },
+                );
+
                 let default_port = 443u16;
                 let (h3_host, h3_port) = self
                     .alt_svc_cache
                     .lookup_h3(authority)
                     .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
                 let connect_host = h3_host.as_deref().unwrap_or(authority.host());
+                let dns_start = Instant::now();
                 let addrs = self
                     .resolve_all_authority_raw(connect_host, h3_port)
                     .await?;
+                self.notify(
+                    request.method(),
+                    original_uri,
+                    RequestPhase::DnsResolved {
+                        addrs: addrs.clone(),
+                        duration: dns_start.elapsed(),
+                    },
+                );
                 let sni_host = authority.host().to_owned();
 
                 let is_idempotent = matches!(
@@ -240,6 +423,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 );
                 let use_0rtt = self.h3_zero_rtt && is_idempotent;
 
+                let tcp_start = Instant::now();
                 let (mut pooled, addr) = if use_0rtt {
                     let (pooled, addr, _used_0rtt) =
                         crate::h3_transport::connect_h3_addrs_0rtt::<R>(
@@ -259,18 +443,63 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                     )
                     .await?
                 };
+                self.notify(
+                    request.method(),
+                    original_uri,
+                    RequestPhase::TcpConnected {
+                        remote_addr: addr,
+                        duration: tcp_start.elapsed(),
+                        protocol: observer::NegotiatedProtocol::Http3,
+                    },
+                );
 
                 pooled.remote_addr = Some(addr);
+                let req_method = request.method().clone();
+                let transfer_start = Instant::now();
+                self.notify(
+                    &req_method,
+                    original_uri,
+                    RequestPhase::RequestSent {
+                        duration: transfer_start.duration_since(pool_checkout_start),
+                    },
+                );
                 let mut resp =
                     Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
+                let transfer = transfer_start.elapsed();
+                self.notify(
+                    &req_method,
+                    original_uri,
+                    RequestPhase::ResponseStarted {
+                        waiting_duration: transfer,
+                    },
+                );
+                self.notify(
+                    &req_method,
+                    original_uri,
+                    RequestPhase::ResponseComplete {
+                        status: resp.status(),
+                        protocol: observer::NegotiatedProtocol::Http3,
+                        total_duration: request_start.elapsed(),
+                    },
+                );
                 resp.set_remote_addr(pooled.remote_addr);
                 resp.set_tls_info(pooled.tls_info.clone());
+                self.attach_observer(&mut resp, &req_method, original_uri);
                 if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                     self.checkin_connection(pool_key, pooled);
                 }
                 return Ok(resp);
             }
         }
+
+        self.notify(
+            request.method(),
+            original_uri,
+            RequestPhase::PoolCheckoutComplete {
+                outcome: observer::PoolOutcome::Miss,
+                blocked_duration: pool_checkout_start.elapsed(),
+            },
+        );
 
         let proxy = self
             .proxy
@@ -336,6 +565,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
             let dns_start = Instant::now();
             let addrs = self.resolve_all_authority_raw(host, port).await?;
             timing.dns = Some(dns_start.elapsed());
+            self.notify(
+                request.method(),
+                original_uri,
+                RequestPhase::DnsResolved {
+                    addrs: addrs.clone(),
+                    duration: dns_start.elapsed(),
+                },
+            );
 
             let tcp_keepalive = self.tcp_keepalive;
             let tcp_keepalive_interval = self.tcp_keepalive_interval;
@@ -459,11 +696,63 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 if let Some(tls_dur) = conn.tls_handshake_duration {
                     timing.tls_handshake = Some(tls_dur);
                     timing.tcp_connect = Some(tcp_tls_elapsed.saturating_sub(tls_dur));
+                    let tcp_dur = tcp_tls_elapsed.saturating_sub(tls_dur);
+                    if let Some(addr) = conn.remote_addr {
+                        self.notify(
+                            request.method(),
+                            original_uri,
+                            RequestPhase::TcpConnected {
+                                remote_addr: addr,
+                                duration: tcp_dur,
+                                protocol: Self::connection_protocol(&conn),
+                            },
+                        );
+                    }
+                    self.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::TlsHandshakeComplete {
+                            duration: tls_dur,
+                            alpn_protocol: match &conn.conn {
+                                HttpConnection::H2(_) => Some("h2".into()),
+                                HttpConnection::H1(_) => Some("http/1.1".into()),
+                                #[cfg(all(feature = "http3", feature = "rustls"))]
+                                HttpConnection::H3(_) => Some("h3".into()),
+                            },
+                            peer_certificate_der: conn
+                                .tls_info
+                                .as_ref()
+                                .and_then(|t| t.peer_certificate())
+                                .map(|c| c.to_vec()),
+                        },
+                    );
                 } else {
                     timing.tcp_connect = Some(tcp_tls_elapsed);
+                    if let Some(addr) = conn.remote_addr {
+                        self.notify(
+                            request.method(),
+                            original_uri,
+                            RequestPhase::TcpConnected {
+                                remote_addr: addr,
+                                duration: tcp_tls_elapsed,
+                                protocol: Self::connection_protocol(&conn),
+                            },
+                        );
+                    }
                 }
             } else {
                 timing.tcp_connect = Some(tcp_tls_elapsed);
+                if let Some(addr) = conn.remote_addr {
+                    self.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::TcpConnected {
+                            remote_addr: addr,
+                            duration: tcp_tls_elapsed,
+                            protocol: Self::connection_protocol(&conn),
+                        },
+                    );
+                }
             }
             conn
         };
@@ -475,14 +764,40 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
             pool_key.protocol = ProtocolHint::Auto;
         }
 
+        let req_method = request.method().clone();
         let transfer_start = Instant::now();
+        self.notify(
+            &req_method,
+            original_uri,
+            RequestPhase::RequestSent {
+                duration: transfer_start.duration_since(pool_checkout_start),
+            },
+        );
         let mut resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
         let transfer = transfer_start.elapsed();
+        self.notify(
+            &req_method,
+            original_uri,
+            RequestPhase::ResponseStarted {
+                waiting_duration: transfer,
+            },
+        );
+        let resp_protocol = Self::connection_protocol(&pooled);
+        self.notify(
+            &req_method,
+            original_uri,
+            RequestPhase::ResponseComplete {
+                status: resp.status(),
+                protocol: resp_protocol,
+                total_duration: request_start.elapsed(),
+            },
+        );
         resp.set_remote_addr(pooled.remote_addr);
         resp.set_tls_info(pooled.tls_info.clone());
         resp.set_timings(Some(
             timing.into_timings(Some(transfer), request_start.elapsed()),
         ));
+        self.attach_observer(&mut resp, &req_method, original_uri);
         if !self.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
             self.checkin_connection(pool_key, pooled);
         }
