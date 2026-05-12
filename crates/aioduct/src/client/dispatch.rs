@@ -31,7 +31,29 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
 
     fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection) {
         Self::populate_sans(&mut conn);
+        self.fire_connection_metrics(&conn, false);
         self.pool.checkin(key, conn);
+    }
+
+    fn fire_connection_metrics(&self, conn: &PooledConnection, closed: bool) {
+        if let Some(ref obs) = self.observer
+            && let Some(remote_addr) = conn.remote_addr
+        {
+            obs.on_event(&RequestEvent {
+                method: http::Method::GET,
+                uri: Uri::default(),
+                phase: RequestPhase::ConnectionMetrics {
+                    remote_addr,
+                    protocol: Self::connection_protocol(conn),
+                    bytes_sent: conn.bytes_sent,
+                    bytes_received: conn.bytes_received,
+                    connection_age: conn.created_at.elapsed(),
+                    requests_served: conn.requests_served,
+                    closed,
+                },
+                at: observer::Instant::now(),
+            });
+        }
     }
 
     #[inline]
@@ -208,6 +230,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                         error = %e,
                         "connection.pool.stale — retrying on fresh connection"
                     );
+                    self.fire_connection_metrics(&conn, true);
                     self.notify(
                         &req_method,
                         original_uri,
@@ -336,6 +359,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                             error = %e,
                             "connection.pool.coalesced.stale — retrying on fresh connection"
                         );
+                        self.fire_connection_metrics(&conn, true);
                         self.notify(
                             &req_method,
                             original_uri,
@@ -824,6 +848,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
             "http.send.start"
         );
 
+        let body_size = http_body::Body::size_hint(request.body())
+            .exact()
+            .unwrap_or(0);
+        conn.bytes_sent += body_size;
+        conn.requests_served += 1;
+
         let result = match &mut conn.conn {
             HttpConnection::H1(sender) => {
                 let resp = sender.send_request(request).await?;
@@ -840,6 +870,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 crate::h3_transport::send_on_h3(sender, request, url).await
             }
         };
+
+        if let Ok(ref resp) = result
+            && let Some(len) = resp.content_length()
+        {
+            conn.bytes_received += len;
+        }
 
         #[cfg(feature = "tracing")]
         if let Ok(ref resp) = result {
