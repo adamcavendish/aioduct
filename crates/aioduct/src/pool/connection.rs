@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::clock::Instant;
 
 /// An established HTTP connection at a specific protocol version.
 pub(crate) enum HttpConnection {
