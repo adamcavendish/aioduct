@@ -154,7 +154,7 @@ pub use bandwidth::BandwidthLimiter;
 pub use body::{BodyStream, RequestBody};
 pub use cache::{CacheConfig, CacheEntry, CacheStore, HttpCache, InMemoryCacheStore};
 pub use cookie::{Cookie, CookieJar, SameSite};
-pub use error::{AioductBody, Error};
+pub use error::{AioductBody, Error, SendError};
 pub use forwarded::ForwardedElement;
 pub use hsts::HstsStore;
 pub use http2::Http2Config;

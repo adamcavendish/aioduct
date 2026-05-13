@@ -21,10 +21,7 @@ async fn test_request_timeout_triggers() {
 
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(
-        matches!(err, aioduct::Error::Timeout),
-        "expected Timeout error, got: {err:?}"
-    );
+    assert!(err.is_timeout(), "expected Timeout error, got: {err:?}");
 }
 
 #[tokio::test]
@@ -60,7 +57,7 @@ async fn test_client_default_timeout_triggers() {
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
     assert!(result.is_err());
-    assert!(matches!(result.unwrap_err(), aioduct::Error::Timeout));
+    assert!(result.unwrap_err().is_timeout());
 }
 
 #[tokio::test]
@@ -239,4 +236,152 @@ async fn test_connect_timeout() {
         start.elapsed() < Duration::from_secs(2),
         "should timeout quickly, not wait for request timeout"
     );
+}
+
+#[tokio::test]
+async fn client_timeout_triggers_on_slow_response() {
+    let addr = start_server_with(|_req| async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow"))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .timeout(Duration::from_millis(100))
+        .build();
+
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+
+    let err = result.unwrap_err();
+    assert!(err.is_timeout(), "expected timeout, got: {err:?}");
+}
+
+#[tokio::test]
+async fn per_request_timeout_triggers_on_slow_response() {
+    let addr = start_server_with(|_req| async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow"))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+
+    let result = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .timeout(Duration::from_millis(100))
+        .send()
+        .await;
+
+    let err = result.unwrap_err();
+    assert!(err.is_timeout(), "expected timeout, got: {err:?}");
+}
+
+#[tokio::test]
+async fn connect_timeout_with_unreachable_ip() {
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .connect_timeout(Duration::from_millis(100))
+        .build();
+
+    let result = client
+        .get("http://192.0.2.1:81/slow")
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
+
+    let err = result.unwrap_err();
+    assert!(
+        err.is_timeout() || err.is_connect(),
+        "expected timeout or connect error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn read_timeout_does_not_apply_to_headers() {
+    // Unlike reqwest, aioduct's read_timeout only applies to body reads.
+    // Use request timeout for header wait timeouts.
+    let addr = start_server_with(|_req| async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow headers"))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .read_timeout(Duration::from_millis(100))
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "slow headers");
+}
+
+#[tokio::test]
+async fn request_timeout_overrides_client_timeout() {
+    let addr = start_server_with(|_req| async {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("delayed"))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .timeout(Duration::from_millis(50))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "delayed");
+}
+
+#[tokio::test]
+async fn timeout_fast_response_succeeds() {
+    let addr = start_server().await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.content_length(), Some(13));
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, "hello aioduct");
+}
+
+#[tokio::test]
+async fn connect_timeout_does_not_affect_fast_connects() {
+    let addr = start_server().await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .connect_timeout(Duration::from_secs(5))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
 }

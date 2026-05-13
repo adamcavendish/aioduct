@@ -113,6 +113,8 @@ flate2.workspace = true
 futures-io.workspace = true
 futures-util.workspace = true
 hyper = { workspace = true, features = ["server"] }
+paste.workspace = true
+quinn = { workspace = true, features = ["runtime-tokio"] }
 rcgen.workspace = true
 rustls = { workspace = true, features = ["std", "tls12"] }
 smol.workspace = true

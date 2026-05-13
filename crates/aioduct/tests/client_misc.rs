@@ -296,3 +296,329 @@ async fn test_https_only_rejects_http() {
         "expected https-only error, got: {err}"
     );
 }
+
+#[tokio::test]
+async fn overridden_dns_resolution() {
+    use std::pin::Pin;
+
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("resolved"))))
+    })
+    .await;
+
+    let overridden_domain = "rust-lang.test";
+    let port = addr.port();
+
+    let target_addr = addr;
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .resolver(
+            move |_host: &str,
+                  _port: u16|
+                  -> Pin<
+                Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
+            > {
+                let target = target_addr;
+                Box::pin(async move { Ok(target) })
+            },
+        )
+        .build();
+
+    let url = format!("http://{overridden_domain}:{port}/");
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, "resolved");
+}
+
+#[tokio::test]
+async fn resolve_builder_convenience() {
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+            "resolved via builder",
+        ))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .resolve("my-custom-host.test", addr)
+        .build();
+
+    let url = format!("http://my-custom-host.test:{}/path", addr.port());
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "resolved via builder");
+}
+
+#[tokio::test]
+async fn resolve_to_addrs_builder_convenience() {
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("multi-addr"))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .resolve_to_addrs("multi.test", &[addr])
+        .build();
+
+    let url = format!("http://multi.test:{}/", addr.port());
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "multi-addr");
+}
+
+#[tokio::test]
+async fn close_connection_after_idle_timeout() {
+    let request_count = Arc::new(AtomicU32::new(0));
+    let count_clone = request_count.clone();
+
+    let addr = start_server_with(move |_req| {
+        let count = count_clone.clone();
+        async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .pool_idle_timeout(Duration::from_millis(100))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _ = resp.text().await.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _ = resp.text().await.unwrap();
+
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn error_connection_refused_with_url() {
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let result = client.get("http://127.0.0.1:1/path").unwrap().send().await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.is_connect(), "expected connect error, got: {err:?}");
+}
+
+#[tokio::test]
+async fn error_for_status_with_reason_phrase() {
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(418)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 418);
+    let err = resp.error_for_status().unwrap_err();
+    assert!(err.is_status());
+    assert_eq!(err.status(), Some(http::StatusCode::from_u16(418).unwrap()));
+}
+
+#[tokio::test]
+async fn error_carries_url_context() {
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let err = client
+        .get("http://127.0.0.1:1/the-path")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.url().path(), "/the-path");
+    assert!(err.is_connect());
+
+    let display = format!("{err}");
+    assert!(
+        display.contains("/the-path"),
+        "Display should include URL, got: {display}"
+    );
+
+    let inner: aioduct::Error = err.into();
+    assert!(inner.is_connect());
+}
+
+#[tokio::test]
+async fn error_for_status_display_includes_status_code() {
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(418)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let err = resp.error_for_status().unwrap_err();
+    let display = format!("{err}");
+    assert!(
+        display.contains("418"),
+        "error_for_status Display should include the status code, got: {display}"
+    );
+}
+
+#[tokio::test]
+async fn send_error_display_includes_url_for_connection_error() {
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let err = client
+        .get("http://127.0.0.1:1/test-path")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+
+    let display = format!("{err}");
+    assert!(
+        display.contains("/test-path"),
+        "SendError Display should include URL, got: {display}"
+    );
+}
+
+#[tokio::test]
+async fn user_agent_builder() {
+    let addr = start_server_with(|req| async move {
+        let ua = req
+            .headers()
+            .get("user-agent")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(ua))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .user_agent("aioduct-test/1.0")
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "aioduct-test/1.0");
+}
+
+#[tokio::test]
+async fn default_headers_applied() {
+    let addr = start_server_with(|req| async move {
+        let val = req
+            .headers()
+            .get("x-custom-default")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
+    })
+    .await;
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::HeaderName::from_static("x-custom-default"),
+        http::header::HeaderValue::from_static("default-value"),
+    );
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .default_headers(headers)
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "default-value");
+}
+
+#[tokio::test]
+async fn request_header_overrides_default_header() {
+    let addr = start_server_with(|req| async move {
+        let val = req
+            .headers()
+            .get("authorization")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
+    })
+    .await;
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        http::header::HeaderValue::from_static("default-token"),
+    );
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .default_headers(headers)
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .header(
+            http::header::AUTHORIZATION,
+            http::header::HeaderValue::from_static("override-token"),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "override-token");
+}
+
+#[tokio::test]
+async fn http1_reason_phrase_in_status() {
+    let addr = start_raw_server(|_req| async {
+        b"HTTP/1.1 418 I'm a Teapot\r\nContent-Length: 0\r\n\r\n".to_vec()
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 418);
+}

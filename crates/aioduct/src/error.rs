@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use http::Uri;
 use http_body_util::combinators::UnsyncBoxBody;
 
 /// Boxed error type for dynamic dispatch.
@@ -58,6 +59,80 @@ pub enum Error {
 
 /// Boxed HTTP body type used throughout aioduct.
 pub type AioductBody = UnsyncBoxBody<Bytes, Error>;
+
+/// An error paired with the URL that was being requested.
+///
+/// Returned by [`RequestBuilder::send()`](crate::request::RequestBuilder::send)
+/// to provide context about which URL caused the failure.
+#[derive(Debug)]
+pub struct SendError {
+    error: Error,
+    url: Uri,
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} for url ({})", self.error, self.url)
+    }
+}
+
+impl std::error::Error for SendError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl SendError {
+    pub(crate) fn new(error: Error, url: Uri) -> Self {
+        Self { error, url }
+    }
+
+    /// Returns the URL that was being requested when this error occurred.
+    pub fn url(&self) -> &Uri {
+        &self.url
+    }
+
+    /// Returns a reference to the underlying error.
+    pub fn error(&self) -> &Error {
+        &self.error
+    }
+
+    /// Consumes this error and returns the underlying [`Error`].
+    pub fn into_error(self) -> Error {
+        self.error
+    }
+
+    /// Returns `true` if the underlying error is a timeout.
+    pub fn is_timeout(&self) -> bool {
+        self.error.is_timeout()
+    }
+
+    /// Returns `true` if the underlying error is a connect failure.
+    pub fn is_connect(&self) -> bool {
+        self.error.is_connect()
+    }
+
+    /// Returns `true` if the underlying error is an HTTP status error.
+    pub fn is_status(&self) -> bool {
+        self.error.is_status()
+    }
+
+    /// Returns `true` if the underlying error is a redirect error.
+    pub fn is_redirect(&self) -> bool {
+        self.error.is_redirect()
+    }
+
+    /// Returns the status code if the underlying error is a status error.
+    pub fn status(&self) -> Option<http::StatusCode> {
+        self.error.status()
+    }
+}
+
+impl From<SendError> for Error {
+    fn from(e: SendError) -> Self {
+        e.error
+    }
+}
 
 impl Error {
     /// Returns `true` if the error is a network-level failure (I/O, TLS, timeout).
