@@ -77,7 +77,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
     }
 
     /// Send the request and return the response.
-    pub async fn send(self) -> Result<Response, Error> {
+    pub async fn send(self) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
         let effective_timeout = self.timeout.or(self.client.timeout);
 
         let execute_fut =

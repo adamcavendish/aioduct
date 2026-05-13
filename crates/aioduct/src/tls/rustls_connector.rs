@@ -314,6 +314,70 @@ where
     }
 }
 
+impl<S> super::TlsConnectLocal<S> for RustlsConnector
+where
+    S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+{
+    type Stream = TlsStream<S>;
+
+    fn connect_local(
+        &self,
+        server_name: &str,
+        stream: S,
+    ) -> Pin<Box<dyn std::future::Future<Output = io::Result<Self::Stream>> + '_>> {
+        let server_name = server_name.to_owned();
+        let config = Arc::clone(&self.config);
+        Box::pin(async move {
+            let dns_name = ServerName::try_from(server_name)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            let tls_conn =
+                rustls::ClientConnection::new(config, dns_name).map_err(io::Error::other)?;
+            let mut tls_stream = TlsStream::new(stream, tls_conn);
+
+            while tls_stream.tls.is_handshaking() {
+                while tls_stream.tls.wants_write() {
+                    std::future::poll_fn(|cx| {
+                        write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
+                    })
+                    .await?;
+                }
+                std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
+                if tls_stream.tls.wants_read() {
+                    let n = std::future::poll_fn(|cx| {
+                        read_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
+                    })
+                    .await?;
+                    if n == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "TLS handshake: peer closed connection",
+                        ));
+                    }
+                    tls_stream
+                        .tls
+                        .process_new_packets()
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                } else if !tls_stream.tls.wants_write() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "TLS handshake stalled: neither wants_read nor wants_write",
+                    ));
+                }
+            }
+
+            while tls_stream.tls.wants_write() {
+                std::future::poll_fn(|cx| {
+                    write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
+                })
+                .await?;
+            }
+            std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
+
+            Ok(tls_stream)
+        })
+    }
+}
+
 /// A TLS-wrapped stream implementing hyper's `Read` and `Write`.
 pub struct TlsStream<S> {
     inner: S,

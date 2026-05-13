@@ -4,7 +4,8 @@ use bytes::{Buf, Bytes};
 use http::{Request, Uri};
 use http_body_util::BodyExt;
 
-use crate::error::{AioductBody, Error};
+use crate::body::RequestBoxBody;
+use crate::error::Error;
 use crate::pool::PooledConnection;
 use crate::response::Response;
 use crate::runtime::RuntimePoll;
@@ -99,7 +100,7 @@ pub(crate) async fn connect_h3_addrs_0rtt<R: RuntimePoll>(
 
 pub(crate) async fn send_on_h3(
     send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
-    request: Request<AioductBody>,
+    request: Request<RequestBoxBody>,
     url: Uri,
 ) -> Result<Response, Error> {
     let (parts, body) = request.into_parts();
@@ -152,7 +153,7 @@ pub(crate) async fn send_on_h3(
         }
     });
 
-    let hyper_body: AioductBody = http_body_util::StreamBody::new(body_stream).boxed_unsync();
+    let hyper_body: RequestBoxBody = http_body_util::StreamBody::new(body_stream).boxed_unsync();
     let http_resp = http::Response::from_parts(resp_parts, hyper_body);
 
     Ok(Response::from_boxed(http_resp, url))

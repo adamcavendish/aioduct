@@ -1,9 +1,16 @@
 mod builder;
+mod builder_build;
+mod builder_build_local;
+mod builder_setters;
 mod connect;
 mod connect_local;
 mod dispatch;
+mod dispatch_send;
+mod engine_local;
+mod engine_send;
 mod execute;
 mod execute_local;
+mod execute_send;
 mod resolve;
 
 pub use builder::HttpEngineBuilder;
@@ -16,29 +23,31 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+#[cfg(test)]
+use http::Method;
 use http::header::HeaderMap;
-use http::{Method, StatusCode, Uri};
+use http::{StatusCode, Uri};
 use http_body_util::BodyExt;
 
+use crate::body::RequestBoxBody;
 use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
-use crate::error::{AioductBody, Error};
+use crate::error::Error;
 use crate::h2c_probe::H2cProbeCache;
 use crate::http2::Http2Config;
 use crate::middleware::MiddlewareStack;
 use crate::pool::ConnectionPool;
 use crate::proxy::ProxySettings;
 use crate::redirect::RedirectPolicy;
-use crate::request::RequestBuilder;
 use crate::retry::RetryConfig;
-use crate::runtime::{Connector, ConnectorSend, Resolve, RuntimeLocal, RuntimePoll};
+use crate::runtime::Resolve;
 
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
 /// HTTP client with connection pooling, TLS, and automatic redirect handling.
 ///
-/// This type supports both poll-based runtimes (tokio, smol) via [`RuntimePoll`] bounds
-/// and completion-based runtimes (compio) via [`RuntimeLocal`] bounds.
+/// This type supports both poll-based runtimes (tokio, smol) via [`RuntimePoll`](crate::runtime::RuntimePoll) bounds
+/// and completion-based runtimes (compio) via [`RuntimeLocal`](crate::runtime::RuntimeLocal) bounds.
 pub struct HttpEngine<R, C> {
     pub(crate) pool: ConnectionPool,
     pub(crate) connector: C,
@@ -151,137 +160,7 @@ impl<R, C> std::fmt::Debug for HttpEngine<R, C> {
     }
 }
 
-impl<R: RuntimePoll, C: ConnectorSend + Default> Default for HttpEngine<R, C> {
-    fn default() -> Self {
-        Self::new(C::default())
-    }
-}
-
-impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
-    /// Create a new [`HttpEngineBuilder`] with default settings.
-    pub fn builder(connector: C) -> HttpEngineBuilder<R, C> {
-        HttpEngineBuilder::new(connector)
-    }
-
-    /// Create a new client with default settings.
-    pub fn new(connector: C) -> Self {
-        Self::builder(connector).build()
-    }
-
-    #[cfg(feature = "rustls")]
-    /// Create a client with rustls TLS using WebPKI root certificates.
-    pub fn with_rustls(connector: C) -> Self {
-        Self::builder(connector)
-            .tls(crate::tls::RustlsConnector::with_webpki_roots())
-            .build()
-    }
-
-    #[cfg(feature = "rustls-native-roots")]
-    /// Create a client with rustls TLS using the system's native root certificates.
-    pub fn with_native_roots(connector: C) -> Self {
-        Self::builder(connector)
-            .tls(crate::tls::RustlsConnector::with_native_roots())
-            .build()
-    }
-
-    #[cfg(all(feature = "http3", feature = "rustls"))]
-    /// Create a client configured for HTTP/3 with rustls.
-    pub fn with_http3(connector: C) -> Self {
-        Self::builder(connector)
-            .tls(crate::tls::RustlsConnector::with_webpki_roots())
-            .http3(true)
-            .build()
-    }
-
-    #[cfg(all(feature = "http3", feature = "rustls"))]
-    /// Create a client that upgrades to HTTP/3 via Alt-Svc discovery.
-    pub fn with_alt_svc_h3(connector: C) -> Self {
-        Self::builder(connector)
-            .tls(crate::tls::RustlsConnector::with_webpki_roots())
-            .alt_svc_h3(true)
-            .build()
-    }
-
-    /// Start a GET request to the given URL.
-    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::GET, uri))
-    }
-
-    /// Start a HEAD request to the given URL.
-    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::HEAD, uri))
-    }
-
-    /// Start a POST request to the given URL.
-    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::POST, uri))
-    }
-
-    /// Start a PUT request to the given URL.
-    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::PUT, uri))
-    }
-
-    /// Start a PATCH request to the given URL.
-    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::PATCH, uri))
-    }
-
-    /// Start a DELETE request to the given URL.
-    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::DELETE, uri))
-    }
-
-    /// Start a request with the given method and URL.
-    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, method, uri))
-    }
-
-    /// Start a parallel chunk download for the given URL.
-    pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownload<R, C> {
-        crate::chunk_download::ChunkDownload::new(self.clone(), url.to_owned())
-    }
-
-    /// Forward an incoming HTTP request to an upstream server.
-    ///
-    /// This is the entry point for proxy/gateway use cases. The forwarded request
-    /// bypasses all client middleware (redirects, cookies, cache, decompression)
-    /// and streams the body directly to the upstream.
-    pub fn forward<B>(
-        &self,
-        request: http::Request<B>,
-    ) -> crate::forward::ForwardBuilder<'_, R, C, B>
-    where
-        B: http_body::Body<Data = Bytes> + Send + 'static,
-        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    {
-        crate::forward::ForwardBuilder::new(self, request)
-    }
-
-    pub(crate) fn default_timeout(&self) -> Option<Duration> {
-        self.timeout
-    }
-
-    pub(crate) fn default_retry(&self) -> Option<&RetryConfig> {
-        self.retry.as_ref()
-    }
-
-    pub(crate) fn middleware(&self) -> &crate::middleware::MiddlewareStack {
-        &self.middleware
-    }
-
-    /// Returns the bandwidth limiter if one was configured via [`HttpEngineBuilder::max_download_speed`].
-    pub fn bandwidth_limiter(&self) -> Option<&crate::bandwidth::BandwidthLimiter> {
-        self.bandwidth_limiter.as_ref()
-    }
-}
+// ── Shared free functions ────────────────────────────────────────────────────
 
 fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
     base.scheme_str()
@@ -304,7 +183,7 @@ fn boxed_response_from_bytes(
     status: StatusCode,
     headers: &HeaderMap,
     body: Bytes,
-) -> http::Response<AioductBody> {
+) -> http::Response<RequestBoxBody> {
     let mut builder = http::Response::builder().status(status);
     for (name, value) in headers {
         builder = builder.header(name, value);
@@ -316,106 +195,6 @@ fn boxed_response_from_bytes(
                 .boxed_unsync(),
         )
         .expect("response builder with valid status cannot fail")
-}
-
-// ── Local path (RuntimeLocal + Connector) ────────────────────────────────────
-
-impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
-    /// Create a new client with default settings for a completion-based runtime.
-    pub fn new_local(connector: C) -> Self {
-        use http::header::{HeaderMap, HeaderValue, USER_AGENT};
-        let mut default_headers = HeaderMap::new();
-        default_headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
-
-        Self {
-            pool: crate::pool::ConnectionPool::new(10, Duration::from_secs(90)),
-            connector,
-            redirect_policy: crate::redirect::RedirectPolicy::default(),
-            timeout: None,
-            connect_timeout: None,
-            read_timeout: None,
-            tcp_keepalive: None,
-            tcp_keepalive_interval: None,
-            tcp_keepalive_retries: None,
-            local_address: None,
-            #[cfg(target_os = "linux")]
-            interface: None,
-            #[cfg(unix)]
-            unix_socket: None,
-            https_only: false,
-            referer: false,
-            no_connection_reuse: false,
-            tcp_fast_open: false,
-            http2_prior_knowledge: false,
-            accept_encoding: crate::decompress::AcceptEncoding::default(),
-            default_headers,
-            retry: None,
-            cookie_jar: None,
-            proxy: None,
-            resolver: None,
-            http2: None,
-            middleware: crate::middleware::MiddlewareStack::new(),
-            rate_limiter: None,
-            bandwidth_limiter: None,
-            digest_auth: None,
-            cache: None,
-            hsts: None,
-            h2c_probe_cache: crate::h2c_probe::H2cProbeCache::new(),
-            connection_coalescing: false,
-            observer: None,
-            #[cfg(feature = "tower")]
-            tower_connector: None,
-            #[cfg(feature = "rustls")]
-            tls: None,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            h3_endpoint: None,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            prefer_h3: false,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            h3_zero_rtt: false,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Start a GET request to the given URL.
-    pub fn get_local(
-        &self,
-        uri: &str,
-    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(crate::request_local::RequestBuilderLocal::new(
-            self,
-            Method::GET,
-            uri,
-        ))
-    }
-
-    /// Start a POST request to the given URL.
-    pub fn post_local(
-        &self,
-        uri: &str,
-    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(crate::request_local::RequestBuilderLocal::new(
-            self,
-            Method::POST,
-            uri,
-        ))
-    }
-
-    /// Start a request with the given method and URL.
-    pub fn request_local(
-        &self,
-        method: Method,
-        uri: &str,
-    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(crate::request_local::RequestBuilderLocal::new(
-            self, method, uri,
-        ))
-    }
 }
 
 #[cfg(test)]

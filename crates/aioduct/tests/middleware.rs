@@ -17,7 +17,7 @@ async fn test_middleware_adds_request_header() {
 
     let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(
-            |req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-middleware"),
                     http::header::HeaderValue::from_static("injected"),
@@ -49,7 +49,7 @@ async fn test_middleware_modifies_response_header() {
     impl aioduct::Middleware for ResponseTagger {
         fn on_response(
             &self,
-            response: &mut http::Response<aioduct::AioductBody>,
+            response: &mut http::Response<aioduct::body::RequestBoxBody>,
             _uri: &http::Uri,
         ) {
             self.called.store(true, Ordering::SeqCst);
@@ -99,7 +99,7 @@ async fn test_multiple_middleware_ordering() {
 
     let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(
-            |req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-order"),
                     http::header::HeaderValue::from_static("first"),
@@ -107,7 +107,7 @@ async fn test_multiple_middleware_ordering() {
             },
         )
         .middleware(
-            |req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-order"),
                     http::header::HeaderValue::from_static("second"),

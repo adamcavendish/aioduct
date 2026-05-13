@@ -5,8 +5,9 @@ use http_body_util::BodyExt;
 
 use super::HttpEngine;
 use crate::body::RequestBody;
+use crate::body::RequestBoxBody;
 use crate::clock::Instant;
-use crate::error::{AioductBody, Error};
+use crate::error::Error;
 use crate::observer::{self, RequestPhase};
 use crate::pool::PooledConnection;
 use crate::response::Response;
@@ -26,7 +27,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         headers: http::HeaderMap,
         body: Option<RequestBody>,
         version: Option<http::Version>,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
         if self.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
                 original_uri.scheme_str().unwrap_or("none").to_owned(),
@@ -56,7 +57,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                 }
                 Some(rb @ RequestBody::Streaming(_)) => (rb.into_hyper_body(), None),
                 None => {
-                    let empty: AioductBody = http_body_util::Full::new(Bytes::new())
+                    let empty: RequestBoxBody = http_body_util::Full::new(Bytes::new())
                         .map_err(|never| match never {})
                         .boxed_unsync();
                     (empty, None)
@@ -73,7 +74,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
             let (cache_state, stale_if_error) =
                 self.cache_lookup(&current_method, &current_uri, &mut current_headers);
             let cache_entry = match cache_state {
-                CacheLookupOutcome::Fresh(resp) => return Ok(*resp),
+                CacheLookupOutcome::Fresh(resp) => return Ok((*resp).into_local()),
                 CacheLookupOutcome::Stale(entry) => Some(entry),
                 CacheLookupOutcome::Miss => None,
             };
@@ -121,7 +122,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                     {
                         let _ = resp.bytes().await;
                         let http_resp = cache_entry.unwrap().into_http_response();
-                        return Ok(Response::from_boxed(http_resp, current_uri));
+                        return Ok(Response::from_boxed(http_resp, current_uri).into_local());
                     }
                     resp
                 }
@@ -131,7 +132,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                         && cached.age <= sie_duration
                     {
                         let http_resp = cached.into_http_response();
-                        return Ok(Response::from_boxed(http_resp, current_uri));
+                        return Ok(Response::from_boxed(http_resp, current_uri).into_local());
                     }
                     return Err(e);
                 }
@@ -156,7 +157,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                 && let Some(cached) = cache_entry
             {
                 let http_resp = cached.into_http_response();
-                return Ok(Response::from_boxed(http_resp, current_uri));
+                return Ok(Response::from_boxed(http_resp, current_uri).into_local());
             }
 
             if let Some(ref cache) = self.cache {
@@ -234,7 +235,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
 
         let replay_for_stale = body_for_replay.clone();
 
-        let retry_body: AioductBody = match body_for_replay {
+        let retry_body: RequestBoxBody = match body_for_replay {
             Some(b) => http_body_util::Full::new(b)
                 .map_err(|never| match never {})
                 .boxed_unsync(),
@@ -271,7 +272,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         resp: Response,
         method: &Method,
         uri: Uri,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
         let mut resp = resp;
         if !self.middleware.is_empty() {
             resp.apply_middleware(&self.middleware, &uri);
@@ -282,8 +283,6 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         } else {
             resp
         };
-        // TODO: read_timeout for Local path requires RuntimeLocal-compatible
-        // ReadTimeoutBody (Sleep may not be Send). Skip for now.
 
         let resp = if let Some(ref limiter) = self.bandwidth_limiter {
             resp.apply_bandwidth_limit(limiter.clone())
@@ -298,9 +297,15 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                 let body_bytes = resp.bytes().await?;
                 cache.store(method, &uri, status, &headers, &body_bytes);
                 let cached_resp = super::boxed_response_from_bytes(status, &headers, body_bytes);
-                return Ok(Response::from_boxed(cached_resp, uri));
+                return Ok(Response::from_boxed(cached_resp, uri).into_local());
             }
         }
+
+        let resp = if let Some(read_timeout) = self.read_timeout {
+            resp.into_local_with_read_timeout::<R>(read_timeout)
+        } else {
+            resp.into_local()
+        };
 
         Ok(resp)
     }
@@ -308,7 +313,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
     #[allow(deprecated)]
     pub(crate) async fn execute_single_local(
         &self,
-        mut request: http::Request<AioductBody>,
+        mut request: http::Request<RequestBoxBody>,
         original_uri: &Uri,
         replay_body: Option<Bytes>,
     ) -> Result<Response, Error> {
@@ -411,7 +416,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                         .as_ref()
                         .cloned()
                         .unwrap_or_else(bytes::Bytes::new);
-                    let body: AioductBody = http_body_util::Full::new(retry_body_bytes)
+                    let body: RequestBoxBody = http_body_util::Full::new(retry_body_bytes)
                         .map_err(|never| match never {})
                         .boxed_unsync();
                     let mut retry_req = http::Request::new(body);

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use http::Uri;
 use http::header::{AUTHORIZATION, HeaderValue};
 
-use crate::error::AioductBody;
+use crate::body::RequestBoxBody;
 use crate::middleware::Middleware;
 
 /// A parsed .netrc file mapping machine names to credentials.
@@ -194,7 +194,7 @@ impl NetrcMiddleware {
 }
 
 impl Middleware for NetrcMiddleware {
-    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<RequestBoxBody>, uri: &Uri) {
         if request.headers().contains_key(AUTHORIZATION) {
             return;
         }
@@ -316,7 +316,7 @@ mod tests {
         let mw = NetrcMiddleware::new(netrc);
 
         let uri: Uri = "http://api.example.com/path".parse().unwrap();
-        let body: AioductBody = http_body_util::Empty::new()
+        let body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
@@ -338,7 +338,7 @@ mod tests {
         let mw = NetrcMiddleware::new(netrc);
 
         let uri: Uri = "http://api.example.com/path".parse().unwrap();
-        let body: AioductBody = http_body_util::Empty::new()
+        let body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut req = http::Request::builder()
@@ -365,7 +365,7 @@ mod tests {
         let mw = NetrcMiddleware::new(netrc);
 
         let uri: Uri = "http://api.example.com/path".parse().unwrap();
-        let body: AioductBody = http_body_util::Empty::new()
+        let body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
@@ -431,7 +431,7 @@ mod tests {
         let mw = NetrcMiddleware::new(netrc);
 
         let uri: Uri = "/relative/path".parse().unwrap();
-        let body: AioductBody = http_body_util::Empty::new()
+        let body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
@@ -473,7 +473,7 @@ mod tests {
         }
         let mw = NetrcMiddleware::from_path(&path).unwrap();
         let uri: http::Uri = "http://mw.example.com/test".parse().unwrap();
-        let body: AioductBody = http_body_util::Empty::new()
+        let body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
@@ -611,7 +611,7 @@ mod tests {
         unsafe { std::env::remove_var("NETRC") };
 
         let uri: http::Uri = "http://mwd.example.com/test".parse().unwrap();
-        let body: AioductBody = http_body_util::Empty::new()
+        let body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();

@@ -327,7 +327,7 @@ async fn stale_retry_skipped_for_streaming_body() {
     // POST with streaming body on the stale connection.
     // The server will RST when it sees the request bytes.
     // Streaming body → not retryable → error expected.
-    let stream_body: aioduct::error::AioductBody =
+    let stream_body: aioduct::body::RequestBoxBody =
         http_body_util::Full::new(Bytes::from("payload"))
             .map_err(|never| match never {})
             .boxed_unsync();
@@ -350,6 +350,7 @@ async fn stale_retry_skipped_for_streaming_body() {
 /// Now that buffered bodies are replayed on stale connection retry,
 /// this should succeed transparently — the exact fix for the scheduler
 /// "connection closed" errors on POST + .json(&data).
+#[cfg(feature = "json")]
 #[tokio::test]
 async fn stale_retry_works_for_post_json_body() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

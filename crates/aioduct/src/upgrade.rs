@@ -116,7 +116,7 @@ impl tokio::io::AsyncWrite for Upgraded {
 }
 
 pub(crate) async fn on_upgrade(
-    response: &mut http::Response<crate::response::ResponseBody>,
+    response: &mut http::Response<crate::response::ResponseBoxSendBody>,
 ) -> Result<Upgraded, Error> {
     let on_upgrade = hyper::upgrade::on(response);
     let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;

@@ -31,10 +31,6 @@ pub(crate) fn poll_executor<R: RuntimePoll>() -> PollExecutor<R> {
 
 /// `!Send` executor for hyper's HTTP/2 handshake — spawns on the current
 /// thread's event loop. Used by completion-based runtimes (compio).
-///
-/// Not yet wired into the client module — scaffolding for the next migration
-/// phase that adds `HttpEngineLocal`.
-#[allow(dead_code)]
 pub(crate) struct CompletionExecutor<R>(PhantomData<fn() -> R>);
 
 impl<R> Clone for CompletionExecutor<R> {
@@ -56,10 +52,6 @@ where
 }
 
 /// Create a [`CompletionExecutor`] for the given runtime.
-///
-/// Not yet wired into the client module — scaffolding for the next migration
-/// phase that adds `HttpEngineLocal`.
-#[allow(dead_code)]
 pub(crate) fn completion_executor<R: RuntimeLocal>() -> CompletionExecutor<R> {
     CompletionExecutor(PhantomData)
 }

@@ -203,16 +203,61 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
     #[cfg(feature = "rustls")]
     pub(super) async fn connect_tls_local(
         &self,
-        _tcp_stream: C::Stream,
-        _host: &str,
+        tcp_stream: C::Stream,
+        host: &str,
     ) -> Result<PooledConnection, Error> {
-        // TLS over !Send streams requires a local TLS implementation.
-        // The current RustlsConnector requires Send streams. This will be
-        // addressed when compio-native TLS support is added.
-        Err(Error::Tls(
-            "TLS with !Send streams is not yet supported — use HTTP or add Send-capable connector"
-                .into(),
-        ))
+        use crate::tls::TlsConnectLocal;
+        use std::time::Instant;
+
+        let tls_start = Instant::now();
+
+        let tls_connector = self
+            .tls
+            .as_ref()
+            .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+
+        let tls_stream =
+            <crate::tls::RustlsConnector as TlsConnectLocal<C::Stream>>::connect_local(
+                tls_connector,
+                host,
+                tcp_stream,
+            )
+            .await
+            .map_err(|e| Error::Tls(Box::new(e)))?;
+
+        let tls_duration = tls_start.elapsed();
+
+        let alpn = crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
+        let tls_info = tls_stream.tls_info();
+
+        match alpn {
+            Some(crate::tls::AlpnProtocol::H2) => {
+                let mut builder = hyper::client::conn::http2::Builder::new(
+                    crate::runtime::executor::completion_executor::<R>(),
+                );
+                if let Some(ref h2) = self.http2 {
+                    h2.apply(&mut builder);
+                }
+                let (sender, conn) = builder.handshake(tls_stream).await?;
+                R::spawn_local(async move {
+                    let _ = conn.await;
+                });
+                let mut pooled = PooledConnection::new_h2(sender);
+                pooled.tls_info = Some(tls_info);
+                pooled.tls_handshake_duration = Some(tls_duration);
+                Ok(pooled)
+            }
+            _ => {
+                let (sender, conn) = hyper::client::conn::http1::handshake(tls_stream).await?;
+                R::spawn_local(async move {
+                    let _ = conn.await;
+                });
+                let mut pooled = PooledConnection::new_h1(sender);
+                pooled.tls_info = Some(tls_info);
+                pooled.tls_handshake_duration = Some(tls_duration);
+                Ok(pooled)
+            }
+        }
     }
 
     #[cfg(not(feature = "rustls"))]

@@ -718,9 +718,10 @@ async fn text_part() {
 #[tokio::test]
 async fn stream_part() {
     let stream_data = "part1 part2";
-    let stream_body: aioduct::AioductBody = http_body_util::Full::new(Bytes::from(stream_data))
-        .map_err(|never| match never {})
-        .boxed_unsync();
+    let stream_body: aioduct::body::RequestBoxBody =
+        http_body_util::Full::new(Bytes::from(stream_data))
+            .map_err(|never| match never {})
+            .boxed_unsync();
 
     let form = aioduct::Multipart::new()
         .text("foo", "bar")
