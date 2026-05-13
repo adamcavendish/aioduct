@@ -2,6 +2,7 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -162,10 +163,7 @@ fn test_smol_timeout_triggers() {
             .await;
 
         assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), aioduct::Error::Timeout),
-            "expected Timeout error"
-        );
+        assert!(result.unwrap_err().is_timeout(), "expected Timeout error");
     });
 }
 
@@ -459,5 +457,122 @@ fn test_smol_multiple_headers_same_name() {
 
         let body = resp.text().await.unwrap();
         assert_eq!(body, "a,b");
+    });
+}
+
+#[test]
+fn test_smol_proxy_auth_for_plain_http() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    smol::block_on(async {
+        let auth_seen = Arc::new(AtomicBool::new(false));
+        let auth_seen_clone = auth_seen.clone();
+
+        let proxy_addr = start_server_with(move |req| {
+            let auth_seen = auth_seen_clone.clone();
+            async move {
+                if let Some(auth) = req.headers().get("proxy-authorization") {
+                    let auth_str = auth.to_str().unwrap_or("");
+                    if auth_str == "Basic dXNlcjpwYXNz" {
+                        auth_seen.store(true, Ordering::SeqCst);
+                    }
+                }
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("proxied"))))
+            }
+        })
+        .await;
+
+        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+            aioduct::runtime::smol_rt::TcpConnector,
+        )
+        .proxy(
+            aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+                .unwrap()
+                .basic_auth("user", "pass"),
+        )
+        .build();
+
+        let resp = client
+            .get("http://example.com/test")
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert!(
+            auth_seen.load(Ordering::SeqCst),
+            "smol client should inject Proxy-Authorization for plain HTTP proxy"
+        );
+    });
+}
+
+#[test]
+fn test_smol_redirect_follows() {
+    smol::block_on(async {
+        let final_addr = start_server().await;
+
+        let redirect_addr = start_server_with(move |_req| {
+            let target = format!("http://{final_addr}/");
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(302)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        })
+        .await;
+
+        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+            aioduct::runtime::smol_rt::TcpConnector,
+        );
+
+        let resp = client
+            .get(&format!("http://{redirect_addr}/start"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+    });
+}
+
+#[test]
+fn test_smol_default_headers() {
+    smol::block_on(async {
+        let addr = start_server_with(|req| async move {
+            let val = req
+                .headers()
+                .get("x-custom-default")
+                .map(|v| v.to_str().unwrap().to_owned())
+                .unwrap_or_default();
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
+        })
+        .await;
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::HeaderName::from_static("x-custom-default"),
+            http::header::HeaderValue::from_static("smol-default"),
+        );
+        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+            aioduct::runtime::smol_rt::TcpConnector,
+        )
+        .default_headers(headers)
+        .build();
+
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.text().await.unwrap(), "smol-default");
     });
 }

@@ -158,6 +158,10 @@ impl<'a> WasiRequestBuilder<'a> {
         }
     }
 
+    pub(crate) fn uri(&self) -> &Uri {
+        &self.uri
+    }
+
     /// Set a request header.
     pub fn header(mut self, name: http::header::HeaderName, value: HeaderValue) -> Self {
         self.headers.insert(name, value);

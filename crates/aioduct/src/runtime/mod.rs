@@ -13,6 +13,7 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// Custom DNS resolver trait.
 ///
@@ -52,6 +53,60 @@ where
         port: u16,
     ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
         (self)(host, port)
+    }
+}
+
+/// A resolver that maps specific hostnames to fixed socket addresses,
+/// falling back to an inner resolver for unmatched hosts.
+pub(crate) struct StaticResolver {
+    overrides: std::collections::HashMap<String, Vec<SocketAddr>>,
+    fallback: Option<Arc<dyn Resolve>>,
+}
+
+impl StaticResolver {
+    pub(crate) fn new(fallback: Option<Arc<dyn Resolve>>) -> Self {
+        Self {
+            overrides: std::collections::HashMap::new(),
+            fallback,
+        }
+    }
+
+    pub(crate) fn add(&mut self, host: String, addrs: Vec<SocketAddr>) {
+        self.overrides.insert(host, addrs);
+    }
+}
+
+impl Resolve for StaticResolver {
+    fn resolve(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+        if let Some(addrs) = self.overrides.get(host) {
+            let addr = addrs[0];
+            return Box::pin(async move { Ok(addr) });
+        }
+        if let Some(ref fallback) = self.fallback {
+            return fallback.resolve(host, port);
+        }
+        let msg = format!("no resolver configured for {host}:{port}");
+        Box::pin(async move { Err(io::Error::new(io::ErrorKind::AddrNotAvailable, msg)) })
+    }
+
+    fn resolve_all(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send>> {
+        if let Some(addrs) = self.overrides.get(host) {
+            let addrs = addrs.clone();
+            return Box::pin(async move { Ok(addrs) });
+        }
+        if let Some(ref fallback) = self.fallback {
+            return fallback.resolve_all(host, port);
+        }
+        let msg = format!("no resolver configured for {host}:{port}");
+        Box::pin(async move { Err(io::Error::new(io::ErrorKind::AddrNotAvailable, msg)) })
     }
 }
 

@@ -218,3 +218,121 @@ fn blocking_json() {
     let data: serde_json::Value = resp.json().unwrap();
     assert_eq!(data["key"], "value");
 }
+
+#[test]
+fn blocking_default_headers() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        let val = req
+            .headers()
+            .get("x-default")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
+    });
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::HeaderName::from_static("x-default"),
+        http::header::HeaderValue::from_static("default-val"),
+    );
+    let client = Client::builder().default_headers(headers).build();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert_eq!(resp.text().unwrap(), "default-val");
+}
+
+#[test]
+fn blocking_override_default_headers() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        let val = req
+            .headers()
+            .get("authorization")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
+    });
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        http::header::HeaderValue::from_static("default-token"),
+    );
+    let client = Client::builder().default_headers(headers).build();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .header(
+            http::header::AUTHORIZATION,
+            http::header::HeaderValue::from_static("override-token"),
+        )
+        .send()
+        .unwrap();
+    assert_eq!(resp.text().unwrap(), "override-token");
+}
+
+#[test]
+fn blocking_error_for_status_5xx() {
+    let addr = start_server_with(|_req: Request<hyper::body::Incoming>| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(500)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    });
+    let client = Client::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    let err = resp.error_for_status().unwrap_err();
+    assert!(err.is_status());
+}
+
+#[test]
+fn blocking_get_no_content_length() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        assert!(
+            req.headers().get("content-length").is_none(),
+            "GET should not set content-length"
+        );
+        assert!(
+            req.headers().get("transfer-encoding").is_none(),
+            "GET should not set transfer-encoding"
+        );
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+    });
+
+    let client = Client::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[test]
+fn blocking_https_only_rejects_http() {
+    let client = Client::builder().https_only(true).build();
+    let result = client.get("http://example.com/").unwrap().send();
+    assert!(result.is_err());
+}
+
+#[test]
+fn blocking_remote_addr() {
+    let addr = start_server_with(hello);
+    let client = Client::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    let remote = resp.remote_addr();
+    assert!(remote.is_some());
+    assert_eq!(remote.unwrap().port(), addr.port());
+}

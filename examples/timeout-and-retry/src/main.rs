@@ -36,7 +36,7 @@ async fn main() -> Result<(), aioduct::Error> {
         .await;
 
     match result {
-        Err(aioduct::Error::Timeout) => println!("\nRequest timed out as expected!"),
+        Err(e) if e.is_timeout() => println!("\nRequest timed out as expected!"),
         Ok(resp) => println!("\nGot response: {}", resp.status()),
         Err(e) => println!("\nOther error: {e}"),
     }

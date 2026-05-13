@@ -3,6 +3,8 @@
 mod common;
 use common::*;
 
+use http_body_util::BodyExt;
+
 #[tokio::test]
 async fn test_redirect_302() {
     let final_addr = start_server().await;
@@ -261,8 +263,6 @@ async fn test_redirect_301_and_302_and_303_changes_post_to_get() {
 
 #[tokio::test]
 async fn test_redirect_307_and_308_replays_post_body() {
-    use http_body_util::BodyExt;
-
     let codes = [307u16, 308];
     for &code in &codes {
         let addr = start_server_with(move |req| async move {
@@ -357,8 +357,6 @@ async fn test_redirect_removes_sensitive_headers_cross_origin() {
 
 #[tokio::test]
 async fn test_redirect_301_302_303_strips_content_headers() {
-    use http_body_util::BodyExt;
-
     let codes = [301u16, 302, 303];
     for &code in &codes {
         let addr = start_server_with(move |req| async move {
@@ -671,4 +669,396 @@ async fn test_redirect_stop_returns_redirect_response() {
         .unwrap();
 
     assert_eq!(resp.status(), http::StatusCode::MOVED_PERMANENTLY);
+}
+
+#[tokio::test]
+async fn redirect_301_302_303_changes_post_to_get() {
+    let codes = [301u16, 302, 303];
+
+    for &code in &codes {
+        let addr = start_server_with(move |req| async move {
+            if req.method() == "POST" {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(code)
+                        .header("location", "/dst")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            } else {
+                assert_eq!(
+                    req.method(),
+                    "GET",
+                    "after {code} redirect, method should be GET"
+                );
+                Ok(Response::builder()
+                    .header("x-arrived", "true")
+                    .body(Full::new(Bytes::from("destination")))
+                    .unwrap())
+            }
+        })
+        .await;
+
+        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let resp = client
+            .post(&format!("http://{addr}/{code}"))
+            .unwrap()
+            .body("request body")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK, "code={code}");
+        assert_eq!(
+            resp.headers().get("x-arrived").unwrap().to_str().unwrap(),
+            "true"
+        );
+        let url = resp.url().to_string();
+        assert!(
+            url.contains("/dst"),
+            "url should be /dst after redirect, got: {url}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn redirect_307_preserves_get() {
+    let addr = start_server_with(|req| async move {
+        assert_eq!(req.method(), "GET");
+        if req.uri().path() == "/start" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(307)
+                    .header("location", "/dst")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            assert_eq!(req.uri().path(), "/dst");
+            Ok(Response::new(Full::new(Bytes::from("arrived"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/start"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "arrived");
+}
+
+#[tokio::test]
+async fn redirect_308_preserves_get() {
+    let addr = start_server_with(|req| async move {
+        assert_eq!(req.method(), "GET");
+        if req.uri().path() == "/start" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(308)
+                    .header("location", "/dst")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            assert_eq!(req.uri().path(), "/dst");
+            Ok(Response::new(Full::new(Bytes::from("arrived"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/start"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "arrived");
+}
+
+#[tokio::test]
+async fn redirect_307_preserves_post_with_body() {
+    let addr = start_server_with(|req| async move {
+        assert_eq!(req.method(), "POST");
+        let path = req.uri().path().to_string();
+        let body_bytes = req.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body_bytes[..], b"Hello", "body must be preserved on 307");
+
+        if path == "/start" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(307)
+                    .header("location", "/dst")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            assert_eq!(path, "/dst");
+            Ok(Response::new(Full::new(Bytes::from("arrived"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .post(&format!("http://{addr}/start"))
+        .unwrap()
+        .body("Hello")
+        .send()
+        .await
+        .unwrap();
+
+    let url = resp.url().to_string();
+    assert!(url.contains("/dst"), "should redirect to /dst, got: {url}");
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "arrived");
+}
+
+#[tokio::test]
+async fn redirect_308_preserves_post_with_body() {
+    let addr = start_server_with(|req| async move {
+        assert_eq!(req.method(), "POST");
+        let path = req.uri().path().to_string();
+        let body_bytes = req.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body_bytes[..], b"Hello", "body must be preserved on 308");
+
+        if path == "/start" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(308)
+                    .header("location", "/dst")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            assert_eq!(path, "/dst");
+            Ok(Response::new(Full::new(Bytes::from("arrived"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .post(&format!("http://{addr}/start"))
+        .unwrap()
+        .body("Hello")
+        .send()
+        .await
+        .unwrap();
+
+    let url = resp.url().to_string();
+    assert!(url.contains("/dst"), "should redirect to /dst, got: {url}");
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "arrived");
+}
+
+#[tokio::test]
+async fn redirect_max_redirects_error() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(302)
+                .header("location", "/loop")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .max_redirects(5)
+        .build();
+
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.is_redirect(), "expected redirect error, got: {err:?}");
+}
+
+#[tokio::test]
+async fn redirect_cross_origin_strips_auth() {
+    let final_addr = start_server_with(|req| async move {
+        let auth = req
+            .headers()
+            .get("authorization")
+            .map(|v| v.to_str().unwrap().to_owned());
+        let body = match auth {
+            Some(v) => format!("auth={v}"),
+            None => "auth=none".to_string(),
+        };
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    let redirect_addr = start_server_with(move |_req| {
+        let target = format!("http://{final_addr}/final");
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{redirect_addr}/start"))
+        .unwrap()
+        .bearer_auth("secret-token")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "auth=none",
+        "authorization header should be stripped on cross-origin redirect"
+    );
+}
+
+#[tokio::test]
+async fn redirect_same_origin_preserves_auth() {
+    let addr = start_server_with(|req| async move {
+        if req.uri().path() == "/start" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", "/final")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            let auth = req
+                .headers()
+                .get("authorization")
+                .map(|v| v.to_str().unwrap().to_owned())
+                .unwrap_or_else(|| "none".to_owned());
+            Ok(Response::new(Full::new(Bytes::from(auth))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/start"))
+        .unwrap()
+        .bearer_auth("secret-token")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("secret-token"),
+        "same-origin redirect should preserve auth, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn redirect_chain_url_reflects_final() {
+    let final_addr = start_server().await;
+    let mid_addr = start_server_with(move |_req| {
+        let target = format!("http://{final_addr}/final");
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let redirect_addr = start_server_with(move |_req| {
+        let target = format!("http://{mid_addr}/mid");
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(301)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{redirect_addr}/start"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let url = resp.url().to_string();
+    assert!(
+        url.contains("/final"),
+        "URL should reflect final destination, got: {url}"
+    );
+}
+
+#[tokio::test]
+async fn redirect_to_invalid_scheme_returns_error() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(302)
+                .header("location", "ftp://invalid.example.com/")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+
+    assert!(
+        result.is_err(),
+        "redirect to ftp:// should produce an error"
+    );
+}
+
+#[tokio::test]
+async fn redirect_stop_policy_allows_invalid_location() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(302)
+                .header("location", "htt://invalid/")
+                .body(Full::new(Bytes::from("redirect body")))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .redirect_policy(aioduct::RedirectPolicy::none())
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::FOUND);
 }

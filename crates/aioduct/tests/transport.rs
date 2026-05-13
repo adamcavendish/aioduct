@@ -457,3 +457,126 @@ async fn test_timings_https_with_tls() {
         "total should be >= dns + tcp"
     );
 }
+#[tokio::test]
+async fn h2_concurrent_requests() {
+    let request_count = Arc::new(AtomicU32::new(0));
+    let count_clone = request_count.clone();
+
+    let addr = start_h2_server_with(move |_req| {
+        let count = count_clone.clone();
+        async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("h2 ok"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .http2_prior_knowledge()
+        .build();
+
+    let mut handles = Vec::new();
+    for _ in 0..20 {
+        let client = client.clone();
+        let url = format!("http://{addr}/");
+        handles.push(tokio::spawn(async move {
+            let resp = client.get(&url).unwrap().send().await.unwrap();
+            assert_eq!(resp.status(), http::StatusCode::OK);
+            resp.text().await.unwrap()
+        }));
+    }
+
+    for handle in handles {
+        let body = handle.await.unwrap();
+        assert_eq!(body, "h2 ok");
+    }
+
+    assert_eq!(request_count.load(Ordering::SeqCst), 20);
+}
+
+#[tokio::test]
+async fn h2_basic_request() {
+    let addr = start_h2_server_with(|req| async move {
+        let method = req.method().to_string();
+        let version = format!("{:?}", req.version());
+        let body = format!("method={method} version={version}");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .http2_prior_knowledge()
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.version(), http::Version::HTTP_2);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("method=GET"), "got: {body}");
+    assert!(body.contains("HTTP/2"), "got: {body}");
+}
+
+#[tokio::test]
+async fn h2_post_with_body() {
+    use http_body_util::BodyExt;
+
+    let addr = start_h2_server_with(|req| async move {
+        assert_eq!(req.method(), "POST");
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body.to_vec()))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .http2_prior_knowledge()
+        .build();
+
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .body("h2 body data")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "h2 body data");
+}
+
+#[tokio::test]
+async fn h2_connection_reuse() {
+    let request_count = Arc::new(AtomicU32::new(0));
+    let count_clone = request_count.clone();
+
+    let addr = start_h2_server_with(move |_req| {
+        let count = count_clone.clone();
+        async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .http2_prior_knowledge()
+        .build();
+
+    for _ in 0..5 {
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await.unwrap();
+    }
+
+    assert_eq!(request_count.load(Ordering::SeqCst), 5);
+}
