@@ -14,8 +14,9 @@ use crate::timing::TimingCollector;
 
 use super::HttpEngine;
 
-impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
-    /// Populate SANs on a connection before returning it to the pool.
+// ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
+
+impl<R, C> HttpEngine<R, C> {
     #[cfg(feature = "rustls")]
     fn populate_sans(conn: &mut PooledConnection) {
         if conn.is_h2_or_h3()
@@ -29,13 +30,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     #[cfg(not(feature = "rustls"))]
     fn populate_sans(_conn: &mut PooledConnection) {}
 
-    fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection) {
+    pub(super) fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection) {
         Self::populate_sans(&mut conn);
         self.fire_connection_metrics(&conn, false);
         self.pool.checkin(key, conn);
     }
 
-    fn fire_connection_metrics(&self, conn: &PooledConnection, closed: bool) {
+    pub(super) fn fire_connection_metrics(&self, conn: &PooledConnection, closed: bool) {
         if let Some(ref obs) = self.observer
             && let Some(remote_addr) = conn.remote_addr
         {
@@ -55,7 +56,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     }
 
     #[inline]
-    fn notify(&self, method: &http::Method, uri: &Uri, phase: RequestPhase) {
+    pub(super) fn notify(&self, method: &http::Method, uri: &Uri, phase: RequestPhase) {
         if let Some(ref obs) = self.observer {
             obs.on_event(&RequestEvent {
                 method: method.clone(),
@@ -66,7 +67,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         }
     }
 
-    fn attach_observer(&self, resp: &mut Response, method: &http::Method, uri: &Uri) {
+    pub(super) fn attach_observer(&self, resp: &mut Response, method: &http::Method, uri: &Uri) {
         if let Some(ref obs) = self.observer {
             resp.set_observer_ctx(BodyObserverCtx {
                 observer: obs.clone(),
@@ -77,7 +78,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         }
     }
 
-    fn connection_protocol(conn: &PooledConnection) -> observer::NegotiatedProtocol {
+    pub(super) fn connection_protocol(conn: &PooledConnection) -> observer::NegotiatedProtocol {
         match &conn.conn {
             HttpConnection::H1(_) => observer::NegotiatedProtocol::Http1,
             HttpConnection::H2(_) => observer::NegotiatedProtocol::Http2,
@@ -86,6 +87,93 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         }
     }
 
+    pub(super) async fn send_on_connection(
+        conn: &mut PooledConnection,
+        request: http::Request<AioductBody>,
+        url: Uri,
+    ) -> Result<Response, Error> {
+        #[cfg(feature = "tracing")]
+        let proto = match &conn.conn {
+            HttpConnection::H1(_) => "h1",
+            HttpConnection::H2(_) => "h2",
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => "h3",
+        };
+        #[cfg(feature = "tracing")]
+        tracing::trace!(
+            protocol = proto,
+            host = url.host().unwrap_or(""),
+            "http.send.start"
+        );
+
+        let body_size = http_body::Body::size_hint(request.body())
+            .exact()
+            .unwrap_or(0);
+        conn.bytes_sent += body_size;
+        conn.requests_served += 1;
+
+        let result = match &mut conn.conn {
+            HttpConnection::H1(sender) => {
+                let resp = sender.send_request(request).await?;
+                let resp = resp.map(crate::response::ResponseBody::from_incoming);
+                Ok(Response::new(resp, url))
+            }
+            HttpConnection::H2(sender) => {
+                let resp = sender.send_request(request).await?;
+                let resp = resp.map(crate::response::ResponseBody::from_incoming);
+                Ok(Response::new(resp, url))
+            }
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(sender) => {
+                crate::h3_transport::send_on_h3(sender, request, url).await
+            }
+        };
+
+        if let Ok(ref resp) = result
+            && let Some(len) = resp.content_length()
+        {
+            conn.bytes_received += len;
+        }
+
+        #[cfg(feature = "tracing")]
+        if let Ok(ref resp) = result {
+            tracing::trace!(status = resp.status().as_u16(), "http.send.done");
+        }
+
+        result
+    }
+
+    pub(super) fn is_stale_connection_error(err: &Error) -> bool {
+        match err {
+            Error::Hyper(e) => {
+                if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
+                    return true;
+                }
+                use std::error::Error as _;
+                if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
+                    return matches!(
+                        io_err.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionAborted
+                    );
+                }
+                false
+            }
+            Error::Io(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionAborted
+            ),
+            _ => false,
+        }
+    }
+}
+
+// ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
+
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     pub(crate) async fn execute_single(
         &self,
         request: http::Request<AioductBody>,
@@ -630,7 +718,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                             .map_err(Error::Io)?
                     } else {
                         #[cfg(feature = "tower")]
-                        if let Some(ref tower_conn) = self.tower_connector {
+                        if let Some(ref tower_slot) = self.tower_connector {
+                            let tower_conn = tower_slot.get::<C>();
                             let info = crate::connector::ConnectInfo {
                                 uri: original_uri.clone(),
                                 addr,
@@ -839,90 +928,5 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         }
 
         Ok(resp)
-    }
-
-    pub(super) async fn send_on_connection(
-        conn: &mut PooledConnection,
-        request: http::Request<AioductBody>,
-        url: Uri,
-    ) -> Result<Response, Error> {
-        #[cfg(feature = "tracing")]
-        let proto = match &conn.conn {
-            HttpConnection::H1(_) => "h1",
-            HttpConnection::H2(_) => "h2",
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            HttpConnection::H3(_) => "h3",
-        };
-        #[cfg(feature = "tracing")]
-        tracing::trace!(
-            protocol = proto,
-            host = url.host().unwrap_or(""),
-            "http.send.start"
-        );
-
-        let body_size = http_body::Body::size_hint(request.body())
-            .exact()
-            .unwrap_or(0);
-        conn.bytes_sent += body_size;
-        conn.requests_served += 1;
-
-        let result = match &mut conn.conn {
-            HttpConnection::H1(sender) => {
-                let resp = sender.send_request(request).await?;
-                let resp = resp.map(crate::response::ResponseBody::from_incoming);
-                Ok(Response::new(resp, url))
-            }
-            HttpConnection::H2(sender) => {
-                let resp = sender.send_request(request).await?;
-                let resp = resp.map(crate::response::ResponseBody::from_incoming);
-                Ok(Response::new(resp, url))
-            }
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            HttpConnection::H3(sender) => {
-                crate::h3_transport::send_on_h3(sender, request, url).await
-            }
-        };
-
-        if let Ok(ref resp) = result
-            && let Some(len) = resp.content_length()
-        {
-            conn.bytes_received += len;
-        }
-
-        #[cfg(feature = "tracing")]
-        if let Ok(ref resp) = result {
-            tracing::trace!(status = resp.status().as_u16(), "http.send.done");
-        }
-
-        result
-    }
-
-    fn is_stale_connection_error(err: &Error) -> bool {
-        match err {
-            Error::Hyper(e) => {
-                if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
-                    return true;
-                }
-                // Hyper wraps IO errors (ConnectionReset, BrokenPipe) when the
-                // underlying socket fails mid-send on a reused connection.
-                use std::error::Error as _;
-                if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
-                    return matches!(
-                        io_err.kind(),
-                        std::io::ErrorKind::ConnectionReset
-                            | std::io::ErrorKind::BrokenPipe
-                            | std::io::ErrorKind::ConnectionAborted
-                    );
-                }
-                false
-            }
-            Error::Io(e) => matches!(
-                e.kind(),
-                std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::ConnectionAborted
-            ),
-            _ => false,
-        }
     }
 }
