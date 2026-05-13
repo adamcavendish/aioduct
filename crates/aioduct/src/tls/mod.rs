@@ -160,6 +160,17 @@ pub trait TlsConnect<S>: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = io::Result<Self::Stream>> + Send + '_>>;
 }
 
+/// `!Send` variant of [`TlsConnect`] for completion-based runtimes (compio).
+pub(crate) trait TlsConnectLocal<S>: 'static {
+    type Stream: hyper::rt::Read + hyper::rt::Write + Unpin + 'static;
+
+    fn connect_local(
+        &self,
+        server_name: &str,
+        stream: S,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Self::Stream>> + '_>>;
+}
+
 #[cfg(feature = "rustls")]
 /// A TLS certificate for use as a trusted root CA.
 #[derive(Clone)]

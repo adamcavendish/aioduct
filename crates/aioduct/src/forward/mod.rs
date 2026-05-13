@@ -10,8 +10,9 @@ use http::uri::{Parts as UriParts, PathAndQuery, Scheme, Uri};
 use http_body::Body;
 use http_body_util::BodyExt;
 
+use crate::body::RequestBoxBody;
 use crate::client::HttpEngine;
-use crate::error::{AioductBody, Error};
+use crate::error::Error;
 use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
@@ -299,8 +300,8 @@ where
             parts.uri = request_uri;
         }
 
-        // 9. Convert body to AioductBody
-        let boxed_body: AioductBody = body
+        // 9. Convert body to RequestBoxBody
+        let boxed_body: RequestBoxBody = body
             .map_frame(|frame| frame)
             .map_err(|e| {
                 let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();

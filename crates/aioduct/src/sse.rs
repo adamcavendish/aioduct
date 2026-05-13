@@ -4,7 +4,8 @@ use bytes::{Buf, BytesMut};
 use http_body_util::BodyExt;
 use memchr::memchr2;
 
-use crate::error::{AioductBody, Error};
+use crate::body::RequestBoxBody;
+use crate::error::Error;
 
 /// A parsed SSE message event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,7 +260,7 @@ fn next_line_str(s: &str) -> (&str, &str) {
 
 /// Async iterator over a `text/event-stream` response body.
 pub struct SseStream {
-    body: AioductBody,
+    body: RequestBoxBody,
     buf: BytesMut,
     decoder: SseDecoder,
     done: bool,
@@ -272,7 +273,7 @@ impl std::fmt::Debug for SseStream {
 }
 
 impl SseStream {
-    pub(crate) fn new(body: AioductBody) -> Self {
+    pub(crate) fn new(body: RequestBoxBody) -> Self {
         Self {
             body,
             buf: BytesMut::new(),
@@ -283,7 +284,7 @@ impl SseStream {
 
     /// Create a stream with a custom maximum payload size per event.
     /// Pass `0` to disable the limit.
-    pub fn with_max_payload_size(body: AioductBody, max: usize) -> Self {
+    pub fn with_max_payload_size(body: RequestBoxBody, max: usize) -> Self {
         Self {
             body,
             buf: BytesMut::new(),
