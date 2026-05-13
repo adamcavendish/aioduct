@@ -62,7 +62,7 @@ pub struct HttpEngineBuilder<R: RuntimePoll, C: ConnectorSend> {
     pub(super) connection_coalescing: bool,
     pub(super) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
     #[cfg(feature = "tower")]
-    pub(super) tower_connector: Option<crate::connector::LayeredConnector<C>>,
+    pub(super) tower_connector: Option<crate::connector::TowerConnectorSlot>,
     #[cfg(feature = "rustls")]
     pub(super) tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "rustls")]
@@ -625,7 +625,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         <L::Service as tower_service::Service<crate::connector::ConnectInfo>>::Future:
             Send + 'static,
     {
-        self.tower_connector = Some(crate::connector::apply_layer(self.connector.clone(), layer));
+        self.tower_connector = Some(crate::connector::TowerConnectorSlot::new(
+            crate::connector::apply_layer(self.connector.clone(), layer),
+        ));
         self
     }
 

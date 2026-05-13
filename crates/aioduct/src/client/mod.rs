@@ -1,7 +1,9 @@
 mod builder;
 mod connect;
+mod connect_local;
 mod dispatch;
 mod execute;
+mod execute_local;
 mod resolve;
 
 pub use builder::HttpEngineBuilder;
@@ -29,12 +31,15 @@ use crate::proxy::ProxySettings;
 use crate::redirect::RedirectPolicy;
 use crate::request::RequestBuilder;
 use crate::retry::RetryConfig;
-use crate::runtime::{ConnectorSend, Resolve, RuntimePoll};
+use crate::runtime::{Connector, ConnectorSend, Resolve, RuntimeLocal, RuntimePoll};
 
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
 /// HTTP client with connection pooling, TLS, and automatic redirect handling.
-pub struct HttpEngine<R: RuntimePoll, C: ConnectorSend> {
+///
+/// This type supports both poll-based runtimes (tokio, smol) via [`RuntimePoll`] bounds
+/// and completion-based runtimes (compio) via [`RuntimeLocal`] bounds.
+pub struct HttpEngine<R, C> {
     pub(crate) pool: ConnectionPool,
     pub(crate) connector: C,
     pub(crate) redirect_policy: RedirectPolicy,
@@ -71,7 +76,7 @@ pub struct HttpEngine<R: RuntimePoll, C: ConnectorSend> {
     pub(crate) connection_coalescing: bool,
     pub(crate) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
     #[cfg(feature = "tower")]
-    pub(crate) tower_connector: Option<crate::connector::LayeredConnector<C>>,
+    pub(crate) tower_connector: Option<crate::connector::TowerConnectorSlot>,
     #[cfg(feature = "rustls")]
     pub(crate) tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -85,7 +90,7 @@ pub struct HttpEngine<R: RuntimePoll, C: ConnectorSend> {
     pub(crate) _phantom: PhantomData<(R, C)>,
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> Clone for HttpEngine<R, C> {
+impl<R, C: Clone> Clone for HttpEngine<R, C> {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
@@ -140,7 +145,7 @@ impl<R: RuntimePoll, C: ConnectorSend> Clone for HttpEngine<R, C> {
     }
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for HttpEngine<R, C> {
+impl<R, C> std::fmt::Debug for HttpEngine<R, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpEngine").finish()
     }
@@ -311,6 +316,106 @@ fn boxed_response_from_bytes(
                 .boxed_unsync(),
         )
         .expect("response builder with valid status cannot fail")
+}
+
+// ── Local path (RuntimeLocal + Connector) ────────────────────────────────────
+
+impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
+    /// Create a new client with default settings for a completion-based runtime.
+    pub fn new_local(connector: C) -> Self {
+        use http::header::{HeaderMap, HeaderValue, USER_AGENT};
+        let mut default_headers = HeaderMap::new();
+        default_headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
+
+        Self {
+            pool: crate::pool::ConnectionPool::new(10, Duration::from_secs(90)),
+            connector,
+            redirect_policy: crate::redirect::RedirectPolicy::default(),
+            timeout: None,
+            connect_timeout: None,
+            read_timeout: None,
+            tcp_keepalive: None,
+            tcp_keepalive_interval: None,
+            tcp_keepalive_retries: None,
+            local_address: None,
+            #[cfg(target_os = "linux")]
+            interface: None,
+            #[cfg(unix)]
+            unix_socket: None,
+            https_only: false,
+            referer: false,
+            no_connection_reuse: false,
+            tcp_fast_open: false,
+            http2_prior_knowledge: false,
+            accept_encoding: crate::decompress::AcceptEncoding::default(),
+            default_headers,
+            retry: None,
+            cookie_jar: None,
+            proxy: None,
+            resolver: None,
+            http2: None,
+            middleware: crate::middleware::MiddlewareStack::new(),
+            rate_limiter: None,
+            bandwidth_limiter: None,
+            digest_auth: None,
+            cache: None,
+            hsts: None,
+            h2c_probe_cache: crate::h2c_probe::H2cProbeCache::new(),
+            connection_coalescing: false,
+            observer: None,
+            #[cfg(feature = "tower")]
+            tower_connector: None,
+            #[cfg(feature = "rustls")]
+            tls: None,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            h3_endpoint: None,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            prefer_h3: false,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            h3_zero_rtt: false,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Start a GET request to the given URL.
+    pub fn get_local(
+        &self,
+        uri: &str,
+    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        Ok(crate::request_local::RequestBuilderLocal::new(
+            self,
+            Method::GET,
+            uri,
+        ))
+    }
+
+    /// Start a POST request to the given URL.
+    pub fn post_local(
+        &self,
+        uri: &str,
+    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        Ok(crate::request_local::RequestBuilderLocal::new(
+            self,
+            Method::POST,
+            uri,
+        ))
+    }
+
+    /// Start a request with the given method and URL.
+    pub fn request_local(
+        &self,
+        method: Method,
+        uri: &str,
+    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        Ok(crate::request_local::RequestBuilderLocal::new(
+            self, method, uri,
+        ))
+    }
 }
 
 #[cfg(test)]
