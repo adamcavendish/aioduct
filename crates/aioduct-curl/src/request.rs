@@ -22,7 +22,7 @@ pub async fn execute(
         eprint_request_info(cli, &req);
     }
 
-    req.send().await
+    Ok(req.send().await?)
 }
 
 fn apply_headers<'a>(

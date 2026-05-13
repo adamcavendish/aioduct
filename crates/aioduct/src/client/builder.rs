@@ -49,6 +49,8 @@ pub struct HttpEngineBuilder<R: RuntimePoll, C: ConnectorSend> {
     pub(super) cookie_jar: Option<CookieJar>,
     pub(super) proxy: Option<ProxySettings>,
     pub(super) resolver: Option<Arc<dyn Resolve>>,
+    pub(super) static_resolves:
+        Option<std::collections::HashMap<String, Vec<std::net::SocketAddr>>>,
     pub(super) http2: Option<Http2Config>,
     pub(super) middleware: MiddlewareStack,
     pub(super) rate_limiter: Option<crate::throttle::RateLimiter>,
@@ -119,6 +121,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
             cookie_jar: None,
             proxy: None,
             resolver: None,
+            static_resolves: None,
             http2: None,
             middleware: MiddlewareStack::new(),
             rate_limiter: None,
@@ -201,7 +204,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         self
     }
 
-    /// Set a timeout between body data chunks (read timeout).
+    /// Set a timeout for gaps between body data chunks.
+    ///
+    /// This applies **only to response body reads**, not to waiting for
+    /// response headers. If no body data arrives within this duration the
+    /// request fails with [`Error::Timeout`](crate::Error::Timeout).
+    ///
+    /// Use [`timeout()`](Self::timeout) for an overall request deadline that
+    /// covers headers and body, or [`connect_timeout()`](Self::connect_timeout)
+    /// for the TCP + TLS handshake phase.
     pub fn read_timeout(mut self, timeout: Duration) -> Self {
         self.read_timeout = Some(timeout);
         self
@@ -342,6 +353,35 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
     /// Set a custom DNS resolver, overriding the runtime's default.
     pub fn resolver(mut self, resolver: impl Resolve) -> Self {
         self.resolver = Some(Arc::new(resolver));
+        self
+    }
+
+    /// Override DNS resolution for a specific hostname.
+    ///
+    /// All requests to `domain` will connect to the given `addr` instead of
+    /// performing DNS resolution. Multiple calls with different domains accumulate.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use aioduct::{HttpEngine, runtime::TokioRuntime};
+    /// # use aioduct::runtime::tokio_rt::TcpConnector;
+    /// let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    ///     .resolve("example.com", "127.0.0.1:8080".parse().unwrap())
+    ///     .build();
+    /// ```
+    pub fn resolve(self, domain: &str, addr: std::net::SocketAddr) -> Self {
+        self.resolve_to_addrs(domain, &[addr])
+    }
+
+    /// Override DNS resolution for a specific hostname with multiple addresses.
+    ///
+    /// The client will attempt connections to the provided addresses using Happy
+    /// Eyeballs (RFC 8305) ordering. Multiple calls with different domains accumulate.
+    pub fn resolve_to_addrs(mut self, domain: &str, addrs: &[std::net::SocketAddr]) -> Self {
+        self.static_resolves
+            .get_or_insert_with(Default::default)
+            .insert(domain.to_owned(), addrs.to_vec());
         self
     }
 
@@ -846,7 +886,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
             retry: self.retry,
             cookie_jar: self.cookie_jar,
             proxy: self.proxy,
-            resolver: self.resolver.or_else(|| Self::default_resolver()),
+            resolver: {
+                if let Some(overrides) = self.static_resolves {
+                    let fallback = self.resolver.or_else(|| Self::default_resolver());
+                    let mut sr = crate::runtime::StaticResolver::new(fallback);
+                    for (host, addrs) in overrides {
+                        sr.add(host, addrs);
+                    }
+                    Some(Arc::new(sr) as Arc<dyn Resolve>)
+                } else {
+                    self.resolver.or_else(|| Self::default_resolver())
+                }
+            },
             http2: self.http2,
             middleware: self.middleware,
             rate_limiter: self.rate_limiter,

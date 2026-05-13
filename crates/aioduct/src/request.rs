@@ -9,7 +9,7 @@ use http::{Method, StatusCode, Uri, Version};
 
 use crate::body::RequestBody;
 use crate::client::HttpEngine;
-use crate::error::{AioductBody, Error};
+use crate::error::{AioductBody, Error, SendError};
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::{ConnectorSend, RuntimePoll};
@@ -339,13 +339,20 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilder<'a, R, C> {
     }
 
     /// Send the request and return the response.
-    pub async fn send(self) -> Result<Response, Error> {
+    ///
+    /// On failure, returns [`SendError`] which includes the URL that was being
+    /// requested. Use [`SendError::into_error()`] to discard URL context, or
+    /// call convenience methods like [`SendError::is_timeout()`] directly.
+    pub async fn send(self) -> Result<Response, SendError> {
+        let url = self.uri.clone();
         let effective_retry = self.retry.as_ref().or(self.client.default_retry()).cloned();
 
-        match effective_retry {
+        let result = match effective_retry {
             Some(config) => self.send_with_retry(config).await,
             None => self.send_once().await,
-        }
+        };
+
+        result.map_err(|error| SendError::new(error, url))
     }
 
     async fn send_once(self) -> Result<Response, Error> {
