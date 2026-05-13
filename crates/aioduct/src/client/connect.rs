@@ -288,7 +288,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     }
 }
 
-fn parse_connect_status(status_line: &str) -> Result<u16, Error> {
+pub(super) fn parse_connect_status(status_line: &str) -> Result<u16, Error> {
     status_line
         .split_whitespace()
         .nth(1)

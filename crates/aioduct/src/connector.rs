@@ -11,6 +11,29 @@ use tower_service::Service;
 
 use crate::runtime::ConnectorSend;
 
+/// Type-erased tower connector slot that can be stored without trait bounds on the struct.
+///
+/// Wraps a `LayeredConnector<C>` but erases the `C` type parameter so the parent
+/// struct doesn't need `C: ConnectorSend` in its definition.
+#[derive(Clone)]
+pub(crate) struct TowerConnectorSlot {
+    inner: Arc<dyn std::any::Any + Send + Sync>,
+}
+
+impl TowerConnectorSlot {
+    pub(crate) fn new<C: ConnectorSend>(connector: LayeredConnector<C>) -> Self {
+        Self {
+            inner: Arc::new(connector),
+        }
+    }
+
+    pub(crate) fn get<C: ConnectorSend>(&self) -> &LayeredConnector<C> {
+        self.inner
+            .downcast_ref::<LayeredConnector<C>>()
+            .expect("TowerConnectorSlot type mismatch")
+    }
+}
+
 /// A connector request containing the target address info.
 #[derive(Debug, Clone)]
 pub struct ConnectInfo {
