@@ -10,7 +10,7 @@ use bytes::Bytes;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http::{Method, StatusCode};
 
-use crate::error::Error;
+use crate::error::{Error, SendError};
 
 /// Unified HTTP client trait — consumers program against this.
 ///
@@ -79,7 +79,7 @@ pub trait RequestBuilderExt: Sized {
     fn timeout(self, duration: Duration) -> Self;
 
     /// Send the request and return the response.
-    fn send(self) -> impl Future<Output = Result<Self::Response, Error>>;
+    fn send(self) -> impl Future<Output = Result<Self::Response, SendError>>;
 }
 
 /// Common interface for reading HTTP responses.
@@ -154,7 +154,7 @@ mod native_impls {
             self
         }
 
-        async fn send(self) -> Result<Response, Error> {
+        async fn send(self) -> Result<Response, SendError> {
             self.inner.send().await
         }
     }
@@ -232,8 +232,9 @@ mod wasm_impls {
             self
         }
 
-        async fn send(self) -> Result<WasmResponse, Error> {
-            self.inner.send().await
+        async fn send(self) -> Result<WasmResponse, SendError> {
+            let url = self.inner.uri().clone();
+            self.inner.send().await.map_err(|e| SendError::new(e, url))
         }
     }
 
@@ -310,8 +311,9 @@ mod wasi_impls {
             self
         }
 
-        async fn send(self) -> Result<WasiResponse, Error> {
-            self.inner.send()
+        async fn send(self) -> Result<WasiResponse, SendError> {
+            let url = self.inner.uri().clone();
+            self.inner.send().map_err(|e| SendError::new(e, url))
         }
     }
 

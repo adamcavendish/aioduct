@@ -1,5 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
+#[macro_use]
+pub mod multi_runtime;
+
 pub use std::convert::Infallible;
 pub use std::net::SocketAddr;
 pub use std::sync::Arc;
@@ -118,6 +121,68 @@ where
                 let _ = server_http2::Builder::new(TokioExec)
                     .serve_connection(io, service_fn(handler))
                     .await;
+            });
+        }
+    });
+
+    addr
+}
+
+/// Start a raw TCP server that writes pre-built bytes for each connection.
+///
+/// The handler receives the raw request bytes (read until the end of headers)
+/// and returns the raw response bytes to write back.
+pub async fn start_raw_server<F, Fut>(handler: F) -> SocketAddr
+where
+    F: Fn(Vec<u8>) -> Fut + Send + Clone + 'static,
+    Fut: std::future::Future<Output = Vec<u8>> + Send,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                buf.truncate(n);
+                let response = handler(buf).await;
+                let _ = stream.write_all(&response).await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+
+    addr
+}
+
+/// Start a raw TCP server where the handler gets direct socket access.
+///
+/// Useful for tests that need to write partial responses with delays
+/// (e.g., fragmented chunked encoding, slow headers).
+pub async fn start_raw_streaming_server<F, Fut>(handler: F) -> SocketAddr
+where
+    F: Fn(Vec<u8>, tokio::net::TcpStream) -> Fut + Send + Clone + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    use tokio::io::AsyncReadExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                buf.truncate(n);
+                handler(buf, stream).await;
             });
         }
     });

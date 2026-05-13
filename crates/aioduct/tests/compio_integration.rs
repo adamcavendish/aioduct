@@ -159,10 +159,7 @@ fn test_compio_timeout_triggers() {
             .await;
 
         assert!(result.is_err());
-        assert!(
-            matches!(result.unwrap_err(), aioduct::Error::Timeout),
-            "expected Timeout error"
-        );
+        assert!(result.unwrap_err().is_timeout(), "expected Timeout error");
     });
 }
 

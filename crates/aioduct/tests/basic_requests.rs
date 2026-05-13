@@ -3,6 +3,8 @@
 mod common;
 use common::*;
 
+use http_body_util::BodyExt;
+
 #[tokio::test]
 async fn test_get_request() {
     let addr = start_server().await;
@@ -218,8 +220,6 @@ async fn test_request_headers_override_defaults() {
 
 #[tokio::test]
 async fn test_put_request() {
-    use http_body_util::BodyExt;
-
     let addr = start_server_with(|req| async move {
         let method = req.method().to_string();
         let body = req.into_body().collect().await.unwrap().to_bytes();
@@ -414,4 +414,411 @@ async fn test_multiple_headers_same_name() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("value1"), "expected value1, got: {body}");
     assert!(body.contains("value2"), "expected value2, got: {body}");
+}
+
+#[tokio::test]
+async fn auto_headers_no_accept_by_default() {
+    let addr = start_server_with(|req| async move {
+        assert_eq!(req.method(), "GET");
+        let accept = req
+            .headers()
+            .get("accept")
+            .map(|v| v.to_str().unwrap().to_owned());
+        let body = match accept {
+            Some(v) => format!("accept={v}"),
+            None => "accept=none".to_string(),
+        };
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "accept=none");
+}
+
+#[tokio::test]
+async fn donot_set_content_length_0_if_have_no_body() {
+    let addr = start_server_with(|req| async move {
+        let headers = req.headers();
+        assert!(
+            headers.get("content-length").is_none(),
+            "GET should not set content-length"
+        );
+        assert!(
+            headers.get("content-type").is_none(),
+            "GET should not set content-type"
+        );
+        assert!(
+            headers.get("transfer-encoding").is_none(),
+            "GET should not set transfer-encoding"
+        );
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn custom_user_agent_via_builder() {
+    let addr = start_server_with(|req| async move {
+        let ua = req
+            .headers()
+            .get("user-agent")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(ua))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .user_agent("aioduct-test-agent")
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "aioduct-test-agent");
+}
+
+#[tokio::test]
+async fn response_text_and_content_length() {
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("Hello"))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.content_length(), Some(5));
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, "Hello");
+}
+
+#[tokio::test]
+async fn response_bytes_and_content_length() {
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("Hello"))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.content_length(), Some(5));
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(&bytes[..], b"Hello");
+}
+
+#[cfg(feature = "json")]
+#[tokio::test]
+async fn response_json_string() {
+    let addr = start_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("\"Hello\""))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let text: String = resp.json().await.unwrap();
+    assert_eq!(text, "Hello");
+}
+
+#[cfg(feature = "json")]
+#[tokio::test]
+async fn json_content_type_default() {
+    let addr = start_server_with(|req| async move {
+        let ct = req
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(ct))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .json(&serde_json::json!({"body": "json"}))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "application/json");
+}
+
+#[cfg(feature = "json")]
+#[tokio::test]
+async fn json_content_type_not_overridden_if_set() {
+    let addr = start_server_with(|req| async move {
+        let ct = req
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(ct))))
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .header(
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/vnd.api+json"),
+        )
+        .json(&serde_json::json!({"body": "json"}))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "application/vnd.api+json");
+}
+
+#[tokio::test]
+async fn body_pipe_response_to_post() {
+    let addr = start_server_with(|req| async move {
+        if req.uri().path() == "/get" {
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("pipe me"))))
+        } else {
+            assert_eq!(req.uri().path(), "/pipe");
+            let full = req.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(&full[..], b"pipe me");
+            Ok(Response::new(Full::new(Bytes::from("piped"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+
+    let res1 = client
+        .get(&format!("http://{addr}/get"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res1.status(), http::StatusCode::OK);
+    assert_eq!(res1.content_length(), Some(7));
+
+    let body_bytes = res1.bytes().await.unwrap();
+
+    let res2 = client
+        .post(&format!("http://{addr}/pipe"))
+        .unwrap()
+        .body(body_bytes.to_vec())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res2.status(), http::StatusCode::OK);
+    assert_eq!(res2.text().await.unwrap(), "piped");
+}
+
+#[tokio::test]
+async fn raw_server_custom_response() {
+    let addr = start_raw_server(|_req| async {
+        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nraw".to_vec()
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "raw");
+}
+
+#[tokio::test]
+async fn text_part() {
+    let form = aioduct::Multipart::new().text("foo", "bar");
+    let expected_body = format!(
+        "--{0}\r\nContent-Disposition: form-data; name=\"foo\"\r\n\r\nbar\r\n--{0}--\r\n",
+        form.boundary()
+    );
+    let ct = form.content_type();
+
+    let addr = start_server_with(move |req| {
+        let ct = ct.clone();
+        let expected_body = expected_body.clone();
+        async move {
+            assert_eq!(req.method(), "POST");
+            assert_eq!(req.headers()["content-type"], ct);
+            assert_eq!(
+                req.headers()["content-length"],
+                expected_body.len().to_string()
+            );
+            let full = req.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(full, expected_body.as_bytes());
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .post(&format!("http://{addr}/multipart/1"))
+        .unwrap()
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn stream_part() {
+    let stream_data = "part1 part2";
+    let stream_body: aioduct::AioductBody = http_body_util::Full::new(Bytes::from(stream_data))
+        .map_err(|never| match never {})
+        .boxed_unsync();
+
+    let form = aioduct::Multipart::new()
+        .text("foo", "bar")
+        .part(aioduct::multipart::Part::stream("part_stream", stream_body));
+
+    let expected_body = format!(
+        "--{0}\r\nContent-Disposition: form-data; name=\"foo\"\r\n\r\nbar\r\n--{0}\r\nContent-Disposition: form-data; name=\"part_stream\"\r\n\r\n{1}\r\n--{0}--\r\n",
+        form.boundary(),
+        stream_data,
+    );
+    let ct = form.content_type();
+
+    let addr = start_server_with(move |req| {
+        let ct = ct.clone();
+        let expected_body = expected_body.clone();
+        async move {
+            assert_eq!(req.method(), "POST");
+            assert_eq!(req.headers()["content-type"], ct);
+            assert_eq!(req.headers()["transfer-encoding"], "chunked");
+            let full = req.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(full, expected_body.as_bytes());
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .post(&format!("http://{addr}/multipart/stream"))
+        .unwrap()
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn file_part() {
+    let file_contents = "file contents here";
+    let form = aioduct::Multipart::new().file(
+        "upload",
+        "test.txt",
+        "application/octet-stream",
+        file_contents.as_bytes().to_vec(),
+    );
+
+    let expected_body = format!(
+        "--{0}\r\nContent-Disposition: form-data; name=\"upload\"; filename=\"test.txt\"\r\nContent-Type: application/octet-stream\r\n\r\n{1}\r\n--{0}--\r\n",
+        form.boundary(),
+        file_contents,
+    );
+    let ct = form.content_type();
+
+    let addr = start_server_with(move |req| {
+        let ct = ct.clone();
+        let expected_body = expected_body.clone();
+        async move {
+            assert_eq!(req.method(), "POST");
+            assert_eq!(req.headers()["content-type"], ct);
+            assert_eq!(
+                req.headers()["content-length"],
+                expected_body.len().to_string()
+            );
+            let full = req.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(full, expected_body.as_bytes());
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+        }
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .post(&format!("http://{addr}/multipart/file"))
+        .unwrap()
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn raw_server_chunked_response() {
+    let addr = start_raw_server(|_req| async {
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
+            .to_vec()
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello world");
 }

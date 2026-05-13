@@ -137,7 +137,13 @@ impl Multipart {
         self.parts.iter().any(|p| p.is_streaming())
     }
 
-    pub(crate) fn content_type(&self) -> String {
+    /// Return the MIME boundary string.
+    pub fn boundary(&self) -> &str {
+        &self.boundary
+    }
+
+    /// Return the full `Content-Type` header value including boundary.
+    pub fn content_type(&self) -> String {
         format!("multipart/form-data; boundary={}", self.boundary)
     }
 

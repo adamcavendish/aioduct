@@ -47,6 +47,7 @@ dependencies = [
  "mime",
  "opentelemetry",
  "opentelemetry-http",
+ "paste",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

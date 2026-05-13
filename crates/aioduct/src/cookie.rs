@@ -166,7 +166,7 @@ impl CookieJar {
     }
 }
 
-fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
+pub(crate) fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Cookie> {
     let mut parts = header.split(';');
     let name_value = parts.next()?.trim();
     let (name, value) = name_value.split_once('=')?;

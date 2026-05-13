@@ -8,7 +8,7 @@ use crate::clock::Instant;
 use bytes::Bytes;
 #[cfg(feature = "json")]
 use http::header::CONTENT_TYPE;
-use http::header::{CONTENT_LENGTH, HeaderMap};
+use http::header::{CONTENT_LENGTH, HeaderMap, SET_COOKIE};
 use http::{Method, StatusCode, Uri, Version};
 use http_body_util::BodyExt;
 
@@ -297,6 +297,26 @@ impl Response {
     /// Parse all `Link` headers from the response (RFC 8288).
     pub fn links(&self) -> Vec<crate::link::Link> {
         crate::link::parse_link_headers(self.inner.headers())
+    }
+
+    /// Parse all `Set-Cookie` response headers and return the cookies.
+    ///
+    /// Each `Set-Cookie` header is parsed into a [`Cookie`](crate::Cookie) with
+    /// its attributes (name, value, domain, path, secure, httponly, samesite).
+    /// The request URL's host is used as the default domain for cookies that
+    /// do not include an explicit `Domain` attribute.
+    pub fn cookies(&self) -> Vec<crate::Cookie> {
+        let domain = self.url.host().unwrap_or("");
+        self.inner
+            .headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .filter_map(|val| {
+                val.to_str()
+                    .ok()
+                    .and_then(|s| crate::cookie::parse_set_cookie(s, domain))
+            })
+            .collect()
     }
 
     /// Consume the response body and return it as bytes.

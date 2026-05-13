@@ -3,6 +3,8 @@
 mod common;
 use common::*;
 
+use aioduct::SameSite;
+
 #[tokio::test]
 async fn test_cookie_jar_stores_and_sends() {
     let addr = start_server_with(|req| async move {
@@ -391,4 +393,56 @@ async fn test_cookie_store_overwrite() {
         .unwrap();
     let body = resp.text().await.unwrap();
     assert_eq!(body, "cookie=key=val2");
+}
+
+#[tokio::test]
+async fn cookie_response_accessor() {
+    let addr = start_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header(
+                    "set-cookie",
+                    "key=val; Domain=example.com; Path=/api; Secure; HttpOnly; SameSite=Strict",
+                )
+                .header("set-cookie", "lax_cookie=lax; SameSite=Lax")
+                .header("set-cookie", "plain=text")
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let cookies = resp.cookies();
+    assert_eq!(cookies.len(), 3);
+
+    // Find each cookie by name
+    let key_cookie = cookies.iter().find(|c| c.name() == "key").unwrap();
+    assert_eq!(key_cookie.value(), "val");
+    assert_eq!(key_cookie.domain(), Some("example.com"));
+    assert_eq!(key_cookie.path(), Some("/api"));
+    assert!(key_cookie.secure());
+    assert!(key_cookie.http_only());
+    assert_eq!(key_cookie.same_site(), Some(&SameSite::Strict));
+
+    let lax_cookie = cookies.iter().find(|c| c.name() == "lax_cookie").unwrap();
+    assert_eq!(lax_cookie.value(), "lax");
+    assert_eq!(lax_cookie.same_site(), Some(&SameSite::Lax));
+    assert!(!lax_cookie.secure());
+    assert!(!lax_cookie.http_only());
+
+    let plain_cookie = cookies.iter().find(|c| c.name() == "plain").unwrap();
+    assert_eq!(plain_cookie.value(), "text");
+    assert_eq!(plain_cookie.domain(), Some("127.0.0.1"));
+    assert_eq!(plain_cookie.path(), None);
+    assert!(!plain_cookie.secure());
+    assert!(!plain_cookie.http_only());
+    assert_eq!(plain_cookie.same_site(), None);
 }
