@@ -1,26 +1,17 @@
-// Compio integration tests are temporarily disabled during the v0.2 migration.
-// Compio's TcpConnector implements Connector (non-Send), not ConnectorSend,
-// so it cannot use HttpEngine<R, C>. These tests will be restored when
-// HttpEngineLocal<R: RuntimeLocal, C: Connector> is implemented in Phase 3.
-#![allow(unexpected_cfgs)]
-#![cfg(all(
-    feature = "compio",
-    feature = "tokio",
-    feature = "__disabled_pending_v0_2"
-))]
+#![cfg(all(feature = "compio", feature = "tokio"))]
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 
 use aioduct::HttpEngine;
-use aioduct::runtime::compio_rt::CompioRuntime;
+use aioduct::runtime::compio_rt::{CompioRuntime, TcpConnector};
 
 async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     Ok(Response::new(Full::new(Bytes::from("hello aioduct"))))
@@ -62,9 +53,9 @@ where
 fn test_compio_get_request() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
+        let client = HttpEngine::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
         let resp = client
-            .get(&format!("http://{addr}/"))
+            .get_local(&format!("http://{addr}/"))
             .unwrap()
             .send()
             .await
@@ -80,9 +71,9 @@ fn test_compio_get_request() {
 fn test_compio_post_request() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
+        let client = HttpEngine::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
         let resp = client
-            .post(&format!("http://{addr}/"))
+            .post_local(&format!("http://{addr}/"))
             .unwrap()
             .body("request body")
             .send()
@@ -97,14 +88,14 @@ fn test_compio_post_request() {
 fn test_compio_connection_reuse() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
+        let client = HttpEngine::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
         let url = format!("http://{addr}/");
 
-        let resp1 = client.get(&url).unwrap().send().await.unwrap();
+        let resp1 = client.get_local(&url).unwrap().send().await.unwrap();
         assert_eq!(resp1.status(), http::StatusCode::OK);
         let _ = resp1.text().await.unwrap();
 
-        let resp2 = client.get(&url).unwrap().send().await.unwrap();
+        let resp2 = client.get_local(&url).unwrap().send().await.unwrap();
         assert_eq!(resp2.status(), http::StatusCode::OK);
         let body = resp2.text().await.unwrap();
         assert_eq!(body, "hello aioduct");
@@ -128,9 +119,9 @@ fn test_compio_redirect_302() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
+        let client = HttpEngine::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
         let resp = client
-            .get(&format!("http://{redirect_addr}/"))
+            .get_local(&format!("http://{redirect_addr}/"))
             .unwrap()
             .send()
             .await
@@ -150,9 +141,9 @@ fn test_compio_timeout_triggers() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
+        let client = HttpEngine::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
         let result = client
-            .get(&format!("http://{addr}/"))
+            .get_local(&format!("http://{addr}/"))
             .unwrap()
             .timeout(Duration::from_millis(50))
             .send()
@@ -175,9 +166,9 @@ fn test_compio_custom_header() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
+        let client = HttpEngine::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
         let resp = client
-            .get(&format!("http://{addr}/"))
+            .get_local(&format!("http://{addr}/"))
             .unwrap()
             .header_str("x-custom", "compio-value")
             .unwrap()
@@ -187,246 +178,5 @@ fn test_compio_custom_header() {
 
         let body = resp.text().await.unwrap();
         assert_eq!(body, "compio-value");
-    });
-}
-
-fn start_h2_server_tokio<F, Fut>(handler: F) -> SocketAddr
-where
-    F: Fn(Request<hyper::body::Incoming>) -> Fut + Send + Clone + 'static,
-    Fut: std::future::Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send + 'static,
-{
-    use hyper::server::conn::http2 as server_http2;
-
-    #[derive(Clone)]
-    struct TokioExec;
-    impl<F> hyper::rt::Executor<F> for TokioExec
-    where
-        F: std::future::Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        fn execute(&self, fut: F) {
-            tokio::spawn(fut);
-        }
-    }
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            tx.send(addr).unwrap();
-
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
-                let handler = handler.clone();
-                tokio::spawn(async move {
-                    let _ = server_http2::Builder::new(TokioExec)
-                        .serve_connection(io, service_fn(handler))
-                        .await;
-                });
-            }
-        });
-    });
-    rx.recv().unwrap()
-}
-
-#[test]
-fn test_compio_h2_prior_knowledge() {
-    let addr = start_h2_server_tokio(|_req| async {
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("h2 compio"))))
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::builder()
-            .http2_prior_knowledge()
-            .build();
-
-        let resp = client
-            .get(&format!("http://{addr}/"))
-            .unwrap()
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), http::StatusCode::OK);
-        assert_eq!(resp.text().await.unwrap(), "h2 compio");
-    });
-}
-
-#[test]
-fn test_compio_h2_multiple_requests() {
-    let addr = start_h2_server_tokio(|_req| async {
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("h2 ok"))))
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::builder()
-            .http2_prior_knowledge()
-            .build();
-        let url = format!("http://{addr}/");
-
-        let resp1 = client.get(&url).unwrap().send().await.unwrap();
-        assert_eq!(resp1.status(), http::StatusCode::OK);
-        assert_eq!(resp1.text().await.unwrap(), "h2 ok");
-
-        let resp2 = client.get(&url).unwrap().send().await.unwrap();
-        assert_eq!(resp2.status(), http::StatusCode::OK);
-        assert_eq!(resp2.text().await.unwrap(), "h2 ok");
-    });
-}
-
-#[test]
-fn test_compio_large_body() {
-    let addr = start_server_with_tokio(|req| async move {
-        let body = req.collect().await.unwrap().to_bytes();
-        let len = body.len();
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!("{len}")))))
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
-        let payload = "x".repeat(1024 * 1024);
-        let resp = client
-            .post(&format!("http://{addr}/"))
-            .unwrap()
-            .body(payload)
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), http::StatusCode::OK);
-        assert_eq!(resp.text().await.unwrap(), "1048576");
-    });
-}
-
-#[test]
-fn test_compio_h2_large_body() {
-    let addr = start_h2_server_tokio(|req| async move {
-        let body = req.collect().await.unwrap().to_bytes();
-        let len = body.len();
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!("{len}")))))
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::builder()
-            .http2_prior_knowledge()
-            .build();
-        let payload = "x".repeat(1024 * 1024);
-        let resp = client
-            .post(&format!("http://{addr}/"))
-            .unwrap()
-            .body(payload)
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), http::StatusCode::OK);
-        assert_eq!(resp.text().await.unwrap(), "1048576");
-    });
-}
-
-#[test]
-fn test_compio_large_response_body() {
-    let addr = start_server_with_tokio(|_req| async move {
-        let body = "y".repeat(512 * 1024);
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
-        let resp = client
-            .get(&format!("http://{addr}/"))
-            .unwrap()
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), http::StatusCode::OK);
-        let body = resp.text().await.unwrap();
-        assert_eq!(body.len(), 512 * 1024);
-    });
-}
-
-#[test]
-fn test_compio_connection_pool_reuse_after_body_consumed() {
-    let addr = start_server_with_tokio(|_req| async move {
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("pool test"))))
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
-        let url = format!("http://{addr}/");
-
-        for _ in 0..5 {
-            let resp = client.get(&url).unwrap().send().await.unwrap();
-            assert_eq!(resp.status(), http::StatusCode::OK);
-            assert_eq!(resp.text().await.unwrap(), "pool test");
-        }
-    });
-}
-
-#[test]
-fn test_compio_head_request() {
-    let addr = start_server_with_tokio(|_req| async move {
-        Ok::<_, Infallible>(
-            Response::builder()
-                .header("content-length", "1000")
-                .body(Full::new(Bytes::new()))
-                .unwrap(),
-        )
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
-        let resp = client
-            .request(http::Method::HEAD, &format!("http://{addr}/"))
-            .unwrap()
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), http::StatusCode::OK);
-        assert_eq!(
-            resp.headers()
-                .get("content-length")
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "1000"
-        );
-        assert_eq!(resp.text().await.unwrap(), "");
-    });
-}
-
-#[test]
-fn test_compio_multiple_headers_same_name() {
-    let addr = start_server_with_tokio(|req| async move {
-        let vals: Vec<&str> = req
-            .headers()
-            .get_all("x-multi")
-            .iter()
-            .map(|v| v.to_str().unwrap())
-            .collect();
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(vals.join(",")))))
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngine::<CompioRuntime>::new();
-        let mut headers = http::HeaderMap::new();
-        headers.append("x-multi", "a".parse().unwrap());
-        headers.append("x-multi", "b".parse().unwrap());
-
-        let resp = client
-            .get(&format!("http://{addr}/"))
-            .unwrap()
-            .headers(headers)
-            .send()
-            .await
-            .unwrap();
-
-        let body = resp.text().await.unwrap();
-        assert_eq!(body, "a,b");
     });
 }

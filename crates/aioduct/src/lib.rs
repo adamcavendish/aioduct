@@ -102,6 +102,9 @@ pub(crate) mod pool;
 /// Request builder for configuring and sending HTTP requests.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod request;
+/// Request builder for `!Send` runtimes (compio, io_uring).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod request_local;
 /// HTTP response type with status, headers, and body.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod response;

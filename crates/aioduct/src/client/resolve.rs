@@ -1,9 +1,8 @@
 use crate::error::Error;
-use crate::runtime::{ConnectorSend, RuntimePoll};
 
 use super::HttpEngine;
 
-impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
+impl<R, C> HttpEngine<R, C> {
     pub(super) async fn resolve_authority(
         &self,
         authority: &http::uri::Authority,
