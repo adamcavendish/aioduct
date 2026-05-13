@@ -35,8 +35,8 @@ impl ExtraRequestConfig {
 
     pub fn apply_to<'a>(
         &self,
-        mut req: aioduct::RequestBuilder<'a, TokioRuntime, TcpConnector>,
-    ) -> aioduct::RequestBuilder<'a, TokioRuntime, TcpConnector> {
+        mut req: aioduct::RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
+    ) -> aioduct::RequestBuilderSend<'a, TokioRuntime, TcpConnector> {
         for (name, value) in &self.headers {
             req = req.header(name.clone(), value.clone());
         }
