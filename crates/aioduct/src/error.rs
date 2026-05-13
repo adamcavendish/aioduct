@@ -57,7 +57,7 @@ pub enum Error {
 
 /// An error paired with the URL that was being requested.
 ///
-/// Returned by [`RequestBuilder::send()`](crate::request::RequestBuilder::send)
+/// Returned by [`RequestBuilderSend::send()`](crate::request::RequestBuilderSend::send)
 /// to provide context about which URL caused the failure.
 #[derive(Debug)]
 pub struct SendError {
