@@ -6,9 +6,9 @@ use crate::clock::Instant;
 /// An established HTTP connection at a specific protocol version.
 pub(crate) enum HttpConnection {
     /// An HTTP/1.1 connection.
-    H1(hyper::client::conn::http1::SendRequest<crate::error::AioductBody>),
+    H1(hyper::client::conn::http1::SendRequest<crate::body::RequestBoxBody>),
     /// An HTTP/2 connection.
-    H2(hyper::client::conn::http2::SendRequest<crate::error::AioductBody>),
+    H2(hyper::client::conn::http2::SendRequest<crate::body::RequestBoxBody>),
     /// An HTTP/3 connection.
     #[cfg(all(feature = "http3", feature = "rustls"))]
     H3(h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>),
@@ -35,7 +35,7 @@ pub(crate) struct PooledConnection {
 impl PooledConnection {
     /// Wrap an HTTP/1.1 connection.
     pub(crate) fn new_h1(
-        sender: hyper::client::conn::http1::SendRequest<crate::error::AioductBody>,
+        sender: hyper::client::conn::http1::SendRequest<crate::body::RequestBoxBody>,
     ) -> Self {
         Self {
             conn: HttpConnection::H1(sender),
@@ -52,7 +52,7 @@ impl PooledConnection {
 
     /// Wrap an HTTP/2 connection.
     pub(crate) fn new_h2(
-        sender: hyper::client::conn::http2::SendRequest<crate::error::AioductBody>,
+        sender: hyper::client::conn::http2::SendRequest<crate::body::RequestBoxBody>,
     ) -> Self {
         Self {
             conn: HttpConnection::H2(sender),

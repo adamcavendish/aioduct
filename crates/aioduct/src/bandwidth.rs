@@ -7,7 +7,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use http_body::{Body, Frame};
 
-use crate::error::{AioductBody, Error};
+use crate::body::RequestBoxBody;
+use crate::error::Error;
 
 /// A token-bucket bandwidth limiter for throttling download throughput.
 ///
@@ -126,13 +127,13 @@ fn now_nanos() -> u64 {
 /// data is buffered and the waker is re-registered so the executor
 /// re-polls — the limiter catches up via wall-clock token refill.
 pub(crate) struct BandwidthBody {
-    inner: AioductBody,
+    inner: RequestBoxBody,
     limiter: BandwidthLimiter,
     pending: Option<Bytes>,
 }
 
 impl BandwidthBody {
-    pub(crate) fn new(inner: AioductBody, limiter: BandwidthLimiter) -> Self {
+    pub(crate) fn new(inner: RequestBoxBody, limiter: BandwidthLimiter) -> Self {
         Self {
             inner,
             limiter,
@@ -314,7 +315,7 @@ mod tests {
         }
     }
 
-    fn boxed_body(chunk: Bytes) -> AioductBody {
+    fn boxed_body(chunk: Bytes) -> RequestBoxBody {
         OneChunkBody { data: Some(chunk) }.boxed_unsync()
     }
 
