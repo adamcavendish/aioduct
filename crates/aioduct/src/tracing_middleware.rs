@@ -1,6 +1,7 @@
 use http::{Method, StatusCode, Uri};
 
-use crate::error::{AioductBody, Error};
+use crate::body::RequestBoxBody;
+use crate::error::Error;
 use crate::middleware::Middleware;
 
 /// Middleware that emits `tracing` events for HTTP request lifecycle.
@@ -27,7 +28,7 @@ impl Default for TracingMiddleware {
 }
 
 impl Middleware for TracingMiddleware {
-    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<RequestBoxBody>, uri: &Uri) {
         tracing::debug!(
             method = %request.method(),
             host = uri.host().unwrap_or(""),
@@ -35,7 +36,7 @@ impl Middleware for TracingMiddleware {
         );
     }
 
-    fn on_response(&self, response: &mut http::Response<AioductBody>, uri: &Uri) {
+    fn on_response(&self, response: &mut http::Response<RequestBoxBody>, uri: &Uri) {
         tracing::debug!(
             status = response.status().as_u16(),
             host = uri.host().unwrap_or(""),
@@ -78,7 +79,7 @@ mod tests {
     use http_body_util::BodyExt;
     use std::sync::{Arc, Mutex};
 
-    fn empty_body() -> AioductBody {
+    fn empty_body() -> RequestBoxBody {
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed_unsync()

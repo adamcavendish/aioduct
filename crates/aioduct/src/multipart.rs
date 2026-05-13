@@ -17,7 +17,7 @@ pub struct Part {
 
 enum PartBody {
     Buffered(Bytes),
-    Streaming(crate::error::AioductBody),
+    Streaming(crate::body::RequestBoxBody),
 }
 
 impl std::fmt::Debug for Multipart {
@@ -56,7 +56,7 @@ impl Part {
     }
 
     /// Create a new part with a streaming body.
-    pub fn stream(name: impl Into<String>, body: crate::error::AioductBody) -> Self {
+    pub fn stream(name: impl Into<String>, body: crate::body::RequestBoxBody) -> Self {
         Self {
             name: name.into(),
             filename: None,
@@ -203,7 +203,7 @@ impl Multipart {
         buf.freeze()
     }
 
-    pub(crate) fn into_streaming_body(self) -> crate::error::AioductBody {
+    pub(crate) fn into_streaming_body(self) -> crate::body::RequestBoxBody {
         use http_body_util::BodyExt;
         use http_body_util::StreamBody;
 
@@ -232,7 +232,7 @@ struct AsyncStream {
     boundary: String,
     parts: std::vec::IntoIter<Part>,
     state: StreamState,
-    current_body: Option<crate::error::AioductBody>,
+    current_body: Option<crate::body::RequestBoxBody>,
 }
 
 impl Unpin for AsyncStream {}
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn has_streaming_parts_true_for_stream() {
-        let body: crate::error::AioductBody = http_body_util::Empty::new()
+        let body: crate::body::RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mp = Multipart::new().part(Part::stream("f", body));
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn part_stream_creates_streaming() {
-        let body: crate::error::AioductBody = http_body_util::Empty::new()
+        let body: crate::body::RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let part = Part::stream("s", body);
@@ -619,7 +619,7 @@ mod streaming_tests {
     #[tokio::test]
     async fn streaming_with_stream_body() {
         let data = bytes::Bytes::from("streamed data");
-        let stream_body: crate::error::AioductBody = http_body_util::Full::new(data)
+        let stream_body: crate::body::RequestBoxBody = http_body_util::Full::new(data)
             .map_err(|never| match never {})
             .boxed_unsync();
 
@@ -636,7 +636,7 @@ mod streaming_tests {
 
     #[tokio::test]
     async fn streaming_mixed_buffered_and_stream() {
-        let stream_body: crate::error::AioductBody =
+        let stream_body: crate::body::RequestBoxBody =
             http_body_util::Full::new(bytes::Bytes::from("stream content"))
                 .map_err(|never| match never {})
                 .boxed_unsync();
@@ -689,7 +689,7 @@ mod streaming_tests {
             }
         }
 
-        let error_body: crate::error::AioductBody = ErrorBody.boxed_unsync();
+        let error_body: crate::body::RequestBoxBody = ErrorBody.boxed_unsync();
         let part = Part::stream("err", error_body);
         let mp = Multipart::new().part(part);
         let body = mp.into_streaming_body();

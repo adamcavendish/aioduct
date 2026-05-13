@@ -1,7 +1,7 @@
 use http::HeaderMap;
 use http::header::ACCEPT_ENCODING;
 
-use crate::error::AioductBody;
+use crate::body::RequestBoxBody;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AcceptEncoding {
@@ -106,9 +106,9 @@ pub(crate) fn set_accept_encoding(headers: &mut HeaderMap, accept: &AcceptEncodi
 
 pub(crate) fn maybe_decompress(
     headers: &mut HeaderMap,
-    body: AioductBody,
+    body: RequestBoxBody,
     accept: &AcceptEncoding,
-) -> AioductBody {
+) -> RequestBoxBody {
     if accept.is_empty() {
         return body;
     }
@@ -153,7 +153,8 @@ mod imp {
     use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
     use http_body_util::BodyExt;
 
-    use crate::error::{AioductBody, Error};
+    use crate::body::RequestBoxBody;
+    use crate::error::Error;
 
     use super::AcceptEncoding;
 
@@ -243,7 +244,7 @@ mod imp {
     }
 
     struct DecompressBody {
-        body: AioductBody,
+        body: RequestBoxBody,
         decoder: Option<StreamDecoder>,
         finished: bool,
         has_data: bool,
@@ -313,9 +314,9 @@ mod imp {
 
     pub(super) fn decompress_impl(
         headers: &mut HeaderMap,
-        body: AioductBody,
+        body: RequestBoxBody,
         accept: &AcceptEncoding,
-    ) -> AioductBody {
+    ) -> RequestBoxBody {
         let encoding = match headers.get(CONTENT_ENCODING) {
             Some(v) => v.as_bytes(),
             None => return body,
@@ -411,7 +412,7 @@ mod tests {
     fn maybe_decompress_passthrough_when_empty() {
         use http_body_util::BodyExt;
         let mut headers = HeaderMap::new();
-        let body: AioductBody = http_body_util::Empty::new()
+        let body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::none();
@@ -422,7 +423,7 @@ mod tests {
     fn maybe_decompress_passthrough_no_encoding_header() {
         use http_body_util::BodyExt;
         let mut headers = HeaderMap::new();
-        let body: AioductBody = http_body_util::Full::new(bytes::Bytes::from("hello"))
+        let body: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::from("hello"))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -460,7 +461,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -508,7 +509,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -542,7 +543,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -571,7 +572,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: AioductBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -592,7 +593,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
 
-        let body: AioductBody = http_body_util::Empty::new()
+        let body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -612,7 +613,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "identity".parse().unwrap());
 
-        let body: AioductBody = http_body_util::Full::new(Bytes::from("raw"))
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from("raw"))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();

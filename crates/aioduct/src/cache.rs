@@ -405,7 +405,7 @@ impl Validators {
 }
 
 impl CachedResponse {
-    pub fn into_http_response(self) -> http::Response<crate::error::AioductBody> {
+    pub fn into_http_response(self) -> http::Response<crate::body::RequestBoxBody> {
         use http_body_util::BodyExt;
 
         let mut builder = http::Response::builder().status(self.status);
