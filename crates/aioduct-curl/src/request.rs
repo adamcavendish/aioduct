@@ -1,6 +1,6 @@
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
-use aioduct::{RequestBuilder, Response};
+use aioduct::{RequestBuilderSend, Response};
 use http::{HeaderName, HeaderValue, Method};
 
 use crate::cli::Cli;
@@ -27,8 +27,8 @@ pub async fn execute(
 
 fn apply_headers<'a>(
     cli: &Cli,
-    mut req: RequestBuilder<'a, TokioRuntime, TcpConnector>,
-) -> RequestBuilder<'a, TokioRuntime, TcpConnector> {
+    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
+) -> RequestBuilderSend<'a, TokioRuntime, TcpConnector> {
     for h in &cli.headers {
         if let Some((name, value)) = h.split_once(':')
             && let (Ok(n), Ok(v)) = (
@@ -51,8 +51,8 @@ fn apply_headers<'a>(
 
 fn apply_auth<'a>(
     cli: &Cli,
-    mut req: RequestBuilder<'a, TokioRuntime, TcpConnector>,
-) -> RequestBuilder<'a, TokioRuntime, TcpConnector> {
+    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
+) -> RequestBuilderSend<'a, TokioRuntime, TcpConnector> {
     if let Some(ref user_str) = cli.user {
         let (user, pass) = match user_str.split_once(':') {
             Some((u, p)) => (u, Some(p)),
@@ -70,8 +70,8 @@ fn apply_auth<'a>(
 
 fn apply_body<'a>(
     cli: &Cli,
-    mut req: RequestBuilder<'a, TokioRuntime, TcpConnector>,
-) -> Result<RequestBuilder<'a, TokioRuntime, TcpConnector>, aioduct::Error> {
+    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
+) -> Result<RequestBuilderSend<'a, TokioRuntime, TcpConnector>, aioduct::Error> {
     if let Some(ref data) = cli.data {
         let body = if let Some(path) = data.strip_prefix('@') {
             std::fs::read(path).map_err(aioduct::Error::Io)?
@@ -94,7 +94,7 @@ fn apply_body<'a>(
     Ok(req)
 }
 
-fn eprint_request_info(cli: &Cli, _req: &RequestBuilder<'_, TokioRuntime, TcpConnector>) {
+fn eprint_request_info(cli: &Cli, _req: &RequestBuilderSend<'_, TokioRuntime, TcpConnector>) {
     let method = cli.effective_method();
     let url: http::Uri = match cli.url.parse() {
         Ok(u) => u,

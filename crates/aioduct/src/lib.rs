@@ -195,7 +195,14 @@ pub use forward::ForwardBuilder;
 #[cfg(feature = "hickory-dns")]
 pub use hickory::HickoryResolver;
 #[cfg(not(target_arch = "wasm32"))]
-pub use request::RequestBuilder;
+pub use request::RequestBuilderSend;
+#[cfg(not(target_arch = "wasm32"))]
+pub use request_local::RequestBuilderLocal;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[deprecated(since = "0.2.0", note = "Renamed to `RequestBuilderSend`")]
+/// Deprecated alias for [`RequestBuilderSend`].
+pub type RequestBuilder<'a, R, C> = RequestBuilderSend<'a, R, C>;
 #[cfg(not(target_arch = "wasm32"))]
 pub use response::Response;
 #[cfg(not(target_arch = "wasm32"))]
@@ -205,12 +212,17 @@ pub use runtime::Runtime;
 pub use runtime::{
     Connector, ConnectorSend, Resolve, RuntimeCompletion, RuntimeLocal, RuntimePoll, SocketConfig,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use traits::OwnedRequestBuilder;
 #[cfg(feature = "wasi-p2")]
 pub use traits::OwnedWasiRequestBuilder;
 #[cfg(feature = "wasm")]
 pub use traits::OwnedWasmRequestBuilder;
+#[cfg(not(target_arch = "wasm32"))]
+pub use traits::{HttpClientLocal, OwnedRequestBuilderLocal, OwnedRequestBuilderSend};
+
+#[cfg(not(target_arch = "wasm32"))]
+#[deprecated(since = "0.2.0", note = "Renamed to `OwnedRequestBuilderSend`")]
+/// Deprecated alias for [`OwnedRequestBuilderSend`].
+pub type OwnedRequestBuilder<R, C> = OwnedRequestBuilderSend<R, C>;
 #[cfg(not(target_arch = "wasm32"))]
 pub use upgrade::Upgraded;
 
@@ -229,6 +241,15 @@ pub type SmolClient = HttpEngine<runtime::smol_rt::SmolRuntime, runtime::smol_rt
 /// Alias for [`SmolClient`].
 #[cfg(feature = "smol")]
 pub type SmolEngine = SmolClient;
+
+/// Convenience alias for [`HttpEngine`] using the compio runtime.
+#[cfg(feature = "compio")]
+pub type CompioClient =
+    HttpEngine<runtime::compio_rt::CompioRuntime, runtime::compio_rt::TcpConnector>;
+
+/// Alias for [`CompioClient`].
+#[cfg(feature = "compio")]
+pub type CompioEngine = CompioClient;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use tls::TlsInfo;

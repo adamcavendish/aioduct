@@ -3,7 +3,7 @@ use http::{Method, Uri};
 use super::HttpEngine;
 use super::builder::HttpEngineBuilder;
 use crate::error::Error;
-use crate::request::RequestBuilder;
+use crate::request::RequestBuilderSend;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
 impl<R: RuntimePoll, C: ConnectorSend + Default> Default for HttpEngine<R, C> {
@@ -58,45 +58,49 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     }
 
     /// Start a GET request to the given URL.
-    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
+    pub fn get(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::GET, uri))
+        Ok(RequestBuilderSend::new(self, Method::GET, uri))
     }
 
     /// Start a HEAD request to the given URL.
-    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
+    pub fn head(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::HEAD, uri))
+        Ok(RequestBuilderSend::new(self, Method::HEAD, uri))
     }
 
     /// Start a POST request to the given URL.
-    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
+    pub fn post(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::POST, uri))
+        Ok(RequestBuilderSend::new(self, Method::POST, uri))
     }
 
     /// Start a PUT request to the given URL.
-    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
+    pub fn put(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::PUT, uri))
+        Ok(RequestBuilderSend::new(self, Method::PUT, uri))
     }
 
     /// Start a PATCH request to the given URL.
-    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
+    pub fn patch(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::PATCH, uri))
+        Ok(RequestBuilderSend::new(self, Method::PATCH, uri))
     }
 
     /// Start a DELETE request to the given URL.
-    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
+    pub fn delete(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, Method::DELETE, uri))
+        Ok(RequestBuilderSend::new(self, Method::DELETE, uri))
     }
 
     /// Start a request with the given method and URL.
-    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_, R, C>, Error> {
+    pub fn request(
+        &self,
+        method: Method,
+        uri: &str,
+    ) -> Result<RequestBuilderSend<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(RequestBuilder::new(self, method, uri))
+        Ok(RequestBuilderSend::new(self, method, uri))
     }
 
     /// Start a parallel chunk download for the given URL.
