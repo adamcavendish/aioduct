@@ -200,7 +200,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         Ok(PooledConnection::new_h2(sender))
     }
 
-    #[cfg(feature = "rustls")]
+    #[cfg(all(feature = "rustls", feature = "compio"))]
     pub(super) async fn connect_tls_local(
         &self,
         tcp_stream: C::Stream,
@@ -258,6 +258,17 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                 Ok(pooled)
             }
         }
+    }
+
+    #[cfg(all(feature = "rustls", not(feature = "compio")))]
+    pub(super) async fn connect_tls_local(
+        &self,
+        _tcp_stream: C::Stream,
+        _host: &str,
+    ) -> Result<PooledConnection, Error> {
+        Err(Error::Tls(
+            "TLS with !Send streams requires the compio feature".into(),
+        ))
     }
 
     #[cfg(not(feature = "rustls"))]

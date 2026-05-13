@@ -314,6 +314,7 @@ where
     }
 }
 
+#[cfg(feature = "compio")]
 impl<S> super::TlsConnectLocal<S> for RustlsConnector
 where
     S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
