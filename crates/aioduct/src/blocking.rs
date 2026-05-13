@@ -33,46 +33,46 @@ impl Client {
 
     fn request_builder<'a>(
         &'a self,
-        rb: crate::request::RequestBuilder<'a, TokioRuntime, TcpConnector>,
-    ) -> RequestBuilder<'a> {
-        RequestBuilder {
+        rb: crate::request::RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
+    ) -> RequestBuilderSend<'a> {
+        RequestBuilderSend {
             inner: rb,
             rt: Arc::clone(&self.rt),
         }
     }
 
     /// Start a GET request.
-    pub fn get(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
+    pub fn get(&self, uri: &str) -> Result<RequestBuilderSend<'_>, Error> {
         Ok(self.request_builder(self.inner.get(uri)?))
     }
 
     /// Start a HEAD request.
-    pub fn head(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
+    pub fn head(&self, uri: &str) -> Result<RequestBuilderSend<'_>, Error> {
         Ok(self.request_builder(self.inner.head(uri)?))
     }
 
     /// Start a POST request.
-    pub fn post(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
+    pub fn post(&self, uri: &str) -> Result<RequestBuilderSend<'_>, Error> {
         Ok(self.request_builder(self.inner.post(uri)?))
     }
 
     /// Start a PUT request.
-    pub fn put(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
+    pub fn put(&self, uri: &str) -> Result<RequestBuilderSend<'_>, Error> {
         Ok(self.request_builder(self.inner.put(uri)?))
     }
 
     /// Start a PATCH request.
-    pub fn patch(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
+    pub fn patch(&self, uri: &str) -> Result<RequestBuilderSend<'_>, Error> {
         Ok(self.request_builder(self.inner.patch(uri)?))
     }
 
     /// Start a DELETE request.
-    pub fn delete(&self, uri: &str) -> Result<RequestBuilder<'_>, Error> {
+    pub fn delete(&self, uri: &str) -> Result<RequestBuilderSend<'_>, Error> {
         Ok(self.request_builder(self.inner.delete(uri)?))
     }
 
     /// Start a request with a custom method.
-    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilder<'_>, Error> {
+    pub fn request(&self, method: Method, uri: &str) -> Result<RequestBuilderSend<'_>, Error> {
         Ok(self.request_builder(self.inner.request(method, uri)?))
     }
 }
@@ -234,12 +234,12 @@ impl ClientBuilder {
 }
 
 /// A blocking request builder.
-pub struct RequestBuilder<'a> {
-    inner: crate::request::RequestBuilder<'a, TokioRuntime, TcpConnector>,
+pub struct RequestBuilderSend<'a> {
+    inner: crate::request::RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
     rt: Arc<tokio::runtime::Runtime>,
 }
 
-impl RequestBuilder<'_> {
+impl RequestBuilderSend<'_> {
     /// Add a typed header to the request.
     pub fn header(
         mut self,

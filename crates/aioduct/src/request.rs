@@ -42,7 +42,7 @@ impl<R: RuntimePoll, C: ConnectorSend> Deref for ClientRef<'_, R, C> {
 }
 
 /// Builder for configuring and sending an HTTP request.
-pub struct RequestBuilder<'a, R: RuntimePoll, C: ConnectorSend> {
+pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     client: ClientRef<'a, R, C>,
     method: Method,
     uri: Uri,
@@ -54,16 +54,16 @@ pub struct RequestBuilder<'a, R: RuntimePoll, C: ConnectorSend> {
     _runtime: PhantomData<(R, C)>,
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilder<'_, R, C> {
+impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilderSend<'_, R, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RequestBuilder")
+        f.debug_struct("RequestBuilderSend")
             .field("method", &self.method)
             .field("uri", &self.uri)
             .finish()
     }
 }
 
-impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilder<'a, R, C> {
+impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     pub(crate) fn new(client: &'a HttpEngine<R, C>, method: Method, uri: Uri) -> Self {
         Self {
             client: ClientRef::Borrowed(client),
@@ -799,7 +799,7 @@ mod tests {
         let client = test_client();
         let rb = client.get("http://example.com/path").unwrap();
         let dbg = format!("{rb:?}");
-        assert!(dbg.contains("RequestBuilder"));
+        assert!(dbg.contains("RequestBuilderSend"));
         assert!(dbg.contains("GET"));
     }
 
