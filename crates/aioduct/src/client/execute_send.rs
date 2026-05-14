@@ -186,7 +186,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 || matches!(self.core.redirect_policy, RedirectPolicy::None)
             {
                 return self
-                    .finalize_response(resp, &current_method, current_uri)
+                    .finalize_response(resp, &current_method, current_uri, &current_headers)
                     .await;
             }
 
@@ -199,7 +199,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             )?;
             let Some((next_uri, next_method, next_body)) = redirect else {
                 return self
-                    .finalize_response(resp, &current_method, current_uri)
+                    .finalize_response(resp, &current_method, current_uri, &current_headers)
                     .await;
             };
 
@@ -276,6 +276,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         resp: Response,
         method: &Method,
         uri: Uri,
+        request_headers: &HeaderMap,
     ) -> Result<Response, Error> {
         #[cfg(all(feature = "http3", feature = "rustls"))]
         if self.core.h3_endpoint.is_some() {
@@ -308,7 +309,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let headers = resp.headers().clone();
             if crate::cache::is_response_cacheable(status, &headers) {
                 let body_bytes = resp.bytes().await?;
-                cache.store(method, &uri, status, &headers, &body_bytes);
+                cache.store(method, &uri, status, &headers, &body_bytes, request_headers);
                 let cached_resp = super::boxed_response_from_bytes(status, &headers, body_bytes);
                 return Ok(Response::from_boxed(cached_resp, uri));
             }

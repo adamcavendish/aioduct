@@ -262,6 +262,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                     .map(crate::h2c_probe::H2cProbeCache::with_ttl)
                     .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
                 connection_coalescing: self.connection_coalescing,
+                sensitive_headers: self.sensitive_headers,
                 observer: self.observer,
                 #[cfg(feature = "rustls")]
                 tls,

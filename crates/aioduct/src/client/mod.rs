@@ -26,8 +26,10 @@ use bytes::Bytes;
 #[cfg(test)]
 use http::Method;
 use http::header::HeaderMap;
+use http::header::HeaderName;
 use http::{StatusCode, Uri};
 use http_body_util::BodyExt;
+use std::collections::HashSet;
 
 use crate::body::RequestBoxBody;
 use crate::cache::HttpCache;
@@ -82,6 +84,7 @@ pub struct HttpEngineCore {
     pub(crate) hsts: Option<crate::hsts::HstsStore>,
     pub(crate) h2c_probe_cache: H2cProbeCache,
     pub(crate) connection_coalescing: bool,
+    pub(crate) sensitive_headers: HashSet<HeaderName>,
     pub(crate) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
     #[cfg(feature = "rustls")]
     pub(crate) tls: Option<Arc<crate::tls::RustlsConnector>>,
@@ -131,6 +134,7 @@ impl Clone for HttpEngineCore {
             hsts: self.hsts.clone(),
             h2c_probe_cache: self.h2c_probe_cache.clone(),
             connection_coalescing: self.connection_coalescing,
+            sensitive_headers: self.sensitive_headers.clone(),
             observer: self.observer.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),

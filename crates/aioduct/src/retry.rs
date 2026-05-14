@@ -82,7 +82,14 @@ impl RetryConfig {
 }
 
 pub(crate) fn is_retryable_error(err: &Error) -> bool {
-    matches!(err, Error::Io(_) | Error::Hyper(_) | Error::Timeout)
+    matches!(
+        err,
+        Error::Io(_)
+            | Error::Hyper(_)
+            | Error::Timeout
+            | Error::ConnectTimeout
+            | Error::ReadTimeout
+    )
 }
 
 pub(crate) fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {

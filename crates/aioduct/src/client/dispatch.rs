@@ -28,6 +28,10 @@ impl HttpEngineCore {
 
     pub(super) fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection) {
         Self::populate_sans(&mut conn);
+        if conn.is_multiplex_clone {
+            self.fire_connection_metrics(&conn, false);
+            return;
+        }
         self.fire_connection_metrics(&conn, false);
         self.pool.checkin(key, conn);
     }

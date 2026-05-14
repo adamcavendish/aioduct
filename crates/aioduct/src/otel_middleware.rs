@@ -141,7 +141,7 @@ impl Middleware for OtelMiddleware {
 
 fn error_type(error: &Error) -> &'static str {
     match error {
-        Error::Timeout => "timeout",
+        Error::Timeout | Error::ConnectTimeout | Error::ReadTimeout => "timeout",
         Error::Io(_) => "io",
         Error::Hyper(_) => "hyper",
         Error::Tls(_) => "tls",

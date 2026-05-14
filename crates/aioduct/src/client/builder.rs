@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::net::IpAddr;
 #[cfg(unix)]
@@ -5,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use http::header::{HeaderMap, HeaderValue, USER_AGENT};
+use http::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 
 use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
@@ -59,6 +60,7 @@ pub struct HttpEngineBuilder<R, C> {
     pub(super) hsts: Option<crate::hsts::HstsStore>,
     pub(super) h2c_probe_ttl: Option<Duration>,
     pub(super) connection_coalescing: bool,
+    pub(super) sensitive_headers: HashSet<HeaderName>,
     pub(super) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
     #[cfg(feature = "tower")]
     pub(super) tower_connector: Option<crate::connector::TowerConnectorSlot>,
@@ -130,6 +132,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
             hsts: None,
             h2c_probe_ttl: None,
             connection_coalescing: true,
+            sensitive_headers: HashSet::new(),
             observer: None,
             #[cfg(feature = "tower")]
             tower_connector: None,

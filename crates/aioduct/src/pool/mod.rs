@@ -66,6 +66,8 @@ struct PoolInner {
     idle: HashMap<PoolKey, VecDeque<IdleConnection>>,
     /// Reverse index: SAN → set of pool keys whose connections cover that name.
     san_index: HashMap<String, HashSet<PoolKey>>,
+    /// Pool keys with an in-progress H2/H3 connection attempt.
+    connecting_h2: HashSet<PoolKey>,
     max_idle_per_host: usize,
     idle_timeout: Duration,
 }
@@ -92,6 +94,7 @@ impl ConnectionPool {
             inner: Arc::new(Mutex::new(PoolInner {
                 idle: HashMap::new(),
                 san_index: HashMap::new(),
+                connecting_h2: HashSet::new(),
                 max_idle_per_host,
                 idle_timeout,
             })),
@@ -109,6 +112,7 @@ impl ConnectionPool {
             inner: Arc::new(Mutex::new(PoolInner {
                 idle: HashMap::new(),
                 san_index: HashMap::new(),
+                connecting_h2: HashSet::new(),
                 max_idle_per_host,
                 idle_timeout,
             })),
@@ -131,6 +135,12 @@ impl ConnectionPool {
                 continue;
             }
             if entry.connection.is_ready() {
+                if entry.connection.is_h2_or_h3()
+                    && let Some(cloned) = entry.connection.clone_for_multiplex()
+                {
+                    queue.push_back(entry);
+                    return Some(cloned);
+                }
                 if queue.is_empty() {
                     inner.idle.remove(key);
                 }
@@ -168,6 +178,28 @@ impl ConnectionPool {
             connection,
             idle_since: Instant::now(),
         });
+    }
+
+    /// Returns true if there is an in-progress H2/H3 connection for this key.
+    /// If so, returns true to let the caller wait and retry checkout.
+    /// If not, marks the key as connecting and returns false.
+    pub(crate) fn mark_connecting_h2(&self, key: &PoolKey) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        if inner.connecting_h2.contains(key) {
+            true
+        } else {
+            inner.connecting_h2.insert(key.clone());
+            false
+        }
+    }
+
+    /// Remove the connecting-in-progress mark for an H2/H3 key.
+    pub(crate) fn unmark_connecting_h2(&self, key: &PoolKey) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.connecting_h2.remove(key);
+        }
     }
 
     /// Find a coalesced connection: an idle h2/h3 connection whose SANs cover
@@ -218,6 +250,13 @@ impl ConnectionPool {
                     && entry.connection.remote_addr.map(|a| a.ip()) != Some(ip)
                 {
                     continue;
+                }
+
+                if entry.connection.is_ready()
+                    && let Some(cloned) = entry.connection.clone_for_multiplex()
+                {
+                    found_conn = Some(cloned);
+                    break;
                 }
 
                 if let Some(entry) = queue.remove(i)
