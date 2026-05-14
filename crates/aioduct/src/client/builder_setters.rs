@@ -250,12 +250,17 @@ impl<R, C> HttpEngineBuilder<R, C> {
     ///     .build();
     /// ```
     #[cfg(feature = "doh")]
-    pub fn dns_over_https(self, server_ip: std::net::IpAddr, server_name: &str) -> Self {
+    pub fn dns_over_https(
+        self,
+        server_ip: std::net::IpAddr,
+        server_name: &str,
+    ) -> Result<Self, crate::error::Error> {
         use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
         let ns = NameServerConfig::https(server_ip, std::sync::Arc::from(server_name), None);
         let config = ResolverConfig::from_parts(None, vec![], vec![ns]);
-        let resolver = crate::HickoryResolver::from_config(config, ResolverOpts::default());
-        self.resolver(resolver)
+        let resolver = crate::HickoryResolver::from_config(config, ResolverOpts::default())
+            .map_err(crate::error::Error::Io)?;
+        Ok(self.resolver(resolver))
     }
 
     /// Use DNS-over-TLS for name resolution.
@@ -273,12 +278,17 @@ impl<R, C> HttpEngineBuilder<R, C> {
     ///     .build();
     /// ```
     #[cfg(feature = "dot")]
-    pub fn dns_over_tls(self, server_ip: std::net::IpAddr, server_name: &str) -> Self {
+    pub fn dns_over_tls(
+        self,
+        server_ip: std::net::IpAddr,
+        server_name: &str,
+    ) -> Result<Self, crate::error::Error> {
         use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
         let ns = NameServerConfig::tls(server_ip, std::sync::Arc::from(server_name));
         let config = ResolverConfig::from_parts(None, vec![], vec![ns]);
-        let resolver = crate::HickoryResolver::from_config(config, ResolverOpts::default());
-        self.resolver(resolver)
+        let resolver = crate::HickoryResolver::from_config(config, ResolverOpts::default())
+            .map_err(crate::error::Error::Io)?;
+        Ok(self.resolver(resolver))
     }
 
     /// Configure HTTP/2 connection parameters (window sizes, keepalive, frame size).

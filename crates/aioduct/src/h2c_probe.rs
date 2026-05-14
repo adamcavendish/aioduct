@@ -40,7 +40,9 @@ impl H2cProbeCache {
 
     /// Returns `Some(true)` if h2c is known, `Some(false)` if h1-only, `None` if unknown/expired.
     pub(crate) fn lookup(&self, authority: &Authority) -> Option<bool> {
-        let map = self.inner.lock().unwrap();
+        let Ok(map) = self.inner.lock() else {
+            return None;
+        };
         match map.get(authority)? {
             H2cCapability::SupportsH2c { probed_at } => {
                 if probed_at.elapsed() < self.ttl {
@@ -60,7 +62,9 @@ impl H2cProbeCache {
     }
 
     pub(crate) fn record_h2c(&self, authority: Authority) {
-        let mut map = self.inner.lock().unwrap();
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
         map.insert(
             authority,
             H2cCapability::SupportsH2c {
@@ -70,7 +74,9 @@ impl H2cProbeCache {
     }
 
     pub(crate) fn record_h1_only(&self, authority: Authority) {
-        let mut map = self.inner.lock().unwrap();
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
         map.insert(
             authority,
             H2cCapability::H1Only {

@@ -87,7 +87,9 @@ impl CookieJar {
 
     /// Extract and store cookies from response `Set-Cookie` headers.
     pub fn store_from_response(&self, domain: &str, headers: &HeaderMap) {
-        let mut jar = self.inner.lock().unwrap();
+        let Ok(mut jar) = self.inner.lock() else {
+            return;
+        };
         let cookies = jar.entry(domain.to_owned()).or_default();
 
         for value in headers.get_all(SET_COOKIE) {
@@ -113,7 +115,9 @@ impl CookieJar {
         request_path: &str,
         headers: &mut HeaderMap,
     ) {
-        let jar = self.inner.lock().unwrap();
+        let Ok(jar) = self.inner.lock() else {
+            return;
+        };
 
         let mut matching_cookies = Vec::new();
 
@@ -156,12 +160,17 @@ impl CookieJar {
 
     /// Remove all stored cookies.
     pub fn clear(&self) {
-        self.inner.lock().unwrap().clear();
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        inner.clear();
     }
 
     /// Return all stored cookies.
     pub fn cookies(&self) -> Vec<Cookie> {
-        let jar = self.inner.lock().unwrap();
+        let Ok(jar) = self.inner.lock() else {
+            return Vec::new();
+        };
         jar.values().flatten().cloned().collect()
     }
 }

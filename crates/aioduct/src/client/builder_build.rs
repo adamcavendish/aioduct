@@ -41,26 +41,26 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Enable or disable HTTP/3 for all HTTPS requests.
-    pub fn http3(mut self, enable: bool) -> Self {
+    pub fn http3(mut self, enable: bool) -> Result<Self, crate::error::Error> {
         if enable {
-            self = self.ensure_h3_endpoint();
+            self = self.ensure_h3_endpoint()?;
             self.prefer_h3 = true;
         } else {
             self.h3_endpoint = None;
             self.prefer_h3 = false;
         }
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Enable automatic HTTP/3 upgrade via Alt-Svc headers.
-    pub fn alt_svc_h3(mut self, enable: bool) -> Self {
+    pub fn alt_svc_h3(mut self, enable: bool) -> Result<Self, crate::error::Error> {
         if enable {
-            self = self.ensure_h3_endpoint();
+            self = self.ensure_h3_endpoint()?;
         } else if !self.prefer_h3 {
             self.h3_endpoint = None;
         }
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -77,12 +77,16 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
-    fn ensure_h3_endpoint(mut self) -> Self {
+    fn ensure_h3_endpoint(mut self) -> Result<Self, crate::error::Error> {
         if self.h3_endpoint.is_none() {
             let tls_config = self
                 .tls
                 .as_ref()
-                .expect("HTTP/3 requires a TLS connector — call .tls() before .http3(true)")
+                .ok_or_else(|| {
+                    crate::error::Error::Other(
+                        "HTTP/3 requires a TLS connector — call .tls() before .http3(true)".into(),
+                    )
+                })?
                 .config()
                 .clone();
             let endpoint = crate::h3_transport::build_quinn_endpoint(
@@ -90,10 +94,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 self.local_address,
                 self.h3_zero_rtt,
             )
-            .expect("failed to build QUIC endpoint");
+            .map_err(|e| crate::error::Error::Other(Box::new(e)))?;
             self.h3_endpoint = Some(endpoint);
         }
-        self
+        Ok(self)
     }
 
     #[allow(unreachable_code)]
@@ -146,6 +150,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                         webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
                     );
                     for cert in &self.extra_root_certs {
+                        // SAFETY: extra root certs are caller-provided; if they
+                        // are malformed the builder cannot continue.
+                        #[allow(clippy::expect_used)]
                         root_store
                             .add(cert.der.clone())
                             .expect("invalid extra root certificate");
@@ -153,6 +160,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                     let crls: Vec<_> = self.crls.into_iter().map(|c| c.der).collect();
                     let identity = self.client_identity.map(|id| (id.certs, id.key));
                     Some(Arc::new(
+                        // SAFETY: build_configured can only fail with invalid
+                        // CRLs or client identity — caller-provided inputs that
+                        // must be correct for the client to function.
+                        #[allow(clippy::expect_used)]
                         crate::tls::RustlsConnector::build_configured(
                             root_store,
                             &versions,
@@ -166,6 +177,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                     ))
                 } else if let Some(identity) = self.client_identity {
                     Some(Arc::new(
+                        // SAFETY: with_identity_versioned can only fail with an
+                        // invalid client cert/key pair — caller-provided input.
+                        #[allow(clippy::expect_used)]
                         crate::tls::RustlsConnector::with_identity_versioned(
                             &self.extra_root_certs,
                             identity,

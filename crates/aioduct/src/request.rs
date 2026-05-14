@@ -118,20 +118,18 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     /// Set a Bearer token Authorization header.
     ///
-    /// # Panics
-    ///
-    /// Panics if the token contains invalid header characters.
+    /// If the token contains invalid header characters, this is a no-op.
     pub fn bearer_auth(mut self, token: &str) -> Self {
-        let value = HeaderValue::from_str(&format!("Bearer {token}")).expect("valid bearer token");
+        let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
+            return self;
+        };
         self.headers.insert(AUTHORIZATION, value);
         self
     }
 
     /// Set a Basic Authorization header.
     ///
-    /// # Panics
-    ///
-    /// Panics if the username or password contain invalid header characters.
+    /// If the username or password produce an invalid header value, this is a no-op.
     pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         use base64::engine::{Engine, general_purpose::STANDARD};
         let credentials = match password {
@@ -139,8 +137,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             None => format!("{username}:"),
         };
         let encoded = STANDARD.encode(credentials);
-        let value =
-            HeaderValue::from_str(&format!("Basic {encoded}")).expect("valid basic auth header");
+        let Ok(value) = HeaderValue::from_str(&format!("Basic {encoded}")) else {
+            return self;
+        };
         self.headers.insert(AUTHORIZATION, value);
         self
     }
@@ -164,7 +163,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             let sep = if i == 0 && !has_query { '?' } else { '&' };
             let key = utf8_percent_encode(key, QUERY_ENCODE);
             let val = utf8_percent_encode(val, QUERY_ENCODE);
-            write!(uri_str, "{sep}{key}={val}").unwrap();
+            let _ = write!(uri_str, "{sep}{key}={val}");
         }
         if let Ok(new_uri) = uri_str.parse() {
             self.uri = new_uri;
@@ -180,7 +179,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         if !query_string.is_empty() {
             let mut uri_str = self.uri.to_string();
             let sep = if self.uri.query().is_some() { '&' } else { '?' };
-            write!(uri_str, "{sep}{query_string}").unwrap();
+            let _ = write!(uri_str, "{sep}{query_string}");
             if let Ok(new_uri) = uri_str.parse() {
                 self.uri = new_uri;
             }
@@ -232,7 +231,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             }
             let k = utf8_percent_encode(key, FORM_ENCODE);
             let v = utf8_percent_encode(val, FORM_ENCODE);
-            write!(encoded, "{k}={v}").unwrap();
+            let _ = write!(encoded, "{k}={v}");
         }
         self.headers.insert(
             http::header::CONTENT_TYPE,
@@ -258,7 +257,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     pub fn multipart(mut self, multipart: crate::multipart::Multipart) -> Self {
         let ct = multipart.content_type();
         // Content-type is constructed from valid parts
-        let value = HeaderValue::from_str(&ct).expect("valid multipart content-type");
+        let Ok(value) = HeaderValue::from_str(&ct) else {
+            return self;
+        };
         self.headers.insert(http::header::CONTENT_TYPE, value);
         if multipart.has_streaming_parts() {
             self.body = Some(RequestBody::Streaming(multipart.into_streaming_body()));

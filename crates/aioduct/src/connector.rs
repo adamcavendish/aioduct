@@ -28,6 +28,9 @@ impl TowerConnectorSlot {
     }
 
     pub(crate) fn get<C: ConnectorSend>(&self) -> &LayeredConnector<C> {
+        // SAFETY: this is only called with the same C that was used in `new()`,
+        // enforced by the type-level generic on HttpEngine<R, C>.
+        #[allow(clippy::expect_used)]
         self.inner
             .downcast_ref::<LayeredConnector<C>>()
             .expect("TowerConnectorSlot type mismatch")
@@ -107,8 +110,12 @@ where
         &self,
         info: ConnectInfo,
     ) -> Pin<Box<dyn Future<Output = io::Result<Stream>> + Send>> {
-        let mut svc = self.inner.lock().unwrap().clone();
+        let svc = match self.inner.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => return Box::pin(async { Err(io::Error::other("lock poisoned")) }),
+        };
         Box::pin(async move {
+            let mut svc = svc;
             std::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
             svc.call(info).await
         })

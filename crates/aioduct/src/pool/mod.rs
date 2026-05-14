@@ -121,7 +121,7 @@ impl ConnectionPool {
     /// Uses LIFO ordering (most recently returned first) and checks readiness
     /// on each candidate, trying all pooled connections before giving up.
     pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().ok()?;
         let idle_timeout = inner.idle_timeout;
         let queue = inner.idle.get_mut(key)?;
         let now = Instant::now();
@@ -146,7 +146,9 @@ impl ConnectionPool {
     ///
     /// When at capacity, evicts the oldest idle connection to make room.
     pub(crate) fn checkin(&self, key: PoolKey, connection: PooledConnection) {
-        let mut inner = self.inner.lock().unwrap();
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
         let max = inner.max_idle_per_host;
 
         for san in &connection.sans {
@@ -178,7 +180,7 @@ impl ConnectionPool {
         target_host: &str,
         resolved_ip: Option<IpAddr>,
     ) -> Option<PooledConnection> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().ok()?;
         let now = Instant::now();
         let idle_timeout = inner.idle_timeout;
 
@@ -218,8 +220,9 @@ impl ConnectionPool {
                     continue;
                 }
 
-                let entry = queue.remove(i).unwrap();
-                if entry.connection.is_ready() {
+                if let Some(entry) = queue.remove(i)
+                    && entry.connection.is_ready()
+                {
                     if queue.is_empty() {
                         found_key = Some(key.clone());
                     }
@@ -263,12 +266,16 @@ impl ConnectionPool {
         R::spawn_send(async move {
             loop {
                 let timeout = {
-                    let guard = inner.lock().unwrap();
+                    let Ok(guard) = inner.lock() else {
+                        return;
+                    };
                     guard.idle_timeout
                 };
                 R::sleep(timeout).await;
 
-                let mut guard = inner.lock().unwrap();
+                let Ok(mut guard) = inner.lock() else {
+                    return;
+                };
                 let now = Instant::now();
                 let idle_timeout = guard.idle_timeout;
                 guard.idle.retain(|_, queue| {

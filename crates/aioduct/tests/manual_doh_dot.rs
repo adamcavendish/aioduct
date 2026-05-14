@@ -23,6 +23,7 @@ fn builder() -> aioduct::client::ClientBuilder<TokioRuntime> {
 async fn doh_cloudflare_resolves_httpbin() {
     let client = builder()
         .dns_over_https("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
+        .unwrap()
         .build();
 
     let resp = client
@@ -47,6 +48,7 @@ async fn doh_cloudflare_resolves_httpbin() {
 async fn doh_google_resolves_httpbin() {
     let client = builder()
         .dns_over_https("8.8.8.8".parse().unwrap(), "dns.google")
+        .unwrap()
         .build();
 
     let resp = client
@@ -65,6 +67,7 @@ async fn doh_google_resolves_httpbin() {
 async fn dot_cloudflare_resolves_httpbin() {
     let client = builder()
         .dns_over_tls("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
+        .unwrap()
         .build();
 
     let resp = client
@@ -83,6 +86,7 @@ async fn dot_cloudflare_resolves_httpbin() {
 async fn dot_google_resolves_httpbin() {
     let client = builder()
         .dns_over_tls("8.8.8.8".parse().unwrap(), "dns.google")
+        .unwrap()
         .build();
 
     let resp = client

@@ -15,6 +15,7 @@ async fn h3_0rtt_reconnection_latency() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .http3(true)
+        .unwrap()
         .h3_zero_rtt(true)
         .timeout(std::time::Duration::from_secs(15))
         .build();
@@ -91,6 +92,7 @@ async fn h3_without_0rtt_baseline() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .http3(true)
+        .unwrap()
         .h3_zero_rtt(false)
         .timeout(std::time::Duration::from_secs(15))
         .build();

@@ -99,6 +99,7 @@ async fn h3_basic_get() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
+        .unwrap()
         .build();
 
     let resp = client
@@ -124,6 +125,7 @@ async fn h3_post_with_body() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
+        .unwrap()
         .build();
 
     let resp = client
@@ -145,6 +147,7 @@ async fn h3_response_body() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
+        .unwrap()
         .build();
 
     let resp = client
@@ -171,6 +174,7 @@ async fn h3_concurrent_requests() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
+        .unwrap()
         .build();
 
     let mut handles = Vec::new();
@@ -200,6 +204,7 @@ async fn h3_connection_refused() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
+        .unwrap()
         .timeout(Duration::from_millis(500))
         .build();
 

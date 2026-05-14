@@ -41,20 +41,20 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Create a client configured for HTTP/3 with rustls.
-    pub fn with_http3(connector: C) -> Self {
-        Self::builder(connector)
+    pub fn with_http3(connector: C) -> Result<Self, Error> {
+        Ok(Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
-            .http3(true)
-            .build()
+            .http3(true)?
+            .build())
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Create a client that upgrades to HTTP/3 via Alt-Svc discovery.
-    pub fn with_alt_svc_h3(connector: C) -> Self {
-        Self::builder(connector)
+    pub fn with_alt_svc_h3(connector: C) -> Result<Self, Error> {
+        Ok(Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
-            .alt_svc_h3(true)
-            .build()
+            .alt_svc_h3(true)?
+            .build())
     }
 
     /// Start a GET request to the given URL.
