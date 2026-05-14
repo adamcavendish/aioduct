@@ -256,6 +256,20 @@ pub type CompioClient =
 #[cfg(feature = "compio")]
 pub type CompioEngine = CompioClient;
 
+/// Blocking client backed by the tokio runtime.
+#[cfg(all(feature = "blocking", feature = "tokio"))]
+pub type BlockingTokioClient =
+    blocking::BlockingClient<TokioClient, runtime::tokio_rt::TokioRuntime>;
+
+/// Blocking client backed by the smol runtime.
+#[cfg(all(feature = "blocking", feature = "smol"))]
+pub type BlockingSmolClient = blocking::BlockingClient<SmolClient, runtime::smol_rt::SmolRuntime>;
+
+/// Blocking client backed by the compio runtime.
+#[cfg(all(feature = "blocking", feature = "compio"))]
+pub type BlockingCompioClient =
+    blocking::BlockingClient<CompioClient, runtime::compio_rt::CompioRuntime>;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use tls::TlsInfo;
 #[cfg(not(target_arch = "wasm32"))]

@@ -21,6 +21,11 @@ impl RuntimeCompletion for CompioRuntime {
     fn sleep(duration: Duration) -> Self::Sleep {
         CompioSleep::new(async_io::Timer::after(duration))
     }
+
+    fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error> {
+        let rt = compio_runtime::Runtime::new().map_err(crate::error::Error::Io)?;
+        Ok(rt.block_on(future))
+    }
 }
 
 impl RuntimeLocal for CompioRuntime {

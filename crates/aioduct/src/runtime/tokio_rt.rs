@@ -23,6 +23,14 @@ impl RuntimeCompletion for TokioRuntime {
             inner: tokio::time::sleep(duration),
         }
     }
+
+    fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(crate::error::Error::Io)?;
+        Ok(rt.block_on(future))
+    }
 }
 
 impl RuntimePoll for TokioRuntime {
