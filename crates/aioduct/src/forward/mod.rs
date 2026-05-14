@@ -11,7 +11,7 @@ use http_body::Body;
 use http_body_util::BodyExt;
 
 use crate::body::RequestBoxBody;
-use crate::client::HttpEngine;
+use crate::client::HttpEngineSend;
 use crate::error::Error;
 use crate::pool::ProtocolHint;
 use crate::response::Response;
@@ -22,11 +22,11 @@ type ResponseHook = Box<dyn FnOnce(&mut Response) + Send>;
 
 /// Builder for forwarding an incoming HTTP request to an upstream server.
 ///
-/// Created via [`HttpEngine::forward`]. Strips hop-by-hop headers, rewrites the URI
+/// Created via [`HttpEngineSend::forward`]. Strips hop-by-hop headers, rewrites the URI
 /// to target the upstream, and streams the body through without buffering.
 /// Skips all client middleware (redirects, cookies, cache, decompression).
 pub struct ForwardBuilder<'a, R: RuntimePoll, C: ConnectorSend, B> {
-    client: &'a HttpEngine<R, C>,
+    client: &'a HttpEngineSend<R, C>,
     request: http::Request<B>,
     upstream: Option<Uri>,
     strip_prefix: Option<String>,
@@ -45,7 +45,7 @@ where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    pub(crate) fn new(client: &'a HttpEngine<R, C>, request: http::Request<B>) -> Self {
+    pub(crate) fn new(client: &'a HttpEngineSend<R, C>, request: http::Request<B>) -> Self {
         Self {
             client,
             request,
@@ -322,7 +322,7 @@ where
                 sleep: R::sleep(duration),
             }
             .await?
-        } else if let Some(duration) = self.client.timeout {
+        } else if let Some(duration) = self.client.core.timeout {
             crate::timeout::Timeout::WithTimeout {
                 future: send_fut,
                 sleep: R::sleep(duration),

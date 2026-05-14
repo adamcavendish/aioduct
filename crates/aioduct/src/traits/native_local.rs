@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use super::{HttpClient, RequestBuilderExt, ResponseExt};
 use crate::body::ResponseBoxLocalBody;
-use crate::client::HttpEngine;
+use crate::client::HttpEngineLocal;
 use crate::error::{Error, SendError};
 use crate::response::Response;
 use crate::runtime::{Connector, RuntimeLocal};
 
 /// An owned request builder for the Local runtime path.
 pub struct OwnedRequestBuilderLocal<R: RuntimeLocal, C: Connector + Clone> {
-    client: HttpEngine<R, C>,
+    client: HttpEngineLocal<R, C>,
     method: Method,
     uri: http::Uri,
     headers: HeaderMap,
@@ -20,43 +20,13 @@ pub struct OwnedRequestBuilderLocal<R: RuntimeLocal, C: Connector + Clone> {
     timeout: Option<Duration>,
 }
 
-/// Newtype wrapper that implements [`HttpClient`] for the Local runtime path.
-///
-/// Needed because Rust's coherence rules prevent implementing `HttpClient`
-/// for both `HttpEngine<R: RuntimePoll, ..>` and `HttpEngine<R: RuntimeLocal, ..>`.
-pub struct HttpClientLocal<R: RuntimeLocal, C: Connector + Clone>(HttpEngine<R, C>);
-
-impl<R: RuntimeLocal, C: Connector + Clone> Clone for HttpClientLocal<R, C> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<R: RuntimeLocal, C: Connector + Clone> HttpClientLocal<R, C> {
-    /// Wrap an [`HttpEngine`] to use via the [`HttpClient`] trait.
-    pub fn new(engine: HttpEngine<R, C>) -> Self {
-        Self(engine)
-    }
-
-    /// Get a reference to the inner engine.
-    pub fn engine(&self) -> &HttpEngine<R, C> {
-        &self.0
-    }
-}
-
-impl<R: RuntimeLocal, C: Connector + Clone> From<HttpEngine<R, C>> for HttpClientLocal<R, C> {
-    fn from(engine: HttpEngine<R, C>) -> Self {
-        Self(engine)
-    }
-}
-
-impl<R: RuntimeLocal, C: Connector + Clone> HttpClient for HttpClientLocal<R, C> {
+impl<R: RuntimeLocal, C: Connector + Clone> HttpClient for HttpEngineLocal<R, C> {
     type RequestBuilder = OwnedRequestBuilderLocal<R, C>;
 
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {
         let uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(OwnedRequestBuilderLocal {
-            client: self.0.clone(),
+            client: self.clone(),
             method,
             uri,
             headers: HeaderMap::new(),
@@ -97,7 +67,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> RequestBuilderExt for OwnedRequestBu
 
     async fn send(self) -> Result<Response<ResponseBoxLocalBody>, SendError> {
         let url = self.uri.clone();
-        let effective_timeout = self.timeout.or(self.client.timeout);
+        let effective_timeout = self.timeout.or(self.client.core.timeout);
 
         let execute_fut =
             self.client

@@ -11,7 +11,7 @@ async fn test_request_timeout_triggers() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let result = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -27,7 +27,7 @@ async fn test_request_timeout_triggers() {
 #[tokio::test]
 async fn test_request_timeout_completes_in_time() {
     let addr = start_server().await;
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -50,7 +50,7 @@ async fn test_client_default_timeout_triggers() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(50))
         .build();
 
@@ -68,7 +68,7 @@ async fn test_request_timeout_overrides_client_timeout() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(10))
         .build();
 
@@ -94,7 +94,7 @@ async fn test_read_timeout_does_not_apply_to_headers() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(100))
         .build();
 
@@ -131,7 +131,7 @@ async fn test_read_timeout_applies_to_body() {
         let _ = stream.write_all(b"world").await;
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(100))
         .build();
 
@@ -178,7 +178,7 @@ async fn test_read_timeout_allows_slow_but_steady_body() {
         stream.flush().await.unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(200))
         .build();
 
@@ -205,7 +205,7 @@ async fn test_content_length_preserved_through_timeout() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -219,7 +219,7 @@ async fn test_content_length_preserved_through_timeout() {
 
 #[tokio::test]
 async fn test_connect_timeout() {
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connect_timeout(Duration::from_millis(100))
         .build();
 
@@ -246,7 +246,7 @@ async fn client_timeout_triggers_on_slow_response() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(100))
         .build();
 
@@ -264,7 +264,7 @@ async fn per_request_timeout_triggers_on_slow_response() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let result = client
         .get(&format!("http://{addr}/"))
@@ -279,7 +279,7 @@ async fn per_request_timeout_triggers_on_slow_response() {
 
 #[tokio::test]
 async fn connect_timeout_with_unreachable_ip() {
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connect_timeout(Duration::from_millis(100))
         .build();
 
@@ -307,7 +307,7 @@ async fn read_timeout_does_not_apply_to_headers() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(100))
         .timeout(Duration::from_secs(5))
         .build();
@@ -331,7 +331,7 @@ async fn request_timeout_overrides_client_timeout() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(50))
         .build();
 
@@ -351,7 +351,7 @@ async fn request_timeout_overrides_client_timeout() {
 async fn timeout_fast_response_succeeds() {
     let addr = start_server().await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
         .build();
 
@@ -372,7 +372,7 @@ async fn timeout_fast_response_succeeds() {
 async fn connect_timeout_does_not_affect_fast_connects() {
     let addr = start_server().await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connect_timeout(Duration::from_secs(5))
         .build();
 

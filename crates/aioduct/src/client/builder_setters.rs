@@ -214,9 +214,9 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// # Example
     ///
     /// ```
-    /// # use aioduct::{HttpEngine, runtime::TokioRuntime};
+    /// # use aioduct::{HttpEngineSend, runtime::TokioRuntime};
     /// # use aioduct::runtime::tokio_rt::TcpConnector;
-    /// let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    /// let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
     ///     .resolve("example.com", "127.0.0.1:8080".parse().unwrap())
     ///     .build();
     /// ```
@@ -244,8 +244,8 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// # Example
     ///
     /// ```no_run
-    /// # use aioduct::{HttpEngine, runtime::TokioRuntime};
-    /// let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    /// # use aioduct::{HttpEngineSend, runtime::TokioRuntime};
+    /// let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
     ///     .dns_over_https("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
     ///     .build();
     /// ```
@@ -267,8 +267,8 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// # Example
     ///
     /// ```no_run
-    /// # use aioduct::{HttpEngine, runtime::TokioRuntime};
-    /// let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    /// # use aioduct::{HttpEngineSend, runtime::TokioRuntime};
+    /// let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
     ///     .dns_over_tls("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
     ///     .build();
     /// ```

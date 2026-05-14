@@ -19,7 +19,7 @@ use hyper::service::service_fn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use aioduct::HttpEngine;
+use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
@@ -85,7 +85,7 @@ async fn stale_h1_rst_on_reuse_retries_transparently() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .build();
 
@@ -147,7 +147,7 @@ async fn stale_h1_fin_on_reuse_retries_transparently() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .build();
 
@@ -212,7 +212,7 @@ async fn stale_h2_goaway_retries_transparently() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .build();
@@ -250,7 +250,7 @@ async fn stale_retry_does_not_loop_on_persistent_failure() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
         .build();
@@ -312,7 +312,7 @@ async fn stale_retry_skipped_for_streaming_body() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
         .build();
@@ -394,7 +394,7 @@ async fn stale_retry_works_for_post_json_body() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
         .build();
@@ -465,7 +465,7 @@ async fn stale_retry_works_for_get_empty_body() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
         .build();
@@ -529,7 +529,7 @@ async fn stale_h1_probabilistic_retry() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .build();
 

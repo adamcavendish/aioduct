@@ -1,18 +1,18 @@
 use http::{Method, Uri};
 
-use super::HttpEngine;
+use super::HttpEngineSend;
 use super::builder::HttpEngineBuilder;
 use crate::error::Error;
 use crate::request::RequestBuilderSend;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
-impl<R: RuntimePoll, C: ConnectorSend + Default> Default for HttpEngine<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend + Default> Default for HttpEngineSend<R, C> {
     fn default() -> Self {
         Self::new(C::default())
     }
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     /// Create a new [`HttpEngineBuilder`] with default settings.
     pub fn builder(connector: C) -> HttpEngineBuilder<R, C> {
         HttpEngineBuilder::new(connector)
@@ -121,19 +121,19 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     }
 
     pub(crate) fn default_timeout(&self) -> Option<std::time::Duration> {
-        self.timeout
+        self.core.timeout
     }
 
     pub(crate) fn default_retry(&self) -> Option<&crate::retry::RetryConfig> {
-        self.retry.as_ref()
+        self.core.retry.as_ref()
     }
 
     pub(crate) fn middleware(&self) -> &crate::middleware::MiddlewareStack {
-        &self.middleware
+        &self.core.middleware
     }
 
     /// Returns the bandwidth limiter if one was configured.
     pub fn bandwidth_limiter(&self) -> Option<&crate::bandwidth::BandwidthLimiter> {
-        self.bandwidth_limiter.as_ref()
+        self.core.bandwidth_limiter.as_ref()
     }
 }

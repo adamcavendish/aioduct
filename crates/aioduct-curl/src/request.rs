@@ -5,10 +5,7 @@ use http::{HeaderName, HeaderValue, Method};
 
 use crate::cli::Cli;
 
-pub async fn execute(
-    cli: &Cli,
-    client: &aioduct::HttpEngine<TokioRuntime, TcpConnector>,
-) -> Result<Response, aioduct::Error> {
+pub async fn execute(cli: &Cli, client: &aioduct::TokioClient) -> Result<Response, aioduct::Error> {
     let method: Method = cli.effective_method().parse().map_err(|_| {
         aioduct::Error::InvalidUrl(format!("invalid method: {}", cli.effective_method()))
     })?;

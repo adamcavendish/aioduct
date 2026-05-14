@@ -11,7 +11,7 @@ use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 
-use aioduct::HttpEngine;
+use aioduct::HttpEngineSend;
 use aioduct::runtime::smol_rt::{SmolIo, SmolRuntime};
 
 async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
@@ -52,7 +52,7 @@ where
 fn test_smol_get_request() {
     smol::block_on(async {
         let addr = start_server().await;
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
 
@@ -73,7 +73,7 @@ fn test_smol_get_request() {
 fn test_smol_post_request() {
     smol::block_on(async {
         let addr = start_server().await;
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
 
@@ -93,7 +93,7 @@ fn test_smol_post_request() {
 fn test_smol_connection_reuse() {
     smol::block_on(async {
         let addr = start_server().await;
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let url = format!("http://{addr}/");
@@ -127,7 +127,7 @@ fn test_smol_redirect_302() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let resp = client
@@ -152,7 +152,7 @@ fn test_smol_timeout_triggers() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let result = client
@@ -180,7 +180,7 @@ fn test_smol_custom_header() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let resp = client
@@ -245,11 +245,12 @@ fn test_smol_h2_prior_knowledge() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
-            aioduct::runtime::smol_rt::TcpConnector,
-        )
-        .http2_prior_knowledge()
-        .build();
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+                aioduct::runtime::smol_rt::TcpConnector,
+            )
+            .http2_prior_knowledge()
+            .build();
 
         let resp = client
             .get(&format!("http://{addr}/"))
@@ -271,11 +272,12 @@ fn test_smol_h2_multiple_requests() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
-            aioduct::runtime::smol_rt::TcpConnector,
-        )
-        .http2_prior_knowledge()
-        .build();
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+                aioduct::runtime::smol_rt::TcpConnector,
+            )
+            .http2_prior_knowledge()
+            .build();
         let url = format!("http://{addr}/");
 
         let resp1 = client.get(&url).unwrap().send().await.unwrap();
@@ -298,7 +300,7 @@ fn test_smol_large_body() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let payload = "x".repeat(1024 * 1024);
@@ -325,11 +327,12 @@ fn test_smol_h2_large_body() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
-            aioduct::runtime::smol_rt::TcpConnector,
-        )
-        .http2_prior_knowledge()
-        .build();
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+                aioduct::runtime::smol_rt::TcpConnector,
+            )
+            .http2_prior_knowledge()
+            .build();
         let payload = "x".repeat(1024 * 1024);
         let resp = client
             .post(&format!("http://{addr}/"))
@@ -353,7 +356,7 @@ fn test_smol_large_response_body() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let resp = client
@@ -377,7 +380,7 @@ fn test_smol_connection_pool_reuse_after_body_consumed() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let url = format!("http://{addr}/");
@@ -403,7 +406,7 @@ fn test_smol_head_request() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let resp = client
@@ -440,7 +443,7 @@ fn test_smol_multiple_headers_same_name() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
         let mut headers = http::HeaderMap::new();
@@ -482,15 +485,16 @@ fn test_smol_proxy_auth_for_plain_http() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
-            aioduct::runtime::smol_rt::TcpConnector,
-        )
-        .proxy(
-            aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
-                .unwrap()
-                .basic_auth("user", "pass"),
-        )
-        .build();
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+                aioduct::runtime::smol_rt::TcpConnector,
+            )
+            .proxy(
+                aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+                    .unwrap()
+                    .basic_auth("user", "pass"),
+            )
+            .build();
 
         let resp = client
             .get("http://example.com/test")
@@ -526,7 +530,7 @@ fn test_smol_redirect_follows() {
         })
         .await;
 
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new(
             aioduct::runtime::smol_rt::TcpConnector,
         );
 
@@ -560,11 +564,12 @@ fn test_smol_default_headers() {
             http::header::HeaderName::from_static("x-custom-default"),
             http::header::HeaderValue::from_static("smol-default"),
         );
-        let client = HttpEngine::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
-            aioduct::runtime::smol_rt::TcpConnector,
-        )
-        .default_headers(headers)
-        .build();
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+                aioduct::runtime::smol_rt::TcpConnector,
+            )
+            .default_headers(headers)
+            .build();
 
         let resp = client
             .get(&format!("http://{addr}/"))

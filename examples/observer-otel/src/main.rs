@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use aioduct::HttpEngine;
+use aioduct::TokioClient;
 use aioduct::observer::{
     ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
     RequestObserver, RequestPhase, TransferDirection,
 };
-use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 use opentelemetry::KeyValue;
 use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer, TracerProvider};
@@ -277,7 +276,7 @@ impl RequestObserver for OtelObserver {
 
 /// Helper to execute a request inside a named OTel span.
 async fn traced_request<T>(
-    client: &HttpEngine<TokioRuntime, TcpConnector>,
+    client: &TokioClient,
     tracer: &T,
     span_name: &str,
     url: &str,
@@ -314,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tracer = provider.tracer("aioduct-observer-otel-example");
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = TokioClient::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .request_observer(OtelObserver)
         .build();

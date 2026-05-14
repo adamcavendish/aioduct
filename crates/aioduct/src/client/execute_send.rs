@@ -3,7 +3,7 @@ use http::header::{AUTHORIZATION, HOST, HeaderMap};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
-use super::HttpEngine;
+use super::HttpEngineSend;
 use crate::body::{RequestBody, RequestBoxBody};
 use crate::error::Error;
 use crate::redirect::RedirectPolicy;
@@ -12,7 +12,7 @@ use crate::runtime::{ConnectorSend, RuntimePoll};
 
 use super::execute::CacheLookupOutcome;
 
-impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub(crate) async fn execute(
         &self,
         method: Method,
@@ -21,21 +21,21 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         body: Option<RequestBody>,
         version: Option<http::Version>,
     ) -> Result<Response, Error> {
-        if self.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+        if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
                 original_uri.scheme_str().unwrap_or("none").to_owned(),
             ));
         }
 
-        let mut current_uri = self.maybe_upgrade_hsts(original_uri);
+        let mut current_uri = self.core.maybe_upgrade_hsts(original_uri);
         let mut current_method = method;
         let mut current_body = body;
         let mut current_headers = headers;
 
-        self.apply_default_headers(&mut current_headers);
+        self.core.apply_default_headers(&mut current_headers);
 
-        for _ in 0..=self.redirect_policy.max_redirects() {
-            if let Some(jar) = &self.cookie_jar
+        for _ in 0..=self.core.redirect_policy.max_redirects() {
+            if let Some(jar) = &self.core.cookie_jar
                 && let Some(authority) = current_uri.authority()
             {
                 let is_secure = current_uri.scheme() == Some(&http::uri::Scheme::HTTPS);
@@ -65,7 +65,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
             }
 
             let (cache_state, stale_if_error) =
-                self.cache_lookup(&current_method, &current_uri, &mut current_headers);
+                self.core
+                    .cache_lookup(&current_method, &current_uri, &mut current_headers);
             let cache_entry = match cache_state {
                 CacheLookupOutcome::Fresh(resp) => return Ok(*resp),
                 CacheLookupOutcome::Stale(entry) => Some(entry),
@@ -94,8 +95,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
 
             let mut request = builder.body(req_body)?;
 
-            if !self.middleware.is_empty() {
-                self.middleware.apply_request(&mut request, &current_uri);
+            if !self.core.middleware.is_empty() {
+                self.core
+                    .middleware
+                    .apply_request(&mut request, &current_uri);
             }
 
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
@@ -153,17 +156,17 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 return Ok(Response::from_boxed(http_resp, current_uri));
             }
 
-            if let Some(ref cache) = self.cache {
+            if let Some(ref cache) = self.core.cache {
                 cache.invalidate(&current_method, &current_uri);
             }
 
-            if let Some(jar) = &self.cookie_jar
+            if let Some(jar) = &self.core.cookie_jar
                 && let Some(authority) = current_uri.authority()
             {
                 jar.store_from_response(authority.host(), resp.headers());
             }
 
-            if let Some(ref hsts) = self.hsts
+            if let Some(ref hsts) = self.core.hsts
                 && current_uri.scheme() == Some(&http::uri::Scheme::HTTPS)
                 && let Some(authority) = current_uri.authority()
             {
@@ -172,14 +175,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
 
             if !resp.status().is_redirection()
                 || resp.status() == StatusCode::NOT_MODIFIED
-                || matches!(self.redirect_policy, RedirectPolicy::None)
+                || matches!(self.core.redirect_policy, RedirectPolicy::None)
             {
                 return self
                     .finalize_response(resp, &current_method, current_uri)
                     .await;
             }
 
-            let redirect = self.process_redirect(
+            let redirect = self.core.process_redirect(
                 &resp,
                 &current_uri,
                 current_method.clone(),
@@ -200,7 +203,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         }
 
         Err(Error::TooManyRedirects(
-            self.redirect_policy.max_redirects(),
+            self.core.redirect_policy.max_redirects(),
         ))
     }
 
@@ -213,7 +216,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         body_for_replay: Option<Bytes>,
         version: Option<http::Version>,
     ) -> Result<Response, Error> {
-        let Some(ref digest) = self.digest_auth else {
+        let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
         };
         if !digest.needs_retry(resp.status(), resp.headers()) {
@@ -253,8 +256,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
             retry_builder = retry_builder.header(name, value);
         }
         let mut retry_request = retry_builder.body(retry_body)?;
-        if !self.middleware.is_empty() {
-            self.middleware.apply_request(&mut retry_request, uri);
+        if !self.core.middleware.is_empty() {
+            self.core.middleware.apply_request(&mut retry_request, uri);
         }
         self.execute_single(retry_request, uri, replay_for_stale)
             .await
@@ -267,32 +270,32 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         uri: Uri,
     ) -> Result<Response, Error> {
         #[cfg(all(feature = "http3", feature = "rustls"))]
-        if self.h3_endpoint.is_some() {
-            self.cache_alt_svc(&uri, resp.headers());
+        if self.core.h3_endpoint.is_some() {
+            self.core.cache_alt_svc(&uri, resp.headers());
         }
         let mut resp = resp;
-        if !self.middleware.is_empty() {
-            resp.apply_middleware(&self.middleware, &uri);
+        if !self.core.middleware.is_empty() {
+            resp.apply_middleware(&self.core.middleware, &uri);
         }
 
-        let resp = if !self.accept_encoding.is_empty() {
-            resp.decompress(&self.accept_encoding)
+        let resp = if !self.core.accept_encoding.is_empty() {
+            resp.decompress(&self.core.accept_encoding)
         } else {
             resp
         };
-        let resp = if let Some(read_timeout) = self.read_timeout {
+        let resp = if let Some(read_timeout) = self.core.read_timeout {
             resp.apply_read_timeout::<R>(read_timeout)
         } else {
             resp
         };
 
-        let resp = if let Some(ref limiter) = self.bandwidth_limiter {
+        let resp = if let Some(ref limiter) = self.core.bandwidth_limiter {
             resp.apply_bandwidth_limit(limiter.clone())
         } else {
             resp
         };
 
-        if let Some(ref cache) = self.cache {
+        if let Some(ref cache) = self.core.cache {
             let status = resp.status();
             let headers = resp.headers().clone();
             if crate::cache::is_response_cacheable(status, &headers) {

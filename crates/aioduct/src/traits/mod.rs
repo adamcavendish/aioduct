@@ -1,6 +1,6 @@
 //! Consumer-facing client trait and extension traits.
 //!
-//! These traits provide a unified interface across `HttpEngine`,
+//! These traits provide a unified interface across `HttpEngineSend`,
 //! `WasmClient`, and `WasiClient`.
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,7 +109,7 @@ pub trait ResponseExt {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native_local::{HttpClientLocal, OwnedRequestBuilderLocal};
+pub use native_local::OwnedRequestBuilderLocal;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_send::OwnedRequestBuilderSend;
 #[cfg(feature = "wasi-p2")]

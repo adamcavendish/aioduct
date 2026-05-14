@@ -20,7 +20,7 @@ use crate::tls::TlsVersion;
 
 use super::DEFAULT_USER_AGENT;
 
-/// Builder for configuring an [`HttpEngine`](super::HttpEngine).
+/// Builder for configuring an [`HttpEngineSend`](super::HttpEngineSend).
 pub struct HttpEngineBuilder<R, C> {
     pub(super) connector: C,
     pub(super) pool_idle_timeout: Duration,

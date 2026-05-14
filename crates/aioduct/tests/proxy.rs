@@ -19,7 +19,7 @@ async fn test_http_proxy() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .build();
 
@@ -58,7 +58,7 @@ async fn test_proxy_settings_no_proxy_bypass() {
     )
     .no_proxy(aioduct::NoProxy::new(&format!("{}", target_addr.ip())));
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(settings)
         .build();
 
@@ -92,7 +92,7 @@ async fn test_no_proxy_wildcard_bypasses_all() {
         aioduct::ProxySettings::all(aioduct::ProxyConfig::http("http://127.0.0.1:9999").unwrap())
             .no_proxy(aioduct::NoProxy::new("*"));
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(settings)
         .build();
 
@@ -177,7 +177,7 @@ async fn test_socks5_proxy() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}")).unwrap())
         .build();
 
@@ -250,7 +250,7 @@ async fn test_socks5_proxy_with_auth() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(
             aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}"))
                 .unwrap()
@@ -290,7 +290,7 @@ async fn test_http_proxy_basic_auth() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(
             aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
                 .unwrap()
@@ -326,7 +326,7 @@ async fn test_http_proxy_preserves_host_header() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .build();
 
@@ -380,7 +380,7 @@ async fn test_connect_tunnel_includes_proxy_auth() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(
             aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
                 .unwrap()
@@ -418,7 +418,7 @@ async fn test_connect_tunnel_detects_auth_required() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .build();
 
@@ -458,7 +458,7 @@ async fn test_proxy_settings_routes_http_and_https_separately() {
         .http(aioduct::ProxyConfig::http(&format!("http://{http_proxy_addr}")).unwrap())
         .no_proxy(aioduct::NoProxy::new(&format!("{}", target_addr.ip())));
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(settings)
         .build();
 
@@ -506,7 +506,7 @@ async fn test_connect_tunnel_target_authority() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .build();
 
@@ -545,7 +545,7 @@ async fn test_connect_tunnel_default_port() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .build();
 

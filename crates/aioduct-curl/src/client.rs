@@ -1,13 +1,12 @@
 use std::time::Duration;
 
-use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
-use aioduct::{HttpEngine, RetryConfig};
+use aioduct::{RetryConfig, TokioClient};
 
 use crate::cli::Cli;
 
-pub fn build_client(cli: &Cli) -> HttpEngine<TokioRuntime, TcpConnector> {
-    let mut builder = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector);
+pub fn build_client(cli: &Cli) -> TokioClient {
+    let mut builder = TokioClient::builder(TcpConnector);
 
     if let Some(ref ua) = cli.user_agent {
         builder = builder.user_agent(ua);

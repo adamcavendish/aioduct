@@ -8,11 +8,11 @@ use crate::observer::{self, RequestEvent, RequestPhase};
 use crate::pool::{HttpConnection, PooledConnection};
 use crate::response::{BodyObserverCtx, Response};
 
-use super::HttpEngine;
+use super::HttpEngineCore;
 
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
-impl<R, C> HttpEngine<R, C> {
+impl HttpEngineCore {
     #[cfg(feature = "rustls")]
     fn populate_sans(conn: &mut PooledConnection) {
         if conn.is_h2_or_h3()

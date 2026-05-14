@@ -1,5 +1,4 @@
-use aioduct::HttpEngine;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
 use aioduct::runtime::tokio_rt::TcpConnector;
 use serde::Serialize;
 
@@ -12,7 +11,7 @@ struct SearchParams {
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
+    let client = TokioClient::builder(TcpConnector).build();
 
     // Simple query parameters via tuples
     let resp = client

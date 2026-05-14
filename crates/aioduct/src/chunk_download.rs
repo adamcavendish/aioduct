@@ -5,13 +5,13 @@ use bytes::{BufMut, BytesMut};
 use http::HeaderValue;
 use http::header::{ACCEPT_RANGES, CONTENT_LENGTH, RANGE};
 
-use crate::client::HttpEngine;
+use crate::client::HttpEngineSend;
 use crate::error::Error;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
 /// Parallel range-request downloader for large files.
 pub struct ChunkDownload<R: RuntimePoll, C: ConnectorSend> {
-    client: HttpEngine<R, C>,
+    client: HttpEngineSend<R, C>,
     url: String,
     chunks: usize,
     _runtime: PhantomData<(R, C)>,
@@ -37,7 +37,7 @@ pub struct ChunkDownloadResult {
 type ChunkResults = Arc<Mutex<Vec<Option<std::result::Result<bytes::Bytes, Error>>>>>;
 
 impl<R: RuntimePoll, C: ConnectorSend> ChunkDownload<R, C> {
-    pub(crate) fn new(client: HttpEngine<R, C>, url: String) -> Self {
+    pub(crate) fn new(client: HttpEngineSend<R, C>, url: String) -> Self {
         Self {
             client,
             url,
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn chunks_clamps_to_one() {
-        let client = crate::HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let dl = client.chunk_download("http://example.com/file");
         let dl = dl.chunks(0);
         assert_eq!(dl.chunks, 1);
@@ -175,14 +175,14 @@ mod tests {
 
     #[test]
     fn chunks_accepts_large_value() {
-        let client = crate::HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let dl = client.chunk_download("http://example.com/file").chunks(100);
         assert_eq!(dl.chunks, 100);
     }
 
     #[test]
     fn debug_format_includes_url() {
-        let client = crate::HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let dl = client.chunk_download("http://example.com/large.bin");
         let dbg = format!("{dl:?}");
         assert!(dbg.contains("ChunkDownload"));

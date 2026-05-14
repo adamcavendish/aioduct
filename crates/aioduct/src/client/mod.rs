@@ -44,13 +44,12 @@ use crate::runtime::Resolve;
 
 const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
-/// HTTP client with connection pooling, TLS, and automatic redirect handling.
+/// Shared configuration for HTTP engines.
 ///
-/// This type supports both poll-based runtimes (tokio, smol) via [`RuntimePoll`](crate::runtime::RuntimePoll) bounds
-/// and completion-based runtimes (compio) via [`RuntimeLocal`](crate::runtime::RuntimeLocal) bounds.
-pub struct HttpEngine<R, C> {
+/// Contains connection pooling, TLS, timeouts, headers, proxy, middleware, and
+/// other settings shared between [`HttpEngineSend`] and [`HttpEngineLocal`].
+pub struct HttpEngineCore {
     pub(crate) pool: ConnectionPool,
-    pub(crate) connector: C,
     pub(crate) redirect_policy: RedirectPolicy,
     pub(crate) timeout: Option<Duration>,
     pub(crate) connect_timeout: Option<Duration>,
@@ -84,8 +83,6 @@ pub struct HttpEngine<R, C> {
     pub(crate) h2c_probe_cache: H2cProbeCache,
     pub(crate) connection_coalescing: bool,
     pub(crate) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
-    #[cfg(feature = "tower")]
-    pub(crate) tower_connector: Option<crate::connector::TowerConnectorSlot>,
     #[cfg(feature = "rustls")]
     pub(crate) tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -96,14 +93,12 @@ pub struct HttpEngine<R, C> {
     pub(crate) h3_zero_rtt: bool,
     #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) alt_svc_cache: crate::alt_svc::AltSvcCache,
-    pub(crate) _phantom: PhantomData<(R, C)>,
 }
 
-impl<R, C: Clone> Clone for HttpEngine<R, C> {
+impl Clone for HttpEngineCore {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
-            connector: self.connector.clone(),
             redirect_policy: self.redirect_policy.clone(),
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
@@ -137,8 +132,6 @@ impl<R, C: Clone> Clone for HttpEngine<R, C> {
             h2c_probe_cache: self.h2c_probe_cache.clone(),
             connection_coalescing: self.connection_coalescing,
             observer: self.observer.clone(),
-            #[cfg(feature = "tower")]
-            tower_connector: self.tower_connector.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -149,14 +142,61 @@ impl<R, C: Clone> Clone for HttpEngine<R, C> {
             h3_zero_rtt: self.h3_zero_rtt,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             alt_svc_cache: self.alt_svc_cache.clone(),
+        }
+    }
+}
+
+/// HTTP client for poll-based runtimes (tokio, smol).
+///
+/// Wraps [`HttpEngineCore`] with a `Send`-capable connector and optional tower layer.
+pub struct HttpEngineSend<R, C> {
+    pub(crate) core: HttpEngineCore,
+    pub(crate) connector: C,
+    #[cfg(feature = "tower")]
+    pub(crate) tower_connector: Option<crate::connector::TowerConnectorSlot>,
+    pub(crate) _phantom: PhantomData<R>,
+}
+
+impl<R, C: Clone> Clone for HttpEngineSend<R, C> {
+    fn clone(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            connector: self.connector.clone(),
+            #[cfg(feature = "tower")]
+            tower_connector: self.tower_connector.clone(),
             _phantom: PhantomData,
         }
     }
 }
 
-impl<R, C> std::fmt::Debug for HttpEngine<R, C> {
+impl<R, C> std::fmt::Debug for HttpEngineSend<R, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HttpEngine").finish()
+        f.debug_struct("HttpEngineSend").finish()
+    }
+}
+
+/// HTTP client for completion-based runtimes (compio).
+///
+/// Wraps [`HttpEngineCore`] with a `!Send`-capable connector.
+pub struct HttpEngineLocal<R, C> {
+    pub(crate) core: HttpEngineCore,
+    pub(crate) connector: C,
+    pub(crate) _phantom: PhantomData<R>,
+}
+
+impl<R, C: Clone> Clone for HttpEngineLocal<R, C> {
+    fn clone(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            connector: self.connector.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<R, C> std::fmt::Debug for HttpEngineLocal<R, C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpEngineLocal").finish()
     }
 }
 

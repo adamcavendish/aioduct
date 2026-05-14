@@ -6,7 +6,7 @@ use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Uri, Version};
 
 use crate::body::{RequestBody, RequestBoxBody};
-use crate::client::HttpEngine;
+use crate::client::HttpEngineLocal;
 use crate::error::Error;
 use crate::response::Response;
 use crate::runtime::{Connector, RuntimeLocal};
@@ -14,7 +14,7 @@ use crate::timeout::Timeout;
 
 /// Builder for configuring and sending an HTTP request on a `!Send` runtime.
 pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: Connector + Clone> {
-    client: &'a HttpEngine<R, C>,
+    client: &'a HttpEngineLocal<R, C>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -24,7 +24,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: Connector + Clone> {
 }
 
 impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
-    pub(crate) fn new(client: &'a HttpEngine<R, C>, method: Method, uri: Uri) -> Self {
+    pub(crate) fn new(client: &'a HttpEngineLocal<R, C>, method: Method, uri: Uri) -> Self {
         Self {
             client,
             method,
@@ -232,7 +232,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
 
     /// Send the request and return the response.
     pub async fn send(self) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
-        let effective_timeout = self.timeout.or(self.client.timeout);
+        let effective_timeout = self.timeout.or(self.client.core.timeout);
 
         let execute_fut =
             self.client

@@ -1,8 +1,8 @@
 use crate::error::Error;
 
-use super::HttpEngine;
+use super::HttpEngineCore;
 
-impl<R, C> HttpEngine<R, C> {
+impl HttpEngineCore {
     pub(super) async fn resolve_authority(
         &self,
         authority: &http::uri::Authority,

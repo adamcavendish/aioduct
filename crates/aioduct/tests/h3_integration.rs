@@ -96,7 +96,7 @@ async fn build_h3_server(
 async fn h3_basic_get() {
     let addr = build_h3_server(|_req, _body| (http::StatusCode::OK, Bytes::new())).await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .build();
@@ -121,7 +121,7 @@ async fn h3_post_with_body() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .build();
@@ -142,7 +142,7 @@ async fn h3_post_with_body() {
 async fn h3_response_body() {
     let addr = build_h3_server(|_req, _body| (http::StatusCode::OK, Bytes::from("hello h3"))).await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .build();
@@ -168,7 +168,7 @@ async fn h3_concurrent_requests() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .build();
@@ -197,7 +197,7 @@ async fn h3_concurrent_requests() {
 
 #[tokio::test]
 async fn h3_connection_refused() {
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .timeout(Duration::from_millis(500))
