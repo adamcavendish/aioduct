@@ -65,7 +65,7 @@ impl RedirectPolicy {
         match self {
             Self::None => 0,
             Self::Limited(n) => *n,
-            Self::Custom(_) => usize::MAX,
+            Self::Custom(_) => 100,
         }
     }
 
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn custom_max_redirects_is_max() {
         let policy = RedirectPolicy::custom(|_, _, _, _| RedirectAction::Follow);
-        assert_eq!(policy.max_redirects(), usize::MAX);
+        assert_eq!(policy.max_redirects(), 100);
     }
 
     #[test]

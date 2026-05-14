@@ -26,6 +26,14 @@ pub enum Error {
     #[error("request timeout")]
     Timeout,
 
+    /// The connection attempt timed out.
+    #[error("connect timeout")]
+    ConnectTimeout,
+
+    /// Reading the response timed out.
+    #[error("read timeout")]
+    ReadTimeout,
+
     /// The URL is invalid or cannot be resolved.
     #[error("invalid URL: {0}")]
     InvalidUrl(String),
@@ -132,12 +140,15 @@ impl From<SendError> for Error {
 impl Error {
     /// Returns `true` if the error is a network-level failure (I/O, TLS, timeout).
     pub fn is_connect(&self) -> bool {
-        matches!(self, Error::Io(_) | Error::Tls(_) | Error::Timeout)
+        matches!(self, Error::Io(_) | Error::Tls(_) | Error::ConnectTimeout)
     }
 
     /// Returns `true` if the error is a timeout.
     pub fn is_timeout(&self) -> bool {
-        matches!(self, Error::Timeout)
+        matches!(
+            self,
+            Error::Timeout | Error::ConnectTimeout | Error::ReadTimeout
+        )
     }
 
     /// Returns `true` if the error is an HTTP status error.
@@ -214,9 +225,23 @@ mod tests {
     }
 
     #[test]
-    fn is_connect_for_timeout() {
-        let err = Error::Timeout;
+    fn is_connect_for_connect_timeout() {
+        let err = Error::ConnectTimeout;
         assert!(err.is_connect());
+        assert!(err.is_timeout());
+    }
+
+    #[test]
+    fn read_timeout_not_connect() {
+        let err = Error::ReadTimeout;
+        assert!(!err.is_connect());
+        assert!(err.is_timeout());
+    }
+
+    #[test]
+    fn generic_timeout_not_connect() {
+        let err = Error::Timeout;
+        assert!(!err.is_connect());
         assert!(err.is_timeout());
     }
 
@@ -247,6 +272,8 @@ mod tests {
 
     #[test]
     fn non_connect_errors() {
+        assert!(!Error::Timeout.is_connect());
+        assert!(!Error::ReadTimeout.is_connect());
         assert!(!Error::Status(http::StatusCode::OK).is_connect());
         assert!(!Error::InvalidUrl("bad".into()).is_connect());
         assert!(!Error::Redirect("nope".into()).is_connect());
