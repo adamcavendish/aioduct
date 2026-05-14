@@ -5,6 +5,6 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["compio", "gzip", "brotli", "zstd", "deflate"] }
+aioduct = { workspace = true, features = ["compio", "gzip", "brotli", "zstd", "deflate", "rustls", "rustls-ring"] }
 http.workspace = true
 compio-runtime.workspace = true

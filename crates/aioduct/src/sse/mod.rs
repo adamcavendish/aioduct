@@ -1,10 +1,17 @@
+//! Server-Sent Events (SSE) stream parser (WHATWG spec §9.2.5).
+
+mod sse_local;
+mod sse_send;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use sse_local::SseStreamLocal;
+pub use sse_send::SseStreamSend;
+
 use std::sync::Arc;
 
 use bytes::{Buf, BytesMut};
-use http_body_util::BodyExt;
 use memchr::memchr2;
 
-use crate::body::RequestBoxBody;
 use crate::error::Error;
 
 /// A parsed SSE message event.
@@ -255,71 +262,6 @@ fn next_line_str(s: &str) -> (&str, &str) {
             }
         }
         None => (s, ""),
-    }
-}
-
-/// Async iterator over a `text/event-stream` response body.
-pub struct SseStream {
-    body: RequestBoxBody,
-    buf: BytesMut,
-    decoder: SseDecoder,
-    done: bool,
-}
-
-impl std::fmt::Debug for SseStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SseStream").finish()
-    }
-}
-
-impl SseStream {
-    pub(crate) fn new(body: RequestBoxBody) -> Self {
-        Self {
-            body,
-            buf: BytesMut::new(),
-            decoder: SseDecoder::new(),
-            done: false,
-        }
-    }
-
-    /// Create a stream with a custom maximum payload size per event.
-    /// Pass `0` to disable the limit.
-    pub fn with_max_payload_size(body: RequestBoxBody, max: usize) -> Self {
-        Self {
-            body,
-            buf: BytesMut::new(),
-            decoder: SseDecoder::with_max_payload_size(max),
-            done: false,
-        }
-    }
-
-    /// Returns the next SSE event, or `None` when the stream ends.
-    pub async fn next(&mut self) -> Option<Result<SseEvent, Error>> {
-        loop {
-            if let Some(event) = self.decoder.decode(&mut self.buf) {
-                return Some(event);
-            }
-
-            if self.done {
-                return None;
-            }
-
-            match self.body.frame().await {
-                Some(Ok(frame)) => {
-                    if let Ok(data) = frame.into_data() {
-                        self.buf.extend_from_slice(&data);
-                    }
-                }
-                Some(Err(e)) => return Some(Err(e)),
-                None => {
-                    self.done = true;
-                    if let Some(event) = self.decoder.decode(&mut self.buf) {
-                        return Some(event);
-                    }
-                    return None;
-                }
-            }
-        }
     }
 }
 

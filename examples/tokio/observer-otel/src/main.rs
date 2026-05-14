@@ -316,6 +316,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = TokioClient::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .request_observer(OtelObserver)
+        .timeout(Duration::from_secs(10))
         .build();
 
     println!("=== OTel Observer Example ===\n");

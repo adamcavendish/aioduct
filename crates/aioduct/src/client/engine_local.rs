@@ -61,4 +61,24 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             self, method, uri,
         ))
     }
+
+    /// Start a parallel chunk download for the given URL.
+    pub fn chunk_download_local(
+        &self,
+        url: &str,
+    ) -> crate::chunk_download_local::ChunkDownloadLocal<R, C> {
+        crate::chunk_download_local::ChunkDownloadLocal::new(self.clone(), url.to_owned())
+    }
+
+    /// Forward an incoming HTTP request to an upstream server.
+    pub fn forward_local<B>(
+        &self,
+        request: http::Request<B>,
+    ) -> crate::forward::forward_local::ForwardBuilderLocal<'_, R, C, B>
+    where
+        B: http_body::Body<Data = bytes::Bytes> + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        crate::forward::forward_local::ForwardBuilderLocal::new(self, request)
+    }
 }

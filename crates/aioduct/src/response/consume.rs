@@ -136,8 +136,8 @@ impl Response {
     }
 
     /// Convert the response into a Server-Sent Events stream.
-    pub fn into_sse_stream(self) -> crate::sse::SseStream {
-        crate::sse::SseStream::new(self.inner.into_body().into_boxed())
+    pub fn into_sse_stream(self) -> crate::sse::SseStreamSend {
+        crate::sse::SseStreamSend::new(self.inner.into_body().into_boxed())
     }
 
     /// Perform an HTTP upgrade (e.g., WebSocket) on this response.

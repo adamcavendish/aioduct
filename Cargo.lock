@@ -1143,7 +1143,12 @@ name = "example-compio-forward-http"
 version = "0.1.10"
 dependencies = [
  "aioduct",
+ "bytes",
  "compio-runtime",
+ "http 1.4.0",
+ "http-body-util",
+ "hyper",
+ "tokio",
 ]
 
 [[package]]
@@ -1287,6 +1292,7 @@ version = "0.1.10"
 dependencies = [
  "aioduct",
  "compio-runtime",
+ "http 1.4.0",
 ]
 
 [[package]]

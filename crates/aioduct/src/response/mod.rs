@@ -1,6 +1,6 @@
 mod body_transforms;
 mod consume;
-mod local;
+mod response_local;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 

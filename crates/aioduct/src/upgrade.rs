@@ -123,6 +123,14 @@ pub(crate) async fn on_upgrade(
     Ok(Upgraded::new(upgraded))
 }
 
+pub(crate) async fn on_upgrade_local(
+    response: &mut http::Response<crate::body::ResponseBoxLocalBody>,
+) -> Result<Upgraded, Error> {
+    let on_upgrade = hyper::upgrade::on(response);
+    let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;
+    Ok(Upgraded::new(upgraded))
+}
+
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
