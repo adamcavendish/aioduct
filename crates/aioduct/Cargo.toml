@@ -26,7 +26,7 @@ hickory-dns = ["dep:hickory-resolver", "tokio"]
 # DoH/DoT: encrypted DNS via hickory-resolver's HTTPS/TLS transport
 doh = ["hickory-dns", "hickory-resolver/https-ring", "hickory-resolver/webpki-roots"]
 dot = ["hickory-dns", "hickory-resolver/tls-ring", "hickory-resolver/webpki-roots"]
-blocking = ["tokio"]
+blocking = []
 tokio = ["dep:tokio"]
 smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
 compio = ["dep:compio-runtime", "dep:compio-driver", "dep:compio-net", "dep:compio-io", "dep:async-io", "dep:futures-io"]

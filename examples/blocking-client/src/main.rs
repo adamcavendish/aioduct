@@ -1,7 +1,10 @@
-use aioduct::blocking::Client;
+use aioduct::BlockingTokioClient;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
-    let client = Client::builder().build();
+    let engine = TokioClient::builder(TcpConnector).build();
+    let client = BlockingTokioClient::new(engine);
 
     // Synchronous GET
     let resp = client.get("https://httpbin.org/get")?.send()?;
