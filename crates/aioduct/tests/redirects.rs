@@ -2342,6 +2342,7 @@ async fn redirect_cross_origin_preserves_custom_sensitive_headers() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
+        .sensitive_header(http::header::HeaderName::from_static("x-api-key"))
         .build();
 
     let resp = client

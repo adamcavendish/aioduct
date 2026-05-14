@@ -58,7 +58,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
     ///
     /// This applies **only to response body reads**, not to waiting for
     /// response headers. If no body data arrives within this duration the
-    /// request fails with [`Error::Timeout`](crate::Error::Timeout).
+    /// request fails with [`Error::ReadTimeout`](crate::Error::ReadTimeout).
     ///
     /// Use [`timeout()`](Self::timeout) for an overall request deadline that
     /// covers headers and body, or [`connect_timeout()`](Self::connect_timeout)
@@ -390,6 +390,15 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// Matches browser behavior (RFC 7540 §9.1.1).
     pub fn connection_coalescing(mut self, enabled: bool) -> Self {
         self.connection_coalescing = enabled;
+        self
+    }
+
+    /// Mark a header as sensitive so it is stripped on cross-origin redirects.
+    ///
+    /// The standard headers `Authorization`, `Cookie`, and `Proxy-Authorization`
+    /// are always stripped. Use this for custom headers like `X-Api-Key`.
+    pub fn sensitive_header(mut self, name: http::header::HeaderName) -> Self {
+        self.sensitive_headers.insert(name);
         self
     }
 
