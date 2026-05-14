@@ -3,9 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
-use aioduct::{HttpEngine, RetryConfig};
+use aioduct::{RetryConfig, TokioClient};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
@@ -18,7 +17,7 @@ use crate::segment;
 
 #[derive(Clone)]
 pub struct DownloadEngine {
-    client: HttpEngine<TokioRuntime, TcpConnector>,
+    client: TokioClient,
     cli: Arc<Cli>,
     extra: Arc<ExtraRequestConfig>,
 }
@@ -38,7 +37,7 @@ pub struct DownloadResult {
 
 impl DownloadEngine {
     pub fn new(cli: Arc<Cli>) -> Self {
-        let mut builder = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let mut builder = TokioClient::builder(TcpConnector)
             .timeout(cli.timeout_duration())
             .connect_timeout(cli.connect_timeout_duration());
 

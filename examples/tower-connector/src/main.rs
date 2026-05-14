@@ -2,10 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use aioduct::HttpEngine;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
 use aioduct::runtime::tokio_rt::TcpConnector;
-
 /// A simple tower Layer that logs connection attempts.
 /// This demonstrates how to wrap the TCP connector with custom logic.
 #[derive(Clone)]
@@ -60,7 +58,7 @@ async fn main() -> Result<(), aioduct::Error> {
     // This is useful for adding logging, metrics, or custom
     // logic at the connection establishment level.
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = TokioClient::builder(TcpConnector)
         .connector_layer(LoggingLayer)
         .build();
 

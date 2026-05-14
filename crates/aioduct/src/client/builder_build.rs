@@ -7,8 +7,8 @@ use crate::runtime::{ConnectorSend, Resolve, RuntimePoll};
 #[cfg(feature = "rustls")]
 use crate::tls::TlsVersion;
 
-use super::HttpEngine;
 use super::builder::HttpEngineBuilder;
+use super::{HttpEngineCore, HttpEngineSend};
 
 // ── Send path only (tower, h3, build) ────────────────────────────────────────
 
@@ -109,8 +109,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         None
     }
 
-    /// Build the configured [`HttpEngine`].
-    pub fn build(self) -> HttpEngine<R, C> {
+    /// Build the configured [`HttpEngineSend`].
+    pub fn build(self) -> HttpEngineSend<R, C> {
         let pool = if self.no_connection_reuse {
             ConnectionPool::new(0, Duration::from_secs(0))
         } else {
@@ -199,68 +199,70 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
             connector
         };
 
-        HttpEngine {
-            pool,
-            connector: self.connector,
-            redirect_policy: self.redirect_policy,
-            timeout: self.timeout,
-            connect_timeout: self.connect_timeout,
-            read_timeout: self.read_timeout,
-            tcp_keepalive: self.tcp_keepalive,
-            tcp_keepalive_interval: self.tcp_keepalive_interval,
-            tcp_keepalive_retries: self.tcp_keepalive_retries,
-            local_address: self.local_address,
-            #[cfg(target_os = "linux")]
-            interface: self.interface,
-            #[cfg(unix)]
-            unix_socket: self.unix_socket,
-            https_only: self.https_only,
-            referer: self.referer,
-            no_connection_reuse: self.no_connection_reuse,
-            tcp_fast_open: self.tcp_fast_open,
-            http2_prior_knowledge: self.http2_prior_knowledge,
-            accept_encoding: self.accept_encoding,
-            default_headers: self.default_headers,
-            retry: self.retry,
-            cookie_jar: self.cookie_jar,
-            proxy: self.proxy,
-            resolver: {
-                if let Some(overrides) = self.static_resolves {
-                    let fallback = self.resolver.or_else(|| Self::default_resolver());
-                    let mut sr = crate::runtime::StaticResolver::new(fallback);
-                    for (host, addrs) in overrides {
-                        sr.add(host, addrs);
+        HttpEngineSend {
+            core: HttpEngineCore {
+                pool,
+                redirect_policy: self.redirect_policy,
+                timeout: self.timeout,
+                connect_timeout: self.connect_timeout,
+                read_timeout: self.read_timeout,
+                tcp_keepalive: self.tcp_keepalive,
+                tcp_keepalive_interval: self.tcp_keepalive_interval,
+                tcp_keepalive_retries: self.tcp_keepalive_retries,
+                local_address: self.local_address,
+                #[cfg(target_os = "linux")]
+                interface: self.interface,
+                #[cfg(unix)]
+                unix_socket: self.unix_socket,
+                https_only: self.https_only,
+                referer: self.referer,
+                no_connection_reuse: self.no_connection_reuse,
+                tcp_fast_open: self.tcp_fast_open,
+                http2_prior_knowledge: self.http2_prior_knowledge,
+                accept_encoding: self.accept_encoding,
+                default_headers: self.default_headers,
+                retry: self.retry,
+                cookie_jar: self.cookie_jar,
+                proxy: self.proxy,
+                resolver: {
+                    if let Some(overrides) = self.static_resolves {
+                        let fallback = self.resolver.or_else(|| Self::default_resolver());
+                        let mut sr = crate::runtime::StaticResolver::new(fallback);
+                        for (host, addrs) in overrides {
+                            sr.add(host, addrs);
+                        }
+                        Some(Arc::new(sr) as Arc<dyn Resolve>)
+                    } else {
+                        self.resolver.or_else(|| Self::default_resolver())
                     }
-                    Some(Arc::new(sr) as Arc<dyn Resolve>)
-                } else {
-                    self.resolver.or_else(|| Self::default_resolver())
-                }
+                },
+                http2: self.http2,
+                middleware: self.middleware,
+                rate_limiter: self.rate_limiter,
+                bandwidth_limiter: self.bandwidth_limiter,
+                digest_auth: self.digest_auth,
+                cache: self.cache,
+                hsts: self.hsts,
+                h2c_probe_cache: self
+                    .h2c_probe_ttl
+                    .map(crate::h2c_probe::H2cProbeCache::with_ttl)
+                    .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
+                connection_coalescing: self.connection_coalescing,
+                observer: self.observer,
+                #[cfg(feature = "rustls")]
+                tls,
+                #[cfg(all(feature = "http3", feature = "rustls"))]
+                h3_endpoint: self.h3_endpoint,
+                #[cfg(all(feature = "http3", feature = "rustls"))]
+                prefer_h3: self.prefer_h3,
+                #[cfg(all(feature = "http3", feature = "rustls"))]
+                h3_zero_rtt: self.h3_zero_rtt,
+                #[cfg(all(feature = "http3", feature = "rustls"))]
+                alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             },
-            http2: self.http2,
-            middleware: self.middleware,
-            rate_limiter: self.rate_limiter,
-            bandwidth_limiter: self.bandwidth_limiter,
-            digest_auth: self.digest_auth,
-            cache: self.cache,
-            hsts: self.hsts,
-            h2c_probe_cache: self
-                .h2c_probe_ttl
-                .map(crate::h2c_probe::H2cProbeCache::with_ttl)
-                .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
-            connection_coalescing: self.connection_coalescing,
-            observer: self.observer,
+            connector: self.connector,
             #[cfg(feature = "tower")]
             tower_connector: self.tower_connector,
-            #[cfg(feature = "rustls")]
-            tls,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            h3_endpoint: self.h3_endpoint,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            prefer_h3: self.prefer_h3,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            h3_zero_rtt: self.h3_zero_rtt,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             _phantom: PhantomData,
         }
     }

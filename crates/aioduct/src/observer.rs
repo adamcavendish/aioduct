@@ -199,7 +199,7 @@ pub struct RequestEvent {
 ///
 /// Implementors receive callbacks at each connection/request phase with
 /// monotonic timestamps and diagnostic data. The observer is shared across
-/// all concurrent requests on an [`crate::HttpEngine`], so `on_event` takes `&self`.
+/// all concurrent requests on an [`crate::HttpEngineSend`], so `on_event` takes `&self`.
 ///
 /// # Thread Safety
 ///

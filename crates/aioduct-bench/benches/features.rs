@@ -10,7 +10,7 @@ fn bench_sse_consume(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_sse_server(SSE_EVENT_COUNT).await;
-        let client = aioduct::HttpEngine::<
+        let client = aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::new(aioduct::runtime::tokio_rt::TcpConnector);
@@ -38,7 +38,7 @@ fn bench_multipart_small(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_echo_server().await;
-        let client = aioduct::HttpEngine::<
+        let client = aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::new(aioduct::runtime::tokio_rt::TcpConnector);
@@ -92,7 +92,7 @@ fn bench_multipart_file_1m(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_echo_server().await;
-        let client = aioduct::HttpEngine::<
+        let client = aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::new(aioduct::runtime::tokio_rt::TcpConnector);
@@ -156,7 +156,7 @@ fn bench_upload_1m(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_echo_server().await;
-        let client = aioduct::HttpEngine::<
+        let client = aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::new(aioduct::runtime::tokio_rt::TcpConnector);
@@ -211,7 +211,7 @@ fn bench_chunk_download(c: &mut Criterion) {
     let total_size = BODY_1M;
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_range_server(total_size).await;
-        let client = aioduct::HttpEngine::<
+        let client = aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::new(aioduct::runtime::tokio_rt::TcpConnector);
@@ -275,7 +275,7 @@ fn bench_body_stream(c: &mut Criterion) {
     let body = Bytes::from(vec![b'S'; BODY_64K]);
     let (addr, aioduct_client) = rt.block_on(async {
         let addr = start_http1_server(body).await;
-        let client = aioduct::HttpEngine::<
+        let client = aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::new(aioduct::runtime::tokio_rt::TcpConnector);

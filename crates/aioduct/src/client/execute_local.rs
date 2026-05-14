@@ -3,7 +3,7 @@ use http::header::{AUTHORIZATION, HOST, HeaderMap};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
-use super::HttpEngine;
+use super::{HttpEngineCore, HttpEngineLocal};
 use crate::body::RequestBody;
 use crate::body::RequestBoxBody;
 use crate::clock::Instant;
@@ -19,7 +19,7 @@ use super::execute::CacheLookupOutcome;
 
 // ── Local path (RuntimeLocal + Connector) ────────────────────────────────────
 
-impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
+impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
     pub(crate) async fn execute_local(
         &self,
         method: Method,
@@ -28,21 +28,21 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         body: Option<RequestBody>,
         version: Option<http::Version>,
     ) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
-        if self.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+        if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
                 original_uri.scheme_str().unwrap_or("none").to_owned(),
             ));
         }
 
-        let mut current_uri = self.maybe_upgrade_hsts(original_uri);
+        let mut current_uri = self.core.maybe_upgrade_hsts(original_uri);
         let mut current_method = method;
         let mut current_body = body;
         let mut current_headers = headers;
 
-        self.apply_default_headers(&mut current_headers);
+        self.core.apply_default_headers(&mut current_headers);
 
-        for _ in 0..=self.redirect_policy.max_redirects() {
-            if let Some(jar) = &self.cookie_jar
+        for _ in 0..=self.core.redirect_policy.max_redirects() {
+            if let Some(jar) = &self.core.cookie_jar
                 && let Some(authority) = current_uri.authority()
             {
                 let is_secure = current_uri.scheme() == Some(&http::uri::Scheme::HTTPS);
@@ -72,7 +72,8 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
             }
 
             let (cache_state, stale_if_error) =
-                self.cache_lookup(&current_method, &current_uri, &mut current_headers);
+                self.core
+                    .cache_lookup(&current_method, &current_uri, &mut current_headers);
             let cache_entry = match cache_state {
                 CacheLookupOutcome::Fresh(resp) => return Ok((*resp).into_local()),
                 CacheLookupOutcome::Stale(entry) => Some(entry),
@@ -101,8 +102,10 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
 
             let mut request = builder.body(req_body)?;
 
-            if !self.middleware.is_empty() {
-                self.middleware.apply_request(&mut request, &current_uri);
+            if !self.core.middleware.is_empty() {
+                self.core
+                    .middleware
+                    .apply_request(&mut request, &current_uri);
             }
 
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
@@ -160,17 +163,17 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                 return Ok(Response::from_boxed(http_resp, current_uri).into_local());
             }
 
-            if let Some(ref cache) = self.cache {
+            if let Some(ref cache) = self.core.cache {
                 cache.invalidate(&current_method, &current_uri);
             }
 
-            if let Some(jar) = &self.cookie_jar
+            if let Some(jar) = &self.core.cookie_jar
                 && let Some(authority) = current_uri.authority()
             {
                 jar.store_from_response(authority.host(), resp.headers());
             }
 
-            if let Some(ref hsts) = self.hsts
+            if let Some(ref hsts) = self.core.hsts
                 && current_uri.scheme() == Some(&http::uri::Scheme::HTTPS)
                 && let Some(authority) = current_uri.authority()
             {
@@ -179,14 +182,17 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
 
             if !resp.status().is_redirection()
                 || resp.status() == StatusCode::NOT_MODIFIED
-                || matches!(self.redirect_policy, crate::redirect::RedirectPolicy::None)
+                || matches!(
+                    self.core.redirect_policy,
+                    crate::redirect::RedirectPolicy::None
+                )
             {
                 return self
                     .finalize_response_local(resp, &current_method, current_uri)
                     .await;
             }
 
-            let redirect = self.process_redirect(
+            let redirect = self.core.process_redirect(
                 &resp,
                 &current_uri,
                 current_method.clone(),
@@ -207,7 +213,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         }
 
         Err(Error::TooManyRedirects(
-            self.redirect_policy.max_redirects(),
+            self.core.redirect_policy.max_redirects(),
         ))
     }
 
@@ -220,7 +226,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         body_for_replay: Option<Bytes>,
         version: Option<http::Version>,
     ) -> Result<Response, Error> {
-        let Some(ref digest) = self.digest_auth else {
+        let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
         };
         if !digest.needs_retry(resp.status(), resp.headers()) {
@@ -260,8 +266,8 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
             retry_builder = retry_builder.header(name, value);
         }
         let mut retry_request = retry_builder.body(retry_body)?;
-        if !self.middleware.is_empty() {
-            self.middleware.apply_request(&mut retry_request, uri);
+        if !self.core.middleware.is_empty() {
+            self.core.middleware.apply_request(&mut retry_request, uri);
         }
         self.execute_single_local(retry_request, uri, replay_for_stale)
             .await
@@ -274,23 +280,23 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         uri: Uri,
     ) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
         let mut resp = resp;
-        if !self.middleware.is_empty() {
-            resp.apply_middleware(&self.middleware, &uri);
+        if !self.core.middleware.is_empty() {
+            resp.apply_middleware(&self.core.middleware, &uri);
         }
 
-        let resp = if !self.accept_encoding.is_empty() {
-            resp.decompress(&self.accept_encoding)
+        let resp = if !self.core.accept_encoding.is_empty() {
+            resp.decompress(&self.core.accept_encoding)
         } else {
             resp
         };
 
-        let resp = if let Some(ref limiter) = self.bandwidth_limiter {
+        let resp = if let Some(ref limiter) = self.core.bandwidth_limiter {
             resp.apply_bandwidth_limit(limiter.clone())
         } else {
             resp
         };
 
-        if let Some(ref cache) = self.cache {
+        if let Some(ref cache) = self.core.cache {
             let status = resp.status();
             let headers = resp.headers().clone();
             if crate::cache::is_response_cacheable(status, &headers) {
@@ -301,7 +307,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
             }
         }
 
-        let resp = if let Some(read_timeout) = self.read_timeout {
+        let resp = if let Some(read_timeout) = self.core.read_timeout {
             resp.into_local_with_read_timeout::<R>(read_timeout)
         } else {
             resp.into_local()
@@ -321,14 +327,15 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         #[allow(deprecated)]
         let timing_start = std::time::Instant::now();
 
-        if let Some(ref limiter) = self.rate_limiter {
+        if let Some(ref limiter) = self.core.rate_limiter {
             while !limiter.try_acquire() {
                 let wait = limiter.wait_duration();
                 R::sleep(wait).await;
             }
         }
 
-        self.notify(request.method(), original_uri, RequestPhase::Started);
+        self.core
+            .notify(request.method(), original_uri, RequestPhase::Started);
         let pool_checkout_start = Instant::now();
 
         let scheme = original_uri
@@ -342,13 +349,13 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
 
         let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
 
-        let can_stale_retry = !self.no_connection_reuse
+        let can_stale_retry = !self.core.no_connection_reuse
             && (http_body::Body::is_end_stream(request.body()) || replay_body.is_some());
 
-        if !self.no_connection_reuse
-            && let Some(mut conn) = self.pool.checkout(&pool_key)
+        if !self.core.no_connection_reuse
+            && let Some(mut conn) = self.core.pool.checkout(&pool_key)
         {
-            self.notify(
+            self.core.notify(
                 request.method(),
                 original_uri,
                 RequestPhase::PoolCheckoutComplete {
@@ -370,25 +377,26 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
 
             let req_method = request.method().clone();
             let transfer_start = Instant::now();
-            self.notify(
+            self.core.notify(
                 &req_method,
                 original_uri,
                 RequestPhase::RequestSent {
                     duration: transfer_start.duration_since(pool_checkout_start),
                 },
             );
-            match Self::send_on_connection(&mut conn, request, original_uri.clone()).await {
+            match HttpEngineCore::send_on_connection(&mut conn, request, original_uri.clone()).await
+            {
                 Ok(mut resp) => {
                     let transfer = transfer_start.elapsed();
-                    self.notify(
+                    self.core.notify(
                         &req_method,
                         original_uri,
                         RequestPhase::ResponseStarted {
                             waiting_duration: transfer,
                         },
                     );
-                    let protocol = Self::connection_protocol(&conn);
-                    self.notify(
+                    let protocol = HttpEngineCore::connection_protocol(&conn);
+                    self.core.notify(
                         &req_method,
                         original_uri,
                         RequestPhase::ResponseComplete {
@@ -403,14 +411,17 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                         TimingCollector::default()
                             .into_timings(Some(transfer), timing_start.elapsed()),
                     ));
-                    self.attach_observer(&mut resp, &req_method, original_uri);
+                    self.core
+                        .attach_observer(&mut resp, &req_method, original_uri);
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                        self.checkin_connection(pool_key, conn);
+                        self.core.checkin_connection(pool_key, conn);
                     }
                     return Ok(resp);
                 }
-                Err(e) if saved_parts.is_some() && Self::is_stale_connection_error(&e) => {
-                    self.fire_connection_metrics(&conn, true);
+                Err(e)
+                    if saved_parts.is_some() && HttpEngineCore::is_stale_connection_error(&e) =>
+                {
+                    self.core.fire_connection_metrics(&conn, true);
                     let (method, uri, headers, version) = saved_parts.unwrap();
                     let retry_body_bytes = replay_body
                         .as_ref()
@@ -430,7 +441,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
             }
         }
 
-        self.notify(
+        self.core.notify(
             request.method(),
             original_uri,
             RequestPhase::PoolCheckoutComplete {
@@ -440,6 +451,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         );
 
         let proxy = self
+            .core
             .proxy
             .as_ref()
             .and_then(|settings| settings.proxy_for(original_uri));
@@ -455,9 +467,9 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
             let port = authority.port_u16().unwrap_or(default_port);
 
             let dns_start = Instant::now();
-            let addrs = self.resolve_all_authority_raw(host, port).await?;
+            let addrs = self.core.resolve_all_authority_raw(host, port).await?;
             timing.dns = Some(dns_start.elapsed());
-            self.notify(
+            self.core.notify(
                 request.method(),
                 original_uri,
                 RequestPhase::DnsResolved {
@@ -469,7 +481,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
             let tcp_start = Instant::now();
             let connect_fut = async {
                 let addr = addrs[0];
-                let tcp_stream = if let Some(local_addr) = self.local_address {
+                let tcp_stream = if let Some(local_addr) = self.core.local_address {
                     self.connector
                         .connect_bound(addr, local_addr)
                         .await
@@ -478,16 +490,16 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                     self.connector.connect(addr).await.map_err(Error::Io)?
                 };
 
-                if let Some(time) = self.tcp_keepalive {
+                if let Some(time) = self.core.tcp_keepalive {
                     tcp_stream
                         .set_keepalive(
                             time,
-                            self.tcp_keepalive_interval,
-                            self.tcp_keepalive_retries,
+                            self.core.tcp_keepalive_interval,
+                            self.core.tcp_keepalive_retries,
                         )
                         .map_err(Error::Io)?;
                 }
-                if self.tcp_fast_open {
+                if self.core.tcp_fast_open {
                     let _ = tcp_stream.set_fast_open();
                 }
 
@@ -500,7 +512,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
                 Ok::<(PooledConnection, Instant), Error>((conn, Instant::now()))
             };
 
-            let (conn, connect_done) = match self.connect_timeout {
+            let (conn, connect_done) = match self.core.connect_timeout {
                 Some(duration) => {
                     crate::timeout::Timeout::WithTimeout {
                         future: connect_fut,
@@ -513,13 +525,13 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             timing.tcp_connect = Some(tcp_tls_elapsed);
             if let Some(addr) = conn.remote_addr {
-                self.notify(
+                self.core.notify(
                     request.method(),
                     original_uri,
                     RequestPhase::TcpConnected {
                         remote_addr: addr,
                         duration: tcp_tls_elapsed,
-                        protocol: Self::connection_protocol(&conn),
+                        protocol: HttpEngineCore::connection_protocol(&conn),
                     },
                 );
             }
@@ -540,24 +552,25 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
 
         let req_method = request.method().clone();
         let transfer_start = Instant::now();
-        self.notify(
+        self.core.notify(
             &req_method,
             original_uri,
             RequestPhase::RequestSent {
                 duration: transfer_start.duration_since(pool_checkout_start),
             },
         );
-        let mut resp = Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
+        let mut resp =
+            HttpEngineCore::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
         let transfer = transfer_start.elapsed();
-        self.notify(
+        self.core.notify(
             &req_method,
             original_uri,
             RequestPhase::ResponseStarted {
                 waiting_duration: transfer,
             },
         );
-        let resp_protocol = Self::connection_protocol(&pooled);
-        self.notify(
+        let resp_protocol = HttpEngineCore::connection_protocol(&pooled);
+        self.core.notify(
             &req_method,
             original_uri,
             RequestPhase::ResponseComplete {
@@ -571,9 +584,11 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngine<R, C> {
         resp.set_timings(Some(
             timing.into_timings(Some(transfer), timing_start.elapsed()),
         ));
-        self.attach_observer(&mut resp, &req_method, original_uri);
-        if !self.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-            self.checkin_connection(pool_key, pooled);
+        self.core
+            .attach_observer(&mut resp, &req_method, original_uri);
+        if !self.core.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
+        {
+            self.core.checkin_connection(pool_key, pooled);
         }
 
         Ok(resp)
