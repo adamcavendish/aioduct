@@ -113,7 +113,7 @@ where
 async fn identity_layer() {
     let addr = start_server().await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(IdentityLayer)
         .build();
 
@@ -132,7 +132,7 @@ async fn identity_layer() {
 async fn timeout_layer_fast_connect() {
     let addr = start_server().await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(TimeoutLayer::new(Duration::from_secs(5)))
         .build();
 
@@ -148,7 +148,7 @@ async fn timeout_layer_fast_connect() {
 
 #[tokio::test]
 async fn timeout_layer_slow_connect() {
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(TimeoutLayer::new(Duration::from_millis(100)))
         .build();
 
@@ -188,7 +188,7 @@ async fn delay_layer_with_timeout_layer_triggers() {
         }
     }
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(DelayThenTimeoutLayer {
             delay: Duration::from_millis(200),
             timeout: Duration::from_millis(100),
@@ -229,7 +229,7 @@ async fn delay_layer_within_timeout_succeeds() {
         }
     }
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(DelayThenTimeoutLayer {
             delay: Duration::from_millis(50),
             timeout: Duration::from_millis(500),

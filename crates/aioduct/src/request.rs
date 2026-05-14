@@ -9,7 +9,7 @@ use http::{Method, StatusCode, Uri, Version};
 
 use crate::body::RequestBody;
 use crate::body::RequestBoxBody;
-use crate::client::HttpEngine;
+use crate::client::HttpEngineSend;
 use crate::error::{Error, SendError};
 use crate::response::Response;
 use crate::retry::RetryConfig;
@@ -17,8 +17,8 @@ use crate::runtime::{ConnectorSend, RuntimePoll};
 use crate::timeout::Timeout;
 
 pub(crate) enum ClientRef<'a, R: RuntimePoll, C: ConnectorSend> {
-    Borrowed(&'a HttpEngine<R, C>),
-    Owned(Box<HttpEngine<R, C>>),
+    Borrowed(&'a HttpEngineSend<R, C>),
+    Owned(Box<HttpEngineSend<R, C>>),
 }
 
 impl<'a, R: RuntimePoll, C: ConnectorSend> ClientRef<'a, R, C> {
@@ -31,9 +31,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> ClientRef<'a, R, C> {
 }
 
 impl<R: RuntimePoll, C: ConnectorSend> Deref for ClientRef<'_, R, C> {
-    type Target = HttpEngine<R, C>;
+    type Target = HttpEngineSend<R, C>;
 
-    fn deref(&self) -> &HttpEngine<R, C> {
+    fn deref(&self) -> &HttpEngineSend<R, C> {
         match self {
             ClientRef::Borrowed(r) => r,
             ClientRef::Owned(o) => o,
@@ -64,7 +64,7 @@ impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilderSend<'_
 }
 
 impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
-    pub(crate) fn new(client: &'a HttpEngine<R, C>, method: Method, uri: Uri) -> Self {
+    pub(crate) fn new(client: &'a HttpEngineSend<R, C>, method: Method, uri: Uri) -> Self {
         Self {
             client: ClientRef::Borrowed(client),
             method,
@@ -78,7 +78,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         }
     }
 
-    pub(crate) fn new_owned(client: HttpEngine<R, C>, method: Method, uri: Uri) -> Self {
+    pub(crate) fn new_owned(client: HttpEngineSend<R, C>, method: Method, uri: Uri) -> Self {
         Self {
             client: ClientRef::Owned(Box::new(client)),
             method,
@@ -500,8 +500,8 @@ mod tests {
     use super::*;
     use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
-    fn test_client() -> HttpEngine<TokioRuntime, TcpConnector> {
-        HttpEngine::new(TcpConnector)
+    fn test_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
+        HttpEngineSend::new(TcpConnector)
     }
 
     #[tokio::test]

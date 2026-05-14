@@ -40,7 +40,7 @@ async fn test_json_request_and_response() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let input = Payload {
         name: "test".into(),
         value: 42,
@@ -86,7 +86,7 @@ async fn test_form_data() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .post(&format!("http://{addr}/"))
         .unwrap()
@@ -123,7 +123,7 @@ async fn test_sse_stream() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -174,7 +174,7 @@ async fn test_sse_multiline_data() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -205,7 +205,7 @@ async fn test_sse_comments_and_retry() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -240,7 +240,7 @@ async fn test_multipart_text_fields() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let form = aioduct::Multipart::new()
         .text("field1", "value1")
         .text("field2", "value2");
@@ -280,7 +280,7 @@ async fn test_multipart_file_upload() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let form = aioduct::Multipart::new()
         .text("description", "test upload")
         .file("file", "hello.txt", "text/plain", "file contents here");
@@ -318,7 +318,7 @@ async fn test_bytes_stream() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -341,7 +341,7 @@ async fn test_bytes_stream_empty() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -372,7 +372,7 @@ async fn test_streaming_body_upload() {
     let stream_body: aioduct::body::RequestBoxBody =
         http_body_util::StreamBody::new(stream).boxed_unsync();
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .post(&format!("http://{addr}/"))
         .unwrap()
@@ -396,7 +396,7 @@ async fn test_streaming_body_from_request_body() {
     .await;
 
     let data = "buffered body content";
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .post(&format!("http://{addr}/"))
         .unwrap()
@@ -441,7 +441,7 @@ async fn test_chunk_download() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let result = client
         .chunk_download(&format!("http://{addr}/"))
         .chunks(4)
@@ -462,7 +462,7 @@ async fn test_chunk_download_fallback_no_range() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let result = client
         .chunk_download(&format!("http://{addr}/"))
         .chunks(4)
@@ -486,7 +486,7 @@ async fn test_large_body() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -504,7 +504,7 @@ async fn test_empty_body_response() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -531,7 +531,7 @@ async fn test_chunk_download_head_fails() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let result = client
         .chunk_download(&format!("http://{addr}/file"))
         .download()
@@ -554,7 +554,7 @@ async fn test_chunk_download_fallback_to_get() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let result = client
         .chunk_download(&format!("http://{addr}/file"))
         .download()
@@ -564,7 +564,7 @@ async fn test_chunk_download_fallback_to_get() {
 }
 #[tokio::test]
 async fn test_chunk_download_debug() {
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let dl = client.chunk_download("http://example.com/file.bin");
     let dbg = format!("{dl:?}");
     assert!(dbg.contains("ChunkDownload"));
@@ -604,7 +604,7 @@ async fn test_chunk_download_with_custom_chunks() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let result = client
         .chunk_download(&format!("http://{addr}/file"))
         .chunks(2)
@@ -636,7 +636,7 @@ async fn test_chunk_download_range_request_fails() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let result = client
         .chunk_download(&format!("http://{addr}/file"))
         .chunks(2)

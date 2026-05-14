@@ -8,13 +8,13 @@ use http::{HeaderMap, Method, StatusCode, Uri, Version};
 use crate::error::Error;
 use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
-/// A blocking HTTP client that wraps the async [`HttpEngine`](crate::HttpEngine).
+/// A blocking HTTP client that wraps the async [`HttpEngineSend`](crate::HttpEngineSend).
 ///
 /// Internally creates a tokio runtime to execute requests synchronously.
 /// Requires the `blocking` feature (which enables `tokio`).
 #[derive(Clone)]
 pub struct Client {
-    inner: crate::HttpEngine<TokioRuntime, TcpConnector>,
+    inner: crate::HttpEngineSend<TokioRuntime, TcpConnector>,
     rt: Arc<tokio::runtime::Runtime>,
 }
 
@@ -27,7 +27,7 @@ impl Client {
     /// Create a blocking client builder.
     pub fn builder() -> ClientBuilder {
         ClientBuilder {
-            inner: crate::HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector),
+            inner: crate::HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector),
         }
     }
 

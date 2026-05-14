@@ -63,7 +63,7 @@ async fn observer_fires_full_lifecycle_on_fresh_connection() {
     let addr = start_server().await;
     let obs = RecordingObserver::default();
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
         .build();
 
@@ -117,7 +117,7 @@ async fn observer_connection_metrics_fires_on_checkin() {
     let addr = start_server().await;
     let obs = RecordingObserver::default();
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
         .build();
 
@@ -140,7 +140,7 @@ async fn observer_fires_pool_hit_on_reused_connection() {
     let addr = start_server().await;
     let obs = RecordingObserver::default();
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
         .build();
 
@@ -186,7 +186,7 @@ async fn observer_bytes_transferred_fires_during_streaming() {
     let addr = start_server().await;
     let obs = RecordingObserver::default();
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
         .build();
 
@@ -238,7 +238,7 @@ async fn observer_captures_method_and_uri() {
         fn on_connection_event(&self, _event: &ConnectionEvent) {}
     }
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(UriCapture(events_clone))
         .build();
 
@@ -261,7 +261,7 @@ async fn observer_no_events_when_not_configured() {
     let addr = start_server().await;
 
     // Client without observer — should not panic or error
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
 
     let resp = client
         .get(&format!("http://{addr}/"))

@@ -16,7 +16,7 @@ pub use hyper::service::service_fn;
 pub use hyper::{Request, Response};
 pub use tokio::net::TcpListener;
 
-pub use aioduct::HttpEngine;
+pub use aioduct::HttpEngineSend;
 pub use aioduct::runtime::TokioRuntime;
 pub use aioduct::runtime::tokio_rt::TcpConnector;
 

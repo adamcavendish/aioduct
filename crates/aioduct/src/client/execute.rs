@@ -4,7 +4,7 @@ use http::header::{
 };
 use http::{Method, StatusCode, Uri};
 
-use super::HttpEngine;
+use super::HttpEngineCore;
 use crate::body::RequestBody;
 use crate::error::Error;
 use crate::redirect::RedirectAction;
@@ -18,7 +18,7 @@ pub(crate) enum CacheLookupOutcome {
 
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
-impl<R, C> HttpEngine<R, C> {
+impl HttpEngineCore {
     pub(super) fn maybe_upgrade_hsts(&self, uri: Uri) -> Uri {
         if let Some(ref hsts) = self.hsts
             && uri.scheme() == Some(&http::uri::Scheme::HTTP)

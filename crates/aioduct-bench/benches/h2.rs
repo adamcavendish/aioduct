@@ -9,9 +9,10 @@ use aioduct_bench::*;
 
 fn make_aioduct_h2_client(
     rt: &Runtime,
-) -> aioduct::HttpEngine<aioduct::runtime::TokioRuntime, aioduct::runtime::tokio_rt::TcpConnector> {
+) -> aioduct::HttpEngineSend<aioduct::runtime::TokioRuntime, aioduct::runtime::tokio_rt::TcpConnector>
+{
     rt.block_on(async {
-        aioduct::HttpEngine::<
+        aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::builder(aioduct::runtime::tokio_rt::TcpConnector)

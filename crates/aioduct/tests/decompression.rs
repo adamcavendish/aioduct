@@ -22,7 +22,7 @@ async fn test_gzip_decompression() {
         Ok::<_, Infallible>(resp)
     };
     let addr = start_server_with(handler).await;
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -46,7 +46,7 @@ async fn test_gzip_accept_encoding_header() {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(accept))))
     };
     let addr = start_server_with(handler).await;
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let text = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -78,7 +78,7 @@ async fn test_no_decompression_passthrough() {
         Ok::<_, Infallible>(resp)
     };
     let addr = start_server_with(handler).await;
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_decompression()
         .build();
     let resp = client
@@ -112,7 +112,7 @@ async fn test_deflate_decompression() {
         Ok::<_, Infallible>(resp)
     };
     let addr = start_server_with(handler).await;
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let text = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -145,7 +145,7 @@ async fn test_get_no_content_headers() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -168,7 +168,7 @@ async fn test_gzip_empty_body_head_request() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .head(&format!("http://{addr}/gzip"))
         .unwrap()
@@ -192,7 +192,7 @@ async fn test_custom_accept_encoding_preserved() {
     })
     .await;
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -240,7 +240,7 @@ mod gzip_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -265,7 +265,7 @@ mod gzip_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let resp = client
             .head(&format!("http://{addr}/"))
             .unwrap()
@@ -293,7 +293,7 @@ mod gzip_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -316,7 +316,7 @@ mod gzip_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -352,7 +352,7 @@ mod gzip_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
         for _ in 0..3 {
             let resp = client
@@ -385,7 +385,7 @@ mod gzip_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .no_decompression()
             .build();
 
@@ -428,7 +428,7 @@ mod deflate_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let text = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -458,7 +458,7 @@ mod deflate_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -498,7 +498,7 @@ mod brotli_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let text = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -530,7 +530,7 @@ mod brotli_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let text = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -560,7 +560,7 @@ mod brotli_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -591,7 +591,7 @@ mod zstd_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let text = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -623,7 +623,7 @@ mod zstd_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let text = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -653,7 +653,7 @@ mod zstd_tests {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -708,7 +708,7 @@ mod fragmented_gzip {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -764,7 +764,7 @@ mod fragmented_deflate {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -823,7 +823,7 @@ mod fragmented_brotli {
         })
         .await;
 
-        let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
