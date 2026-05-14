@@ -1,0 +1,10 @@
+[package]
+name = "example-smol-middleware"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol"] }
+http.workspace = true
+smol.workspace = true

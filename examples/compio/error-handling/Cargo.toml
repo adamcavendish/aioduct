@@ -1,0 +1,9 @@
+[package]
+name = "example-compio-error-handling"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio"] }
+compio-runtime.workspace = true

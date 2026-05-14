@@ -1,0 +1,12 @@
+[package]
+name = "example-smol-otel-spans"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol", "otel", "rustls", "rustls-ring"] }
+opentelemetry = { workspace = true, features = ["trace"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "rt-tokio"] }
+opentelemetry-stdout = { workspace = true, features = ["trace"] }
+smol.workspace = true
