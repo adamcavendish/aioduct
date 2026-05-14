@@ -1,9 +1,0 @@
-[package]
-name = "example-post-form"
-version.workspace = true
-edition.workspace = true
-publish = false
-
-[dependencies]
-aioduct = { workspace = true, features = ["tokio"] }
-tokio = { workspace = true, features = ["full"] }

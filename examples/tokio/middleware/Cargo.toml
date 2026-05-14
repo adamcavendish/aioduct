@@ -1,0 +1,10 @@
+[package]
+name = "example-tokio-middleware"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true, features = ["full"] }
+http.workspace = true

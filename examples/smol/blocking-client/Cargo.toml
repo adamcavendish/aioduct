@@ -1,0 +1,9 @@
+[package]
+name = "example-smol-blocking-client"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["blocking", "smol"] }
+smol.workspace = true

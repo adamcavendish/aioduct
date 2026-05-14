@@ -1,0 +1,9 @@
+[package]
+name = "example-compio-https-rustls"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio", "rustls", "rustls-ring"] }
+compio-runtime.workspace = true

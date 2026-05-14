@@ -1,0 +1,26 @@
+use aioduct::SmolClient;
+use aioduct::runtime::smol_rt::TcpConnector;
+
+fn main() -> Result<(), aioduct::Error> {
+    smol::block_on(async {
+        let client = SmolClient::builder(TcpConnector).build();
+
+        // Simple GET request
+        let resp = client.get("https://httpbin.org/get")?.send().await?;
+
+        println!("Status: {}", resp.status());
+        println!("URL: {}", resp.url());
+        println!("Version: {:?}", resp.version());
+
+        // Read response headers
+        for (name, value) in resp.headers() {
+            println!("  {name}: {}", value.to_str().unwrap_or("<binary>"));
+        }
+
+        // Read body as text
+        let body = resp.text().await?;
+        println!("\nBody:\n{body}");
+
+        Ok(())
+    })
+}
