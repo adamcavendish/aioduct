@@ -15,6 +15,12 @@ pub trait RuntimeCompletion: 'static {
 
     /// Sleep for the given duration.
     fn sleep(duration: Duration) -> Self::Sleep;
+
+    /// Run a future to completion on a new runtime instance.
+    ///
+    /// Creates a single-threaded runtime and blocks the current thread until
+    /// the future completes. Used by [`BlockingClient`](crate::blocking::BlockingClient).
+    fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error>;
 }
 
 /// Thread-local spawning for completion-based runtimes (compio, wasm).
