@@ -23,6 +23,10 @@ impl RuntimeCompletion for SmolRuntime {
             inner: async_io::Timer::after(duration),
         }
     }
+
+    fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error> {
+        Ok(smol::block_on(future))
+    }
 }
 
 impl RuntimePoll for SmolRuntime {

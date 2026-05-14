@@ -1,4 +1,4 @@
-#![cfg(feature = "blocking")]
+#![cfg(all(feature = "blocking", feature = "tokio"))]
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -10,7 +10,9 @@ use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 
-use aioduct::blocking::Client;
+use aioduct::BlockingTokioClient;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     Ok(Response::new(Full::new(Bytes::from("hello blocking"))))
@@ -60,7 +62,7 @@ where
 #[test]
 fn blocking_get() {
     let addr = start_server_with(hello);
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -75,7 +77,7 @@ fn blocking_get() {
 #[test]
 fn blocking_post_with_body() {
     let addr = start_server_with(echo_body);
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .post(&format!("http://{addr}/"))
         .unwrap()
@@ -99,7 +101,7 @@ fn blocking_custom_header() {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
     });
 
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -116,18 +118,19 @@ fn blocking_custom_header() {
 #[test]
 fn blocking_timeout() {
     let addr = start_server_with(slow);
-    let client = Client::builder()
-        .timeout(Duration::from_millis(100))
-        .build();
+    let client = BlockingTokioClient::new(
+        TokioClient::builder(TcpConnector)
+            .timeout(Duration::from_millis(100))
+            .build(),
+    );
     let result = client.get(&format!("http://{addr}/")).unwrap().send();
-
     assert!(result.is_err());
 }
 
 #[test]
 fn blocking_head_request() {
     let addr = start_server_with(hello);
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .head(&format!("http://{addr}/"))
         .unwrap()
@@ -139,7 +142,7 @@ fn blocking_head_request() {
 #[test]
 fn blocking_put_request() {
     let addr = start_server_with(echo_body);
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .put(&format!("http://{addr}/"))
         .unwrap()
@@ -159,7 +162,7 @@ fn blocking_error_for_status() {
                 .unwrap(),
         )
     });
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -171,7 +174,7 @@ fn blocking_error_for_status() {
 #[test]
 fn blocking_connection_reuse() {
     let addr = start_server_with(hello);
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let url = format!("http://{addr}/");
 
     let resp1 = client.get(&url).unwrap().send().unwrap();
@@ -193,7 +196,7 @@ fn blocking_content_length() {
                 .unwrap(),
         )
     });
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -209,7 +212,7 @@ fn blocking_json() {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(r#"{"key":"value"}"#))))
     });
 
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -235,7 +238,11 @@ fn blocking_default_headers() {
         http::header::HeaderName::from_static("x-default"),
         http::header::HeaderValue::from_static("default-val"),
     );
-    let client = Client::builder().default_headers(headers).build();
+    let client = BlockingTokioClient::new(
+        TokioClient::builder(TcpConnector)
+            .default_headers(headers)
+            .build(),
+    );
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -260,7 +267,11 @@ fn blocking_override_default_headers() {
         http::header::AUTHORIZATION,
         http::header::HeaderValue::from_static("default-token"),
     );
-    let client = Client::builder().default_headers(headers).build();
+    let client = BlockingTokioClient::new(
+        TokioClient::builder(TcpConnector)
+            .default_headers(headers)
+            .build(),
+    );
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -283,7 +294,7 @@ fn blocking_error_for_status_5xx() {
                 .unwrap(),
         )
     });
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -307,7 +318,7 @@ fn blocking_get_no_content_length() {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
     });
 
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -318,7 +329,8 @@ fn blocking_get_no_content_length() {
 
 #[test]
 fn blocking_https_only_rejects_http() {
-    let client = Client::builder().https_only(true).build();
+    let client =
+        BlockingTokioClient::new(TokioClient::builder(TcpConnector).https_only(true).build());
     let result = client.get("http://example.com/").unwrap().send();
     assert!(result.is_err());
 }
@@ -326,7 +338,7 @@ fn blocking_https_only_rejects_http() {
 #[test]
 fn blocking_remote_addr() {
     let addr = start_server_with(hello);
-    let client = Client::new();
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
