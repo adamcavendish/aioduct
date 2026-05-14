@@ -50,6 +50,10 @@ impl RustlsConnector {
     ) -> Self {
         let root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        // SAFETY: the default crypto provider (aws-lc-rs or ring) always
+        // supports TLS 1.2 and 1.3, which are the only versions callers can
+        // request through the public SupportedProtocolVersion constants.
+        #[allow(clippy::expect_used)]
         let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
             .with_protocol_versions(versions)
             .expect("configured rustls provider does not support the requested TLS versions")
@@ -72,10 +76,15 @@ impl RustlsConnector {
         let mut root_store =
             rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         for cert in certs {
+            // SAFETY: extra root certs are caller-provided; if they are
+            // malformed the connector cannot be built meaningfully.
+            #[allow(clippy::expect_used)]
             root_store
                 .add(cert.der.clone())
                 .expect("invalid extra root certificate");
         }
+        // SAFETY: the default crypto provider always supports TLS 1.2 and 1.3.
+        #[allow(clippy::expect_used)]
         let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
             .with_protocol_versions(versions)
             .expect("configured rustls provider does not support the requested TLS versions")
@@ -108,6 +117,8 @@ impl RustlsConnector {
         for cert in certs {
             root_store.add(cert.der.clone()).map_err(io::Error::other)?;
         }
+        // SAFETY: the default crypto provider always supports TLS 1.2 and 1.3.
+        #[allow(clippy::expect_used)]
         let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
             .with_protocol_versions(versions)
             .expect("configured rustls provider does not support the requested TLS versions")
@@ -131,6 +142,9 @@ impl RustlsConnector {
     ) -> Self {
         let mut root_store = rustls::RootCertStore::empty();
         let native_certs = rustls_native_certs::load_native_certs();
+        // SAFETY: if the OS yields zero certs with errors, TLS cannot function
+        // at all — panicking here surfaces the misconfigured system immediately.
+        #[allow(clippy::panic)]
         if native_certs.certs.is_empty() && !native_certs.errors.is_empty() {
             panic!(
                 "failed to load any native root certificates ({} errors)",
@@ -140,6 +154,8 @@ impl RustlsConnector {
         for cert in native_certs.certs {
             let _ = root_store.add(cert);
         }
+        // SAFETY: the default crypto provider always supports TLS 1.2 and 1.3.
+        #[allow(clippy::expect_used)]
         let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
             .with_protocol_versions(versions)
             .expect("configured rustls provider does not support the requested TLS versions")
@@ -151,6 +167,9 @@ impl RustlsConnector {
 
     /// Create a connector that accepts any server certificate (INSECURE — testing only).
     pub fn danger_accept_invalid_certs() -> Self {
+        // SAFETY: the default crypto provider always supports the safe default
+        // TLS versions (1.2 and 1.3).
+        #[allow(clippy::expect_used)]
         let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
             .with_safe_default_protocol_versions()
             .expect("configured rustls provider does not support the default TLS versions")
@@ -192,7 +211,7 @@ impl RustlsConnector {
 
             let config = rustls::ClientConfig::builder_with_provider(crypto_provider())
                 .with_protocol_versions(versions)
-                .expect("configured rustls provider does not support the requested TLS versions")
+                .map_err(io::Error::other)?
                 .dangerous()
                 .with_custom_certificate_verifier(verifier);
 
@@ -207,7 +226,7 @@ impl RustlsConnector {
         } else {
             let builder = rustls::ClientConfig::builder_with_provider(crypto_provider())
                 .with_protocol_versions(versions)
-                .expect("configured rustls provider does not support the requested TLS versions")
+                .map_err(io::Error::other)?
                 .with_root_certificates(root_store);
 
             let mut config = match identity {

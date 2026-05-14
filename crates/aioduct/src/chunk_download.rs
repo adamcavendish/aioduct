@@ -129,7 +129,11 @@ impl<R: RuntimePoll, C: ConnectorSend> ChunkDownload<R, C> {
                 }
                 .await;
 
-                results.lock().unwrap()[i] = Some(result);
+                let Ok(mut guard) = results.lock() else {
+                    done_count.fetch_add(1, std::sync::atomic::Ordering::Release);
+                    return;
+                };
+                guard[i] = Some(result);
                 done_count.fetch_add(1, std::sync::atomic::Ordering::Release);
             });
         }

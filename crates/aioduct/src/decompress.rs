@@ -267,6 +267,9 @@ mod imp {
                     if let Ok(data) = frame.into_data() {
                         if self.decoder.is_some() {
                             self.has_data = true;
+                            // SAFETY: we just checked is_some() above and nothing
+                            // removes the decoder between the check and this line.
+                            #[allow(clippy::unwrap_used)]
                             let decoder = self.decoder.as_mut().unwrap();
                             if let Err(e) = decoder.write_chunk(&data) {
                                 self.finished = true;

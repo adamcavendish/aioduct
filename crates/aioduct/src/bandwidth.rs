@@ -151,12 +151,13 @@ impl Body for BandwidthBody {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         // 1. Emit buffered data from a previous poll that was rate-limited.
-        if let Some(ref data) = self.pending {
+        if let Some(data) = self.pending.as_ref() {
             let n = data.len() as u64;
             if self.limiter.wait_duration(n).is_zero() {
                 let _ = self.limiter.try_consume(n);
-                let data = self.pending.take().unwrap();
-                return Poll::Ready(Some(Ok(Frame::data(data))));
+                if let Some(data) = self.pending.take() {
+                    return Poll::Ready(Some(Ok(Frame::data(data))));
+                }
             }
             cx.waker().wake_by_ref();
             return Poll::Pending;

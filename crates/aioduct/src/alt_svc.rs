@@ -36,7 +36,9 @@ impl AltSvcCache {
     }
 
     pub fn insert(&self, authority: Authority, entries: Vec<AltSvcEntry>) {
-        let mut map = self.inner.lock().unwrap();
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
         if entries.is_empty() {
             map.remove(&authority);
         } else {
@@ -45,7 +47,7 @@ impl AltSvcCache {
     }
 
     pub fn lookup_h3(&self, authority: &Authority) -> Option<(Option<String>, u16)> {
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock().ok()?;
         let entries = map.get_mut(authority)?;
         entries.retain(|e| !e.is_expired());
         if entries.is_empty() {
