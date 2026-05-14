@@ -4,6 +4,8 @@
 //! For HTTPS, enable the `rustls` feature.
 
 #![deny(missing_docs)]
+#![deny(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 #[cfg(not(any(
@@ -283,6 +285,7 @@ pub use hyper::ext::Protocol;
 
 #[cfg(feature = "__bench")]
 #[doc(hidden)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 pub mod __bench {
     use std::net::{IpAddr, SocketAddr};
     use std::time::Duration;

@@ -185,7 +185,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             blocked_duration: pool_checkout_start.elapsed(),
                         },
                     );
-                    let (method, uri, headers, version) = saved_parts.unwrap();
+                    // saved_parts is guaranteed Some by the match arm guard above.
+                    let Some((method, uri, headers, version)) = saved_parts else {
+                        return Err(e);
+                    };
                     let retry_body_bytes = replay_body
                         .as_ref()
                         .cloned()
@@ -325,7 +328,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 blocked_duration: pool_checkout_start.elapsed(),
                             },
                         );
-                        let (method, uri, headers, version) = saved_parts.unwrap();
+                        // saved_parts is guaranteed Some by the match arm guard.
+                        let Some((method, uri, headers, version)) = saved_parts else {
+                            return Err(e);
+                        };
                         let retry_body_bytes = replay_body
                             .as_ref()
                             .cloned()

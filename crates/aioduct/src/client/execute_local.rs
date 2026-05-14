@@ -74,7 +74,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             let (cache_state, stale_if_error) =
                 self.core
                     .cache_lookup(&current_method, &current_uri, &mut current_headers);
-            let cache_entry = match cache_state {
+            let mut cache_entry = match cache_state {
                 CacheLookupOutcome::Fresh(resp) => return Ok((*resp).into_local()),
                 CacheLookupOutcome::Stale(entry) => Some(entry),
                 CacheLookupOutcome::Miss => None,
@@ -124,8 +124,16 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                         && cached.age <= sie_duration
                     {
                         let _ = resp.bytes().await;
-                        let http_resp = cache_entry.unwrap().into_http_response();
-                        return Ok(Response::from_boxed(http_resp, current_uri).into_local());
+                        // SAFETY: cache_entry is guaranteed Some by the let-chain
+                        // guard above. Use take() to move ownership out.
+                        if let Some(cached) = cache_entry.take() {
+                            let http_resp = cached.into_http_response();
+                            return Ok(Response::from_boxed(http_resp, current_uri).into_local());
+                        }
+                        // Unreachable: if the guard matched, cache_entry was Some.
+                        return Err(Error::Other(
+                            "stale cache entry unexpectedly missing".into(),
+                        ));
                     }
                     resp
                 }
@@ -422,7 +430,10 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                     if saved_parts.is_some() && HttpEngineCore::is_stale_connection_error(&e) =>
                 {
                     self.core.fire_connection_metrics(&conn, true);
-                    let (method, uri, headers, version) = saved_parts.unwrap();
+                    // saved_parts is guaranteed Some by the match arm guard.
+                    let Some((method, uri, headers, version)) = saved_parts else {
+                        return Err(e);
+                    };
                     let retry_body_bytes = replay_body
                         .as_ref()
                         .cloned()

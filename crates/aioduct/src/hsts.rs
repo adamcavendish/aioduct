@@ -42,7 +42,9 @@ impl HstsStore {
         if let Some(value) = headers.get("strict-transport-security")
             && let Some((max_age, include_subdomains)) = parse_hsts(value)
         {
-            let mut store = self.inner.lock().unwrap();
+            let Ok(mut store) = self.inner.lock() else {
+                return;
+            };
             if max_age.is_zero() {
                 store.remove(host);
             } else {
@@ -59,7 +61,9 @@ impl HstsStore {
 
     /// Check whether a host should be upgraded from HTTP to HTTPS.
     pub fn should_upgrade(&self, host: &str) -> bool {
-        let store = self.inner.lock().unwrap();
+        let Ok(store) = self.inner.lock() else {
+            return false;
+        };
 
         if let Some(entry) = store.get(host)
             && Instant::now() < entry.expires_at
@@ -84,7 +88,10 @@ impl HstsStore {
 
     /// Remove all stored HSTS entries.
     pub fn clear(&self) {
-        self.inner.lock().unwrap().clear();
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        inner.clear();
     }
 }
 

@@ -50,7 +50,9 @@ impl<R: RuntimeLocal, C: Connector + Clone> RequestBuilderExt for OwnedRequestBu
     }
 
     fn bearer_auth(mut self, token: &str) -> Self {
-        let value = HeaderValue::from_str(&format!("Bearer {token}")).expect("valid bearer token");
+        let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
+            return self;
+        };
         self.headers.insert(http::header::AUTHORIZATION, value);
         self
     }
