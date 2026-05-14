@@ -1,0 +1,10 @@
+[package]
+name = "example-compio-query-params"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio", "json"] }
+serde.workspace = true
+compio-runtime.workspace = true

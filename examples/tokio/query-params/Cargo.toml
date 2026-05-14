@@ -1,0 +1,10 @@
+[package]
+name = "example-tokio-query-params"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio", "json"] }
+tokio = { workspace = true, features = ["full"] }
+serde.workspace = true

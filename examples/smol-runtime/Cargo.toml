@@ -1,9 +1,0 @@
-[package]
-name = "example-smol-runtime"
-version.workspace = true
-edition.workspace = true
-publish = false
-
-[dependencies]
-aioduct = { workspace = true, features = ["smol"] }
-smol.workspace = true

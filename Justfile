@@ -156,9 +156,9 @@ ci: fmt-check clippy-all doc-check book msrv test-all coverage-lcov
 
 # Build the landing page WASM demo (requires wasm-pack)
 site-wasm:
-    wasm-pack build examples/wasm-demo \
+    wasm-pack build examples/wasm/demo \
         --target web \
-        --out-dir ../../site/wasm \
+        --out-dir ../../../site/wasm \
         --out-name aioduct_wasm_demo \
         --release
     rm -f site/wasm/.gitignore site/wasm/package.json

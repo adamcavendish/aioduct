@@ -1,0 +1,10 @@
+[package]
+name = "example-wasi-p2-demo"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["wasi-p2", "json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "example-smol-forward-websocket-h2"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol", "tokio"] }
+tokio = { workspace = true, features = ["full"] }
+hyper = { workspace = true, features = ["server", "http2"] }
+http-body-util.workspace = true
+bytes.workspace = true
+http.workspace = true
+smol.workspace = true

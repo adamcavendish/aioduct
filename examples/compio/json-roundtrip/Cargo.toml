@@ -1,0 +1,11 @@
+[package]
+name = "example-compio-json-roundtrip"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio", "json"] }
+serde.workspace = true
+serde_json.workspace = true
+compio-runtime.workspace = true

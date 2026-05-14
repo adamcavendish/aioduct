@@ -1,0 +1,9 @@
+[package]
+name = "example-tokio-https-rustls"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio", "rustls", "rustls-ring"] }
+tokio = { workspace = true, features = ["full"] }

@@ -1,0 +1,9 @@
+[package]
+name = "example-smol-basic-get"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol"] }
+smol.workspace = true

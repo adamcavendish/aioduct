@@ -1,0 +1,10 @@
+[package]
+name = "example-compio-decompression"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio", "gzip", "brotli", "zstd", "deflate"] }
+http.workspace = true
+compio-runtime.workspace = true
