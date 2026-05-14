@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{OtelMiddleware, SmolClient};
 fn main() -> Result<(), aioduct::Error> {
@@ -12,6 +14,7 @@ fn main() -> Result<(), aioduct::Error> {
 
         let client = SmolClient::builder(TcpConnector)
             .middleware(OtelMiddleware::new())
+            .timeout(Duration::from_secs(10))
             .build();
 
         // Each request creates an OpenTelemetry span with HTTP semantic conventions

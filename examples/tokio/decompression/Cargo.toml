@@ -5,6 +5,6 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["tokio", "gzip", "brotli", "zstd", "deflate"] }
+aioduct = { workspace = true, features = ["tokio", "gzip", "brotli", "zstd", "deflate", "rustls", "rustls-ring"] }
 tokio = { workspace = true, features = ["full"] }
 http.workspace = true

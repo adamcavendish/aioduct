@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["tokio", "tower"] }
+aioduct = { workspace = true, features = ["tokio", "tower", "rustls", "rustls-ring"] }
 tokio = { workspace = true, features = ["full"] }
 tower-service.workspace = true
 tower-layer.workspace = true

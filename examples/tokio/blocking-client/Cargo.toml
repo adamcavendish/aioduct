@@ -5,4 +5,4 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["blocking"] }
+aioduct = { workspace = true, features = ["blocking", "tokio", "rustls", "rustls-ring"] }

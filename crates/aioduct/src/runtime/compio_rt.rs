@@ -349,6 +349,77 @@ where
     }
 }
 
+// ── DefaultResolver ───────────────────────────────────────────────────────
+
+/// Default DNS resolver for compio using blocking `getaddrinfo` via
+/// `compio_runtime::spawn_blocking`.
+pub struct DefaultResolver;
+
+impl super::Resolve for DefaultResolver {
+    fn resolve(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+        let addr = format!("{host}:{port}");
+        Box::pin(AssertSend(async move {
+            let addrs = compio_runtime::spawn_blocking(move || {
+                use std::net::ToSocketAddrs;
+                addr.to_socket_addrs().map(|iter| iter.collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|e| io::Error::other(format!("{e:?}")))?;
+            let addrs = addrs?;
+            addrs.into_iter().next().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses found")
+            })
+        }))
+    }
+
+    fn resolve_all(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send>> {
+        let addr = format!("{host}:{port}");
+        Box::pin(AssertSend(async move {
+            let addrs = compio_runtime::spawn_blocking(move || {
+                use std::net::ToSocketAddrs;
+                addr.to_socket_addrs().map(|iter| iter.collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|e| io::Error::other(format!("{e:?}")))?;
+            let addrs = addrs?;
+            if addrs.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    "no addresses found",
+                ));
+            }
+            Ok(addrs)
+        }))
+    }
+}
+
+/// Wrapper that unsafely implements `Send` for a `!Send` future.
+///
+/// # Safety
+///
+/// Only safe in compio's thread-per-core model where futures never cross
+/// thread boundaries.
+struct AssertSend<F>(F);
+
+unsafe impl<F> Send for AssertSend<F> {}
+
+impl<F: Future> Future for AssertSend<F> {
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let inner = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        inner.poll(cx)
+    }
+}
+
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
