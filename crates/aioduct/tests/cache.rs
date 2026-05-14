@@ -1,14 +1,27 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+use tokio::net::TcpListener;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::h1_server_with;
 
 #[tokio::test]
 async fn test_cache_stores_and_returns_fresh() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, Ordering::SeqCst);
@@ -66,7 +79,7 @@ async fn test_cacheable_gzip_response_is_decompressed_before_return_and_cache_hi
     let attempt_clone = attempt.clone();
     let compressed_clone = compressed.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         let compressed = compressed_clone.clone();
         async move {
@@ -114,7 +127,7 @@ async fn test_cache_304_revalidation() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -177,7 +190,7 @@ async fn test_cache_stale_if_error_serves_stale_on_5xx() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -229,7 +242,7 @@ async fn test_cache_stale_if_error_serves_stale_on_connection_error() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, Ordering::SeqCst);
@@ -289,7 +302,7 @@ async fn test_cache_stale_if_error_not_applied_without_directive() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -371,7 +384,7 @@ async fn test_custom_cache_store_with_client() {
     };
     let cache = aioduct::HttpCache::with_store(store);
 
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(
             Response::builder()
                 .header("cache-control", "max-age=3600")
@@ -416,7 +429,7 @@ async fn test_custom_cache_store_304_revalidation() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -475,7 +488,7 @@ async fn test_custom_cache_store_invalidation_on_post() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -535,7 +548,7 @@ async fn test_custom_cache_store_shared_across_cloned_clients() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, Ordering::SeqCst);
@@ -578,5 +591,84 @@ async fn test_custom_cache_store_shared_across_cloned_clients() {
         attempt.load(Ordering::SeqCst),
         1,
         "second client should use shared cache"
+    );
+}
+
+// ── Bug-Finding Tests ─────────────────────────────────────────────────
+
+// BUG: cache.rs completely ignores the Vary header. Two requests with different
+// Accept-Encoding values should produce different cache entries, but they don't.
+#[tokio::test]
+async fn cache_should_respect_vary_header() {
+    use std::time::Duration;
+
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let (addr, _) = h1_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            let accept = req
+                .headers()
+                .get("accept-encoding")
+                .map(|v| v.to_str().unwrap_or("").to_string())
+                .unwrap_or_else(|| "none".to_string());
+
+            let body = format!("request={n} accept={accept}");
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("cache-control", "max-age=3600")
+                    .header("vary", "Accept-Encoding")
+                    .body(Full::new(Bytes::from(body)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let cache = aioduct::cache::HttpCache::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    // First request: Accept-Encoding: gzip
+    let resp = client
+        .get(&format!("http://{addr}/resource"))
+        .unwrap()
+        .header(
+            http::header::ACCEPT_ENCODING,
+            http::header::HeaderValue::from_static("gzip"),
+        )
+        .send()
+        .await
+        .unwrap();
+    let body1 = resp.text().await.unwrap();
+    assert!(
+        body1.contains("request=0"),
+        "first request should hit server"
+    );
+    assert!(body1.contains("accept=gzip"), "server sees gzip");
+
+    // Second request: Accept-Encoding: br (different value)
+    // With Vary: Accept-Encoding, this should be a cache MISS and hit the server.
+    let resp = client
+        .get(&format!("http://{addr}/resource"))
+        .unwrap()
+        .header(
+            http::header::ACCEPT_ENCODING,
+            http::header::HeaderValue::from_static("br"),
+        )
+        .send()
+        .await
+        .unwrap();
+    let body2 = resp.text().await.unwrap();
+
+    assert!(
+        body2.contains("accept=br"),
+        "BUG: cache.rs ignores the Vary header entirely. \
+         Second request with Accept-Encoding: br got a cached response intended for gzip. \
+         Got: {body2}"
     );
 }

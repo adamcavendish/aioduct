@@ -1,14 +1,21 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
-
+use std::convert::Infallible;
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use aioduct::runtime::ConnectorSend;
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::runtime::{ConnectorSend, TokioRuntime};
+
+use aioduct_test_server::h1::{h1_server, h1_server_with};
 
 // =============================================================================
 // CountingConnector — wraps TcpConnector with a connection counter
@@ -62,7 +69,7 @@ impl ConnectorSend for CountingConnector {
 
 #[tokio::test]
 async fn tokio_engine_alias_works() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = aioduct::TokioEngine::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -83,7 +90,7 @@ fn tokio_client_and_engine_are_same_type() {
 
 #[tokio::test]
 async fn builder_auto_wires_default_resolver() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
     // Use localhost (not 127.0.0.1) to exercise the resolver
     let resp = client
@@ -97,7 +104,7 @@ async fn builder_auto_wires_default_resolver() {
 
 #[tokio::test]
 async fn custom_connector_send_integration() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let connector = CountingConnector::new();
     let count = connector.count.clone();
     let client = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(connector)
@@ -117,7 +124,7 @@ async fn custom_connector_send_integration() {
 
 #[tokio::test]
 async fn custom_connector_two_clients_isolated() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let c1 = CountingConnector::new();
     let c2 = CountingConnector::new();
     let count1 = c1.count.clone();
@@ -152,7 +159,7 @@ async fn custom_connector_two_clients_isolated() {
 
 #[tokio::test]
 async fn http_engine_default_works() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::default();
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -165,7 +172,7 @@ async fn http_engine_default_works() {
 
 #[tokio::test]
 async fn forward_preserves_method_and_body() {
-    let upstream_addr = start_server_with(|req| async move {
+    let (upstream_addr, _counter) = h1_server_with(|req| async move {
         use http_body_util::BodyExt;
         let method = req.method().to_string();
         let body_bytes = req.into_body().collect().await.unwrap().to_bytes();
@@ -198,7 +205,7 @@ async fn forward_preserves_method_and_body() {
 
 #[tokio::test]
 async fn forward_strips_connection_header() {
-    let upstream_addr = start_server_with(|req| async move {
+    let (upstream_addr, _counter) = h1_server_with(|req| async move {
         let has_connection = req.headers().contains_key("connection");
         let has_custom = req.headers().contains_key("x-custom");
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
@@ -233,7 +240,7 @@ async fn forward_strips_connection_header() {
 
 #[tokio::test]
 async fn forward_with_custom_connector() {
-    let upstream_addr = start_server().await;
+    let (upstream_addr, _counter) = h1_server().await;
 
     let connector = CountingConnector::new();
     let count = connector.count.clone();

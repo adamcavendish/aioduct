@@ -1,7 +1,15 @@
 #![cfg(all(feature = "tokio", feature = "http3", feature = "rustls"))]
 
-mod common;
-use common::*;
+use std::net::SocketAddr;
+use std::time::Duration;
+
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::tls::{crypto_provider, install_crypto_provider};
 
 use std::sync::Arc;
 
@@ -15,19 +23,18 @@ async fn build_h3_server(
     + Clone
     + 'static,
 ) -> std::net::SocketAddr {
-    install_rustls_crypto_provider();
+    install_crypto_provider();
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
-    let mut server_tls_config =
-        rustls::ServerConfig::builder_with_provider(rustls_crypto_provider())
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der.clone()], key_der)
-            .unwrap();
+    let mut server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
     server_tls_config.alpn_protocols = vec![b"h3".to_vec()];
     server_tls_config.max_early_data_size = 0;
 
