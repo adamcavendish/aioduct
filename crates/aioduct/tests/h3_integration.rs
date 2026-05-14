@@ -1,9 +1,6 @@
 #![cfg(all(feature = "tokio", feature = "http3", feature = "rustls"))]
 
-use std::net::SocketAddr;
 use std::time::Duration;
-
-use hyper::Response;
 
 use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
