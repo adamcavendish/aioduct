@@ -1,30 +1,43 @@
+use std::time::Duration;
+
 use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{RedirectAction, RedirectPolicy, TokioClient};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // Default: follow up to 10 redirects
-    let client = TokioClient::builder(TcpConnector).build();
+    let client = TokioClient::builder(TcpConnector)
+        .timeout(Duration::from_secs(10))
+        .build();
 
     let resp = client.get("https://httpbin.org/redirect/3")?.send().await?;
 
     println!("Final URL after redirects: {}", resp.url());
     println!("Status: {}", resp.status());
 
-    // Limited redirects
+    // Limited redirects — requesting 3 redirects but only allowing 1
     let client = TokioClient::builder(TcpConnector)
         .redirect_policy(RedirectPolicy::Limited(1))
+        .timeout(Duration::from_secs(10))
         .build();
 
-    let resp = client.get("https://httpbin.org/redirect/3")?.send().await?;
-
-    // Only followed 1 redirect, then stopped
-    println!("\nLimited (1): final URL = {}", resp.url());
-    println!("Status: {}", resp.status());
+    let req = client.get("https://httpbin.org/redirect/3")?;
+    match req.send().await {
+        Ok(resp) => {
+            println!("\nLimited (1): final URL = {}", resp.url());
+            println!("Status: {}", resp.status());
+        }
+        Err(e) if e.is_redirect() => {
+            // Expected: TooManyRedirects because we allow only 1 but need 3
+            println!("\nLimited (1): got expected redirect error: {e}");
+        }
+        Err(e) => return Err(e.into()),
+    }
 
     // No redirects
     let client = TokioClient::builder(TcpConnector)
         .redirect_policy(RedirectPolicy::None)
+        .timeout(Duration::from_secs(10))
         .build();
 
     let resp = client.get("https://httpbin.org/redirect/1")?.send().await?;
@@ -42,6 +55,7 @@ async fn main() -> Result<(), aioduct::Error> {
                 RedirectAction::Stop
             }
         }))
+        .timeout(Duration::from_secs(10))
         .build();
 
     let resp = client

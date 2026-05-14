@@ -8,13 +8,14 @@ async fn main() -> Result<(), aioduct::Error> {
     // Rate limit to 5 requests per second
     let client = TokioClient::builder(TcpConnector)
         .rate_limiter(RateLimiter::new(5, Duration::from_secs(1)))
+        .timeout(Duration::from_secs(10))
         .build();
 
-    println!("Sending 10 requests with rate limit of 5/sec...");
+    println!("Sending 5 requests with rate limit of 5/sec...");
 
     let start = std::time::Instant::now();
 
-    for i in 1..=10 {
+    for i in 1..=5 {
         let resp = client.get("https://httpbin.org/get")?.send().await?;
 
         println!(
@@ -26,7 +27,7 @@ async fn main() -> Result<(), aioduct::Error> {
 
     let elapsed = start.elapsed();
     println!(
-        "\n10 requests completed in {:.1}s (expected ~2s with 5/sec limit)",
+        "\n5 requests completed in {:.1}s (expected ~1s with 5/sec limit)",
         elapsed.as_secs_f64()
     );
 

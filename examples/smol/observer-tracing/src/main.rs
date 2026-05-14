@@ -255,6 +255,7 @@ fn main() -> Result<(), aioduct::Error> {
         let client = SmolClient::builder(TcpConnector)
             .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
             .request_observer(TracingObserver)
+            .timeout(Duration::from_secs(10))
             .build();
 
         // --- 1. HTTPS GET: shows DNS → TCP → TLS → send → TTFB → complete pipeline ---

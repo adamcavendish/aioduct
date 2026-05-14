@@ -5,5 +5,10 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["compio"] }
+aioduct = { workspace = true, features = ["compio", "tokio"] }
+tokio = { workspace = true, features = ["full"] }
+hyper = { workspace = true, features = ["server", "http1"] }
+http-body-util.workspace = true
+bytes.workspace = true
+http.workspace = true
 compio-runtime.workspace = true

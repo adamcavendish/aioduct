@@ -5,6 +5,6 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["smol", "json"] }
+aioduct = { workspace = true, features = ["smol", "json", "rustls", "rustls-ring"] }
 serde.workspace = true
 smol.workspace = true

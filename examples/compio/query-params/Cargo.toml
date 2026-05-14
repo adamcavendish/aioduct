@@ -5,6 +5,6 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["compio", "json"] }
+aioduct = { workspace = true, features = ["compio", "json", "rustls", "rustls-ring"] }
 serde.workspace = true
 compio-runtime.workspace = true

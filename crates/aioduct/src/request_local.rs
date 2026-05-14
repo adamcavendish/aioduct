@@ -218,6 +218,21 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
         self
     }
 
+    /// Set upgrade headers for a WebSocket handshake.
+    ///
+    /// This sets `Connection: Upgrade`, `Upgrade: websocket`, and forces HTTP/1.1.
+    /// After calling `send()`, check for status 101 and call `response.upgrade()`.
+    pub fn upgrade(mut self) -> Self {
+        self.headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("Upgrade"),
+        );
+        self.headers
+            .insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
+        self.version = Some(Version::HTTP_11);
+        self
+    }
+
     /// Clone this request builder if the body is buffered.
     pub fn try_clone(&self) -> Option<Self> {
         let body = match &self.body {

@@ -84,6 +84,9 @@ pub mod blocking;
 /// Parallel range-request file downloader.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chunk_download;
+/// Parallel range-request downloader for `!Send` runtimes.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod chunk_download_local;
 /// HTTP client with connection pooling and redirect handling.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod client;
@@ -174,7 +177,9 @@ pub use observer::{
 pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use retry::{RetryBudget, RetryConfig};
-pub use sse::{SseDecoder, SseEvent, SseMessage, SseStream};
+#[cfg(not(target_arch = "wasm32"))]
+pub use sse::SseStreamLocal;
+pub use sse::{SseDecoder, SseEvent, SseMessage, SseStreamSend};
 pub use throttle::RateLimiter;
 #[allow(deprecated)]
 pub use timing::RequestTimings;
@@ -188,6 +193,8 @@ pub use problem::ProblemDetails;
 #[cfg(not(target_arch = "wasm32"))]
 pub use chunk_download::ChunkDownload;
 #[cfg(not(target_arch = "wasm32"))]
+pub use chunk_download_local::ChunkDownloadLocal;
+#[cfg(not(target_arch = "wasm32"))]
 pub use client::HttpEngineBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::HttpEngineCore;
@@ -198,6 +205,8 @@ pub use client::HttpEngineSend;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use forward::ForwardBuilder;
+#[cfg(not(target_arch = "wasm32"))]
+pub use forward::forward_local::ForwardBuilderLocal;
 #[cfg(feature = "hickory-dns")]
 pub use hickory::HickoryResolver;
 #[cfg(not(target_arch = "wasm32"))]
