@@ -1,0 +1,11 @@
+[package]
+name = "example-tokio-tower-connector"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio", "tower"] }
+tokio = { workspace = true, features = ["full"] }
+tower-service.workspace = true
+tower-layer.workspace = true

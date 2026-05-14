@@ -1,0 +1,11 @@
+[package]
+name = "example-smol-json-roundtrip"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol", "json"] }
+serde.workspace = true
+serde_json.workspace = true
+smol.workspace = true

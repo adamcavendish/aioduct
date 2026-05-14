@@ -1,0 +1,9 @@
+[package]
+name = "example-smol-proxy-socks"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol", "rustls", "rustls-ring"] }
+smol.workspace = true

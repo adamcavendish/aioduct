@@ -1,0 +1,10 @@
+[package]
+name = "example-compio-sse-stream"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio"] }
+http.workspace = true
+compio-runtime.workspace = true

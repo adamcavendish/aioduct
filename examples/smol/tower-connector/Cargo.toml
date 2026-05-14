@@ -1,0 +1,11 @@
+[package]
+name = "example-smol-tower-connector"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol", "tower"] }
+tower-service.workspace = true
+tower-layer.workspace = true
+smol.workspace = true

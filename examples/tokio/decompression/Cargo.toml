@@ -1,0 +1,10 @@
+[package]
+name = "example-tokio-decompression"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio", "gzip", "brotli", "zstd", "deflate"] }
+tokio = { workspace = true, features = ["full"] }
+http.workspace = true

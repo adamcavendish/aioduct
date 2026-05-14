@@ -33,9 +33,9 @@ jobs:
 
       - name: Build WASM demo
         run: |
-          wasm-pack build examples/wasm-demo \
+          wasm-pack build examples/wasm/demo \
             --target web \
-            --out-dir ../../site/wasm \
+            --out-dir ../../../site/wasm \
             --out-name aioduct_wasm_demo \
             --release
 

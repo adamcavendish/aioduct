@@ -1,0 +1,12 @@
+[package]
+name = "example-tokio-observer-otel"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio", "rustls", "rustls-ring"] }
+tokio = { workspace = true, features = ["full"] }
+opentelemetry = { workspace = true, features = ["trace"] }
+opentelemetry_sdk = { workspace = true, features = ["trace", "rt-tokio"] }
+opentelemetry-stdout = { workspace = true, features = ["trace"] }
