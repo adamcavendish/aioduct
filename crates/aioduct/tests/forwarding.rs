@@ -1,7 +1,20 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::server::conn::http1 as server_http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use tokio::net::TcpListener;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::TokioExec;
 
 // =============================================================================
 // Request Forwarding Tests
@@ -805,18 +818,6 @@ async fn forward_non_upgrade_still_strips_connection() {
 async fn forward_h2_extended_connect() {
     use hyper::server::conn::http2 as server_http2;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    #[derive(Clone)]
-    struct TokioExec;
-    impl<F> hyper::rt::Executor<F> for TokioExec
-    where
-        F: std::future::Future + Send + 'static,
-        F::Output: Send + 'static,
-    {
-        fn execute(&self, fut: F) {
-            tokio::spawn(fut);
-        }
-    }
 
     let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let upstream_addr = upstream.local_addr().unwrap();

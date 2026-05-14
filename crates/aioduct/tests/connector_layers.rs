@@ -1,7 +1,11 @@
 #![cfg(all(feature = "tokio", feature = "tower"))]
 
-mod common;
-use common::*;
+use std::time::Duration;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+
+use aioduct_test_server::h1::h1_server;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -111,7 +115,7 @@ where
 
 #[tokio::test]
 async fn identity_layer() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(IdentityLayer)
@@ -130,7 +134,7 @@ async fn identity_layer() {
 
 #[tokio::test]
 async fn timeout_layer_fast_connect() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(TimeoutLayer::new(Duration::from_secs(5)))
@@ -164,7 +168,7 @@ async fn timeout_layer_slow_connect() {
 
 #[tokio::test]
 async fn delay_layer_with_timeout_layer_triggers() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     // Since connector_layer replaces the previous layer, we compose
     // delay + timeout into a single layer using a wrapper.
@@ -207,7 +211,7 @@ async fn delay_layer_with_timeout_layer_triggers() {
 
 #[tokio::test]
 async fn delay_layer_within_timeout_succeeds() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     #[derive(Clone)]
     struct DelayThenTimeoutLayer {

@@ -1,7 +1,21 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Request;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::h1_server_with;
+use aioduct_test_server::raw::raw_streaming_server;
 
 #[cfg(feature = "gzip")]
 #[tokio::test]
@@ -21,7 +35,7 @@ async fn test_gzip_decompression() {
             .unwrap();
         Ok::<_, Infallible>(resp)
     };
-    let addr = start_server_with(handler).await;
+    let (addr, _counter) = h1_server_with(handler).await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -45,7 +59,7 @@ async fn test_gzip_accept_encoding_header() {
             .unwrap_or_default();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(accept))))
     };
-    let addr = start_server_with(handler).await;
+    let (addr, _counter) = h1_server_with(handler).await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let text = client
         .get(&format!("http://{addr}/"))
@@ -77,7 +91,7 @@ async fn test_no_decompression_passthrough() {
             .unwrap();
         Ok::<_, Infallible>(resp)
     };
-    let addr = start_server_with(handler).await;
+    let (addr, _counter) = h1_server_with(handler).await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_decompression()
         .build();
@@ -111,7 +125,7 @@ async fn test_deflate_decompression() {
             .unwrap();
         Ok::<_, Infallible>(resp)
     };
-    let addr = start_server_with(handler).await;
+    let (addr, _counter) = h1_server_with(handler).await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let text = client
         .get(&format!("http://{addr}/"))
@@ -127,7 +141,7 @@ async fn test_deflate_decompression() {
 }
 #[tokio::test]
 async fn test_get_no_content_headers() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         assert_eq!(req.method(), "GET");
         assert!(
             req.headers().get("content-length").is_none(),
@@ -157,7 +171,7 @@ async fn test_get_no_content_headers() {
 #[cfg(feature = "gzip")]
 #[tokio::test]
 async fn test_gzip_empty_body_head_request() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         assert_eq!(req.method(), "HEAD");
         Ok::<_, Infallible>(
             Response::builder()
@@ -182,7 +196,7 @@ async fn test_gzip_empty_body_head_request() {
 #[cfg(feature = "gzip")]
 #[tokio::test]
 async fn test_custom_accept_encoding_preserved() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let accept_encoding = req
             .headers()
             .get("accept-encoding")
@@ -226,7 +240,7 @@ mod gzip_tests {
         let content: String = (0..10_000).map(|i| format!("test {i}")).collect();
         let compressed = gzip_compress(content.as_bytes());
 
-        let addr = start_server_with(move |_req| {
+        let (addr, _counter) = h1_server_with(move |_req| {
             let compressed = compressed.clone();
             async move {
                 Ok::<_, Infallible>(
@@ -254,7 +268,7 @@ mod gzip_tests {
 
     #[tokio::test]
     async fn gzip_empty_body_head_request() {
-        let addr = start_server_with(|req| async move {
+        let (addr, _counter) = h1_server_with(|req| async move {
             assert_eq!(req.method(), "HEAD");
             Ok::<_, Infallible>(
                 Response::builder()
@@ -279,7 +293,7 @@ mod gzip_tests {
 
     #[tokio::test]
     async fn gzip_accept_encoding_sent_automatically() {
-        let addr = start_server_with(|req| async move {
+        let (addr, _counter) = h1_server_with(|req| async move {
             let ae = req
                 .headers()
                 .get("accept-encoding")
@@ -305,7 +319,7 @@ mod gzip_tests {
 
     #[tokio::test]
     async fn gzip_accept_encoding_not_changed_if_set() {
-        let addr = start_server_with(|req| async move {
+        let (addr, _counter) = h1_server_with(|req| async move {
             let ae = req
                 .headers()
                 .get("accept-encoding")
@@ -337,7 +351,7 @@ mod gzip_tests {
         let request_count = Arc::new(AtomicU32::new(0));
         let count_clone = request_count.clone();
 
-        let addr = start_server_with(move |_req| {
+        let (addr, _counter) = h1_server_with(move |_req| {
             let compressed = compressed.clone();
             let count = count_clone.clone();
             async move {
@@ -372,7 +386,7 @@ mod gzip_tests {
     async fn no_decompression_passthrough() {
         let compressed = gzip_compress(b"raw gzip data");
 
-        let addr = start_server_with(move |_req| {
+        let (addr, _counter) = h1_server_with(move |_req| {
             let compressed = compressed.clone();
             async move {
                 Ok::<_, Infallible>(
@@ -415,7 +429,7 @@ mod deflate_tests {
         encoder.write_all(b"deflate test payload").unwrap();
         let compressed = encoder.finish().unwrap();
 
-        let addr = start_server_with(move |_req| {
+        let (addr, _counter) = h1_server_with(move |_req| {
             let compressed = compressed.clone();
             async move {
                 Ok::<_, Infallible>(
@@ -444,7 +458,7 @@ mod deflate_tests {
 
     #[tokio::test]
     async fn deflate_accept_encoding_sent() {
-        let addr = start_server_with(|req| async move {
+        let (addr, _counter) = h1_server_with(|req| async move {
             let ae = req
                 .headers()
                 .get("accept-encoding")
@@ -485,7 +499,7 @@ mod brotli_tests {
     async fn brotli_decompression() {
         let compressed = brotli_compress(b"brotli test payload");
 
-        let addr = start_server_with(move |_req| {
+        let (addr, _counter) = h1_server_with(move |_req| {
             let compressed = compressed.clone();
             async move {
                 Ok::<_, Infallible>(
@@ -517,7 +531,7 @@ mod brotli_tests {
         let content: String = (0..5_000).map(|i| format!("brotli {i} ")).collect();
         let compressed = brotli_compress(content.as_bytes());
 
-        let addr = start_server_with(move |_req| {
+        let (addr, _counter) = h1_server_with(move |_req| {
             let compressed = compressed.clone();
             async move {
                 Ok::<_, Infallible>(
@@ -546,7 +560,7 @@ mod brotli_tests {
 
     #[tokio::test]
     async fn brotli_accept_encoding_sent() {
-        let addr = start_server_with(|req| async move {
+        let (addr, _counter) = h1_server_with(|req| async move {
             let ae = req
                 .headers()
                 .get("accept-encoding")
@@ -578,7 +592,7 @@ mod zstd_tests {
     async fn zstd_decompression() {
         let compressed = zstd::encode_all(b"zstd test payload" as &[u8], 3).unwrap();
 
-        let addr = start_server_with(move |_req| {
+        let (addr, _counter) = h1_server_with(move |_req| {
             let compressed = compressed.clone();
             async move {
                 Ok::<_, Infallible>(
@@ -610,7 +624,7 @@ mod zstd_tests {
         let content: String = (0..5_000).map(|i| format!("zstd {i} ")).collect();
         let compressed = zstd::encode_all(content.as_bytes(), 3).unwrap();
 
-        let addr = start_server_with(move |_req| {
+        let (addr, _counter) = h1_server_with(move |_req| {
             let compressed = compressed.clone();
             async move {
                 Ok::<_, Infallible>(
@@ -639,7 +653,7 @@ mod zstd_tests {
 
     #[tokio::test]
     async fn zstd_accept_encoding_sent() {
-        let addr = start_server_with(|req| async move {
+        let (addr, _counter) = h1_server_with(|req| async move {
             let ae = req
                 .headers()
                 .get("accept-encoding")
@@ -682,7 +696,7 @@ mod fragmented_gzip {
         let part1: Vec<u8> = compressed[..mid].to_vec();
         let part2: Vec<u8> = compressed[mid..].to_vec();
 
-        let addr = start_raw_streaming_server(move |_req, mut stream| {
+        let addr = raw_streaming_server(move |_req, mut stream| {
             let p1 = part1.clone();
             let p2 = part2.clone();
             async move {
@@ -742,7 +756,7 @@ mod fragmented_deflate {
             compressed[third * 2..].to_vec(),
         ];
 
-        let addr = start_raw_streaming_server(move |_req, mut stream| {
+        let addr = raw_streaming_server(move |_req, mut stream| {
             let parts = parts.clone();
             async move {
                 let headers = "HTTP/1.1 200 OK\r\nContent-Encoding: deflate\r\nTransfer-Encoding: chunked\r\n\r\n";
@@ -792,7 +806,7 @@ mod fragmented_brotli {
         }
 
         let bytes: Vec<u8> = compressed;
-        let addr = start_raw_streaming_server(move |_req, mut stream| {
+        let addr = raw_streaming_server(move |_req, mut stream| {
             let bytes = bytes.clone();
             async move {
                 let headers =
@@ -833,4 +847,60 @@ mod fragmented_brotli {
 
         assert_eq!(resp.text().await.unwrap(), content);
     }
+}
+
+// ── Bug-Finding Tests ─────────────────────────────────────────────────
+
+// BUG: decompress.rs:323-341 compares the entire Content-Encoding header value as
+// raw bytes. A stacked encoding like "gzip, identity" doesn't match any arm and
+// falls through to `_ => None`, returning the body still compressed.
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn stacked_content_encoding_not_handled() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let content = "hello stacked encoding";
+
+    let mut gzip_encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    gzip_encoder.write_all(content.as_bytes()).unwrap();
+    let compressed = gzip_encoder.finish().unwrap();
+
+    let addr = raw_streaming_server(move |_request_bytes, mut stream| {
+        let compressed = compressed.clone();
+        async move {
+            use tokio::io::AsyncWriteExt;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Encoding: gzip, identity\r\n\
+                 Content-Length: {}\r\n\
+                 \r\n",
+                compressed.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&compressed).await.unwrap();
+            stream.flush().await.unwrap();
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, content,
+        "BUG: decompress.rs:328-341 matches Content-Encoding as exact bytes. \
+         Stacked encodings like 'gzip, identity' are not recognized and the body \
+         is returned still compressed."
+    );
 }

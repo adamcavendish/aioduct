@@ -11,6 +11,7 @@ repository = "https://github.com/adamcavendish/aioduct"
 
 [workspace.dependencies]
 aioduct = { path = "crates/aioduct" }
+aioduct-test-server = { path = "crates/aioduct-test-server" }
 
 async-io = "2"
 base64 = "0.22"

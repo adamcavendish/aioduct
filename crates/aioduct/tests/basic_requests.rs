@@ -1,13 +1,23 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::{echo_headers, h1_server, h1_server_with};
+use aioduct_test_server::raw::raw_server;
 
 use http_body_util::BodyExt;
 
 #[tokio::test]
 async fn test_get_request() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
@@ -24,7 +34,7 @@ async fn test_get_request() {
 
 #[tokio::test]
 async fn test_post_request() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
@@ -40,7 +50,7 @@ async fn test_post_request() {
 
 #[tokio::test]
 async fn test_connection_reuse() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let url = format!("http://{addr}/");
 
@@ -56,7 +66,7 @@ async fn test_connection_reuse() {
 
 #[tokio::test]
 async fn test_host_header_and_path() {
-    let addr = start_server_with(echo_headers).await;
+    let (addr, _counter) = h1_server_with(echo_headers).await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
@@ -80,7 +90,7 @@ async fn test_host_header_and_path() {
 
 #[tokio::test]
 async fn test_custom_header() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let custom = req
             .headers()
             .get("x-custom")
@@ -117,7 +127,7 @@ async fn test_missing_scheme() {
 }
 #[tokio::test]
 async fn test_query_params() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let query = req.uri().query().unwrap_or("none").to_owned();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(query))))
     })
@@ -138,7 +148,7 @@ async fn test_query_params() {
 
 #[tokio::test]
 async fn test_default_user_agent() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ua = req
             .headers()
             .get("user-agent")
@@ -165,7 +175,7 @@ async fn test_default_user_agent() {
 
 #[tokio::test]
 async fn test_custom_default_headers() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let custom = req
             .headers()
             .get("x-default")
@@ -194,7 +204,7 @@ async fn test_custom_default_headers() {
 
 #[tokio::test]
 async fn test_request_headers_override_defaults() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ua = req
             .headers()
             .get("user-agent")
@@ -220,7 +230,7 @@ async fn test_request_headers_override_defaults() {
 
 #[tokio::test]
 async fn test_put_request() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let method = req.method().to_string();
         let body = req.into_body().collect().await.unwrap().to_bytes();
         let resp_body = format!("method={method} body={}", String::from_utf8_lossy(&body));
@@ -247,7 +257,7 @@ async fn test_put_request() {
 
 #[tokio::test]
 async fn test_patch_request() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let method = req.method().to_string();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(method))))
     })
@@ -266,7 +276,7 @@ async fn test_patch_request() {
 
 #[tokio::test]
 async fn test_delete_request() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let method = req.method().to_string();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(method))))
     })
@@ -285,7 +295,7 @@ async fn test_delete_request() {
 
 #[tokio::test]
 async fn test_head_request() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let method = req.method().to_string();
         Ok::<_, Infallible>(
             Response::builder()
@@ -315,7 +325,7 @@ async fn test_head_request() {
 
 #[tokio::test]
 async fn test_query_params_with_existing_query() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let query = req.uri().query().unwrap_or("").to_string();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(query))))
     })
@@ -340,7 +350,7 @@ async fn test_query_params_with_existing_query() {
 
 #[tokio::test]
 async fn test_no_default_headers() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ua = req
             .headers()
             .get("user-agent")
@@ -367,7 +377,7 @@ async fn test_no_default_headers() {
 
 #[tokio::test]
 async fn test_custom_method() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let method = req.method().to_string();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(method))))
     })
@@ -386,7 +396,7 @@ async fn test_custom_method() {
 
 #[tokio::test]
 async fn test_multiple_headers_same_name() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let values: Vec<String> = req
             .headers()
             .get_all("x-multi")
@@ -418,7 +428,7 @@ async fn test_multiple_headers_same_name() {
 
 #[tokio::test]
 async fn auto_headers_no_accept_by_default() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         assert_eq!(req.method(), "GET");
         let accept = req
             .headers()
@@ -446,7 +456,7 @@ async fn auto_headers_no_accept_by_default() {
 
 #[tokio::test]
 async fn donot_set_content_length_0_if_have_no_body() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let headers = req.headers();
         assert!(
             headers.get("content-length").is_none(),
@@ -476,7 +486,7 @@ async fn donot_set_content_length_0_if_have_no_body() {
 
 #[tokio::test]
 async fn custom_user_agent_via_builder() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ua = req
             .headers()
             .get("user-agent")
@@ -503,7 +513,7 @@ async fn custom_user_agent_via_builder() {
 
 #[tokio::test]
 async fn response_text_and_content_length() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("Hello"))))
     })
     .await;
@@ -523,7 +533,7 @@ async fn response_text_and_content_length() {
 
 #[tokio::test]
 async fn response_bytes_and_content_length() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("Hello"))))
     })
     .await;
@@ -544,7 +554,7 @@ async fn response_bytes_and_content_length() {
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn response_json_string() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("\"Hello\""))))
     })
     .await;
@@ -564,7 +574,7 @@ async fn response_json_string() {
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn json_content_type_default() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ct = req
             .headers()
             .get("content-type")
@@ -591,7 +601,7 @@ async fn json_content_type_default() {
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn json_content_type_not_overridden_if_set() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ct = req
             .headers()
             .get("content-type")
@@ -621,7 +631,7 @@ async fn json_content_type_not_overridden_if_set() {
 
 #[tokio::test]
 async fn body_pipe_response_to_post() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         if req.uri().path() == "/get" {
             Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("pipe me"))))
         } else {
@@ -661,10 +671,9 @@ async fn body_pipe_response_to_post() {
 
 #[tokio::test]
 async fn raw_server_custom_response() {
-    let addr = start_raw_server(|_req| async {
-        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nraw".to_vec()
-    })
-    .await;
+    let addr =
+        raw_server(|_req| async { b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nraw".to_vec() })
+            .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let resp = client
@@ -687,7 +696,7 @@ async fn text_part() {
     );
     let ct = form.content_type();
 
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let ct = ct.clone();
         let expected_body = expected_body.clone();
         async move {
@@ -734,7 +743,7 @@ async fn stream_part() {
     );
     let ct = form.content_type();
 
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let ct = ct.clone();
         let expected_body = expected_body.clone();
         async move {
@@ -776,7 +785,7 @@ async fn file_part() {
     );
     let ct = form.content_type();
 
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let ct = ct.clone();
         let expected_body = expected_body.clone();
         async move {
@@ -806,7 +815,7 @@ async fn file_part() {
 
 #[tokio::test]
 async fn raw_server_chunked_response() {
-    let addr = start_raw_server(|_req| async {
+    let addr = raw_server(|_req| async {
         b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
             .to_vec()
     })

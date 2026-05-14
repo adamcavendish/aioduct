@@ -1,7 +1,16 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::h1_server_with;
 
 #[cfg(feature = "json")]
 #[tokio::test]
@@ -15,7 +24,7 @@ async fn test_json_request_and_response() {
         value: u32,
     }
 
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let content_type = req
             .headers()
             .get("content-type")
@@ -73,7 +82,7 @@ async fn test_json_request_and_response() {
 async fn test_form_data() {
     use http_body_util::BodyExt;
 
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ct = req
             .headers()
             .get("content-type")
@@ -111,7 +120,7 @@ async fn test_form_data() {
 }
 #[tokio::test]
 async fn test_sse_stream() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         let sse_body =
             "event: greeting\ndata: hello\n\ndata: world\n\nevent: done\ndata: bye\nid: 3\n\n";
         Ok::<_, Infallible>(
@@ -163,7 +172,7 @@ async fn test_sse_stream() {
 }
 #[tokio::test]
 async fn test_sse_multiline_data() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         let sse_body = "data: line1\ndata: line2\ndata: line3\n\n";
         Ok::<_, Infallible>(
             Response::builder()
@@ -194,7 +203,7 @@ async fn test_sse_multiline_data() {
 }
 #[tokio::test]
 async fn test_sse_comments_and_retry() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         let sse_body = ": this is a comment\nretry: 5000\ndata: after comment\n\n";
         Ok::<_, Infallible>(
             Response::builder()
@@ -227,7 +236,7 @@ async fn test_sse_comments_and_retry() {
 async fn test_multipart_text_fields() {
     use http_body_util::BodyExt;
 
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ct = req
             .headers()
             .get("content-type")
@@ -273,7 +282,7 @@ async fn test_multipart_text_fields() {
 async fn test_multipart_file_upload() {
     use http_body_util::BodyExt;
 
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let body = req.into_body().collect().await.unwrap().to_bytes();
         let body_str = String::from_utf8_lossy(&body).to_string();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body_str))))
@@ -313,7 +322,7 @@ async fn test_multipart_file_upload() {
 }
 #[tokio::test]
 async fn test_bytes_stream() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("chunk1chunk2chunk3"))))
     })
     .await;
@@ -336,7 +345,7 @@ async fn test_bytes_stream() {
 }
 #[tokio::test]
 async fn test_bytes_stream_empty() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
     })
     .await;
@@ -356,7 +365,7 @@ async fn test_bytes_stream_empty() {
 async fn test_streaming_body_upload() {
     use http_body_util::BodyExt;
 
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let body = req.into_body().collect().await.unwrap().to_bytes();
         Ok::<_, Infallible>(Response::new(Full::new(body)))
     })
@@ -389,7 +398,7 @@ async fn test_streaming_body_upload() {
 async fn test_streaming_body_from_request_body() {
     use http_body_util::BodyExt;
 
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let body = req.into_body().collect().await.unwrap().to_bytes();
         Ok::<_, Infallible>(Response::new(Full::new(body)))
     })
@@ -411,7 +420,7 @@ async fn test_streaming_body_from_request_body() {
 async fn test_chunk_download() {
     let data = "abcdefghijklmnopqrstuvwxyz0123456789";
 
-    let addr = start_server_with(move |req| async move {
+    let (addr, _counter) = h1_server_with(move |req| async move {
         let total = data.len();
         if req.method() == http::Method::HEAD {
             return Ok::<_, Infallible>(
@@ -457,7 +466,7 @@ async fn test_chunk_download() {
 }
 #[tokio::test]
 async fn test_chunk_download_fallback_no_range() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("no range support"))))
     })
     .await;
@@ -480,7 +489,7 @@ async fn test_large_body() {
     let data = "x".repeat(100_000);
     let data_clone = data.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let data = data_clone.clone();
         async move { Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(data)))) }
     })
@@ -499,7 +508,7 @@ async fn test_large_body() {
 }
 #[tokio::test]
 async fn test_empty_body_response() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
     })
     .await;
@@ -517,7 +526,7 @@ async fn test_empty_body_response() {
 }
 #[tokio::test]
 async fn test_chunk_download_head_fails() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         if req.method() == http::Method::HEAD {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -540,7 +549,7 @@ async fn test_chunk_download_head_fails() {
 }
 #[tokio::test]
 async fn test_chunk_download_fallback_to_get() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         if req.method() == http::Method::HEAD {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -575,7 +584,7 @@ async fn test_chunk_download_with_custom_chunks() {
     let data = "x".repeat(10000);
     let data_clone = data.clone();
 
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let data = data_clone.clone();
         async move {
             if req.method() == http::Method::HEAD {
@@ -618,7 +627,7 @@ async fn test_chunk_download_with_custom_chunks() {
 }
 #[tokio::test]
 async fn test_chunk_download_range_request_fails() {
-    let addr = start_server_with(move |req| async move {
+    let (addr, _counter) = h1_server_with(move |req| async move {
         if req.method() == http::Method::HEAD {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -644,4 +653,56 @@ async fn test_chunk_download_range_request_fails() {
         .await;
 
     assert!(result.is_err());
+}
+
+// ── Bug-Finding Tests ─────────────────────────────────────────────────
+
+// Upload echo: small body (curl test_07_01).
+#[tokio::test]
+async fn upload_echo_small() {
+    let (addr, _) = aioduct_test_server::h1::h1_echo_server().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .timeout(std::time::Duration::from_secs(5))
+        .build();
+
+    let data = "0123456789";
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .body(data)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains(data),
+        "echo server should return the uploaded data, got: {body}"
+    );
+}
+
+// Upload echo: large body (100KB).
+#[tokio::test]
+async fn upload_echo_large() {
+    let (addr, _) = aioduct_test_server::h1::h1_echo_server().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+
+    let data = "x".repeat(100 * 1024);
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .body(data.clone())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains(&data),
+        "echo server should return the full 100KB upload"
+    );
 }

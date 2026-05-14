@@ -5,10 +5,115 @@
 //! enabled.
 #![cfg(feature = "tokio")]
 
-#[macro_use]
-mod common;
+use aioduct_test_server::h1::{spawn_h1_server, spawn_h1_server_with};
 
-use common::multi_runtime::{spawn_server, spawn_server_with};
+/// Stamps out a test function for each supported runtime.
+///
+/// Inside the test body:
+/// - `new_client()` creates a default `HttpEngineSend` for the current runtime
+/// - `new_client_builder()` returns an `HttpEngineBuilder` for the current runtime
+/// - `spawn_server()` / `spawn_server_with(handler)` start a test server
+///   (these are runtime-agnostic, from the `aioduct_test_server` crate)
+macro_rules! runtime_test {
+    (
+        $(
+            $(#[$meta:meta])*
+            async fn $name:ident() $body:block
+        )*
+    ) => {
+        $(
+            #[cfg(feature = "tokio")]
+            paste::paste! {
+                #[tokio::test]
+                $(#[$meta])*
+                async fn [<$name _tokio>]() {
+                    #[allow(unused)]
+                    fn new_client() -> aioduct::HttpEngineSend<
+                        aioduct::runtime::TokioRuntime,
+                        aioduct::runtime::tokio_rt::TcpConnector,
+                    > {
+                        aioduct::HttpEngineSend::new(aioduct::runtime::tokio_rt::TcpConnector)
+                    }
+
+                    #[allow(unused)]
+                    fn new_client_builder() -> aioduct::HttpEngineBuilder<
+                        aioduct::runtime::TokioRuntime,
+                        aioduct::runtime::tokio_rt::TcpConnector,
+                    > {
+                        aioduct::HttpEngineSend::builder(aioduct::runtime::tokio_rt::TcpConnector)
+                    }
+
+                    #[allow(unused)]
+                    fn spawn_server() -> std::net::SocketAddr {
+                        spawn_h1_server()
+                    }
+
+                    #[allow(unused)]
+                    fn spawn_server_with<F, Fut>(handler: F) -> std::net::SocketAddr
+                    where
+                        F: Fn(hyper::Request<hyper::body::Incoming>) -> Fut + Send + Clone + 'static,
+                        Fut: std::future::Future<
+                                Output = Result<
+                                    hyper::Response<http_body_util::Full<bytes::Bytes>>,
+                                    std::convert::Infallible,
+                                >,
+                            > + Send,
+                    {
+                        spawn_h1_server_with(handler)
+                    }
+
+                    $body
+                }
+            }
+
+            #[cfg(feature = "smol")]
+            paste::paste! {
+                #[test]
+                $(#[$meta])*
+                fn [<$name _smol>]() {
+                    smol::block_on(async {
+                        #[allow(unused)]
+                        fn new_client() -> aioduct::HttpEngineSend<
+                            aioduct::runtime::smol_rt::SmolRuntime,
+                            aioduct::runtime::smol_rt::TcpConnector,
+                        > {
+                            aioduct::HttpEngineSend::new(aioduct::runtime::smol_rt::TcpConnector)
+                        }
+
+                        #[allow(unused)]
+                        fn new_client_builder() -> aioduct::HttpEngineBuilder<
+                            aioduct::runtime::smol_rt::SmolRuntime,
+                            aioduct::runtime::smol_rt::TcpConnector,
+                        > {
+                            aioduct::HttpEngineSend::builder(aioduct::runtime::smol_rt::TcpConnector)
+                        }
+
+                        #[allow(unused)]
+                        fn spawn_server() -> std::net::SocketAddr {
+                            spawn_h1_server()
+                        }
+
+                        #[allow(unused)]
+                        fn spawn_server_with<F, Fut>(handler: F) -> std::net::SocketAddr
+                        where
+                            F: Fn(hyper::Request<hyper::body::Incoming>) -> Fut + Send + Clone + 'static,
+                            Fut: std::future::Future<
+                                    Output = Result<
+                                        hyper::Response<http_body_util::Full<bytes::Bytes>>,
+                                        std::convert::Infallible,
+                                    >,
+                                > + Send,
+                        {
+                            spawn_h1_server_with(handler)
+                        }
+
+                        $body
+                    });
+                }
+            }
+        )*
+    };
+}
 
 runtime_test! {
     async fn test_basic_get() {
