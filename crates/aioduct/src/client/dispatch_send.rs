@@ -484,6 +484,78 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             },
         );
 
+        // H2/H3 multiplexing: if another task is already establishing an H2
+        // connection for this key, wait briefly and retry checkout instead of
+        // opening a redundant connection.
+        let may_h2 = force_h2c || is_https || self.core.http2_prior_knowledge;
+        if may_h2 && !self.core.no_connection_reuse && self.core.pool.mark_connecting_h2(&pool_key)
+        {
+            for _ in 0..20 {
+                R::sleep(std::time::Duration::from_millis(5)).await;
+                if let Some(mut conn) = self.core.pool.checkout(&pool_key) {
+                    self.core.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::PoolCheckoutComplete {
+                            outcome: observer::PoolOutcome::Hit,
+                            blocked_duration: pool_checkout_start.elapsed(),
+                        },
+                    );
+                    let req_method = request.method().clone();
+                    let transfer_start = Instant::now();
+                    self.core.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::RequestSent {
+                            duration: transfer_start.duration_since(pool_checkout_start),
+                        },
+                    );
+                    let result = HttpEngineCore::send_on_connection(
+                        &mut conn,
+                        request,
+                        original_uri.clone(),
+                    )
+                    .await;
+                    match result {
+                        Ok(mut resp) => {
+                            let transfer = transfer_start.elapsed();
+                            let protocol = HttpEngineCore::connection_protocol(&conn);
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::ResponseStarted {
+                                    waiting_duration: transfer,
+                                },
+                            );
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::ResponseComplete {
+                                    status: resp.status(),
+                                    protocol,
+                                    total_duration: request_start.elapsed(),
+                                },
+                            );
+                            resp.set_remote_addr(conn.remote_addr);
+                            resp.set_tls_info(conn.tls_info.clone());
+                            resp.set_timings(Some(
+                                TimingCollector::default()
+                                    .into_timings(Some(transfer), timing_start.elapsed()),
+                            ));
+                            self.core
+                                .attach_observer(&mut resp, &req_method, original_uri);
+                            self.core.checkin_connection(pool_key, conn);
+                            return Ok(resp);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+            // Timed out waiting — connect ourselves.
+            self.core.pool.unmark_connecting_h2(&pool_key);
+            let _ = self.core.pool.mark_connecting_h2(&pool_key);
+        }
+
         let proxy = self
             .core
             .proxy
@@ -747,6 +819,24 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             && matches!(pooled.conn, HttpConnection::H1(_))
         {
             pool_key.protocol = ProtocolHint::Auto;
+        }
+
+        // For H2/H3, check in the original connection immediately so concurrent
+        // requests can multiplex onto it, and use a clone for this request.
+        // Also, if another concurrent task already established an H2 connection
+        // for this key, prefer that (discard the redundant new connection).
+        let is_multiplex = pooled.is_h2_or_h3() && !self.core.no_connection_reuse;
+        if is_multiplex {
+            if let Some(existing) = self.core.pool.checkout(&pool_key) {
+                drop(pooled);
+                pooled = existing;
+            } else if let Some(cloned) = pooled.clone_for_multiplex() {
+                self.core.checkin_connection(pool_key.clone(), pooled);
+                pooled = cloned;
+            }
+            self.core.pool.unmark_connecting_h2(&pool_key);
+        } else if may_h2 {
+            self.core.pool.unmark_connecting_h2(&pool_key);
         }
 
         if let Some(ref proxy) = proxy

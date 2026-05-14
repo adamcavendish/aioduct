@@ -30,6 +30,8 @@ pub(crate) struct PooledConnection {
     pub(crate) bytes_sent: u64,
     /// Cumulative bytes received (response bodies) on this connection.
     pub(crate) bytes_received: u64,
+    /// True when this is a cloned handle for H2/H3 multiplexing.
+    pub(crate) is_multiplex_clone: bool,
 }
 
 impl PooledConnection {
@@ -47,6 +49,7 @@ impl PooledConnection {
             requests_served: 0,
             bytes_sent: 0,
             bytes_received: 0,
+            is_multiplex_clone: false,
         }
     }
 
@@ -64,6 +67,7 @@ impl PooledConnection {
             requests_served: 0,
             bytes_sent: 0,
             bytes_received: 0,
+            is_multiplex_clone: false,
         }
     }
 
@@ -82,6 +86,7 @@ impl PooledConnection {
             requests_served: 0,
             bytes_sent: 0,
             bytes_received: 0,
+            is_multiplex_clone: false,
         }
     }
 
@@ -103,5 +108,29 @@ impl PooledConnection {
             #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(_) => true,
         }
+    }
+
+    /// Clone the underlying send handle for H2/H3 multiplexing.
+    ///
+    /// Returns `None` for H1 connections (no multiplexing).
+    pub(crate) fn clone_for_multiplex(&self) -> Option<Self> {
+        let conn = match &self.conn {
+            HttpConnection::H1(_) => return None,
+            HttpConnection::H2(s) => HttpConnection::H2(s.clone()),
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(s) => HttpConnection::H3(s.clone()),
+        };
+        Some(Self {
+            conn,
+            remote_addr: self.remote_addr,
+            tls_info: self.tls_info.clone(),
+            tls_handshake_duration: self.tls_handshake_duration,
+            sans: self.sans.clone(),
+            created_at: self.created_at,
+            requests_served: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            is_multiplex_clone: true,
+        })
     }
 }

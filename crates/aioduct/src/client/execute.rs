@@ -53,7 +53,7 @@ impl HttpEngineCore {
         headers: &mut HeaderMap,
     ) -> (CacheLookupOutcome, Option<std::time::Duration>) {
         if let Some(ref cache) = self.cache {
-            match cache.lookup(method, uri) {
+            match cache.lookup(method, uri, headers) {
                 crate::cache::CacheLookup::Fresh(cached) => {
                     let http_resp = cached.into_http_response();
                     (
@@ -119,7 +119,17 @@ impl HttpEngineCore {
                 (Method::GET, None)
             }
             StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
-                (current_method, body_for_replay)
+                match body_for_replay {
+                    Some(body) => (current_method, Some(body)),
+                    None if current_method == Method::GET || current_method == Method::HEAD => {
+                        (current_method, None)
+                    }
+                    None => {
+                        return Err(Error::Redirect(
+                            "cannot replay streaming body for 307/308 redirect".into(),
+                        ));
+                    }
+                }
             }
             _ => return Err(Error::Redirect("unexpected redirect status".into())),
         };
@@ -136,6 +146,9 @@ impl HttpEngineCore {
             headers.remove(http::header::AUTHORIZATION);
             headers.remove(COOKIE);
             headers.remove(PROXY_AUTHORIZATION);
+            for name in &self.sensitive_headers {
+                headers.remove(name);
+            }
         }
 
         if self.referer

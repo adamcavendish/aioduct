@@ -97,8 +97,14 @@ impl CookieJar {
                 && let Some(cookie) = parse_set_cookie(s, domain)
             {
                 if cookie.expired {
-                    cookies.retain(|c| c.name != cookie.name);
-                } else if let Some(existing) = cookies.iter_mut().find(|c| c.name == cookie.name) {
+                    cookies.retain(|c| {
+                        !(c.name == cookie.name
+                            && c.domain == cookie.domain
+                            && c.path == cookie.path)
+                    });
+                } else if let Some(existing) = cookies.iter_mut().find(|c| {
+                    c.name == cookie.name && c.domain == cookie.domain && c.path == cookie.path
+                }) {
                     *existing = cookie;
                 } else {
                     cookies.push(cookie);
@@ -135,7 +141,7 @@ impl CookieJar {
                     continue;
                 }
                 if let Some(p) = &c.path
-                    && !request_path.starts_with(p.as_str())
+                    && !path_matches(request_path, p)
                 {
                     continue;
                 }
@@ -154,7 +160,14 @@ impl CookieJar {
             .join("; ");
 
         if let Ok(value) = cookie_header.parse() {
-            headers.insert(COOKIE, value);
+            if let Some(existing) = headers.get(COOKIE) {
+                let merged = format!("{}; {}", existing.to_str().unwrap_or(""), cookie_header);
+                if let Ok(merged_value) = merged.parse() {
+                    headers.insert(COOKIE, merged_value);
+                }
+            } else {
+                headers.insert(COOKIE, value);
+            }
         }
     }
 
@@ -204,8 +217,8 @@ pub(crate) fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Coo
             http_only = true;
         } else if let Some(val) = lower.strip_prefix("domain=") {
             domain = Some(val.trim_start_matches('.').to_owned());
-        } else if let Some(val) = lower.strip_prefix("path=") {
-            path = Some(val.to_owned());
+        } else if lower.starts_with("path=") {
+            path = Some(attr[5..].to_owned());
         } else if let Some(val) = lower.strip_prefix("samesite=") {
             same_site = match val.trim() {
                 "strict" => Some(SameSite::Strict),
@@ -218,13 +231,13 @@ pub(crate) fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Coo
             && seconds <= 0
         {
             expired = true;
-        } else if let Some(val) = attr
-            .strip_prefix("Expires=")
-            .or_else(|| attr.strip_prefix("expires="))
-            && let Some(expires_time) = parse_http_date(val.trim())
-            && expires_time < SystemTime::now()
-        {
-            expired = true;
+        } else if lower.starts_with("expires=") {
+            let val = &attr[8..];
+            if let Some(expires_time) = parse_http_date(val.trim())
+                && expires_time < SystemTime::now()
+            {
+                expired = true;
+            }
         }
     }
 
@@ -261,46 +274,110 @@ pub(crate) fn parse_set_cookie(header: &str, request_domain: &str) -> Option<Coo
 }
 
 fn parse_http_date(s: &str) -> Option<SystemTime> {
-    // Parse "Wed, 21 Oct 2015 07:28:00 GMT" (RFC 7231 preferred format)
+    parse_imf_fixdate(s)
+        .or_else(|| parse_rfc850(s))
+        .or_else(|| parse_asctime(s))
+}
+
+fn parse_imf_fixdate(s: &str) -> Option<SystemTime> {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() != 6 || parts[5] != "GMT" {
         return None;
     }
 
     let day: u64 = parts[1].parse().ok()?;
-    let month = match parts[2] {
-        "Jan" => 1u64,
-        "Feb" => 2,
-        "Mar" => 3,
-        "Apr" => 4,
-        "May" => 5,
-        "Jun" => 6,
-        "Jul" => 7,
-        "Aug" => 8,
-        "Sep" => 9,
-        "Oct" => 10,
-        "Nov" => 11,
-        "Dec" => 12,
-        _ => return None,
-    };
+    let month = parse_month(parts[2])?;
     let year: u64 = parts[3].parse().ok()?;
-    let time_parts: Vec<&str> = parts[4].split(':').collect();
-    if time_parts.len() != 3 {
+    let (hour, min, sec) = parse_time(parts[4])?;
+
+    compute_unix_time(year, month, day, hour, min, sec)
+}
+
+fn parse_rfc850(s: &str) -> Option<SystemTime> {
+    let (_, rest) = s.split_once(", ")?;
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    if parts.len() != 3 || parts[2] != "GMT" {
         return None;
     }
-    let hour: u64 = time_parts[0].parse().ok()?;
-    let min: u64 = time_parts[1].parse().ok()?;
-    let sec: u64 = time_parts[2].parse().ok()?;
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    if date_parts.len() != 3 {
+        return None;
+    }
+    let day: u64 = date_parts[0].parse().ok()?;
+    let month = parse_month(date_parts[1])?;
+    let mut year: u64 = date_parts[2].parse().ok()?;
+    if year < 70 {
+        year += 2000;
+    } else if year < 100 {
+        year += 1900;
+    }
+    let (hour, min, sec) = parse_time(parts[1])?;
 
-    // Days before each month (non-leap year)
-    let days_before_month = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    compute_unix_time(year, month, day, hour, min, sec)
+}
+
+fn parse_asctime(s: &str) -> Option<SystemTime> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() != 5 {
+        return None;
+    }
+    let month = parse_month(parts[1])?;
+    let day: u64 = parts[2].parse().ok()?;
+    let (hour, min, sec) = parse_time(parts[3])?;
+    let year: u64 = parts[4].parse().ok()?;
+
+    compute_unix_time(year, month, day, hour, min, sec)
+}
+
+fn parse_month(s: &str) -> Option<u64> {
+    match s {
+        "Jan" => Some(1),
+        "Feb" => Some(2),
+        "Mar" => Some(3),
+        "Apr" => Some(4),
+        "May" => Some(5),
+        "Jun" => Some(6),
+        "Jul" => Some(7),
+        "Aug" => Some(8),
+        "Sep" => Some(9),
+        "Oct" => Some(10),
+        "Nov" => Some(11),
+        "Dec" => Some(12),
+        _ => None,
+    }
+}
+
+fn parse_time(s: &str) -> Option<(u64, u64, u64)> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some((
+        parts[0].parse().ok()?,
+        parts[1].parse().ok()?,
+        parts[2].parse().ok()?,
+    ))
+}
+
+fn compute_unix_time(
+    year: u64,
+    month: u64,
+    day: u64,
+    hour: u64,
+    min: u64,
+    sec: u64,
+) -> Option<SystemTime> {
+    if year < 1970 {
+        return Some(SystemTime::UNIX_EPOCH);
+    }
+
+    let days_before_month = [0u64, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     let m = (month - 1) as usize;
     if m >= 12 {
         return None;
     }
 
     let mut days = (year - 1970) * 365;
-    // Add leap days
     if year > 1970 {
         days += (year - 1) / 4 - 1969 / 4;
         days -= (year - 1) / 100 - 1969 / 100;
@@ -316,6 +393,16 @@ fn parse_http_date(s: &str) -> Option<SystemTime> {
 
     let unix_secs = days * 86400 + hour * 3600 + min * 60 + sec;
     Some(SystemTime::UNIX_EPOCH + Duration::from_secs(unix_secs))
+}
+
+fn path_matches(request_path: &str, cookie_path: &str) -> bool {
+    if request_path == cookie_path {
+        return true;
+    }
+    if !request_path.starts_with(cookie_path) {
+        return false;
+    }
+    cookie_path.ends_with('/') || request_path.as_bytes().get(cookie_path.len()) == Some(&b'/')
 }
 
 fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {

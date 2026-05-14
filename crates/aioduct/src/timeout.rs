@@ -83,7 +83,7 @@ impl<S: crate::runtime::RuntimeCompletion> http_body::Body for ReadTimeoutBody<S
                     && let Poll::Ready(()) = sleep.poll(cx)
                 {
                     this.sleep.set(None);
-                    return Poll::Ready(Some(Err(crate::error::Error::Timeout)));
+                    return Poll::Ready(Some(Err(crate::error::Error::ReadTimeout)));
                 }
                 Poll::Pending
             }
@@ -145,7 +145,7 @@ impl<S: crate::runtime::RuntimeCompletion> http_body::Body for ReadTimeoutRespon
                     && let Poll::Ready(()) = sleep.poll(cx)
                 {
                     this.sleep.set(None);
-                    return Poll::Ready(Some(Err(crate::error::Error::Timeout)));
+                    return Poll::Ready(Some(Err(crate::error::Error::ReadTimeout)));
                 }
                 Poll::Pending
             }

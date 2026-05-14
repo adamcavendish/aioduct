@@ -29,6 +29,8 @@ pub struct CacheEntry {
     pub(crate) immutable: bool,
     pub(crate) stale_while_revalidate: Option<Duration>,
     pub(crate) stale_if_error: Option<Duration>,
+    pub(crate) vary: Option<Vec<String>>,
+    pub(crate) request_vary_headers: Option<Vec<(String, Option<String>)>>,
 }
 
 impl CacheEntry {
@@ -261,12 +263,21 @@ impl HttpCache {
         self.store.is_empty()
     }
 
-    pub(crate) fn lookup(&self, method: &Method, uri: &Uri) -> CacheLookup {
+    pub(crate) fn lookup(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        request_headers: &HeaderMap,
+    ) -> CacheLookup {
         if !is_cacheable_method(method) {
             return CacheLookup::Miss;
         }
 
         let Some(entry) = self.store.get(method, uri) else {
+            return CacheLookup::Miss;
+        };
+
+        if !vary_matches(&entry, request_headers) {
             return CacheLookup::Miss;
         };
 
@@ -328,6 +339,7 @@ impl HttpCache {
         status: StatusCode,
         headers: &HeaderMap,
         body: &Bytes,
+        request_headers: &HeaderMap,
     ) {
         if !is_cacheable_method(method) || !is_cacheable_status(status) {
             return;
@@ -338,6 +350,29 @@ impl HttpCache {
         if directives.no_store || directives.private {
             return;
         }
+
+        let vary = headers
+            .get(http::header::VARY)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .collect::<Vec<_>>()
+            });
+
+        let request_vary_headers = vary.as_ref().map(|vary_names| {
+            vary_names
+                .iter()
+                .map(|name| {
+                    let val = http::header::HeaderName::from_bytes(name.as_bytes())
+                        .ok()
+                        .and_then(|hn| request_headers.get(&hn))
+                        .and_then(|v| v.to_str().ok())
+                        .map(String::from);
+                    (name.clone(), val)
+                })
+                .collect::<Vec<_>>()
+        });
 
         let entry = CacheEntry {
             status,
@@ -362,6 +397,8 @@ impl HttpCache {
             immutable: directives.immutable,
             stale_while_revalidate: directives.stale_while_revalidate,
             stale_if_error: directives.stale_if_error,
+            vary,
+            request_vary_headers,
         };
 
         self.store.put(method, uri, entry);
@@ -584,6 +621,30 @@ fn is_unsafe_method(method: &Method) -> bool {
     )
 }
 
+fn vary_matches(entry: &CacheEntry, request_headers: &HeaderMap) -> bool {
+    let Some(ref vary_names) = entry.vary else {
+        return true;
+    };
+    let Some(ref stored) = entry.request_vary_headers else {
+        return true;
+    };
+    for (name, stored_val) in stored {
+        if name == "*" {
+            return false;
+        }
+        let current_val = http::header::HeaderName::from_bytes(name.as_bytes())
+            .ok()
+            .and_then(|hn| request_headers.get(&hn))
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        if current_val != *stored_val {
+            return false;
+        }
+    }
+    let _ = vary_names;
+    true
+}
+
 pub(crate) fn is_response_cacheable(status: StatusCode, headers: &HeaderMap) -> bool {
     if !is_cacheable_status(status) {
         return false;
@@ -617,9 +678,16 @@ mod tests {
         headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
         let body = Bytes::from("hello");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(resp) => {
                 assert_eq!(resp.status, StatusCode::OK);
                 assert_eq!(resp.body, Bytes::from("hello"));
@@ -636,7 +704,14 @@ mod tests {
         headers.insert(CACHE_CONTROL, "no-store".parse().unwrap());
         let body = Bytes::from("secret");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
         assert!(cache.is_empty());
     }
 
@@ -649,9 +724,16 @@ mod tests {
         headers.insert(ETAG, "\"abc123\"".parse().unwrap());
         let body = Bytes::from("data");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Stale { validators, .. } => {
                 assert_eq!(validators.etag.as_deref(), Some("\"abc123\""));
             }
@@ -667,7 +749,14 @@ mod tests {
         headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
         let body = Bytes::from("result");
 
-        cache.store(&Method::POST, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::POST,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
         assert!(cache.is_empty());
     }
 
@@ -679,7 +768,14 @@ mod tests {
         headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
         let body = Bytes::from("data");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
         assert_eq!(cache.len(), 1);
 
         cache.invalidate(&Method::POST, &uri);
@@ -700,6 +796,7 @@ mod tests {
                 StatusCode::OK,
                 &headers,
                 &Bytes::from("x"),
+                &HeaderMap::new(),
             );
         }
 
@@ -805,6 +902,7 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
         assert!(!cache.is_empty());
         cache.clear();
@@ -829,6 +927,7 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
         assert!(cache.is_empty());
     }
@@ -849,9 +948,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Stale { validators, .. } => {
                 assert_eq!(validators.etag.as_deref(), Some("\"v1\""));
             }
@@ -872,9 +972,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Stale { .. } => {}
             _ => panic!("expected stale due to no-cache"),
         }
@@ -892,9 +993,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(_) => {}
             _ => panic!("expected fresh for immutable entry"),
         }
@@ -915,9 +1017,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("stale-ok"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(resp) => {
                 assert_eq!(resp.body, Bytes::from("stale-ok"));
             }
@@ -941,9 +1044,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Stale { stale_if_error, .. } => {
                 assert_eq!(stale_if_error, Some(Duration::from_secs(600)));
             }
@@ -957,7 +1061,14 @@ mod tests {
         let uri: Uri = "http://example.com/head".parse().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
-        cache.store(&Method::HEAD, &uri, StatusCode::OK, &headers, &Bytes::new());
+        cache.store(
+            &Method::HEAD,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::new(),
+            &HeaderMap::new(),
+        );
         assert_eq!(cache.len(), 1);
     }
 
@@ -973,6 +1084,7 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
         assert_eq!(cache.len(), 1);
         cache.invalidate(&Method::DELETE, &uri);
@@ -991,6 +1103,7 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
         cache.invalidate(&Method::GET, &uri);
         assert_eq!(cache.len(), 1);
@@ -1008,8 +1121,9 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(_) => {}
             _ => panic!("expected fresh from s-maxage"),
         }
@@ -1031,7 +1145,7 @@ mod tests {
     fn test_cache_lookup_post_is_miss() {
         let cache = HttpCache::new();
         let uri: Uri = "http://example.com/".parse().unwrap();
-        match cache.lookup(&Method::POST, &uri) {
+        match cache.lookup(&Method::POST, &uri, &HeaderMap::new()) {
             CacheLookup::Miss => {}
             _ => panic!("expected miss for POST"),
         }
@@ -1058,9 +1172,16 @@ mod tests {
         headers.insert(EXPIRES, "Thu, 01 Jan 2099 00:00:00 GMT".parse().unwrap());
         let body = Bytes::from("expires-fresh");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(resp) => {
                 assert_eq!(resp.body, Bytes::from("expires-fresh"));
             }
@@ -1077,9 +1198,16 @@ mod tests {
         headers.insert(ETAG, "\"exp-v1\"".parse().unwrap());
         let body = Bytes::from("expired");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Stale { validators, .. } => {
                 assert_eq!(validators.etag.as_deref(), Some("\"exp-v1\""));
             }
@@ -1095,9 +1223,16 @@ mod tests {
         headers.insert(CACHE_CONTROL, "max-age=0".parse().unwrap());
         let body = Bytes::from("no validators");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Miss => {}
             _ => panic!("expected miss for stale entry without validators"),
         }
@@ -1114,9 +1249,16 @@ mod tests {
         );
         let body = Bytes::from("immut");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(resp) => {
                 assert_eq!(resp.body, Bytes::from("immut"));
             }
@@ -1175,9 +1317,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("data"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Stale { .. } => {}
             _ => panic!("expected stale for expired Expires"),
         }
@@ -1196,9 +1339,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("data"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(_) => {}
             _ => panic!("expected fresh for future Expires"),
         }
@@ -1216,9 +1360,16 @@ mod tests {
         );
         let body = Bytes::from("swr-expires");
 
-        cache.store(&Method::GET, &uri, StatusCode::OK, &headers, &body);
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &body,
+            &HeaderMap::new(),
+        );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(resp) => {
                 assert_eq!(resp.body, Bytes::from("swr-expires"));
             }
@@ -1282,6 +1433,7 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR,
             &headers,
             &Bytes::from("err"),
+            &HeaderMap::new(),
         );
         assert!(cache.is_empty());
     }
@@ -1330,12 +1482,13 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("custom"),
+            &HeaderMap::new(),
         );
 
         assert_eq!(cache.len(), 1);
         assert_eq!(put_count.load(Ordering::Relaxed), 1);
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(resp) => {
                 assert_eq!(resp.body, Bytes::from("custom"));
             }
@@ -1371,6 +1524,8 @@ mod tests {
             immutable: false,
             stale_while_revalidate: None,
             stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
         };
         store.put(&Method::GET, &uri, entry);
         assert_eq!(store.len(), 1);
@@ -1399,6 +1554,7 @@ mod tests {
                 StatusCode::OK,
                 &headers,
                 &Bytes::from("x"),
+                &HeaderMap::new(),
             );
         }
         assert_eq!(cache.len(), 5);
@@ -1423,6 +1579,8 @@ mod tests {
             immutable: false,
             stale_while_revalidate: None,
             stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
         };
 
         let uri_a: Uri = "http://example.com/a".parse().unwrap();
@@ -1460,6 +1618,8 @@ mod tests {
             immutable: false,
             stale_while_revalidate: None,
             stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
         };
 
         let uri_a: Uri = "http://example.com/a".parse().unwrap();
@@ -1491,6 +1651,8 @@ mod tests {
             immutable: false,
             stale_while_revalidate: None,
             stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
         };
         let head_entry = CacheEntry {
             body: Bytes::from("head-body"),
@@ -1556,6 +1718,7 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("data"),
+            &HeaderMap::new(),
         );
 
         cache.invalidate(&Method::POST, &uri);
@@ -1610,6 +1773,7 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("x"),
+            &HeaderMap::new(),
         );
         assert_eq!(cache.len(), 1);
         assert!(!cache.is_empty());
@@ -1633,9 +1797,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("ws-data"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(resp) => {
                 assert_eq!(resp.status, StatusCode::OK);
                 assert_eq!(resp.body, Bytes::from("ws-data"));
@@ -1659,9 +1824,10 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("old"),
+            &HeaderMap::new(),
         );
 
-        match cache.lookup(&Method::GET, &uri) {
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Stale { validators, .. } => {
                 assert_eq!(validators.etag.as_deref(), Some("\"custom-v1\""));
             }
@@ -1713,6 +1879,7 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("secret"),
+            &HeaderMap::new(),
         );
 
         assert_eq!(put_count.load(Ordering::Relaxed), 0);
@@ -1733,10 +1900,11 @@ mod tests {
             StatusCode::OK,
             &headers,
             &Bytes::from("shared"),
+            &HeaderMap::new(),
         );
 
         assert_eq!(cache2.len(), 1);
-        match cache2.lookup(&Method::GET, &uri) {
+        match cache2.lookup(&Method::GET, &uri, &HeaderMap::new()) {
             CacheLookup::Fresh(resp) => {
                 assert_eq!(resp.body, Bytes::from("shared"));
             }

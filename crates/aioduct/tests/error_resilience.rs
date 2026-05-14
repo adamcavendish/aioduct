@@ -543,10 +543,11 @@ async fn error_is_timeout_for_timeouts() {
         err.is_timeout(),
         "timeout must have is_timeout() == true, got: {err:?}"
     );
-    // Note: in this library, timeouts also classify as is_connect().
+    // Generic request timeout is not a connect error — it fires after
+    // the TCP connection succeeds but before headers arrive.
     assert!(
-        err.is_connect(),
-        "timeout should also be is_connect() == true per the error definition"
+        !err.is_connect(),
+        "generic timeout should NOT be is_connect(); use connect_timeout() for that"
     );
 }
 

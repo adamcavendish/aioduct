@@ -320,10 +320,18 @@ mod imp {
         body: RequestBoxBody,
         accept: &AcceptEncoding,
     ) -> RequestBoxBody {
-        let encoding = match headers.get(CONTENT_ENCODING) {
+        let encoding_raw = match headers.get(CONTENT_ENCODING) {
             Some(v) => v.as_bytes(),
             None => return body,
         };
+
+        let encoding_str = std::str::from_utf8(encoding_raw).unwrap_or("");
+        let encoding = encoding_str
+            .split(',')
+            .map(str::trim)
+            .rfind(|e| !e.eq_ignore_ascii_case("identity"))
+            .unwrap_or("")
+            .as_bytes();
 
         let decoder = match encoding {
             #[cfg(feature = "gzip")]

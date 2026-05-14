@@ -63,8 +63,9 @@ impl BandwidthLimiter {
             return Duration::ZERO;
         }
         let deficit = bytes_needed - available;
-        let bps = self.inner.bytes_per_sec.max(1);
-        Duration::from_nanos(deficit * 1_000_000_000 / bps)
+        let bps = self.inner.bytes_per_sec.max(1) as u128;
+        let nanos = (deficit as u128 * 1_000_000_000u128 / bps).min(u64::MAX as u128) as u64;
+        Duration::from_nanos(nanos)
     }
 
     fn refill(&self) {
@@ -81,7 +82,8 @@ impl BandwidthLimiter {
             return;
         }
 
-        let consumed_ns = new_bytes * 1_000_000_000 / inner.bytes_per_sec.max(1);
+        let consumed_ns =
+            (new_bytes as u128 * 1_000_000_000u128 / inner.bytes_per_sec.max(1) as u128) as u64;
         inner
             .last_refill_ns
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |l| {
@@ -119,6 +121,17 @@ fn now_nanos() -> u64 {
 }
 
 // ── BandwidthBody ──────────────────────────────────────────────────────
+
+// TODO: Replace with runtime-native sleep (parameterize BandwidthBody on
+// RuntimeCompletion, split send/local boxing like ReadTimeoutBody).
+fn schedule_wake(cx: &mut Context<'_>, wait: Duration) {
+    let wait = wait.max(Duration::from_millis(1));
+    let waker = cx.waker().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(wait);
+        waker.wake();
+    });
+}
 
 /// Body wrapper that enforces bandwidth limits on response data.
 ///
@@ -159,7 +172,7 @@ impl Body for BandwidthBody {
                     return Poll::Ready(Some(Ok(Frame::data(data))));
                 }
             }
-            cx.waker().wake_by_ref();
+            schedule_wake(cx, self.limiter.wait_duration(n));
             return Poll::Pending;
         }
 
@@ -173,8 +186,9 @@ impl Body for BandwidthBody {
                             let _ = self.limiter.try_consume(n);
                             Poll::Ready(Some(Ok(Frame::data(data))))
                         } else {
+                            let wait = self.limiter.wait_duration(n);
                             self.pending = Some(data);
-                            cx.waker().wake_by_ref();
+                            schedule_wake(cx, wait);
                             Poll::Pending
                         }
                     }
