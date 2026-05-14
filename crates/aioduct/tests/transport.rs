@@ -1,13 +1,32 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+use hyper::server::conn::http1 as server_http1;
+use hyper::service::service_fn;
+use tokio::net::TcpListener;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::TokioExec;
+use aioduct_test_server::h1::{h1_server, h1_server_with, hello};
+use aioduct_test_server::h2::h2_server_with;
+use aioduct_test_server::tls::{crypto_provider, install_crypto_provider};
 
 #[tokio::test]
 async fn test_custom_resolver() {
     use std::pin::Pin;
 
-    let target_addr = start_server().await;
+    let (target_addr, _counter) = h1_server().await;
 
     let resolver_addr = target_addr;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
@@ -33,7 +52,7 @@ async fn test_custom_resolver() {
 }
 #[tokio::test]
 async fn test_tcp_keepalive() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tcp_keepalive(Duration::from_secs(60))
         .build();
@@ -50,7 +69,7 @@ async fn test_tcp_keepalive() {
 }
 #[tokio::test]
 async fn test_local_address_binding() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
         .build();
@@ -67,7 +86,7 @@ async fn test_local_address_binding() {
 }
 #[tokio::test]
 async fn test_http2_config_accepted() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2(
             aioduct::Http2Config::new()
@@ -97,7 +116,7 @@ async fn test_http2_config_accepted() {
 }
 #[tokio::test]
 async fn test_tcp_fast_open_works() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tcp_fast_open(true)
@@ -115,7 +134,7 @@ async fn test_tcp_fast_open_works() {
 }
 #[tokio::test]
 async fn test_h2_prior_knowledge() {
-    let addr = start_h2_server_with(|_req| async {
+    let (addr, _counter) = h2_server_with(|_req| async {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("h2 response"))))
     })
     .await;
@@ -139,7 +158,7 @@ async fn test_h2_prior_knowledge_multiple_requests() {
     let count = Arc::new(AtomicU32::new(0));
     let count_clone = count.clone();
 
-    let addr = start_h2_server_with(move |_req| {
+    let (addr, _counter) = h2_server_with(move |_req| {
         let count = count_clone.clone();
         async move {
             count.fetch_add(1, Ordering::SeqCst);
@@ -202,7 +221,7 @@ async fn test_happy_eyeballs_single_addr() {
 }
 #[tokio::test]
 async fn test_tcp_keepalive_with_interval_and_retries() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tcp_keepalive(Duration::from_secs(60))
@@ -262,7 +281,7 @@ async fn test_unix_socket_connection() {
 }
 #[tokio::test]
 async fn test_happy_eyeballs_multi_addrs_integration() {
-    let addr = start_server_with(move |_req| async {
+    let (addr, _counter) = h1_server_with(move |_req| async {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("he-ok"))))
     })
     .await;
@@ -371,8 +390,8 @@ async fn test_timings_https_with_tls() {
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     let server_config = {
-        install_rustls_crypto_provider();
-        let mut cfg = rustls::ServerConfig::builder_with_provider(rustls_crypto_provider())
+        install_crypto_provider();
+        let mut cfg = rustls::ServerConfig::builder_with_provider(crypto_provider())
             .with_safe_default_protocol_versions()
             .expect("configured rustls provider does not support the default TLS versions")
             .with_no_client_auth()
@@ -397,18 +416,6 @@ async fn test_timings_https_with_tls() {
                 };
                 let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
 
-                #[derive(Clone)]
-                struct TokioExec;
-                impl<F> hyper::rt::Executor<F> for TokioExec
-                where
-                    F: std::future::Future + Send + 'static,
-                    F::Output: Send + 'static,
-                {
-                    fn execute(&self, fut: F) {
-                        tokio::spawn(fut);
-                    }
-                }
-
                 let builder = hyper::server::conn::http2::Builder::new(TokioExec);
                 builder.serve_connection(io, service_fn(hello)).await.ok();
             });
@@ -417,12 +424,11 @@ async fn test_timings_https_with_tls() {
 
     let mut root_store = rustls::RootCertStore::empty();
     root_store.add(cert_der).unwrap();
-    let mut client_tls_config =
-        rustls::ClientConfig::builder_with_provider(rustls_crypto_provider())
-            .with_safe_default_protocol_versions()
-            .expect("configured rustls provider does not support the default TLS versions")
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+    let mut client_tls_config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("configured rustls provider does not support the default TLS versions")
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
     let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
@@ -463,7 +469,7 @@ async fn h2_concurrent_requests() {
     let request_count = Arc::new(AtomicU32::new(0));
     let count_clone = request_count.clone();
 
-    let addr = start_h2_server_with(move |_req| {
+    let (addr, _counter) = h2_server_with(move |_req| {
         let count = count_clone.clone();
         async move {
             count.fetch_add(1, Ordering::SeqCst);
@@ -497,7 +503,7 @@ async fn h2_concurrent_requests() {
 
 #[tokio::test]
 async fn h2_basic_request() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let method = req.method().to_string();
         let version = format!("{:?}", req.version());
         let body = format!("method={method} version={version}");
@@ -527,7 +533,7 @@ async fn h2_basic_request() {
 async fn h2_post_with_body() {
     use http_body_util::BodyExt;
 
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         assert_eq!(req.method(), "POST");
         let body = req.into_body().collect().await.unwrap().to_bytes();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body.to_vec()))))
@@ -555,7 +561,7 @@ async fn h2_connection_reuse() {
     let request_count = Arc::new(AtomicU32::new(0));
     let count_clone = request_count.clone();
 
-    let addr = start_h2_server_with(move |_req| {
+    let (addr, _counter) = h2_server_with(move |_req| {
         let count = count_clone.clone();
         async move {
             count.fetch_add(1, Ordering::SeqCst);

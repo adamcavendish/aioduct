@@ -1,14 +1,26 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::h1_server_with;
 
 #[tokio::test]
 async fn test_retry_on_server_error() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -50,7 +62,7 @@ async fn test_retry_exhausted() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, Ordering::SeqCst);
@@ -86,7 +98,7 @@ async fn test_retry_disabled_on_status() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, Ordering::SeqCst);
@@ -123,7 +135,7 @@ async fn test_client_default_retry() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -164,7 +176,7 @@ async fn test_retry_429_too_many_requests() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -205,7 +217,7 @@ async fn test_retry_with_budget_exhaustion() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, Ordering::SeqCst);
@@ -243,7 +255,7 @@ async fn test_retry_with_timeout_succeeds_on_retry() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -277,7 +289,7 @@ async fn test_retry_budget_deposit_on_success() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -321,7 +333,7 @@ async fn test_retry_exhaustion_returns_last_error() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, Ordering::SeqCst);
@@ -357,7 +369,7 @@ async fn test_retry_with_retry_after_header() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);
@@ -397,7 +409,7 @@ async fn test_retry_on_status_disabled_no_retry() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             attempt.fetch_add(1, Ordering::SeqCst);
@@ -432,7 +444,7 @@ async fn test_client_default_retry_with_recovery() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);

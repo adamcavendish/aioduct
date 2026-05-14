@@ -1,7 +1,21 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::{h1_server, h1_server_with};
+use aioduct_test_server::raw::raw_server;
 
 #[tokio::test]
 async fn test_connection_refused() {
@@ -11,7 +25,7 @@ async fn test_connection_refused() {
 }
 #[tokio::test]
 async fn test_client_clone_shares_pool() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let cloned = client.clone();
 
@@ -36,7 +50,7 @@ async fn test_client_clone_shares_pool() {
 }
 #[tokio::test]
 async fn test_concurrent_requests() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let mut handles = Vec::new();
@@ -66,7 +80,7 @@ async fn test_no_connection_reuse() {
     let request_count = Arc::new(AtomicU32::new(0));
     let request_count_clone = request_count.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let count = request_count_clone.clone();
         async move {
             count.fetch_add(1, Ordering::SeqCst);
@@ -93,7 +107,7 @@ async fn test_no_connection_reuse() {
 }
 #[tokio::test]
 async fn test_remote_addr_is_set() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
@@ -111,7 +125,7 @@ async fn test_remote_addr_is_set() {
 async fn test_response_content_length() {
     let body = "x".repeat(42);
     let body_clone = body.clone();
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let body = body_clone.clone();
         async move { Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body)))) }
     })
@@ -129,7 +143,7 @@ async fn test_response_content_length() {
 }
 #[tokio::test]
 async fn test_response_version() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
@@ -143,7 +157,7 @@ async fn test_response_version() {
 }
 #[tokio::test]
 async fn test_error_for_status_integration() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(
             Response::builder()
                 .status(404)
@@ -167,8 +181,8 @@ async fn test_error_for_status_integration() {
 }
 #[tokio::test]
 async fn test_response_url_after_redirect() {
-    let final_addr = start_server().await;
-    let redirect_addr = start_server_with(move |_req| {
+    let (final_addr, _counter) = h1_server().await;
+    let (redirect_addr, _counter) = h1_server_with(move |_req| {
         let target = format!("http://{final_addr}/final");
         async move {
             Ok::<_, Infallible>(
@@ -205,7 +219,7 @@ async fn test_client_debug() {
 }
 #[tokio::test]
 async fn test_rate_limiter_throttles() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .rate_limiter(aioduct::RateLimiter::new(100, Duration::from_secs(1)))
@@ -228,7 +242,7 @@ async fn test_rate_limiter_throttles() {
 }
 #[tokio::test]
 async fn test_rate_limiter_sleep_path() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .rate_limiter(aioduct::RateLimiter::new(1, Duration::from_millis(200)))
@@ -260,7 +274,7 @@ async fn test_bandwidth_limiter_download() {
     let data = "x".repeat(500);
     let data_clone = data.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let data = data_clone.clone();
         async move { Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(data)))) }
     })
@@ -301,7 +315,7 @@ async fn test_https_only_rejects_http() {
 async fn overridden_dns_resolution() {
     use std::pin::Pin;
 
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("resolved"))))
     })
     .await;
@@ -333,7 +347,7 @@ async fn overridden_dns_resolution() {
 
 #[tokio::test]
 async fn resolve_builder_convenience() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
             "resolved via builder",
         ))))
@@ -353,7 +367,7 @@ async fn resolve_builder_convenience() {
 
 #[tokio::test]
 async fn resolve_to_addrs_builder_convenience() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("multi-addr"))))
     })
     .await;
@@ -374,7 +388,7 @@ async fn close_connection_after_idle_timeout() {
     let request_count = Arc::new(AtomicU32::new(0));
     let count_clone = request_count.clone();
 
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let count = count_clone.clone();
         async move {
             count.fetch_add(1, Ordering::SeqCst);
@@ -421,7 +435,7 @@ async fn error_connection_refused_with_url() {
 
 #[tokio::test]
 async fn error_for_status_with_reason_phrase() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(
             Response::builder()
                 .status(418)
@@ -470,7 +484,7 @@ async fn error_carries_url_context() {
 
 #[tokio::test]
 async fn error_for_status_display_includes_status_code() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(
             Response::builder()
                 .status(418)
@@ -515,7 +529,7 @@ async fn send_error_display_includes_url_for_connection_error() {
 
 #[tokio::test]
 async fn user_agent_builder() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let ua = req
             .headers()
             .get("user-agent")
@@ -541,7 +555,7 @@ async fn user_agent_builder() {
 
 #[tokio::test]
 async fn default_headers_applied() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let val = req
             .headers()
             .get("x-custom-default")
@@ -572,7 +586,7 @@ async fn default_headers_applied() {
 
 #[tokio::test]
 async fn request_header_overrides_default_header() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let val = req
             .headers()
             .get("authorization")
@@ -607,7 +621,7 @@ async fn request_header_overrides_default_header() {
 
 #[tokio::test]
 async fn http1_reason_phrase_in_status() {
-    let addr = start_raw_server(|_req| async {
+    let addr = raw_server(|_req| async {
         b"HTTP/1.1 418 I'm a Teapot\r\nContent-Length: 0\r\n\r\n".to_vec()
     })
     .await;
