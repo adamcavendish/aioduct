@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use aioduct::HttpEngine;
+use aioduct::TokioClient;
 use aioduct::observer::{
     ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
     RequestObserver, RequestPhase, TransferDirection,
 };
-use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
 /// Observer that emits structured tracing events for every request lifecycle phase.
@@ -253,7 +252,7 @@ async fn main() -> Result<(), aioduct::Error> {
         .with_timer(tracing_subscriber::fmt::time::uptime())
         .init();
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = TokioClient::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .request_observer(TracingObserver)
         .build();

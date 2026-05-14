@@ -30,7 +30,7 @@ async fn forward_basic_get_to_upstream() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/hello/world")
@@ -72,7 +72,7 @@ async fn forward_strip_prefix() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/api/v1/users")
@@ -114,7 +114,7 @@ async fn forward_preserves_query_string() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/search?q=rust&page=2")
@@ -160,7 +160,7 @@ async fn forward_strips_hop_by_hop_headers() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -219,7 +219,7 @@ async fn forward_adds_extra_headers() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -272,7 +272,7 @@ async fn forward_preserve_host() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -319,7 +319,7 @@ async fn forward_rewrites_host_by_default() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -372,7 +372,7 @@ async fn forward_post_with_body() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("POST")
         .uri("/submit")
@@ -418,7 +418,7 @@ async fn forward_on_request_hook() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -464,7 +464,7 @@ async fn forward_on_response_hook() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -514,7 +514,7 @@ async fn forward_timeout() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/slow")
@@ -560,7 +560,7 @@ async fn forward_remove_header() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -604,7 +604,7 @@ async fn forward_upstream_base_path() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/users/123")
@@ -668,7 +668,7 @@ async fn forward_h1_upgrade_websocket() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/ws")
@@ -732,7 +732,7 @@ async fn forward_h1_upgrade_preserves_headers() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/ws")
@@ -779,7 +779,7 @@ async fn forward_non_upgrade_still_strips_connection() {
             .unwrap();
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -862,7 +862,7 @@ async fn forward_h2_extended_connect() {
         }
     });
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
         .build();
 

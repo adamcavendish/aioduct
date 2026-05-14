@@ -1,8 +1,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
-use aioduct::HttpEngine;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
 use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
@@ -56,7 +55,7 @@ async fn main() -> Result<(), aioduct::Error> {
     let upstream_addr = start_upstream().await;
     println!("Upstream running on {upstream_addr}");
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = TokioClient::new(TcpConnector);
 
     // Simulate an incoming request to /api/users from 10.0.0.42
     let incoming_req = http::Request::builder()

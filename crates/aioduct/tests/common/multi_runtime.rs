@@ -73,7 +73,7 @@ pub fn spawn_server() -> std::net::SocketAddr {
 /// ```
 ///
 /// Inside the test body:
-/// - `new_client()` creates a default `HttpEngine` for the current runtime
+/// - `new_client()` creates a default `HttpEngineSend` for the current runtime
 /// - `new_client_builder()` returns an `HttpEngineBuilder` for the current runtime
 /// - `spawn_server()` / `spawn_server_with(handler)` start a test server
 ///   (these are runtime-agnostic, from the `common::multi_runtime` module)
@@ -92,11 +92,11 @@ macro_rules! runtime_test {
                 $(#[$meta])*
                 async fn [<$name _tokio>]() {
                     #[allow(unused)]
-                    fn new_client() -> aioduct::HttpEngine<
+                    fn new_client() -> aioduct::HttpEngineSend<
                         aioduct::runtime::TokioRuntime,
                         aioduct::runtime::tokio_rt::TcpConnector,
                     > {
-                        aioduct::HttpEngine::new(aioduct::runtime::tokio_rt::TcpConnector)
+                        aioduct::HttpEngineSend::new(aioduct::runtime::tokio_rt::TcpConnector)
                     }
 
                     #[allow(unused)]
@@ -104,7 +104,7 @@ macro_rules! runtime_test {
                         aioduct::runtime::TokioRuntime,
                         aioduct::runtime::tokio_rt::TcpConnector,
                     > {
-                        aioduct::HttpEngine::builder(aioduct::runtime::tokio_rt::TcpConnector)
+                        aioduct::HttpEngineSend::builder(aioduct::runtime::tokio_rt::TcpConnector)
                     }
 
                     $body
@@ -118,11 +118,11 @@ macro_rules! runtime_test {
                 fn [<$name _smol>]() {
                     smol::block_on(async {
                         #[allow(unused)]
-                        fn new_client() -> aioduct::HttpEngine<
+                        fn new_client() -> aioduct::HttpEngineSend<
                             aioduct::runtime::smol_rt::SmolRuntime,
                             aioduct::runtime::smol_rt::TcpConnector,
                         > {
-                            aioduct::HttpEngine::new(aioduct::runtime::smol_rt::TcpConnector)
+                            aioduct::HttpEngineSend::new(aioduct::runtime::smol_rt::TcpConnector)
                         }
 
                         #[allow(unused)]
@@ -130,7 +130,7 @@ macro_rules! runtime_test {
                             aioduct::runtime::smol_rt::SmolRuntime,
                             aioduct::runtime::smol_rt::TcpConnector,
                         > {
-                            aioduct::HttpEngine::builder(aioduct::runtime::smol_rt::TcpConnector)
+                            aioduct::HttpEngineSend::builder(aioduct::runtime::smol_rt::TcpConnector)
                         }
 
                         $body

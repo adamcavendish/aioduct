@@ -1,8 +1,5 @@
-use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
-use aioduct::{Error, HttpEngine};
-
-type TokioClient = HttpEngine<TokioRuntime, TcpConnector>;
+use aioduct::{Error, TokioClient};
 
 #[tokio::main]
 async fn main() {

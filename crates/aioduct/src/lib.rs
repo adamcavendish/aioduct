@@ -186,9 +186,13 @@ pub use problem::ProblemDetails;
 #[cfg(not(target_arch = "wasm32"))]
 pub use chunk_download::ChunkDownload;
 #[cfg(not(target_arch = "wasm32"))]
-pub use client::HttpEngine;
-#[cfg(not(target_arch = "wasm32"))]
 pub use client::HttpEngineBuilder;
+#[cfg(not(target_arch = "wasm32"))]
+pub use client::HttpEngineCore;
+#[cfg(not(target_arch = "wasm32"))]
+pub use client::HttpEngineLocal;
+#[cfg(not(target_arch = "wasm32"))]
+pub use client::HttpEngineSend;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use forward::ForwardBuilder;
@@ -217,7 +221,7 @@ pub use traits::OwnedWasiRequestBuilder;
 #[cfg(feature = "wasm")]
 pub use traits::OwnedWasmRequestBuilder;
 #[cfg(not(target_arch = "wasm32"))]
-pub use traits::{HttpClientLocal, OwnedRequestBuilderLocal, OwnedRequestBuilderSend};
+pub use traits::{OwnedRequestBuilderLocal, OwnedRequestBuilderSend};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[deprecated(since = "0.2.0", note = "Renamed to `OwnedRequestBuilderSend`")]
@@ -226,26 +230,27 @@ pub type OwnedRequestBuilder<R, C> = OwnedRequestBuilderSend<R, C>;
 #[cfg(not(target_arch = "wasm32"))]
 pub use upgrade::Upgraded;
 
-/// Convenience alias for [`HttpEngine`] using the Tokio runtime.
+/// Convenience alias for [`HttpEngineSend`] using the Tokio runtime.
 #[cfg(feature = "tokio")]
-pub type TokioClient = HttpEngine<runtime::tokio_rt::TokioRuntime, runtime::tokio_rt::TcpConnector>;
+pub type TokioClient =
+    HttpEngineSend<runtime::tokio_rt::TokioRuntime, runtime::tokio_rt::TcpConnector>;
 
 /// Alias for [`TokioClient`].
 #[cfg(feature = "tokio")]
 pub type TokioEngine = TokioClient;
 
-/// Convenience alias for [`HttpEngine`] using the smol runtime.
+/// Convenience alias for [`HttpEngineSend`] using the smol runtime.
 #[cfg(feature = "smol")]
-pub type SmolClient = HttpEngine<runtime::smol_rt::SmolRuntime, runtime::smol_rt::TcpConnector>;
+pub type SmolClient = HttpEngineSend<runtime::smol_rt::SmolRuntime, runtime::smol_rt::TcpConnector>;
 
 /// Alias for [`SmolClient`].
 #[cfg(feature = "smol")]
 pub type SmolEngine = SmolClient;
 
-/// Convenience alias for [`HttpEngine`] using the compio runtime.
+/// Convenience alias for [`HttpEngineLocal`] using the compio runtime.
 #[cfg(feature = "compio")]
 pub type CompioClient =
-    HttpEngine<runtime::compio_rt::CompioRuntime, runtime::compio_rt::TcpConnector>;
+    HttpEngineLocal<runtime::compio_rt::CompioRuntime, runtime::compio_rt::TcpConnector>;
 
 /// Alias for [`CompioClient`].
 #[cfg(feature = "compio")]

@@ -13,13 +13,13 @@ fn bench_h1_pool_vs_no_pool(c: &mut Criterion) {
     let url = format!("http://{addr}/");
 
     let pooled = rt.block_on(async {
-        aioduct::HttpEngine::<
+        aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::new(aioduct::runtime::tokio_rt::TcpConnector)
     });
     let no_pool = rt.block_on(async {
-        aioduct::HttpEngine::<
+        aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::builder(aioduct::runtime::tokio_rt::TcpConnector)
@@ -68,7 +68,7 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
         .initial_connection_window_size(4 * 1024 * 1024)
         .max_concurrent_reset_streams(1024);
     let pooled = rt.block_on(async {
-        aioduct::HttpEngine::<
+        aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::builder(aioduct::runtime::tokio_rt::TcpConnector)
@@ -77,7 +77,7 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
         .build()
     });
     let no_pool = rt.block_on(async {
-        aioduct::HttpEngine::<
+        aioduct::HttpEngineSend::<
             aioduct::runtime::TokioRuntime,
             aioduct::runtime::tokio_rt::TcpConnector,
         >::builder(aioduct::runtime::tokio_rt::TcpConnector)

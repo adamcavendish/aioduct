@@ -6,9 +6,9 @@ use crate::pool::PooledConnection;
 use crate::proxy::ProxyConfig;
 use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 
-use super::HttpEngine;
+use super::HttpEngineSend;
 
-impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub(super) async fn connect_via_proxy(
         &self,
         proxy: &ProxyConfig,
@@ -18,9 +18,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
         let proxy_addr = self
+            .core
             .resolve_authority(proxy_authority, default_port)
             .await?;
-        let mut tcp_stream = if let Some(local_addr) = self.local_address {
+        let mut tcp_stream = if let Some(local_addr) = self.core.local_address {
             self.connector
                 .connect_bound(proxy_addr, local_addr)
                 .await
@@ -32,19 +33,19 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 .map_err(Error::Io)?
         };
         #[cfg(target_os = "linux")]
-        if let Some(ref iface) = self.interface {
+        if let Some(ref iface) = self.core.interface {
             tcp_stream.bind_device(iface).map_err(Error::Io)?;
         }
-        if let Some(time) = self.tcp_keepalive {
+        if let Some(time) = self.core.tcp_keepalive {
             tcp_stream
                 .set_keepalive(
                     time,
-                    self.tcp_keepalive_interval,
-                    self.tcp_keepalive_retries,
+                    self.core.tcp_keepalive_interval,
+                    self.core.tcp_keepalive_retries,
                 )
                 .map_err(Error::Io)?;
         }
-        if self.tcp_fast_open {
+        if self.core.tcp_fast_open {
             let _ = tcp_stream.set_fast_open();
         }
 
@@ -165,7 +166,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
-        if self.http2_prior_knowledge || force_h2c {
+        if self.core.http2_prior_knowledge || force_h2c {
             Box::pin(self.connect_h2_prior_knowledge(stream))
         } else {
             Box::pin(self.connect_h1(stream))
@@ -193,7 +194,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         let mut builder = hyper::client::conn::http2::Builder::new(
             crate::runtime::executor::poll_executor::<R>(),
         );
-        if let Some(ref h2) = self.http2 {
+        if let Some(ref h2) = self.core.http2 {
             h2.apply(&mut builder);
         }
         let (sender, conn) = builder.handshake(stream).await?;
@@ -218,6 +219,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
         let tls_start = Instant::now();
 
         let tls_connector = self
+            .core
             .tls
             .as_ref()
             .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
@@ -251,7 +253,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngine<R, C> {
                 let mut builder = hyper::client::conn::http2::Builder::new(
                     crate::runtime::executor::poll_executor::<R>(),
                 );
-                if let Some(ref h2) = self.http2 {
+                if let Some(ref h2) = self.core.http2 {
                     h2.apply(&mut builder);
                 }
                 let (sender, conn) = builder.handshake(tls_stream).await?;

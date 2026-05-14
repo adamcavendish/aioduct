@@ -42,7 +42,7 @@ pub trait RuntimePoll: RuntimeCompletion<Sleep: Send> + Send + Sync {
 /// Post-connection socket configuration (keepalive, fast open, device binding).
 ///
 /// Implemented per-runtime on stream adapter types (`TokioIo`, `SmolIo`, etc.).
-/// Used by [`HttpEngine`](crate::HttpEngine) to apply socket options after
+/// Used by [`HttpEngineSend`](crate::HttpEngineSend) to apply socket options after
 /// connection establishment.
 pub trait SocketConfig {
     /// Configure TCP keepalive on this stream.
@@ -108,7 +108,7 @@ pub trait Connector: 'static {
 /// `Send`-safe connector for poll-based runtimes (tokio, smol).
 ///
 /// Same interface as [`Connector`] but with `Send` futures. This is the trait
-/// used by [`HttpEngine`](crate::HttpEngine) and the tower connector layer.
+/// used by [`HttpEngineSend`](crate::HttpEngineSend) and the tower connector layer.
 /// Completion-based runtimes (compio) implement only [`Connector`].
 pub trait ConnectorSend: Clone + Send + Sync + 'static {
     /// The byte stream type passed to hyper for HTTP framing.

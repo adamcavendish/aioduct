@@ -4,21 +4,21 @@ use http::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
 
 use super::{HttpClient, RequestBuilderExt, ResponseExt};
-use crate::client::HttpEngine;
+use crate::client::HttpEngineSend;
 use crate::error::{Error, SendError};
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
-/// An owned request builder that does not borrow the [`HttpEngine`].
+/// An owned request builder that does not borrow the [`HttpEngineSend`].
 ///
-/// Returned by [`HttpClient::request()`] on [`HttpEngine`]. Internally wraps
+/// Returned by [`HttpClient::request()`] on [`HttpEngineSend`]. Internally wraps
 /// a standard [`RequestBuilderSend`](crate::request::RequestBuilderSend) with an
 /// owned client reference.
 pub struct OwnedRequestBuilderSend<R: RuntimePoll, C: ConnectorSend> {
     inner: crate::request::RequestBuilderSend<'static, R, C>,
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> HttpClient for HttpEngine<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend> HttpClient for HttpEngineSend<R, C> {
     type RequestBuilder = OwnedRequestBuilderSend<R, C>;
 
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {

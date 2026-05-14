@@ -1,7 +1,5 @@
-use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
-use aioduct::{HttpEngine, OtelMiddleware};
-
+use aioduct::{OtelMiddleware, TokioClient};
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // Set up OpenTelemetry with stdout exporter for demo purposes
@@ -12,7 +10,7 @@ async fn main() -> Result<(), aioduct::Error> {
 
     opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = TokioClient::builder(TcpConnector)
         .middleware(OtelMiddleware::new())
         .build();
 
