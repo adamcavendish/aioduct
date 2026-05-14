@@ -1,11 +1,23 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::{h1_server, h1_server_with};
 
 #[tokio::test]
 async fn test_middleware_adds_request_header() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let val = req
             .headers()
             .get("x-middleware")
@@ -40,7 +52,7 @@ async fn test_middleware_adds_request_header() {
 async fn test_middleware_modifies_response_header() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     struct ResponseTagger {
         called: Arc<AtomicBool>,
@@ -87,7 +99,7 @@ async fn test_middleware_modifies_response_header() {
 }
 #[tokio::test]
 async fn test_multiple_middleware_ordering() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let val = req
             .headers()
             .get("x-order")
@@ -169,8 +181,8 @@ async fn test_middleware_on_redirect_callback() {
         }
     }
 
-    let final_addr = start_server().await;
-    let redirect_addr = start_server_with(move |_req| {
+    let (final_addr, _counter) = h1_server().await;
+    let (redirect_addr, _counter) = h1_server_with(move |_req| {
         let target = format!("http://{final_addr}/");
         async move {
             Ok::<_, Infallible>(
@@ -226,7 +238,7 @@ async fn test_middleware_on_retry_callback() {
 
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();
-    let addr = start_server_with(move |_req| {
+    let (addr, _counter) = h1_server_with(move |_req| {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, Ordering::SeqCst);

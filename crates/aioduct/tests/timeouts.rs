@@ -1,11 +1,21 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::{h1_server, h1_server_with};
 
 #[tokio::test]
 async fn test_request_timeout_triggers() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_secs(5)).await;
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow"))))
     })
@@ -26,7 +36,7 @@ async fn test_request_timeout_triggers() {
 
 #[tokio::test]
 async fn test_request_timeout_completes_in_time() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
 
     let resp = client
@@ -44,7 +54,7 @@ async fn test_request_timeout_completes_in_time() {
 
 #[tokio::test]
 async fn test_client_default_timeout_triggers() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_secs(5)).await;
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow"))))
     })
@@ -62,7 +72,7 @@ async fn test_client_default_timeout_triggers() {
 
 #[tokio::test]
 async fn test_request_timeout_overrides_client_timeout() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_millis(100)).await;
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("delayed"))))
     })
@@ -88,7 +98,7 @@ async fn test_request_timeout_overrides_client_timeout() {
 async fn test_read_timeout_does_not_apply_to_headers() {
     // Note: aioduct's read_timeout only applies to body reads, not header wait.
     // Use request timeout for header wait timeouts.
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_millis(150)).await;
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow headers"))))
     })
@@ -195,7 +205,7 @@ async fn test_read_timeout_allows_slow_but_steady_body() {
 
 #[tokio::test]
 async fn test_content_length_preserved_through_timeout() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         Ok::<_, Infallible>(
             Response::builder()
                 .header("content-length", "5")
@@ -240,7 +250,7 @@ async fn test_connect_timeout() {
 
 #[tokio::test]
 async fn client_timeout_triggers_on_slow_response() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow"))))
     })
@@ -258,7 +268,7 @@ async fn client_timeout_triggers_on_slow_response() {
 
 #[tokio::test]
 async fn per_request_timeout_triggers_on_slow_response() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow"))))
     })
@@ -301,7 +311,7 @@ async fn connect_timeout_with_unreachable_ip() {
 async fn read_timeout_does_not_apply_to_headers() {
     // Unlike reqwest, aioduct's read_timeout only applies to body reads.
     // Use request timeout for header wait timeouts.
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_millis(200)).await;
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow headers"))))
     })
@@ -325,7 +335,7 @@ async fn read_timeout_does_not_apply_to_headers() {
 
 #[tokio::test]
 async fn request_timeout_overrides_client_timeout() {
-    let addr = start_server_with(|_req| async {
+    let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_millis(150)).await;
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("delayed"))))
     })
@@ -349,7 +359,7 @@ async fn request_timeout_overrides_client_timeout() {
 
 #[tokio::test]
 async fn timeout_fast_response_succeeds() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
@@ -370,7 +380,7 @@ async fn timeout_fast_response_succeeds() {
 
 #[tokio::test]
 async fn connect_timeout_does_not_affect_fast_connects() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connect_timeout(Duration::from_secs(5))

@@ -1,13 +1,25 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::sync::Arc;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+use tokio::net::TcpListener;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::{h1_server, h1_server_with};
+use aioduct_test_server::raw::raw_server;
 
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 #[tokio::test]
 async fn test_http_proxy() {
-    let proxy_addr = start_server_with(|req| async move {
+    let (proxy_addr, _counter) = h1_server_with(|req| async move {
         let uri = req.uri().to_string();
         let host = req
             .headers()
@@ -40,7 +52,7 @@ async fn test_http_proxy() {
 #[tokio::test]
 async fn test_proxy_settings_no_proxy_bypass() {
     // Set up a "proxy" server that labels responses
-    let proxy_addr = start_server_with(|req| async move {
+    let (proxy_addr, _counter) = h1_server_with(|req| async move {
         let uri = req.uri().to_string();
         let body = format!("proxied: {uri}");
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
@@ -48,7 +60,7 @@ async fn test_proxy_settings_no_proxy_bypass() {
     .await;
 
     // Set up the actual target server
-    let target_addr = start_server_with(|_req| async move {
+    let (target_addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
     })
     .await;
@@ -83,7 +95,7 @@ async fn test_proxy_settings_no_proxy_bypass() {
 }
 #[tokio::test]
 async fn test_no_proxy_wildcard_bypasses_all() {
-    let target_addr = start_server_with(|_req| async move {
+    let (target_addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
     })
     .await;
@@ -130,7 +142,7 @@ async fn test_no_proxy_bare_domain_matches_subdomains() {
 async fn test_socks5_proxy() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let target_addr = start_server().await;
+    let (target_addr, _counter) = h1_server().await;
 
     // Minimal SOCKS5 proxy server
     let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -195,7 +207,7 @@ async fn test_socks5_proxy() {
 async fn test_socks5_proxy_with_auth() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let target_addr = start_server().await;
+    let (target_addr, _counter) = h1_server().await;
 
     let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let socks_addr = socks_listener.local_addr().unwrap();
@@ -274,7 +286,7 @@ async fn test_http_proxy_basic_auth() {
     let auth_seen = Arc::new(AtomicBool::new(false));
     let auth_seen_clone = auth_seen.clone();
 
-    let proxy_addr = start_server_with(move |req| {
+    let (proxy_addr, _counter) = h1_server_with(move |req| {
         let auth_seen = auth_seen_clone.clone();
         async move {
             // For plain HTTP proxy, Proxy-Authorization should be in the request headers
@@ -314,7 +326,7 @@ async fn test_http_proxy_basic_auth() {
 
 #[tokio::test]
 async fn test_http_proxy_preserves_host_header() {
-    let proxy_addr = start_server_with(|req| async move {
+    let (proxy_addr, _counter) = h1_server_with(|req| async move {
         let host = req
             .headers()
             .get("host")
@@ -355,7 +367,7 @@ async fn test_connect_tunnel_includes_proxy_auth() {
     let auth_seen = Arc::new(AtomicBool::new(false));
     let auth_seen_clone = auth_seen.clone();
 
-    let proxy_addr = start_raw_server(move |req_bytes| {
+    let proxy_addr = raw_server(move |req_bytes| {
         let auth_seen = auth_seen_clone.clone();
         async move {
             let req_str = String::from_utf8_lossy(&req_bytes);
@@ -406,7 +418,7 @@ async fn test_connect_tunnel_includes_proxy_auth() {
 
 #[tokio::test]
 async fn test_connect_tunnel_detects_auth_required() {
-    let proxy_addr = start_raw_server(|req_bytes| async move {
+    let proxy_addr = raw_server(|req_bytes| async move {
         let req_str = String::from_utf8_lossy(&req_bytes);
 
         if req_str.starts_with("CONNECT") {
@@ -440,7 +452,7 @@ async fn test_connect_tunnel_detects_auth_required() {
 #[tokio::test]
 async fn test_proxy_settings_routes_http_and_https_separately() {
     // Set up an HTTP proxy server
-    let http_proxy_addr = start_server_with(|req| async move {
+    let (http_proxy_addr, _counter) = h1_server_with(|req| async move {
         let uri = req.uri().to_string();
         let body = format!("http-proxy: {uri}");
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
@@ -448,7 +460,7 @@ async fn test_proxy_settings_routes_http_and_https_separately() {
     .await;
 
     // Set up the actual target server for direct access
-    let target_addr = start_server_with(|_req| async move {
+    let (target_addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
     })
     .await;
@@ -491,7 +503,7 @@ async fn test_connect_tunnel_target_authority() {
     let connect_target = Arc::new(std::sync::Mutex::new(String::new()));
     let connect_target_clone = connect_target.clone();
 
-    let proxy_addr = start_raw_server(move |req_bytes| {
+    let proxy_addr = raw_server(move |req_bytes| {
         let connect_target = connect_target_clone.clone();
         async move {
             let req_str = String::from_utf8_lossy(&req_bytes);
@@ -531,7 +543,7 @@ async fn test_connect_tunnel_default_port() {
     let connect_target = Arc::new(std::sync::Mutex::new(String::new()));
     let connect_target_clone = connect_target.clone();
 
-    let proxy_addr = start_raw_server(move |req_bytes| {
+    let proxy_addr = raw_server(move |req_bytes| {
         let connect_target = connect_target_clone.clone();
         async move {
             let req_str = String::from_utf8_lossy(&req_bytes);

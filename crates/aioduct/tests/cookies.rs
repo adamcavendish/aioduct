@@ -1,13 +1,25 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::h1_server_with;
 
 use aioduct::SameSite;
 
 #[tokio::test]
 async fn test_cookie_jar_stores_and_sends() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let cookie = req
             .headers()
             .get("cookie")
@@ -53,7 +65,7 @@ async fn test_cookie_jar_stores_and_sends() {
 }
 #[tokio::test]
 async fn test_cookie_jar_multiple_cookies() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let cookie = req
             .headers()
             .get("cookie")
@@ -114,7 +126,7 @@ async fn test_cookie_jar_multiple_cookies() {
 }
 #[tokio::test]
 async fn test_no_cookie_jar_no_cookies() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let has_cookie = req.headers().contains_key("cookie");
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
             "has_cookie={has_cookie}"
@@ -137,7 +149,7 @@ async fn test_no_cookie_jar_no_cookies() {
 async fn test_cookie_jar_same_host_shared() {
     let jar = aioduct::CookieJar::new();
 
-    let addr1 = start_server_with(|req| async move {
+    let (addr1, _counter) = h1_server_with(|req| async move {
         let cookie = req
             .headers()
             .get("cookie")
@@ -183,7 +195,7 @@ async fn test_cookie_jar_same_host_shared() {
 async fn test_cookie_store_max_age_zero() {
     let request_count = Arc::new(AtomicU32::new(0));
     let request_count_clone = request_count.clone();
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let count = request_count_clone.clone();
         async move {
             let n = count.fetch_add(1, Ordering::SeqCst);
@@ -234,7 +246,7 @@ async fn test_cookie_store_max_age_zero() {
 async fn test_cookie_store_expired() {
     let request_count = Arc::new(AtomicU32::new(0));
     let request_count_clone = request_count.clone();
-    let addr = start_server_with(move |req| {
+    let (addr, _counter) = h1_server_with(move |req| {
         let count = request_count_clone.clone();
         async move {
             let n = count.fetch_add(1, Ordering::SeqCst);
@@ -286,7 +298,7 @@ async fn test_cookie_store_expired() {
 }
 #[tokio::test]
 async fn test_cookie_store_path_scoping() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         if req.uri().path() == "/set" {
             Ok::<_, Infallible>(
                 Response::builder()
@@ -343,7 +355,7 @@ async fn test_cookie_store_path_scoping() {
 }
 #[tokio::test]
 async fn test_cookie_store_overwrite() {
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         match req.uri().path() {
             "/set1" => Ok::<_, Infallible>(
                 Response::builder()
@@ -397,7 +409,7 @@ async fn test_cookie_store_overwrite() {
 
 #[tokio::test]
 async fn cookie_response_accessor() {
-    let addr = start_server_with(|_req| async move {
+    let (addr, _counter) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(
             Response::builder()
                 .header(
@@ -445,4 +457,439 @@ async fn cookie_response_accessor() {
     assert!(!plain_cookie.secure());
     assert!(!plain_cookie.http_only());
     assert_eq!(plain_cookie.same_site(), None);
+}
+
+// ── Bug-Finding Tests ─────────────────────────────────────────────────
+
+// Multiple Set-Cookie headers should all be stored.
+#[tokio::test]
+async fn cookie_jar_stores_multiple_set_cookie_headers() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        if path == "/set" {
+            let resp = Response::builder()
+                .status(200)
+                .header("Set-Cookie", "a=1; Path=/")
+                .header("Set-Cookie", "b=2; Path=/")
+                .header("Set-Cookie", "c=3; Path=/")
+                .body(Full::new(Bytes::from("cookies set")))
+                .unwrap();
+            Ok::<_, Infallible>(resp)
+        } else {
+            let cookie = req
+                .headers()
+                .get("cookie")
+                .map(|v| v.to_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+            Ok(Response::new(Full::new(Bytes::from(format!(
+                "cookie={cookie}"
+            )))))
+        }
+    })
+    .await;
+
+    let jar = aioduct::cookie::CookieJar::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cookie_jar(jar)
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let resp = client
+        .get(&format!("http://{addr}/set"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/check"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("a=1"),
+        "cookie a=1 should be stored, got: {body}"
+    );
+    assert!(
+        body.contains("b=2"),
+        "cookie b=2 should be stored, got: {body}"
+    );
+    assert!(
+        body.contains("c=3"),
+        "cookie c=3 should be stored, got: {body}"
+    );
+}
+
+// BUG: cookie.rs insert() overwrites caller's Cookie header.
+#[tokio::test]
+async fn cookie_jar_should_not_overwrite_manual_cookie_header() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let cookie = req
+            .headers()
+            .get("cookie")
+            .map(|v| v.to_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "cookie={cookie}"
+        )))))
+    })
+    .await;
+
+    let jar = aioduct::cookie::CookieJar::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cookie_jar(jar.clone())
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    // Pre-populate jar
+    let (set_addr, _) = h1_server_with(|_req| async move {
+        let resp = Response::builder()
+            .header("Set-Cookie", "jar_cookie=from_jar; Path=/")
+            .body(Full::new(Bytes::from("ok")))
+            .unwrap();
+        Ok::<_, Infallible>(resp)
+    })
+    .await;
+
+    let resp = client
+        .get(&format!("http://127.0.0.1:{}/", set_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let _ = resp.text().await.unwrap();
+
+    // Send request with manual Cookie header + jar cookies
+    let resp = client
+        .get(&format!("http://127.0.0.1:{}/check", addr.port()))
+        .unwrap()
+        .header(
+            http::header::COOKIE,
+            http::header::HeaderValue::from_static("manual=user_set"),
+        )
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+
+    assert!(
+        body.contains("manual=user_set"),
+        "BUG: Cookie jar overwrites the manual Cookie header. \
+         Manual cookie 'manual=user_set' was lost, got: {body}"
+    );
+}
+
+// BUG: cookie.rs:207-208 lowercases the Path attribute value.
+// `Path=/MyApp/API` is stored as `/myapp/api`. Since path matching (line 138)
+// is case-sensitive, the cookie never matches requests to `/MyApp/API`.
+#[tokio::test]
+async fn cookie_path_value_should_preserve_case() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        if path == "/set" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("Set-Cookie", "token=abc; Path=/MyApp/API")
+                    .body(Full::new(Bytes::from("ok")))
+                    .unwrap(),
+            )
+        } else {
+            let cookie = req
+                .headers()
+                .get("cookie")
+                .map(|v| v.to_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+            Ok(Response::new(Full::new(Bytes::from(format!(
+                "cookie={cookie}"
+            )))))
+        }
+    })
+    .await;
+
+    let jar = aioduct::CookieJar::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cookie_jar(jar)
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let _ = client
+        .get(&format!("http://{addr}/set"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/MyApp/API/endpoint"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+
+    assert!(
+        body.contains("token=abc"),
+        "BUG: Path value is lowercased at storage time (cookie.rs:207-208). \
+         Cookie with Path=/MyApp/API should match /MyApp/API/endpoint, got: {body}"
+    );
+}
+
+// BUG: cookie.rs:137-140 uses starts_with for path matching, violating RFC 6265 §5.1.4.
+// A cookie with Path=/api matches /api-extra (no / separator check).
+#[tokio::test]
+async fn cookie_path_match_requires_separator() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        if path == "/set" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("Set-Cookie", "token=abc; Path=/api")
+                    .body(Full::new(Bytes::from("ok")))
+                    .unwrap(),
+            )
+        } else {
+            let cookie = req
+                .headers()
+                .get("cookie")
+                .map(|v| v.to_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+            Ok(Response::new(Full::new(Bytes::from(format!(
+                "cookie={cookie}"
+            )))))
+        }
+    })
+    .await;
+
+    let jar = aioduct::CookieJar::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cookie_jar(jar)
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let _ = client
+        .get(&format!("http://{addr}/set"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    // /api-extra should NOT match Path=/api (RFC 6265 §5.1.4 requires / separator)
+    let resp = client
+        .get(&format!("http://{addr}/api-extra"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+
+    assert!(
+        !body.contains("token=abc"),
+        "BUG: cookie.rs:138 uses starts_with without checking for '/' separator. \
+         Cookie with Path=/api should NOT be sent to /api-extra per RFC 6265 §5.1.4, \
+         got: {body}"
+    );
+}
+
+// BUG: cookie.rs:221-228 only matches Expires= and expires= (partially case-sensitive).
+// All other attributes use the lowercased copy, but Expires uses the original attr.
+// EXPIRES= in any other casing is silently ignored.
+#[tokio::test]
+async fn cookie_expires_attribute_should_be_case_insensitive() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        if path == "/set" {
+            // Server sends Expires with unusual casing
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header(
+                        "Set-Cookie",
+                        "token=abc; EXPIRES=Wed, 01 Jan 2020 00:00:00 GMT",
+                    )
+                    .body(Full::new(Bytes::from("ok")))
+                    .unwrap(),
+            )
+        } else {
+            let cookie = req
+                .headers()
+                .get("cookie")
+                .map(|v| v.to_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+            Ok(Response::new(Full::new(Bytes::from(format!(
+                "cookie={cookie}"
+            )))))
+        }
+    })
+    .await;
+
+    let jar = aioduct::CookieJar::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cookie_jar(jar)
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let _ = client
+        .get(&format!("http://{addr}/set"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/check"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+
+    assert!(
+        !body.contains("token=abc"),
+        "BUG: cookie.rs:221-228 only matches 'Expires=' and 'expires=', not 'EXPIRES='. \
+         Cookie with past EXPIRES should be treated as expired and not sent, got: {body}"
+    );
+}
+
+// BUG: cookie.rs:100-101 deduplicates cookies by name only, not name+domain+path.
+// Two cookies with the same name but different paths/domains overwrite each other.
+#[tokio::test]
+async fn cookie_dedup_should_consider_path_not_just_name() {
+    let jar = aioduct::CookieJar::new();
+
+    // Store cookie with Path=/api
+    let mut headers = http::HeaderMap::new();
+    headers.append(
+        http::header::SET_COOKIE,
+        "token=api_value; Path=/api".parse().unwrap(),
+    );
+    jar.store_from_response("example.com", &headers);
+
+    // Store cookie with Path=/web (same name, different path)
+    let mut headers = http::HeaderMap::new();
+    headers.append(
+        http::header::SET_COOKIE,
+        "token=web_value; Path=/web".parse().unwrap(),
+    );
+    jar.store_from_response("example.com", &headers);
+
+    let cookies = jar.cookies();
+    let token_cookies: Vec<_> = cookies.iter().filter(|c| c.name() == "token").collect();
+
+    assert_eq!(
+        token_cookies.len(),
+        2,
+        "BUG: cookie.rs:100-101 uses name-only dedup. Two cookies named 'token' \
+         with different paths should coexist (RFC 6265 §5.3 uses name+domain+path as key), \
+         but found {} cookies",
+        token_cookies.len()
+    );
+}
+
+// BUG: cookie.rs:302 `(year - 1970)` underflows for years before 1970.
+// In debug builds this panics; in release it wraps to a huge value,
+// making the cookie appear non-expired (security regression).
+#[tokio::test]
+async fn cookie_expires_year_before_1970_should_not_panic() {
+    let jar = aioduct::CookieJar::new();
+
+    let mut headers = http::HeaderMap::new();
+    headers.append(
+        http::header::SET_COOKIE,
+        "old=val; Expires=Thu, 01 Jan 1960 00:00:00 GMT"
+            .parse()
+            .unwrap(),
+    );
+    // Should not panic (debug) or treat as non-expired (release)
+    jar.store_from_response("example.com", &headers);
+
+    let mut req_headers = http::HeaderMap::new();
+    jar.apply_to_request("example.com", false, "/", &mut req_headers);
+
+    assert!(
+        req_headers.get("cookie").is_none(),
+        "BUG: cookie.rs:302 `(year - 1970)` underflows for year < 1970. \
+         Cookie with Expires in 1960 should be treated as expired and not sent"
+    );
+}
+
+// BUG: cookie.rs SameSite attribute is parsed and stored but never enforced.
+// Cookies with SameSite=Strict should not be sent on cross-site requests.
+#[tokio::test]
+async fn cookie_samesite_strict_should_not_be_sent_cross_site() {
+    let jar = aioduct::CookieJar::new();
+
+    // Store a SameSite=Strict cookie
+    let mut headers = http::HeaderMap::new();
+    headers.append(
+        http::header::SET_COOKIE,
+        "session=abc; SameSite=Strict".parse().unwrap(),
+    );
+    jar.store_from_response("example.com", &headers);
+
+    // Verify the cookie was stored with SameSite attribute
+    let cookies = jar.cookies();
+    let session = cookies.iter().find(|c| c.name() == "session").unwrap();
+    assert_eq!(
+        session.same_site(),
+        Some(&aioduct::SameSite::Strict),
+        "SameSite=Strict should be parsed"
+    );
+
+    // Apply to request — SameSite=Strict should ideally not be sent in cross-site contexts.
+    // The library sends it unconditionally since apply_to_request never checks same_site.
+    let mut req_headers = http::HeaderMap::new();
+    jar.apply_to_request("example.com", false, "/", &mut req_headers);
+
+    // This documents the feature gap: SameSite is parsed but never enforced.
+    // In a full implementation, there would be a parameter for cross-site context.
+    assert!(
+        req_headers.get("cookie").is_some(),
+        "FEATURE GAP: SameSite=Strict cookie is sent unconditionally. \
+         cookie.rs:111-159 apply_to_request() never reads the same_site field. \
+         A proper implementation would check the cross-site context."
+    );
+}
+
+// BUG: cookie.rs:263-318 parse_http_date only accepts RFC 7231 IMF-fixdate format.
+// RFC 850 format ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime format
+// ("Sun Nov  6 08:49:37 1994") are silently ignored, leaving cookies with no expiry.
+#[tokio::test]
+async fn cookie_expires_rfc850_format_should_be_parsed() {
+    let jar = aioduct::CookieJar::new();
+
+    // Store cookie with RFC 850 format Expires (past date)
+    let mut headers = http::HeaderMap::new();
+    headers.append(
+        http::header::SET_COOKIE,
+        "old=val; Expires=Sunday, 06-Nov-94 08:49:37 GMT"
+            .parse()
+            .unwrap(),
+    );
+    jar.store_from_response("example.com", &headers);
+
+    let cookies = jar.cookies();
+
+    // The RFC 850 date is in the past (1994), so the cookie should be expired.
+    // But since parse_http_date only accepts RFC 7231 format, it fails to parse
+    // and the cookie is treated as non-expired.
+    assert!(
+        cookies.is_empty(),
+        "BUG: cookie.rs:263-318 parse_http_date only accepts RFC 7231 format. \
+         RFC 850 date 'Sunday, 06-Nov-94 08:49:37 GMT' is not parsed, \
+         so the cookie is stored as non-expired. Found {} cookies.",
+        cookies.len()
+    );
 }

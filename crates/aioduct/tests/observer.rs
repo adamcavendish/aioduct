@@ -1,7 +1,12 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::sync::Arc;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::h1_server;
 
 use std::sync::Mutex;
 
@@ -60,7 +65,7 @@ impl RecordingObserver {
 
 #[tokio::test]
 async fn observer_fires_full_lifecycle_on_fresh_connection() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let obs = RecordingObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
@@ -114,7 +119,7 @@ async fn observer_fires_full_lifecycle_on_fresh_connection() {
 
 #[tokio::test]
 async fn observer_connection_metrics_fires_on_checkin() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let obs = RecordingObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
@@ -137,7 +142,7 @@ async fn observer_connection_metrics_fires_on_checkin() {
 
 #[tokio::test]
 async fn observer_fires_pool_hit_on_reused_connection() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let obs = RecordingObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
@@ -183,7 +188,7 @@ async fn observer_fires_pool_hit_on_reused_connection() {
 
 #[tokio::test]
 async fn observer_bytes_transferred_fires_during_streaming() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
     let obs = RecordingObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
@@ -219,7 +224,7 @@ async fn observer_bytes_transferred_fires_during_streaming() {
 
 #[tokio::test]
 async fn observer_captures_method_and_uri() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     let events: Arc<Mutex<Vec<(http::Method, http::Uri)>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -258,7 +263,7 @@ async fn observer_captures_method_and_uri() {
 
 #[tokio::test]
 async fn observer_no_events_when_not_configured() {
-    let addr = start_server().await;
+    let (addr, _counter) = h1_server().await;
 
     // Client without observer — should not panic or error
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();

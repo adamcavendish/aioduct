@@ -1,7 +1,19 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Response;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+use aioduct_test_server::h1::h1_server_with;
+use aioduct_test_server::h2::h2_server_with;
 
 // =============================================================================
 // Per-Forward h2c and Adaptive h2c Tests
@@ -9,7 +21,7 @@ use common::*;
 
 #[tokio::test]
 async fn forward_h2c_to_h2_upstream() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let version = format!("{:?}", req.version());
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(version))))
     })
@@ -41,7 +53,7 @@ async fn forward_h2c_to_h2_upstream() {
 
 #[tokio::test]
 async fn forward_adaptive_h2c_to_h2_server() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let version = format!("{:?}", req.version());
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(version))))
     })
@@ -97,7 +109,7 @@ async fn forward_adaptive_h2c_to_h2_server() {
 #[tokio::test]
 async fn forward_adaptive_h2c_falls_back_to_h1() {
     // Start an h1-only server
-    let addr = start_server_with(|req| async move {
+    let (addr, _counter) = h1_server_with(|req| async move {
         let version = format!("{:?}", req.version());
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(version))))
     })
@@ -152,7 +164,7 @@ async fn forward_adaptive_h2c_falls_back_to_h1() {
 
 #[tokio::test]
 async fn forward_h2c_preserves_request_body() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         use http_body_util::BodyExt;
         let body = req.into_body().collect().await.unwrap().to_bytes();
         Ok::<_, Infallible>(Response::new(Full::new(body)))
@@ -185,7 +197,7 @@ async fn forward_h2c_preserves_request_body() {
 
 #[tokio::test]
 async fn forward_h2c_rewrites_host_and_preserves_custom_headers() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let host = req
             .headers()
             .get("host")
@@ -234,7 +246,7 @@ async fn forward_h2c_rewrites_host_and_preserves_custom_headers() {
 
 #[tokio::test]
 async fn forward_h2c_with_strip_prefix() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let path = req.uri().path().to_owned();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(path))))
     })
@@ -265,7 +277,7 @@ async fn forward_h2c_with_strip_prefix() {
 
 #[tokio::test]
 async fn forward_h2c_with_upstream_base_path() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let path = req.uri().path().to_owned();
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(path))))
     })
@@ -295,7 +307,7 @@ async fn forward_h2c_with_upstream_base_path() {
 
 #[tokio::test]
 async fn forward_h2c_extra_and_remove_headers() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let added = req
             .headers()
             .get("x-added")
@@ -338,7 +350,7 @@ async fn forward_h2c_extra_and_remove_headers() {
 
 #[tokio::test]
 async fn forward_h2c_on_request_hook() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let via = req
             .headers()
             .get("x-hook")
@@ -375,7 +387,7 @@ async fn forward_h2c_on_request_hook() {
 
 #[tokio::test]
 async fn forward_h2c_on_response_hook() {
-    let addr = start_h2_server_with(|_req| async move {
+    let (addr, _counter) = h2_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
     })
     .await;
@@ -416,7 +428,7 @@ async fn forward_h2c_timeout() {
     let notify = Arc::new(Notify::new());
     let notify_clone = notify.clone();
 
-    let addr = start_h2_server_with(move |_req| {
+    let (addr, _counter) = h2_server_with(move |_req| {
         let n = notify_clone.clone();
         async move {
             n.notified().await;
@@ -450,7 +462,7 @@ async fn forward_h2c_timeout() {
 
 #[tokio::test]
 async fn forward_h2c_preserve_host() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let host = req
             .headers()
             .get("host")
@@ -486,13 +498,13 @@ async fn forward_h2c_preserve_host() {
 
 #[tokio::test]
 async fn forward_adaptive_h2c_probe_cache_isolates_authorities() {
-    let h2_addr = start_h2_server_with(|req| async move {
+    let (h2_addr, _counter) = h2_server_with(|req| async move {
         let version = format!("{:?}", req.version());
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(version))))
     })
     .await;
 
-    let h1_addr = start_server_with(|req| async move {
+    let (h1_addr, _counter) = h1_server_with(|req| async move {
         let version = format!("{:?}", req.version());
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(version))))
     })
@@ -566,7 +578,7 @@ async fn forward_adaptive_h2c_probe_cache_isolates_authorities() {
 
 #[tokio::test]
 async fn forward_h2c_query_string_preserved() {
-    let addr = start_h2_server_with(|req| async move {
+    let (addr, _counter) = h2_server_with(|req| async move {
         let pq = req
             .uri()
             .path_and_query()
@@ -601,13 +613,13 @@ async fn forward_h2c_query_string_preserved() {
 #[tokio::test]
 async fn forward_mixed_h1_h2c_pool_isolation() {
     // Start both an h1 server and an h2 server
-    let h1_addr = start_server_with(|req| async move {
+    let (h1_addr, _counter) = h1_server_with(|req| async move {
         let version = format!("{:?}", req.version());
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(version))))
     })
     .await;
 
-    let h2_addr = start_h2_server_with(|req| async move {
+    let (h2_addr, _counter) = h2_server_with(|req| async move {
         let version = format!("{:?}", req.version());
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(version))))
     })

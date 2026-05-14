@@ -1,7 +1,18 @@
 #![cfg(feature = "tokio")]
 
-mod common;
-use common::*;
+use std::convert::Infallible;
+
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::Request;
+use hyper::Response;
+use hyper::server::conn::http1 as server_http1;
+use hyper::service::service_fn;
+use tokio::net::TcpListener;
+
+use aioduct::HttpEngineSend;
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::test]
 async fn test_upgrade_websocket() {
