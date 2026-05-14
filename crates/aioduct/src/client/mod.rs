@@ -228,6 +228,9 @@ fn boxed_response_from_bytes(
     for (name, value) in headers {
         builder = builder.header(name, value);
     }
+    // SAFETY: the builder uses a valid status code and headers that were
+    // already validated when the response was originally built.
+    #[allow(clippy::expect_used)]
     builder
         .body(
             http_body_util::Full::new(body)

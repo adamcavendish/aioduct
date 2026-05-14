@@ -132,7 +132,7 @@ fn md5_hex(input: &str) -> String {
     let digest = md5_compute(input.as_bytes());
     let mut hex = String::with_capacity(32);
     for byte in &digest {
-        write!(hex, "{byte:02x}").unwrap();
+        let _ = write!(hex, "{byte:02x}");
     }
     hex
 }

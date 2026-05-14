@@ -48,7 +48,7 @@ impl Response {
                         phase: RequestPhase::TransferAborted {
                             direction: TransferDirection::Download,
                             bytes_transferred: 0,
-                            elapsed: response_started.unwrap().elapsed(),
+                            elapsed: response_started.map(|t| t.elapsed()).unwrap_or_default(),
                             error: e.to_string(),
                         },
                         at: observer::Instant::now(),

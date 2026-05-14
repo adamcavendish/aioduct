@@ -61,7 +61,9 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
 
     /// Set a Bearer token Authorization header.
     pub fn bearer_auth(mut self, token: &str) -> Self {
-        let value = HeaderValue::from_str(&format!("Bearer {token}")).expect("valid bearer token");
+        let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
+            return self;
+        };
         self.headers.insert(AUTHORIZATION, value);
         self
     }
@@ -74,8 +76,9 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
             None => format!("{username}:"),
         };
         let encoded = STANDARD.encode(credentials);
-        let value =
-            HeaderValue::from_str(&format!("Basic {encoded}")).expect("valid basic auth header");
+        let Ok(value) = HeaderValue::from_str(&format!("Basic {encoded}")) else {
+            return self;
+        };
         self.headers.insert(AUTHORIZATION, value);
         self
     }
@@ -99,7 +102,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
             let s = if i == 0 { sep } else { '&' };
             let k = utf8_percent_encode(key, QUERY_ENCODE);
             let v = utf8_percent_encode(value, QUERY_ENCODE);
-            write!(uri_str, "{s}{k}={v}").unwrap();
+            let _ = write!(uri_str, "{s}{k}={v}");
         }
         if let Ok(new_uri) = uri_str.parse() {
             self.uri = new_uri;
@@ -115,7 +118,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
         if !query_string.is_empty() {
             let mut uri_str = self.uri.to_string();
             let sep = if self.uri.query().is_some() { '&' } else { '?' };
-            write!(uri_str, "{sep}{query_string}").unwrap();
+            let _ = write!(uri_str, "{sep}{query_string}");
             if let Ok(new_uri) = uri_str.parse() {
                 self.uri = new_uri;
             }
@@ -166,7 +169,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
             }
             let k = utf8_percent_encode(key, FORM_ENCODE);
             let v = utf8_percent_encode(value, FORM_ENCODE);
-            write!(encoded, "{k}={v}").unwrap();
+            let _ = write!(encoded, "{k}={v}");
         }
         self.headers.insert(
             http::header::CONTENT_TYPE,
@@ -191,7 +194,9 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
     /// Set a multipart form body.
     pub fn multipart(mut self, multipart: crate::multipart::Multipart) -> Self {
         let ct = multipart.content_type();
-        let value = HeaderValue::from_str(&ct).expect("valid multipart content-type");
+        let Ok(value) = HeaderValue::from_str(&ct) else {
+            return self;
+        };
         self.headers.insert(http::header::CONTENT_TYPE, value);
         if multipart.has_streaming_parts() {
             self.body = Some(RequestBody::Streaming(multipart.into_streaming_body()));

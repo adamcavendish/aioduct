@@ -139,7 +139,10 @@ impl CacheStore for InMemoryCacheStore {
             method: method.clone(),
             uri: uri.clone(),
         };
-        self.inner.lock().unwrap().entries.get(&key).cloned()
+        let Ok(inner) = self.inner.lock() else {
+            return None;
+        };
+        inner.entries.get(&key).cloned()
     }
 
     fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
@@ -147,7 +150,9 @@ impl CacheStore for InMemoryCacheStore {
             method: method.clone(),
             uri: uri.clone(),
         };
-        let mut inner = self.inner.lock().unwrap();
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
         if inner.entries.len() >= inner.max_entries
             && !inner.entries.contains_key(&key)
             && let Some(oldest_key) = find_oldest_entry(&inner.entries)
@@ -162,15 +167,24 @@ impl CacheStore for InMemoryCacheStore {
             method: method.clone(),
             uri: uri.clone(),
         };
-        self.inner.lock().unwrap().entries.remove(&key);
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        inner.entries.remove(&key);
     }
 
     fn clear(&self) {
-        self.inner.lock().unwrap().entries.clear();
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        inner.entries.clear();
     }
 
     fn len(&self) -> usize {
-        self.inner.lock().unwrap().entries.len()
+        let Ok(inner) = self.inner.lock() else {
+            return 0;
+        };
+        inner.entries.len()
     }
 }
 
@@ -415,6 +429,9 @@ impl CachedResponse {
         if let Ok(age_secs) = http::HeaderValue::from_str(&self.age.as_secs().to_string()) {
             builder = builder.header(AGE, age_secs);
         }
+        // SAFETY: the builder uses a valid status code and headers that were
+        // already validated when the response was originally received and cached.
+        #[allow(clippy::expect_used)]
         builder
             .body(
                 http_body_util::Full::new(self.body)

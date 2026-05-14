@@ -50,14 +50,14 @@ impl HickoryResolver {
     }
 
     /// Create a resolver from explicit config and options.
-    pub fn from_config(config: ResolverConfig, opts: ResolverOpts) -> Self {
+    pub fn from_config(config: ResolverConfig, opts: ResolverOpts) -> Result<Self, std::io::Error> {
         let resolver = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
             .with_options(opts)
             .build()
-            .expect("failed to build HickoryResolver");
-        Self {
+            .map_err(std::io::Error::other)?;
+        Ok(Self {
             resolver: Arc::new(resolver),
-        }
+        })
     }
 }
 
@@ -82,11 +82,7 @@ fn socket_addrs_from_ips(
     Ok(addrs)
 }
 
-impl Default for HickoryResolver {
-    fn default() -> Self {
-        Self::new().expect("failed to create HickoryResolver")
-    }
-}
+// No Default impl — use HickoryResolver::new() which returns Result.
 
 impl Resolve for HickoryResolver {
     fn resolve(
