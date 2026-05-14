@@ -1,3 +1,50 @@
-fn main() {
-    eprintln!("TODO: compio json-roundtrip — Response<LocalBody>::json() not yet available");
+use aioduct::CompioClient;
+use aioduct::runtime::compio_rt::TcpConnector;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize)]
+struct CreatePost {
+    title: String,
+    body: String,
+    user_id: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct PostResponse {
+    id: Option<u64>,
+    title: Option<String>,
+}
+
+fn main() -> Result<(), aioduct::Error> {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = CompioClient::builder_local(TcpConnector).build_local();
+
+        let payload = CreatePost {
+            title: "Hello from aioduct".into(),
+            body: "This is a test post".into(),
+            user_id: 1,
+        };
+
+        let resp: PostResponse = client
+            .post_local("https://jsonplaceholder.typicode.com/posts")?
+            .json(&payload)?
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        println!("Created post: {resp:?}");
+
+        let resp: serde_json::Value = client
+            .get_local("https://jsonplaceholder.typicode.com/posts/1")?
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        println!("\nFetched post title: {}", resp["title"]);
+
+        Ok(())
+    })
 }

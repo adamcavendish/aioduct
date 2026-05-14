@@ -200,7 +200,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                     ))
                 }
             } else {
-                self.tls
+                Some(Arc::new(crate::tls::RustlsConnector::with_webpki_roots()))
             };
 
             if needs_sni_update {

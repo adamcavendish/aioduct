@@ -9,6 +9,15 @@ use super::builder::HttpEngineBuilder;
 use super::{HttpEngineCore, HttpEngineLocal};
 
 impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineBuilder<R, C> {
+    #[allow(unreachable_code)]
+    fn default_local_resolver() -> Option<Arc<dyn crate::runtime::Resolve>> {
+        #[cfg(feature = "compio")]
+        {
+            return Some(Arc::new(crate::runtime::compio_rt::DefaultResolver));
+        }
+        None
+    }
+
     /// Build the configured [`HttpEngineLocal`] for a completion-based runtime.
     pub fn build_local(self) -> HttpEngineLocal<R, C> {
         let pool = if self.no_connection_reuse {
@@ -18,7 +27,11 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineBuilder<R, C> {
         };
 
         #[cfg(feature = "rustls")]
-        let tls = self.tls;
+        let tls = if self.tls.is_some() {
+            self.tls
+        } else {
+            Some(Arc::new(crate::tls::RustlsConnector::with_webpki_roots()))
+        };
 
         HttpEngineLocal {
             core: HttpEngineCore {
@@ -47,14 +60,14 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineBuilder<R, C> {
                 proxy: self.proxy,
                 resolver: {
                     if let Some(overrides) = self.static_resolves {
-                        let fallback = self.resolver;
+                        let fallback = self.resolver.or_else(|| Self::default_local_resolver());
                         let mut sr = crate::runtime::StaticResolver::new(fallback);
                         for (host, addrs) in overrides {
                             sr.add(host, addrs);
                         }
                         Some(Arc::new(sr) as Arc<dyn Resolve>)
                     } else {
-                        self.resolver
+                        self.resolver.or_else(|| Self::default_local_resolver())
                     }
                 },
                 http2: self.http2,

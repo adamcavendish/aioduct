@@ -574,7 +574,8 @@ mod builder_tests {
         let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .tls_sni(true)
             .build();
-        assert!(client.core.tls.is_none());
+        let tls = client.core.tls.as_ref().unwrap();
+        assert!(tls.config().enable_sni);
     }
 
     #[cfg(feature = "rustls")]

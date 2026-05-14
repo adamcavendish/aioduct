@@ -56,4 +56,21 @@ impl Response<crate::body::ResponseBoxLocalBody> {
         let bytes = self.bytes().await?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
+
+    /// Consume the response body and deserialize it as JSON.
+    #[cfg(feature = "json")]
+    pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
+        let bytes = self.bytes().await?;
+        serde_json::from_slice(&bytes).map_err(|e| Error::Other(Box::new(e)))
+    }
+
+    /// Convert the response into a Server-Sent Events stream.
+    pub fn into_sse_stream(self) -> crate::sse::SseStreamLocal {
+        crate::sse::SseStreamLocal::new(self.inner.into_body())
+    }
+
+    /// Perform an HTTP upgrade (e.g., WebSocket) on this response.
+    pub async fn upgrade(mut self) -> Result<crate::upgrade::Upgraded, Error> {
+        crate::upgrade::on_upgrade_local(&mut self.inner).await
+    }
 }

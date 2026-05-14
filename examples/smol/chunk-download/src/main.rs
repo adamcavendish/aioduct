@@ -7,10 +7,11 @@ fn main() -> Result<(), aioduct::Error> {
         let client = SmolClient::builder(TcpConnector)
             .max_download_speed(5_000_000) // 5 MB/s shared across all parallel chunks
             .max_requests_per_sec(20) // rate-limit HEAD + Range requests
-            .timeout(Duration::from_secs(300))
+            .timeout(Duration::from_secs(30))
             .build();
 
-        let url = "https://releases.ubuntu.com/24.04/ubuntu-24.04.2-desktop-amd64.iso.zsync";
+        // httpbin /range/{n} supports Accept-Ranges: bytes, ideal for chunk download demo
+        let url = "https://httpbin.org/range/10240";
 
         // Parallel chunk download — splits the file into ranges and downloads concurrently
         println!("Starting parallel chunk download...");

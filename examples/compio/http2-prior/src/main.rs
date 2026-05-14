@@ -8,8 +8,8 @@ fn main() -> Result<(), aioduct::Error> {
             .http2_prior_knowledge()
             .build_local();
 
-        // Note: httpbin.org doesn't support h2c, so this would fail in practice.
-        // This example demonstrates the API for local h2c servers.
+        // Note: most public servers don't support h2c, so we only demonstrate the API.
+        // Use the h2c client with a local server that supports cleartext HTTP/2.
         println!("Client configured for HTTP/2 prior knowledge (h2c)");
         println!("Use with a local server that supports cleartext HTTP/2");
 
@@ -21,7 +21,7 @@ fn main() -> Result<(), aioduct::Error> {
         let standard_client = CompioClient::builder_local(TcpConnector).build_local();
 
         let resp = standard_client
-            .get_local("https://www.google.com/")?
+            .get_local("https://httpbin.org/get")?
             .send()
             .await?;
 
