@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::clock::Instant;
@@ -21,7 +22,7 @@ pub(crate) struct PooledConnection {
     pub(crate) tls_info: Option<crate::tls::TlsInfo>,
     pub(crate) tls_handshake_duration: Option<Duration>,
     /// Subject Alternative Names from peer cert (for connection coalescing).
-    pub(crate) sans: Vec<String>,
+    pub(crate) sans: Arc<[String]>,
     /// When this connection was established.
     pub(crate) created_at: Instant,
     /// Number of request/response cycles served on this connection.
@@ -44,7 +45,7 @@ impl PooledConnection {
             remote_addr: None,
             tls_info: None,
             tls_handshake_duration: None,
-            sans: Vec::new(),
+            sans: Arc::from([]),
             created_at: Instant::now(),
             requests_served: 0,
             bytes_sent: 0,
@@ -62,7 +63,7 @@ impl PooledConnection {
             remote_addr: None,
             tls_info: None,
             tls_handshake_duration: None,
-            sans: Vec::new(),
+            sans: Arc::from([]),
             created_at: Instant::now(),
             requests_served: 0,
             bytes_sent: 0,
@@ -81,7 +82,7 @@ impl PooledConnection {
             remote_addr: None,
             tls_info: None,
             tls_handshake_duration: None,
-            sans: Vec::new(),
+            sans: Arc::from([]),
             created_at: Instant::now(),
             requests_served: 0,
             bytes_sent: 0,

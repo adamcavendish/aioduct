@@ -38,12 +38,16 @@ impl HttpEngineCore {
     }
 
     pub(super) fn apply_default_headers(&self, headers: &mut HeaderMap) {
-        for (name, value) in &self.default_headers {
+        for (name, value) in self.default_headers.iter() {
             if !headers.contains_key(name) {
                 headers.insert(name, value.clone());
             }
         }
-        crate::decompress::set_accept_encoding(headers, &self.accept_encoding);
+        if let Some(ref val) = self.accept_encoding_header
+            && !headers.contains_key(http::header::ACCEPT_ENCODING)
+        {
+            headers.insert(http::header::ACCEPT_ENCODING, val.clone());
+        }
     }
 
     pub(super) fn cache_lookup(

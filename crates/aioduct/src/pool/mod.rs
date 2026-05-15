@@ -161,7 +161,7 @@ impl ConnectionPool {
         };
         let max = inner.max_idle_per_host;
 
-        for san in &connection.sans {
+        for san in connection.sans.iter() {
             inner
                 .san_index
                 .entry(san.clone())

@@ -355,7 +355,7 @@ pub mod __bench {
 
     pub fn set_sans(conn: &mut BenchConn, sans: Vec<String>) {
         if let Some(c) = conn.0.as_mut() {
-            c.sans = sans;
+            c.sans = std::sync::Arc::from(sans);
         }
     }
 
