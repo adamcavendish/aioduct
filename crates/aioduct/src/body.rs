@@ -21,6 +21,14 @@ use crate::response::BodyObserverCtx;
 /// dispatch pipeline. Based on `UnsyncBoxBody` from `http-body-util`.
 pub type RequestBoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Error>;
 
+/// Boxed `!Send` request body for completion-based runtimes (compio).
+///
+/// Used in the Local execution path where the body may contain `!Send` state
+/// (e.g. compio futures). The body is created, polled, and dropped on the
+/// same thread — no cross-thread migration occurs.
+#[cfg(not(target_arch = "wasm32"))]
+pub type RequestBoxLocalBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + 'static>>;
+
 /// Boxed `Send` response body for poll-based runtimes (tokio, smol).
 ///
 /// This is the default body type for [`Response`](crate::response::Response).
@@ -68,6 +76,17 @@ impl RequestBody {
                 .boxed_unsync(),
             #[cfg(not(target_arch = "wasm32"))]
             RequestBody::Streaming(body) => body,
+        }
+    }
+
+    /// Convert to a `!Send` local body for completion-based runtimes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn into_local_body(self) -> RequestBoxLocalBody {
+        match self {
+            RequestBody::Buffered(b) => {
+                Box::pin(http_body_util::Full::new(b).map_err(|never| match never {}))
+            }
+            RequestBody::Streaming(body) => Box::pin(body),
         }
     }
 

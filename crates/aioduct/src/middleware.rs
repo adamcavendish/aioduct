@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use http::{Method, StatusCode, Uri};
 
+use http_body_util::BodyExt;
+
 use crate::body::RequestBoxBody;
 use crate::error::Error;
 
@@ -77,6 +79,24 @@ impl MiddlewareStack {
         for layer in &self.layers {
             layer.on_request(request, uri);
         }
+    }
+
+    pub fn apply_request_local<B>(&self, request: &mut http::Request<B>, uri: &Uri) {
+        let dummy_body: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::new())
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let mut proxy = http::Request::new(dummy_body);
+        *proxy.method_mut() = request.method().clone();
+        *proxy.uri_mut() = request.uri().clone();
+        *proxy.version_mut() = request.version();
+        *proxy.headers_mut() = request.headers().clone();
+        for layer in &self.layers {
+            layer.on_request(&mut proxy, uri);
+        }
+        *request.method_mut() = proxy.method().clone();
+        *request.uri_mut() = proxy.uri().clone();
+        *request.version_mut() = proxy.version();
+        *request.headers_mut() = proxy.headers().clone();
     }
 
     pub fn apply_response(&self, response: &mut http::Response<RequestBoxBody>, uri: &Uri) {

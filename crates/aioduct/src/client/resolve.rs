@@ -2,7 +2,7 @@ use crate::error::Error;
 
 use super::HttpEngineCore;
 
-impl HttpEngineCore {
+impl<B> HttpEngineCore<B> {
     pub(super) async fn resolve_authority(
         &self,
         authority: &http::uri::Authority,

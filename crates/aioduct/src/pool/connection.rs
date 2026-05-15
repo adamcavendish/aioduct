@@ -5,19 +5,19 @@ use std::time::Duration;
 use crate::clock::Instant;
 
 /// An established HTTP connection at a specific protocol version.
-pub(crate) enum HttpConnection {
+pub(crate) enum HttpConnection<B> {
     /// An HTTP/1.1 connection.
-    H1(hyper::client::conn::http1::SendRequest<crate::body::RequestBoxBody>),
+    H1(hyper::client::conn::http1::SendRequest<B>),
     /// An HTTP/2 connection.
-    H2(hyper::client::conn::http2::SendRequest<crate::body::RequestBoxBody>),
+    H2(hyper::client::conn::http2::SendRequest<B>),
     /// An HTTP/3 connection.
     #[cfg(all(feature = "http3", feature = "rustls"))]
     H3(h3::client::SendRequest<h3_quinn::OpenStreams, bytes::Bytes>),
 }
 
 /// A pooled HTTP connection wrapper.
-pub(crate) struct PooledConnection {
-    pub(crate) conn: HttpConnection,
+pub(crate) struct PooledConnection<B> {
+    pub(crate) conn: HttpConnection<B>,
     pub(crate) remote_addr: Option<SocketAddr>,
     pub(crate) tls_info: Option<crate::tls::TlsInfo>,
     pub(crate) tls_handshake_duration: Option<Duration>,
@@ -35,11 +35,9 @@ pub(crate) struct PooledConnection {
     pub(crate) is_multiplex_clone: bool,
 }
 
-impl PooledConnection {
+impl<B> PooledConnection<B> {
     /// Wrap an HTTP/1.1 connection.
-    pub(crate) fn new_h1(
-        sender: hyper::client::conn::http1::SendRequest<crate::body::RequestBoxBody>,
-    ) -> Self {
+    pub(crate) fn new_h1(sender: hyper::client::conn::http1::SendRequest<B>) -> Self {
         Self {
             conn: HttpConnection::H1(sender),
             remote_addr: None,
@@ -55,9 +53,7 @@ impl PooledConnection {
     }
 
     /// Wrap an HTTP/2 connection.
-    pub(crate) fn new_h2(
-        sender: hyper::client::conn::http2::SendRequest<crate::body::RequestBoxBody>,
-    ) -> Self {
+    pub(crate) fn new_h2(sender: hyper::client::conn::http2::SendRequest<B>) -> Self {
         Self {
             conn: HttpConnection::H2(sender),
             remote_addr: None,
@@ -115,7 +111,9 @@ impl PooledConnection {
             HttpConnection::H3(_) => true,
         }
     }
+}
 
+impl<B: 'static> PooledConnection<B> {
     /// Clone the underlying send handle for H2/H3 multiplexing.
     ///
     /// Returns `None` for H1 connections (no multiplexing).

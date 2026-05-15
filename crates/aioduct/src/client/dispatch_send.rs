@@ -167,7 +167,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     return Ok(resp);
                 }
                 Err(e)
-                    if saved_parts.is_some() && HttpEngineCore::is_stale_connection_error(&e) =>
+                    if saved_parts.is_some()
+                        && HttpEngineCore::<RequestBoxBody>::is_stale_connection_error(&e) =>
                 {
                     #[cfg(feature = "tracing")]
                     tracing::debug!(
@@ -309,7 +310,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     }
                     Err(e)
                         if saved_parts.is_some()
-                            && HttpEngineCore::is_stale_connection_error(&e) =>
+                            && HttpEngineCore::<RequestBoxBody>::is_stale_connection_error(&e) =>
                     {
                         #[cfg(feature = "tracing")]
                         tracing::debug!(
@@ -602,7 +603,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         let io = crate::runtime::smol_rt::SmolIo::new(unix_stream);
                         return self.connect_plaintext_with_hint(io, force_h2c).await;
                     }
-                    Err::<PooledConnection, Error>(Error::Other(
+                    Err::<PooledConnection<RequestBoxBody>, Error>(Error::Other(
                         "unix socket support requires tokio or smol feature".into(),
                     ))
                 };
@@ -743,7 +744,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .await?
                 };
                 conn.remote_addr = Some(addr);
-                Ok::<(PooledConnection, Instant), Error>((conn, Instant::now()))
+                Ok::<(PooledConnection<RequestBoxBody>, Instant), Error>((conn, Instant::now()))
             };
 
             let (conn, connect_done) = match self.core.connect_timeout {

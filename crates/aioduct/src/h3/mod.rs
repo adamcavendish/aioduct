@@ -14,7 +14,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 pub(crate) async fn connect_h3<R: RuntimePoll>(
     quinn_conn: quinn::Connection,
-) -> Result<PooledConnection, Error> {
+) -> Result<PooledConnection<RequestBoxBody>, Error> {
     let h3_conn = h3_quinn::Connection::new(quinn_conn);
     let (mut driver, send_request) = h3::client::new(h3_conn)
         .await
@@ -32,7 +32,7 @@ pub(crate) async fn connect_h3_addrs<R: RuntimePoll>(
     addrs: &[SocketAddr],
     server_name: &str,
     local_address: Option<IpAddr>,
-) -> Result<(PooledConnection, SocketAddr), Error> {
+) -> Result<(PooledConnection<RequestBoxBody>, SocketAddr), Error> {
     let endpoint_addr = endpoint.local_addr().map_err(Error::Io)?;
     let addrs = ordered_h3_addrs(addrs, local_address, endpoint_addr.ip());
     if addrs.is_empty() {
@@ -66,7 +66,7 @@ pub(crate) async fn connect_h3_addrs_0rtt<R: RuntimePoll>(
     addrs: &[SocketAddr],
     server_name: &str,
     local_address: Option<IpAddr>,
-) -> Result<(PooledConnection, SocketAddr, bool), Error> {
+) -> Result<(PooledConnection<RequestBoxBody>, SocketAddr, bool), Error> {
     let endpoint_addr = endpoint.local_addr().map_err(Error::Io)?;
     let addrs = ordered_h3_addrs(addrs, local_address, endpoint_addr.ip());
     if addrs.is_empty() {
