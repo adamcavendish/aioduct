@@ -1,0 +1,6 @@
+[profile.default]
+slow-timeout = { period = "3s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = "test(bandwidth_limiter_should_not_busy_loop) | test(test_connect_tunnel)"
+slow-timeout = { period = "10s", terminate-after = 2 }

@@ -414,24 +414,36 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 let use_0rtt = self.core.h3_zero_rtt && is_idempotent;
 
                 let tcp_start = Instant::now();
-                let (mut pooled, addr) = if use_0rtt {
-                    let (pooled, addr, _used_0rtt) =
-                        crate::h3_transport::connect_h3_addrs_0rtt::<R>(
+                let h3_connect_fut = async {
+                    if use_0rtt {
+                        let (pooled, addr, _used_0rtt) =
+                            crate::h3_transport::connect_h3_addrs_0rtt::<R>(
+                                endpoint,
+                                &addrs,
+                                &sni_host,
+                                self.core.local_address,
+                            )
+                            .await?;
+                        Ok((pooled, addr))
+                    } else {
+                        crate::h3_transport::connect_h3_addrs::<R>(
                             endpoint,
                             &addrs,
                             &sni_host,
                             self.core.local_address,
                         )
-                        .await?;
-                    (pooled, addr)
-                } else {
-                    crate::h3_transport::connect_h3_addrs::<R>(
-                        endpoint,
-                        &addrs,
-                        &sni_host,
-                        self.core.local_address,
-                    )
-                    .await?
+                        .await
+                    }
+                };
+                let (mut pooled, addr) = match self.core.connect_timeout {
+                    Some(duration) => {
+                        crate::timeout::Timeout::WithTimeout {
+                            future: h3_connect_fut,
+                            sleep: R::sleep(duration),
+                        }
+                        .await?
+                    }
+                    None => h3_connect_fut.await?,
                 };
                 self.core.notify(
                     request.method(),
