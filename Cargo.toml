@@ -72,3 +72,6 @@ wasm-bindgen-test = "0.3"
 web-sys = "0.3"
 webpki-roots = "1"
 zstd = { version = "0.13", default-features = false }
+
+[profile.bench]
+lto = "thin"

@@ -9,6 +9,7 @@ aioduct = { workspace = true, features = ["tokio", "json", "rustls", "rustls-rin
 bytes.workspace = true
 criterion = { version = "0.8", features = ["async_tokio"] }
 http.workspace = true
+http-body.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
@@ -18,21 +19,5 @@ serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 
 [[bench]]
-name = "h1"
-harness = false
-
-[[bench]]
-name = "h2"
-harness = false
-
-[[bench]]
-name = "pooling"
-harness = false
-
-[[bench]]
-name = "features"
-harness = false
-
-[[bench]]
-name = "json"
+name = "bench_main"
 harness = false
