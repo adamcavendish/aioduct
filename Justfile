@@ -102,13 +102,9 @@ coverage-lcov:
 bench:
     cargo bench -p aioduct-bench
 
-# Run a specific benchmark binary (h1, h2, pooling, features, json)
-bench-bin name:
-    cargo bench -p aioduct-bench --bench {{ name }}
-
 # Run a specific benchmark group by name filter
 bench-group group:
-    cargo bench -p aioduct-bench -- {{ group }}
+    cargo bench -p aioduct-bench --bench bench_main -- {{ group }}
 
 # Run benchmarks and save baseline
 bench-save name:

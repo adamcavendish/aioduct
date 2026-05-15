@@ -380,4 +380,33 @@ pub mod __bench {
             .checkout_coalesced(target_host, resolved_ip)
             .is_some()
     }
+
+    pub fn checkout(pool: &BenchPool, key: &BenchKey) -> Option<BenchConn> {
+        pool.0.checkout(&key.0).map(|c| BenchConn(Some(c)))
+    }
+
+    pub fn wrap_read_timeout_body(
+        body: crate::body::RequestBoxBody,
+        duration: Duration,
+    ) -> crate::body::RequestBoxBody {
+        use http_body_util::BodyExt;
+        crate::timeout::ReadTimeoutBody::<TokioRuntime>::new(body, duration)
+            .map_err(|e| e)
+            .boxed_unsync()
+    }
+
+    pub fn wrap_bandwidth_body(
+        body: crate::body::RequestBoxBody,
+        limiter: crate::bandwidth::BandwidthLimiter,
+    ) -> crate::body::RequestBoxBody {
+        use http_body_util::BodyExt;
+        crate::bandwidth::BandwidthBody::<TokioRuntime>::new(body, limiter).boxed_unsync()
+    }
+
+    pub fn make_full_body(total_size: usize) -> crate::body::RequestBoxBody {
+        use http_body_util::BodyExt;
+        http_body_util::Full::new(bytes::Bytes::from(vec![b'X'; total_size]))
+            .map_err(|never| match never {})
+            .boxed_unsync()
+    }
 }

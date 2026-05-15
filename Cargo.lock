@@ -99,6 +99,7 @@ dependencies = [
  "bytes",
  "criterion",
  "http 1.4.0",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",
