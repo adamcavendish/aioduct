@@ -58,10 +58,13 @@ impl Response {
         }
     }
 
-    pub(crate) fn apply_bandwidth_limit(self, limiter: crate::bandwidth::BandwidthLimiter) -> Self {
+    pub(crate) fn apply_bandwidth_limit<R: crate::runtime::RuntimePoll>(
+        self,
+        limiter: crate::bandwidth::BandwidthLimiter,
+    ) -> Self {
         let (parts, body) = self.inner.into_parts();
         let boxed = body.into_boxed();
-        let wrapped = crate::bandwidth::BandwidthBody::new(boxed, limiter);
+        let wrapped = crate::bandwidth::BandwidthBody::<R>::new(boxed, limiter);
         let boxed: RequestBoxBody = wrapped.boxed_unsync();
         Self {
             inner: http::Response::from_parts(parts, ResponseBoxSendBody::from_boxed(boxed)),

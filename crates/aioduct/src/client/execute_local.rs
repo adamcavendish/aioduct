@@ -299,12 +299,6 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             resp
         };
 
-        let resp = if let Some(ref limiter) = self.core.bandwidth_limiter {
-            resp.apply_bandwidth_limit(limiter.clone())
-        } else {
-            resp
-        };
-
         if let Some(ref cache) = self.core.cache {
             let status = resp.status();
             let headers = resp.headers().clone();
@@ -320,6 +314,12 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             resp.into_local_with_read_timeout::<R>(read_timeout)
         } else {
             resp.into_local()
+        };
+
+        let resp = if let Some(ref limiter) = self.core.bandwidth_limiter {
+            resp.apply_bandwidth_limit_local::<R>(limiter.clone())
+        } else {
+            resp
         };
 
         Ok(resp)

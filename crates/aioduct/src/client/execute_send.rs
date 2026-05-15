@@ -299,7 +299,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         };
 
         let resp = if let Some(ref limiter) = self.core.bandwidth_limiter {
-            resp.apply_bandwidth_limit(limiter.clone())
+            resp.apply_bandwidth_limit::<R>(limiter.clone())
         } else {
             resp
         };
