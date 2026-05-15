@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::body::RequestBoxLocalBody;
 use crate::error::Error;
 use crate::pool::PooledConnection;
 use crate::proxy::ProxyConfig;
@@ -14,7 +15,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
-    ) -> Result<PooledConnection, Error> {
+    ) -> Result<PooledConnection<RequestBoxLocalBody>, Error> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
         let proxy_addr = self
@@ -84,7 +85,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         mut tcp_stream: C::Stream,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
-    ) -> Result<PooledConnection, Error> {
+    ) -> Result<PooledConnection<RequestBoxLocalBody>, Error> {
         use hyper::rt::{Read, Write};
 
         let target = target_authority.as_str();
@@ -148,7 +149,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
     pub(super) fn connect_plaintext_local<S>(
         &self,
         stream: S,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection, Error>> + '_>>
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<RequestBoxLocalBody>, Error>> + '_>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
@@ -159,7 +160,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         &self,
         stream: S,
         force_h2c: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection, Error>> + '_>>
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<RequestBoxLocalBody>, Error>> + '_>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
@@ -170,7 +171,10 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         }
     }
 
-    pub(super) async fn connect_h1_local<S>(&self, stream: S) -> Result<PooledConnection, Error>
+    pub(super) async fn connect_h1_local<S>(
+        &self,
+        stream: S,
+    ) -> Result<PooledConnection<RequestBoxLocalBody>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
@@ -184,7 +188,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
     pub(super) async fn connect_h2_prior_knowledge_local<S>(
         &self,
         stream: S,
-    ) -> Result<PooledConnection, Error>
+    ) -> Result<PooledConnection<RequestBoxLocalBody>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
@@ -206,7 +210,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         &self,
         tcp_stream: C::Stream,
         host: &str,
-    ) -> Result<PooledConnection, Error> {
+    ) -> Result<PooledConnection<RequestBoxLocalBody>, Error> {
         use crate::tls::TlsConnectLocal;
         use std::time::Instant;
 
@@ -267,7 +271,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         &self,
         _tcp_stream: C::Stream,
         _host: &str,
-    ) -> Result<PooledConnection, Error> {
+    ) -> Result<PooledConnection<RequestBoxLocalBody>, Error> {
         Err(Error::Tls(
             "TLS with !Send streams requires the compio feature".into(),
         ))
@@ -278,7 +282,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         &self,
         _tcp_stream: C::Stream,
         _host: &str,
-    ) -> Result<PooledConnection, Error> {
+    ) -> Result<PooledConnection<RequestBoxLocalBody>, Error> {
         Err(Error::Tls(
             "HTTPS requires the `rustls` TLS backend feature".into(),
         ))

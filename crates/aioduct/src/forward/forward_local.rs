@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::body::RequestBoxBody;
+use crate::body::RequestBoxLocalBody;
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
 use crate::response::Response;
@@ -225,16 +225,10 @@ where
             .map_err(|e| Error::Other(Box::new(e)))?;
         parts.uri = request_uri;
 
-        // Buffer the body into bytes. For !Send runtimes we cannot use
-        // UnsyncBoxBody::new (which requires Send), so we collect first.
-        let collected = body.collect().await.map_err(|e| {
+        let boxed_body: RequestBoxLocalBody = Box::pin(body.map_err(|e| {
             let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();
             Error::Other(boxed)
-        })?;
-        let bytes = collected.to_bytes();
-        let boxed_body: RequestBoxBody = http_body_util::Full::new(bytes)
-            .map_err(|never| match never {})
-            .boxed_unsync();
+        }));
 
         let request = http::Request::from_parts(parts, boxed_body);
 

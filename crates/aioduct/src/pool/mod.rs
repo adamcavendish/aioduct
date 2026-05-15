@@ -57,13 +57,13 @@ impl PoolKey {
     }
 }
 
-struct IdleConnection {
-    connection: PooledConnection,
+struct IdleConnection<B> {
+    connection: PooledConnection<B>,
     idle_since: Instant,
 }
 
-struct PoolInner {
-    idle: HashMap<PoolKey, VecDeque<IdleConnection>>,
+struct PoolInner<B> {
+    idle: HashMap<PoolKey, VecDeque<IdleConnection<B>>>,
     /// Reverse index: SAN → set of pool keys whose connections cover that name.
     san_index: HashMap<String, HashSet<PoolKey>>,
     /// Pool keys with an in-progress H2/H3 connection attempt.
@@ -73,12 +73,12 @@ struct PoolInner {
 }
 
 /// Thread-safe pool of idle HTTP connections keyed by origin.
-pub(crate) struct ConnectionPool {
-    inner: Arc<Mutex<PoolInner>>,
+pub(crate) struct ConnectionPool<B> {
+    inner: Arc<Mutex<PoolInner<B>>>,
     reaper_spawned: Arc<AtomicBool>,
 }
 
-impl Clone for ConnectionPool {
+impl<B> Clone for ConnectionPool<B> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -87,7 +87,7 @@ impl Clone for ConnectionPool {
     }
 }
 
-impl ConnectionPool {
+impl<B: 'static> ConnectionPool<B> {
     /// Create a pool with the given capacity and timeout settings.
     pub(crate) fn new(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
         Self {
@@ -124,7 +124,7 @@ impl ConnectionPool {
     ///
     /// Uses LIFO ordering (most recently returned first) and checks readiness
     /// on each candidate, trying all pooled connections before giving up.
-    pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection> {
+    pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection<B>> {
         let mut inner = self.inner.lock().ok()?;
         let idle_timeout = inner.idle_timeout;
         let queue = inner.idle.get_mut(key)?;
@@ -155,7 +155,7 @@ impl ConnectionPool {
     /// Return a connection to the pool for future reuse.
     ///
     /// When at capacity, evicts the oldest idle connection to make room.
-    pub(crate) fn checkin(&self, key: PoolKey, connection: PooledConnection) {
+    pub(crate) fn checkin(&self, key: PoolKey, connection: PooledConnection<B>) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
@@ -211,7 +211,7 @@ impl ConnectionPool {
         &self,
         target_host: &str,
         resolved_ip: Option<IpAddr>,
-    ) -> Option<PooledConnection> {
+    ) -> Option<PooledConnection<B>> {
         let mut inner = self.inner.lock().ok()?;
         let now = Instant::now();
         let idle_timeout = inner.idle_timeout;
@@ -294,15 +294,59 @@ impl ConnectionPool {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn ensure_reaper<R: RuntimePoll>(&self) {
+    pub(crate) fn ensure_reaper<R: RuntimePoll>(&self)
+    where
+        B: Send,
+    {
         if !self.reaper_spawned.swap(true, Ordering::AcqRel) {
             self.spawn_reaper::<R>();
         }
     }
 
-    fn spawn_reaper<R: RuntimePoll>(&self) {
+    fn spawn_reaper<R: RuntimePoll>(&self)
+    where
+        B: Send,
+    {
         let inner = Arc::clone(&self.inner);
         R::spawn_send(async move {
+            loop {
+                let timeout = {
+                    let Ok(guard) = inner.lock() else {
+                        return;
+                    };
+                    guard.idle_timeout
+                };
+                R::sleep(timeout).await;
+
+                let Ok(mut guard) = inner.lock() else {
+                    return;
+                };
+                let now = Instant::now();
+                let idle_timeout = guard.idle_timeout;
+                guard.idle.retain(|_, queue| {
+                    queue.retain(|entry| now.duration_since(entry.idle_since) < idle_timeout);
+                    !queue.is_empty()
+                });
+                let live_keys: HashSet<PoolKey> = guard.idle.keys().cloned().collect();
+                guard.san_index.retain(|_, keys| {
+                    keys.retain(|k| live_keys.contains(k));
+                    !keys.is_empty()
+                });
+            }
+        });
+    }
+
+    /// Ensure the reaper is running on a local (single-threaded) runtime.
+    #[allow(dead_code)]
+    pub(crate) fn ensure_reaper_local<R: crate::runtime::RuntimeLocal>(&self) {
+        if !self.reaper_spawned.swap(true, Ordering::AcqRel) {
+            self.spawn_reaper_local::<R>();
+        }
+    }
+
+    fn spawn_reaper_local<R: crate::runtime::RuntimeLocal>(&self) {
+        let inner = Arc::clone(&self.inner);
+        R::spawn_local(async move {
             loop {
                 let timeout = {
                     let Ok(guard) = inner.lock() else {

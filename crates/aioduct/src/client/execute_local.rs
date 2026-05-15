@@ -5,7 +5,7 @@ use http_body_util::BodyExt;
 
 use super::{HttpEngineCore, HttpEngineLocal};
 use crate::body::RequestBody;
-use crate::body::RequestBoxBody;
+use crate::body::RequestBoxLocalBody;
 use crate::clock::Instant;
 use crate::error::Error;
 use crate::observer::{self, RequestPhase};
@@ -53,13 +53,13 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             let (req_body, body_for_replay) = match current_body.take() {
                 Some(RequestBody::Buffered(b)) => {
                     let body_clone = RequestBody::Buffered(b.clone());
-                    (RequestBody::Buffered(b).into_hyper_body(), Some(body_clone))
+                    (RequestBody::Buffered(b).into_local_body(), Some(body_clone))
                 }
-                Some(rb @ RequestBody::Streaming(_)) => (rb.into_hyper_body(), None),
+                Some(rb @ RequestBody::Streaming(_)) => (rb.into_local_body(), None),
                 None => {
-                    let empty: RequestBoxBody = http_body_util::Full::new(Bytes::new())
-                        .map_err(|never| match never {})
-                        .boxed_unsync();
+                    let empty: RequestBoxLocalBody = Box::pin(
+                        http_body_util::Full::new(Bytes::new()).map_err(|never| match never {}),
+                    );
                     (empty, None)
                 }
             };
@@ -99,7 +99,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             if !self.core.middleware.is_empty() {
                 self.core
                     .middleware
-                    .apply_request(&mut request, &current_uri);
+                    .apply_request_local(&mut request, &current_uri);
             }
 
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
@@ -243,13 +243,11 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
 
         let replay_for_stale = body_for_replay.clone();
 
-        let retry_body: RequestBoxBody = match body_for_replay {
-            Some(b) => http_body_util::Full::new(b)
-                .map_err(|never| match never {})
-                .boxed_unsync(),
-            None => http_body_util::Full::new(Bytes::new())
-                .map_err(|never| match never {})
-                .boxed_unsync(),
+        let retry_body: RequestBoxLocalBody = match body_for_replay {
+            Some(b) => Box::pin(http_body_util::Full::new(b).map_err(|never| match never {})),
+            None => {
+                Box::pin(http_body_util::Full::new(Bytes::new()).map_err(|never| match never {}))
+            }
         };
 
         let retry_uri: Uri = match uri.path_and_query() {
@@ -265,7 +263,9 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         let mut retry_request = retry_builder.body(retry_body)?;
         *retry_request.headers_mut() = headers.clone();
         if !self.core.middleware.is_empty() {
-            self.core.middleware.apply_request(&mut retry_request, uri);
+            self.core
+                .middleware
+                .apply_request_local(&mut retry_request, uri);
         }
         self.execute_single_local(retry_request, uri, replay_for_stale)
             .await
@@ -318,7 +318,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
     #[allow(deprecated)]
     pub(crate) async fn execute_single_local(
         &self,
-        mut request: http::Request<RequestBoxBody>,
+        mut request: http::Request<RequestBoxLocalBody>,
         original_uri: &Uri,
         replay_body: Option<Bytes>,
     ) -> Result<Response, Error> {
@@ -418,7 +418,8 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                     return Ok(resp);
                 }
                 Err(e)
-                    if saved_parts.is_some() && HttpEngineCore::is_stale_connection_error(&e) =>
+                    if saved_parts.is_some()
+                        && HttpEngineCore::<RequestBoxLocalBody>::is_stale_connection_error(&e) =>
                 {
                     self.core.fire_connection_metrics(&conn, true);
                     // saved_parts is guaranteed Some by the match arm guard.
@@ -429,9 +430,9 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                         .as_ref()
                         .cloned()
                         .unwrap_or_else(bytes::Bytes::new);
-                    let body: RequestBoxBody = http_body_util::Full::new(retry_body_bytes)
-                        .map_err(|never| match never {})
-                        .boxed_unsync();
+                    let body: RequestBoxLocalBody = Box::pin(
+                        http_body_util::Full::new(retry_body_bytes).map_err(|never| match never {}),
+                    );
                     let mut retry_req = http::Request::new(body);
                     *retry_req.method_mut() = method;
                     *retry_req.uri_mut() = uri;
@@ -482,15 +483,14 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
 
             let tcp_start = Instant::now();
             let connect_fut = async {
-                let addr = addrs[0];
-                let tcp_stream = if let Some(local_addr) = self.core.local_address {
-                    self.connector
-                        .connect_bound(addr, local_addr)
-                        .await
-                        .map_err(Error::Io)?
-                } else {
-                    self.connector.connect(addr).await.map_err(Error::Io)?
-                };
+                let (tcp_stream, addr) =
+                    crate::happy_eyeballs::connect_happy_eyeballs_local::<R, C>(
+                        &self.connector,
+                        &addrs,
+                        self.core.local_address,
+                    )
+                    .await
+                    .map_err(Error::Io)?;
 
                 if let Some(time) = self.core.tcp_keepalive {
                     tcp_stream
@@ -511,7 +511,10 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                     self.connect_plaintext_local(tcp_stream).await?
                 };
                 conn.remote_addr = Some(addr);
-                Ok::<(PooledConnection, Instant), Error>((conn, Instant::now()))
+                Ok::<(PooledConnection<RequestBoxLocalBody>, Instant), Error>((
+                    conn,
+                    Instant::now(),
+                ))
             };
 
             let (conn, connect_done) = match self.core.connect_timeout {
