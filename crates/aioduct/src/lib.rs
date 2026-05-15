@@ -267,6 +267,14 @@ pub type CompioClient =
 #[cfg(feature = "compio")]
 pub type CompioEngine = CompioClient;
 
+/// Convenience alias for the WebAssembly (browser Fetch API) client.
+#[cfg(feature = "wasm")]
+pub type WasmClient = wasm::WasmClient;
+
+/// Convenience alias for the WASI Preview 2 HTTP client.
+#[cfg(feature = "wasi-p2")]
+pub type WasiClient = wasi_p2::WasiClient;
+
 /// Blocking client backed by the tokio runtime.
 #[cfg(all(feature = "blocking", feature = "tokio"))]
 pub type BlockingTokioClient =

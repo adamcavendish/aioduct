@@ -3,7 +3,7 @@ use std::time::Duration;
 use base64::Engine;
 use wasm_bindgen::prelude::*;
 
-use aioduct::wasm::WasmClient;
+use aioduct::WasmClient;
 
 #[wasm_bindgen]
 pub async fn fetch_url(url: &str) -> Result<String, String> {

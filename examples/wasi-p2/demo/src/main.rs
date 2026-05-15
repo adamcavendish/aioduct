@@ -1,4 +1,4 @@
-use aioduct::wasi_p2::WasiClient;
+use aioduct::WasiClient;
 
 fn main() {
     let client = WasiClient::builder()

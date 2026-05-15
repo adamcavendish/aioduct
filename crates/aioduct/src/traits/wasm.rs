@@ -74,3 +74,15 @@ impl ResponseExt for WasmResponse {
         self.text()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_http_client<C: HttpClient>() {}
+
+    #[test]
+    fn wasm_client_implements_http_client() {
+        assert_http_client::<WasmClient>();
+    }
+}
