@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::runtime::{Connector, ConnectorSend, RuntimeLocal, RuntimePoll};
 
-const HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(250);
+pub(crate) const HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(250);
 
 pub(crate) async fn connect_happy_eyeballs<R: RuntimePoll, C: ConnectorSend>(
     connector: &C,
@@ -29,7 +29,7 @@ pub(crate) async fn connect_happy_eyeballs<R: RuntimePoll, C: ConnectorSend>(
     race_connect::<R, C>(connector, &interleaved, local_address).await
 }
 
-fn interleave_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+pub(crate) fn interleave_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
     let (v6, v4): (Vec<&SocketAddr>, Vec<&SocketAddr>) = addrs.iter().partition(|a| a.is_ipv6());
     let mut result = Vec::with_capacity(addrs.len());
     let mut i6 = v6.into_iter();
