@@ -619,7 +619,7 @@ mod builder_tests {
 
         let mut test_headers = headers.clone();
         // Simulate what apply_default_headers does
-        for (name, value) in &client.core.default_headers {
+        for (name, value) in client.core.default_headers.iter() {
             if !test_headers.contains_key(name) {
                 test_headers.insert(name, value.clone());
             }

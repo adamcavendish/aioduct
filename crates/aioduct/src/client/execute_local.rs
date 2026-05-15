@@ -80,13 +80,10 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 CacheLookupOutcome::Miss => None,
             };
 
-            let path_and_query = current_uri
-                .path_and_query()
-                .map(|pq| pq.as_str())
-                .unwrap_or("/");
-            let req_uri: Uri = path_and_query
-                .parse()
-                .map_err(|e| Error::Other(Box::new(e)))?;
+            let req_uri: Uri = match current_uri.path_and_query() {
+                Some(pq) => Uri::from(pq.clone()),
+                None => Uri::from_static("/"),
+            };
 
             let mut builder = http::Request::builder()
                 .method(current_method.clone())
@@ -96,11 +93,8 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 builder = builder.version(ver);
             }
 
-            for (name, value) in &current_headers {
-                builder = builder.header(name, value);
-            }
-
             let mut request = builder.body(req_body)?;
+            *request.headers_mut() = current_headers.clone();
 
             if !self.core.middleware.is_empty() {
                 self.core
@@ -258,22 +252,18 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 .boxed_unsync(),
         };
 
-        let retry_uri: Uri = uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/")
-            .parse()
-            .map_err(|e| Error::Other(Box::new(e)))?;
+        let retry_uri: Uri = match uri.path_and_query() {
+            Some(pq) => Uri::from(pq.clone()),
+            None => Uri::from_static("/"),
+        };
         let mut retry_builder = http::Request::builder()
             .method(method.clone())
             .uri(retry_uri);
         if let Some(ver) = version {
             retry_builder = retry_builder.version(ver);
         }
-        for (name, value) in headers.iter() {
-            retry_builder = retry_builder.header(name, value);
-        }
         let mut retry_request = retry_builder.body(retry_body)?;
+        *retry_request.headers_mut() = headers.clone();
         if !self.core.middleware.is_empty() {
             self.core.middleware.apply_request(&mut retry_request, uri);
         }

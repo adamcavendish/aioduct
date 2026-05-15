@@ -2,6 +2,7 @@ use crate::clock::Instant;
 
 use bytes::Bytes;
 use http::Uri;
+use http::header::HeaderMap;
 use http_body_util::BodyExt;
 
 use crate::body::RequestBoxBody;
@@ -23,9 +24,16 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         request: http::Request<RequestBoxBody>,
         original_uri: &Uri,
         replay_body: Option<Bytes>,
+        stale_retry_headers: Option<&HeaderMap>,
     ) -> Result<Response, Error> {
-        self.execute_single_with_hint(request, original_uri, ProtocolHint::Auto, replay_body)
-            .await
+        self.execute_single_with_hint(
+            request,
+            original_uri,
+            ProtocolHint::Auto,
+            replay_body,
+            stale_retry_headers,
+        )
+        .await
     }
 
     #[allow(deprecated)] // TimingCollector usage — will be removed when observer replaces it
@@ -35,6 +43,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         original_uri: &Uri,
         protocol: ProtocolHint,
         replay_body: Option<Bytes>,
+        stale_retry_headers: Option<&HeaderMap>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
         #[allow(deprecated)]
@@ -108,7 +117,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 Some((
                     request.method().clone(),
                     request.uri().clone(),
-                    request.headers().clone(),
                     request.version(),
                 ))
             } else {
@@ -185,10 +193,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             blocked_duration: pool_checkout_start.elapsed(),
                         },
                     );
-                    // saved_parts is guaranteed Some by the match arm guard above.
-                    let Some((method, uri, headers, version)) = saved_parts else {
+                    let Some((method, uri, version)) = saved_parts else {
                         return Err(e);
                     };
+                    let headers = stale_retry_headers.cloned().unwrap_or_default();
                     let retry_body_bytes = replay_body
                         .as_ref()
                         .cloned()
@@ -249,7 +257,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     Some((
                         request.method().clone(),
                         request.uri().clone(),
-                        request.headers().clone(),
                         request.version(),
                     ))
                 } else {
@@ -329,9 +336,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             },
                         );
                         // saved_parts is guaranteed Some by the match arm guard.
-                        let Some((method, uri, headers, version)) = saved_parts else {
+                        let Some((method, uri, version)) = saved_parts else {
                             return Err(e);
                         };
+                        let headers = stale_retry_headers.cloned().unwrap_or_default();
                         let retry_body_bytes = replay_body
                             .as_ref()
                             .cloned()
