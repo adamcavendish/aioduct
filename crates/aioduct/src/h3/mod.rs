@@ -11,6 +11,10 @@ use crate::response::Response;
 use crate::runtime::RuntimePoll;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use crate::happy_eyeballs::{HAPPY_EYEBALLS_DELAY, interleave_addrs};
 
 pub(crate) async fn connect_h3<R: RuntimePoll>(
     quinn_conn: quinn::Connection,
@@ -33,69 +37,275 @@ pub(crate) async fn connect_h3_addrs<R: RuntimePoll>(
     server_name: &str,
     local_address: Option<IpAddr>,
 ) -> Result<(PooledConnection<RequestBoxBody>, SocketAddr), Error> {
-    let endpoint_addr = endpoint.local_addr().map_err(Error::Io)?;
-    let addrs = ordered_h3_addrs(addrs, local_address, endpoint_addr.ip());
-    if addrs.is_empty() {
-        return Err(Error::InvalidUrl(
-            "no compatible HTTP/3 addresses found".into(),
-        ));
-    }
+    let addrs = h3_candidate_addrs(endpoint, addrs, local_address)?;
 
-    let mut last_err = None;
-    for addr in addrs {
-        match endpoint.connect(addr, server_name) {
-            Ok(connecting) => match connecting.await {
-                Ok(quinn_conn) => match connect_h3::<R>(quinn_conn).await {
-                    Ok(pooled) => return Ok((pooled, addr)),
-                    Err(err) => last_err = Some(err),
-                },
-                Err(err) => last_err = Some(Error::Other(Box::new(err))),
-            },
-            Err(err) => last_err = Some(Error::Other(Box::new(err))),
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| Error::Other("failed to establish HTTP/3 connection".into())))
+    let (quinn_conn, addr) = race_quic_connect::<R>(endpoint, &addrs, server_name).await?;
+    let pooled = connect_h3::<R>(quinn_conn).await?;
+    Ok((pooled, addr))
 }
 
-/// Attempt 0-RTT connection to the first compatible address, falling back to full handshake.
-///
-/// Returns the pooled connection and whether 0-RTT was used.
 pub(crate) async fn connect_h3_addrs_0rtt<R: RuntimePoll>(
     endpoint: &quinn::Endpoint,
     addrs: &[SocketAddr],
     server_name: &str,
     local_address: Option<IpAddr>,
 ) -> Result<(PooledConnection<RequestBoxBody>, SocketAddr, bool), Error> {
+    let addrs = h3_candidate_addrs(endpoint, addrs, local_address)?;
+
+    let (quinn_conn, addr, used_0rtt) =
+        race_quic_connect_0rtt::<R>(endpoint, &addrs, server_name).await?;
+    let pooled = connect_h3::<R>(quinn_conn).await?;
+    Ok((pooled, addr, used_0rtt))
+}
+
+fn h3_candidate_addrs(
+    endpoint: &quinn::Endpoint,
+    addrs: &[SocketAddr],
+    local_address: Option<IpAddr>,
+) -> Result<Vec<SocketAddr>, Error> {
     let endpoint_addr = endpoint.local_addr().map_err(Error::Io)?;
-    let addrs = ordered_h3_addrs(addrs, local_address, endpoint_addr.ip());
-    if addrs.is_empty() {
+    let filtered = filter_h3_addrs(addrs, local_address, endpoint_addr.ip());
+    if filtered.is_empty() {
         return Err(Error::InvalidUrl(
             "no compatible HTTP/3 addresses found".into(),
         ));
     }
+    Ok(filtered)
+}
 
-    let mut last_err = None;
-    for addr in addrs {
-        match endpoint.connect(addr, server_name) {
-            Ok(connecting) => match connecting.into_0rtt() {
-                Ok((quinn_conn, _zero_rtt_accepted)) => match connect_h3::<R>(quinn_conn).await {
-                    Ok(pooled) => return Ok((pooled, addr, true)),
-                    Err(err) => last_err = Some(err),
-                },
-                Err(connecting) => match connecting.await {
-                    Ok(quinn_conn) => match connect_h3::<R>(quinn_conn).await {
-                        Ok(pooled) => return Ok((pooled, addr, false)),
-                        Err(err) => last_err = Some(err),
-                    },
-                    Err(err) => last_err = Some(Error::Other(Box::new(err))),
-                },
-            },
-            Err(err) => last_err = Some(Error::Other(Box::new(err))),
-        }
+fn filter_h3_addrs(
+    addrs: &[SocketAddr],
+    local_address: Option<IpAddr>,
+    endpoint_ip: IpAddr,
+) -> Vec<SocketAddr> {
+    if let Some(local_ip) = local_address {
+        addrs
+            .iter()
+            .copied()
+            .filter(|a| a.is_ipv4() == local_ip.is_ipv4())
+            .collect()
+    } else if endpoint_ip.is_ipv6() {
+        interleave_addrs(addrs)
+    } else {
+        addrs.iter().copied().filter(|a| a.is_ipv4()).collect()
+    }
+}
+
+// ── Happy Eyeballs for QUIC ────────────────────────────────────────────────
+
+enum H3ConnectResult {
+    Connected(quinn::Connection, SocketAddr),
+    Failed(Error),
+    DeadlineReached,
+}
+
+async fn race_quic_connect<R: RuntimePoll>(
+    endpoint: &quinn::Endpoint,
+    addrs: &[SocketAddr],
+    server_name: &str,
+) -> Result<(quinn::Connection, SocketAddr), Error> {
+    if addrs.len() == 1 {
+        return quic_connect_one(endpoint, addrs[0], server_name).await;
     }
 
-    Err(last_err.unwrap_or_else(|| Error::Other("failed to establish HTTP/3 connection".into())))
+    let mut last_err = Error::Other("failed to establish HTTP/3 connection".into());
+    for (i, &addr) in addrs.iter().enumerate() {
+        let is_last = i == addrs.len() - 1;
+        if is_last {
+            match quic_connect_one(endpoint, addr, server_name).await {
+                Ok(result) => return Ok(result),
+                Err(e) => last_err = e,
+            }
+        } else {
+            match quic_connect_with_deadline::<R>(endpoint, addr, server_name).await {
+                H3ConnectResult::Connected(conn, addr) => return Ok((conn, addr)),
+                H3ConnectResult::Failed(e) => last_err = e,
+                H3ConnectResult::DeadlineReached => {}
+            }
+        }
+    }
+    Err(last_err)
+}
+
+async fn quic_connect_one(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    server_name: &str,
+) -> Result<(quinn::Connection, SocketAddr), Error> {
+    let connecting = endpoint
+        .connect(addr, server_name)
+        .map_err(|e| Error::Other(Box::new(e)))?;
+    let conn = connecting.await.map_err(|e| Error::Other(Box::new(e)))?;
+    Ok((conn, addr))
+}
+
+async fn quic_connect_with_deadline<R: RuntimePoll>(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    server_name: &str,
+) -> H3ConnectResult {
+    let connecting = match endpoint.connect(addr, server_name) {
+        Ok(c) => c,
+        Err(e) => return H3ConnectResult::Failed(Error::Other(Box::new(e))),
+    };
+    SelectQuicConnect {
+        connect: Box::pin(async move { connecting.await.map_err(|e| Error::Other(Box::new(e))) }),
+        sleep: Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY)),
+        addr,
+        done: false,
+    }
+    .await
+}
+
+struct SelectQuicConnect {
+    connect: Pin<Box<dyn std::future::Future<Output = Result<quinn::Connection, Error>> + Send>>,
+    sleep: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    addr: SocketAddr,
+    done: bool,
+}
+
+impl std::future::Future for SelectQuicConnect {
+    type Output = H3ConnectResult;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if this.done {
+            return Poll::Pending;
+        }
+
+        if let Poll::Ready(result) = this.connect.as_mut().poll(cx) {
+            this.done = true;
+            return Poll::Ready(match result {
+                Ok(conn) => H3ConnectResult::Connected(conn, this.addr),
+                Err(e) => H3ConnectResult::Failed(e),
+            });
+        }
+
+        if let Poll::Ready(()) = this.sleep.as_mut().poll(cx) {
+            this.done = true;
+            return Poll::Ready(H3ConnectResult::DeadlineReached);
+        }
+
+        Poll::Pending
+    }
+}
+
+// ── Happy Eyeballs for QUIC 0-RTT ─────────────────────────────────────────
+
+enum H3ConnectResult0rtt {
+    Connected(quinn::Connection, SocketAddr, bool),
+    Failed(Error),
+    DeadlineReached,
+}
+
+async fn race_quic_connect_0rtt<R: RuntimePoll>(
+    endpoint: &quinn::Endpoint,
+    addrs: &[SocketAddr],
+    server_name: &str,
+) -> Result<(quinn::Connection, SocketAddr, bool), Error> {
+    if addrs.len() == 1 {
+        return quic_connect_one_0rtt(endpoint, addrs[0], server_name).await;
+    }
+
+    let mut last_err = Error::Other("failed to establish HTTP/3 connection".into());
+    for (i, &addr) in addrs.iter().enumerate() {
+        let is_last = i == addrs.len() - 1;
+        if is_last {
+            match quic_connect_one_0rtt(endpoint, addr, server_name).await {
+                Ok(result) => return Ok(result),
+                Err(e) => last_err = e,
+            }
+        } else {
+            match quic_connect_0rtt_with_deadline::<R>(endpoint, addr, server_name).await {
+                H3ConnectResult0rtt::Connected(conn, addr, used_0rtt) => {
+                    return Ok((conn, addr, used_0rtt));
+                }
+                H3ConnectResult0rtt::Failed(e) => last_err = e,
+                H3ConnectResult0rtt::DeadlineReached => {}
+            }
+        }
+    }
+    Err(last_err)
+}
+
+async fn quic_connect_one_0rtt(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    server_name: &str,
+) -> Result<(quinn::Connection, SocketAddr, bool), Error> {
+    let connecting = endpoint
+        .connect(addr, server_name)
+        .map_err(|e| Error::Other(Box::new(e)))?;
+    match connecting.into_0rtt() {
+        Ok((conn, _zero_rtt_accepted)) => Ok((conn, addr, true)),
+        Err(connecting) => {
+            let conn = connecting.await.map_err(|e| Error::Other(Box::new(e)))?;
+            Ok((conn, addr, false))
+        }
+    }
+}
+
+async fn quic_connect_0rtt_with_deadline<R: RuntimePoll>(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    server_name: &str,
+) -> H3ConnectResult0rtt {
+    let connecting = match endpoint.connect(addr, server_name) {
+        Ok(c) => c,
+        Err(e) => return H3ConnectResult0rtt::Failed(Error::Other(Box::new(e))),
+    };
+    SelectQuicConnect0rtt {
+        connect: Box::pin(async move {
+            match connecting.into_0rtt() {
+                Ok((conn, _zero_rtt_accepted)) => Ok((conn, true)),
+                Err(connecting) => {
+                    let conn = connecting.await.map_err(|e| Error::Other(Box::new(e)))?;
+                    Ok((conn, false))
+                }
+            }
+        }),
+        sleep: Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY)),
+        addr,
+        done: false,
+    }
+    .await
+}
+
+#[allow(clippy::type_complexity)]
+struct SelectQuicConnect0rtt {
+    connect:
+        Pin<Box<dyn std::future::Future<Output = Result<(quinn::Connection, bool), Error>> + Send>>,
+    sleep: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    addr: SocketAddr,
+    done: bool,
+}
+
+impl std::future::Future for SelectQuicConnect0rtt {
+    type Output = H3ConnectResult0rtt;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if this.done {
+            return Poll::Pending;
+        }
+
+        if let Poll::Ready(result) = this.connect.as_mut().poll(cx) {
+            this.done = true;
+            return Poll::Ready(match result {
+                Ok((conn, used_0rtt)) => H3ConnectResult0rtt::Connected(conn, this.addr, used_0rtt),
+                Err(e) => H3ConnectResult0rtt::Failed(e),
+            });
+        }
+
+        if let Poll::Ready(()) = this.sleep.as_mut().poll(cx) {
+            this.done = true;
+            return Poll::Ready(H3ConnectResult0rtt::DeadlineReached);
+        }
+
+        Poll::Pending
+    }
 }
 
 pub(crate) async fn send_on_h3(
@@ -187,29 +397,6 @@ fn h3_bind_addr(local_address: Option<IpAddr>) -> SocketAddr {
 
 fn h3_ipv4_bind_addr() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-}
-
-fn ordered_h3_addrs(
-    addrs: &[SocketAddr],
-    local_address: Option<IpAddr>,
-    endpoint_ip: IpAddr,
-) -> Vec<SocketAddr> {
-    if let Some(local_ip) = local_address {
-        return addrs
-            .iter()
-            .copied()
-            .filter(|addr| addr.is_ipv4() == local_ip.is_ipv4())
-            .collect();
-    }
-
-    let (ipv6_addrs, ipv4_addrs): (Vec<_>, Vec<_>) =
-        addrs.iter().copied().partition(|addr| addr.is_ipv6());
-
-    if endpoint_ip.is_ipv6() {
-        ipv6_addrs.into_iter().chain(ipv4_addrs).collect()
-    } else {
-        ipv4_addrs
-    }
 }
 
 pub(crate) fn build_quinn_endpoint(
@@ -323,31 +510,31 @@ mod tests {
     }
 
     #[test]
-    fn ordered_h3_addrs_prefers_ipv6_on_dual_stack_endpoint() {
+    fn filter_h3_addrs_interleaves_on_ipv6_endpoint() {
         let ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443);
         let ipv6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
 
-        let addrs = ordered_h3_addrs(&[ipv4, ipv6], None, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+        let addrs = filter_h3_addrs(&[ipv4, ipv6], None, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
 
         assert_eq!(addrs, vec![ipv6, ipv4]);
     }
 
     #[test]
-    fn ordered_h3_addrs_filters_ipv6_for_ipv4_endpoint() {
+    fn filter_h3_addrs_filters_ipv6_for_ipv4_endpoint() {
         let ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443);
         let ipv6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
 
-        let addrs = ordered_h3_addrs(&[ipv6, ipv4], None, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        let addrs = filter_h3_addrs(&[ipv6, ipv4], None, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
 
         assert_eq!(addrs, vec![ipv4]);
     }
 
     #[test]
-    fn ordered_h3_addrs_honors_explicit_ipv4_local_address() {
+    fn filter_h3_addrs_honors_explicit_ipv4_local_address() {
         let ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443);
         let ipv6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
 
-        let addrs = ordered_h3_addrs(
+        let addrs = filter_h3_addrs(
             &[ipv6, ipv4],
             Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             IpAddr::V6(Ipv6Addr::UNSPECIFIED),
@@ -357,11 +544,11 @@ mod tests {
     }
 
     #[test]
-    fn ordered_h3_addrs_honors_explicit_ipv6_local_address() {
+    fn filter_h3_addrs_honors_explicit_ipv6_local_address() {
         let ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443);
         let ipv6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
 
-        let addrs = ordered_h3_addrs(
+        let addrs = filter_h3_addrs(
             &[ipv4, ipv6],
             Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
             IpAddr::V6(Ipv6Addr::UNSPECIFIED),
@@ -371,16 +558,16 @@ mod tests {
     }
 
     #[test]
-    fn ordered_h3_addrs_empty_input() {
-        let addrs = ordered_h3_addrs(&[], None, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+    fn filter_h3_addrs_empty_input() {
+        let addrs = filter_h3_addrs(&[], None, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
         assert!(addrs.is_empty());
     }
 
     #[test]
-    fn ordered_h3_addrs_all_same_family() {
+    fn filter_h3_addrs_all_same_family() {
         let a1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443);
         let a2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 443);
-        let addrs = ordered_h3_addrs(&[a1, a2], None, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        let addrs = filter_h3_addrs(&[a1, a2], None, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         assert_eq!(addrs, vec![a1, a2]);
     }
 

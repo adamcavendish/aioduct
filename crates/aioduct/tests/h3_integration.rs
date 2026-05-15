@@ -107,7 +107,7 @@ async fn h3_basic_get() {
         .build();
 
     let resp = client
-        .get(&format!("https://localhost:{}/", addr.port()))
+        .get(&format!("https://127.0.0.1:{}/", addr.port()))
         .unwrap()
         .send()
         .await
@@ -133,7 +133,7 @@ async fn h3_post_with_body() {
         .build();
 
     let resp = client
-        .post(&format!("https://localhost:{}/", addr.port()))
+        .post(&format!("https://127.0.0.1:{}/", addr.port()))
         .unwrap()
         .body("hello")
         .send()
@@ -155,7 +155,7 @@ async fn h3_response_body() {
         .build();
 
     let resp = client
-        .get(&format!("https://localhost:{}/", addr.port()))
+        .get(&format!("https://127.0.0.1:{}/", addr.port()))
         .unwrap()
         .send()
         .await
@@ -187,7 +187,7 @@ async fn h3_concurrent_requests() {
         let port = addr.port();
         handles.push(tokio::spawn(async move {
             let resp = client
-                .get(&format!("https://localhost:{port}/{i}"))
+                .get(&format!("https://127.0.0.1:{port}/{i}"))
                 .unwrap()
                 .send()
                 .await
