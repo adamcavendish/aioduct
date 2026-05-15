@@ -128,15 +128,15 @@ impl TlsInfo {
 
 /// Extract DNS Subject Alternative Names from a DER-encoded certificate.
 #[cfg(feature = "rustls")]
-pub(crate) fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
+pub(crate) fn extract_sans_from_der(der: &[u8]) -> std::sync::Arc<[String]> {
     use x509_parser::prelude::*;
     let Ok((_, cert)) = X509Certificate::from_der(der) else {
-        return Vec::new();
+        return std::sync::Arc::from([]);
     };
     let Some(san_ext) = cert.subject_alternative_name().ok().flatten() else {
-        return Vec::new();
+        return std::sync::Arc::from([]);
     };
-    san_ext
+    let sans: Vec<String> = san_ext
         .value
         .general_names
         .iter()
@@ -144,7 +144,8 @@ pub(crate) fn extract_sans_from_der(der: &[u8]) -> Vec<String> {
             GeneralName::DNSName(dns) => Some(dns.to_string()),
             _ => None,
         })
-        .collect()
+        .collect();
+    std::sync::Arc::from(sans)
 }
 
 /// Async TLS handshake abstraction.

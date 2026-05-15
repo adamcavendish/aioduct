@@ -1,4 +1,5 @@
 use http::HeaderMap;
+#[cfg(test)]
 use http::header::ACCEPT_ENCODING;
 
 use crate::body::RequestBoxBody;
@@ -96,6 +97,7 @@ impl AcceptEncoding {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn set_accept_encoding(headers: &mut HeaderMap, accept: &AcceptEncoding) {
     if !headers.contains_key(ACCEPT_ENCODING)
         && let Some(value) = accept.header_value()

@@ -222,11 +222,11 @@ async fn checkout_coalesced_finds_by_san() {
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
-    conn.sans = vec![
+    conn.sans = std::sync::Arc::from(vec![
         "origin.example.com".into(),
         "cdn.example.com".into(),
         "api.example.com".into(),
-    ];
+    ]);
     conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
     pool.checkin(k, conn);
 
@@ -243,7 +243,7 @@ async fn checkout_coalesced_rejects_h1() {
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h1_conn().await;
-    conn.sans = vec!["origin.example.com".into(), "cdn.example.com".into()];
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
     conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
     pool.checkin(k, conn);
 
@@ -260,7 +260,7 @@ async fn checkout_coalesced_rejects_different_ip() {
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
-    conn.sans = vec!["origin.example.com".into(), "cdn.example.com".into()];
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
     conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
     pool.checkin(k, conn);
 
@@ -277,7 +277,7 @@ async fn checkout_coalesced_skips_expired() {
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
-    conn.sans = vec!["origin.example.com".into(), "cdn.example.com".into()];
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
     conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
     pool.checkin(k, conn);
 
