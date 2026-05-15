@@ -1,10 +1,11 @@
 use super::*;
+use crate::body::RequestBoxBody;
 use crate::runtime::TokioRuntime;
 use crate::runtime::tokio_rt::TokioIo;
 
 /// Helper: perform an HTTP/1.1 handshake over a duplex stream and return
 /// the resulting `PooledConnection`.
-async fn make_h1_conn() -> PooledConnection {
+async fn make_h1_conn() -> PooledConnection<RequestBoxBody> {
     let (client_io, mut server_io) = tokio::io::duplex(1024);
 
     // Spawn a task that reads from the server side so the connection stays
@@ -42,23 +43,23 @@ fn key(host: &str) -> PoolKey {
 
 #[test]
 fn pool_creates_with_given_parameters() {
-    let _pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let _pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
 }
 
 #[test]
 fn pool_new_does_not_require_runtime() {
-    let _pool = ConnectionPool::new(8, Duration::from_secs(30));
+    let _pool = ConnectionPool::<RequestBoxBody>::new(8, Duration::from_secs(30));
 }
 
 #[test]
 fn checkout_returns_none_on_empty_pool() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
     assert!(pool.checkout(&key("example.com:80")).is_none());
 }
 
 #[tokio::test]
 async fn checkin_then_checkout_returns_connection() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
     let k = key("example.com:80");
 
     let conn = make_h1_conn().await;
@@ -75,7 +76,7 @@ async fn checkin_then_checkout_returns_connection() {
 
 #[tokio::test]
 async fn checkout_with_different_key_returns_none() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
 
     let conn = make_h1_conn().await;
     pool.checkin(key("a.example.com:80"), conn);
@@ -91,7 +92,7 @@ async fn checkout_with_different_key_returns_none() {
 #[tokio::test]
 async fn pool_respects_max_idle_per_host() {
     let max_idle = 2;
-    let pool = ConnectionPool::new_no_reaper(max_idle, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(max_idle, Duration::from_secs(30));
     let k = key("example.com:80");
 
     for _ in 0..3 {
@@ -111,7 +112,7 @@ async fn pool_respects_max_idle_per_host() {
 
 #[tokio::test]
 async fn checkin_checkout_is_lifo() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
     let k = key("example.com:80");
 
     let conn1 = make_h1_conn().await;
@@ -138,7 +139,7 @@ async fn checkin_checkout_is_lifo() {
 
 #[tokio::test]
 async fn checkout_expired_connection_returns_none() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_millis(50));
     let k = key("example.com:80");
 
     let conn = make_h1_conn().await;
@@ -154,7 +155,7 @@ async fn checkout_expired_connection_returns_none() {
 
 #[tokio::test]
 async fn reaper_removes_expired_connections() {
-    let pool = ConnectionPool::new(1, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBoxBody>::new(1, Duration::from_millis(50));
     pool.ensure_reaper::<TokioRuntime>();
     let k = key("example.com:80");
 
@@ -174,7 +175,7 @@ async fn reaper_removes_expired_connections() {
 use std::net::IpAddr;
 
 /// Helper: perform an HTTP/2 handshake over a duplex stream.
-async fn make_h2_conn() -> PooledConnection {
+async fn make_h2_conn() -> PooledConnection<RequestBoxBody> {
     let (client_io, server_io) = tokio::io::duplex(65536);
 
     // Spawn server-side h2 connection handler
@@ -218,7 +219,7 @@ fn key_https(host: &str) -> PoolKey {
 
 #[tokio::test]
 async fn checkout_coalesced_finds_by_san() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -239,7 +240,7 @@ async fn checkout_coalesced_finds_by_san() {
 
 #[tokio::test]
 async fn checkout_coalesced_rejects_h1() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h1_conn().await;
@@ -256,7 +257,7 @@ async fn checkout_coalesced_rejects_h1() {
 
 #[tokio::test]
 async fn checkout_coalesced_rejects_different_ip() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -273,7 +274,7 @@ async fn checkout_coalesced_rejects_different_ip() {
 
 #[tokio::test]
 async fn checkout_coalesced_skips_expired() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_millis(50));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -293,7 +294,7 @@ async fn checkout_coalesced_skips_expired() {
 
 #[test]
 fn checkout_coalesced_empty_pool_returns_none() {
-    let pool = ConnectionPool::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
     let ip: IpAddr = [10, 0, 0, 1].into();
     let result = pool.checkout_coalesced("cdn.example.com", Some(ip));
     assert!(result.is_none(), "empty pool should return None");

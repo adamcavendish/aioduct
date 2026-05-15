@@ -32,6 +32,8 @@ use http_body_util::BodyExt;
 use std::collections::HashSet;
 
 use crate::body::RequestBoxBody;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::body::RequestBoxLocalBody;
 use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
 use crate::error::Error;
@@ -50,8 +52,12 @@ const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 ///
 /// Contains connection pooling, TLS, timeouts, headers, proxy, middleware, and
 /// other settings shared between [`HttpEngineSend`] and [`HttpEngineLocal`].
-pub struct HttpEngineCore {
-    pub(crate) pool: ConnectionPool,
+///
+/// Generic over `B`, the body type stored in the connection pool:
+/// - Send path uses `B = RequestBoxBody` (inner body is `Send`)
+/// - Local path uses `B = RequestBoxLocalBody` (inner body may be `!Send`)
+pub struct HttpEngineCore<B> {
+    pub(crate) pool: ConnectionPool<B>,
     pub(crate) redirect_policy: RedirectPolicy,
     pub(crate) timeout: Option<Duration>,
     pub(crate) connect_timeout: Option<Duration>,
@@ -99,7 +105,7 @@ pub struct HttpEngineCore {
     pub(crate) alt_svc_cache: crate::alt_svc::AltSvcCache,
 }
 
-impl Clone for HttpEngineCore {
+impl<B: 'static> Clone for HttpEngineCore<B> {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
@@ -156,7 +162,7 @@ impl Clone for HttpEngineCore {
 ///
 /// Wraps [`HttpEngineCore`] with a `Send`-capable connector and optional tower layer.
 pub struct HttpEngineSend<R, C> {
-    pub(crate) core: HttpEngineCore,
+    pub(crate) core: HttpEngineCore<RequestBoxBody>,
     pub(crate) connector: C,
     #[cfg(feature = "tower")]
     pub(crate) tower_connector: Option<crate::connector::TowerConnectorSlot>,
@@ -185,7 +191,7 @@ impl<R, C> std::fmt::Debug for HttpEngineSend<R, C> {
 ///
 /// Wraps [`HttpEngineCore`] with a `!Send`-capable connector.
 pub struct HttpEngineLocal<R, C> {
-    pub(crate) core: HttpEngineCore,
+    pub(crate) core: HttpEngineCore<RequestBoxLocalBody>,
     pub(crate) connector: C,
     pub(crate) _phantom: PhantomData<R>,
 }

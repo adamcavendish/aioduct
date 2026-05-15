@@ -18,7 +18,7 @@ pub(crate) enum CacheLookupOutcome {
 
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
-impl HttpEngineCore {
+impl<B> HttpEngineCore<B> {
     pub(super) fn maybe_upgrade_hsts(&self, uri: Uri) -> Uri {
         if let Some(ref hsts) = self.hsts
             && uri.scheme() == Some(&http::uri::Scheme::HTTP)
