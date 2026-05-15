@@ -525,17 +525,67 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 None => connect_fut.await?,
             };
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
-            timing.tcp_connect = Some(tcp_tls_elapsed);
-            if let Some(addr) = conn.remote_addr {
-                self.core.notify(
-                    request.method(),
-                    original_uri,
-                    RequestPhase::TcpConnected {
-                        remote_addr: addr,
-                        duration: tcp_tls_elapsed,
-                        protocol: HttpEngineCore::connection_protocol(&conn),
-                    },
-                );
+            if is_https {
+                if let Some(tls_dur) = conn.tls_handshake_duration {
+                    timing.tls_handshake = Some(tls_dur);
+                    timing.tcp_connect = Some(tcp_tls_elapsed.saturating_sub(tls_dur));
+                    let tcp_dur = tcp_tls_elapsed.saturating_sub(tls_dur);
+                    if let Some(addr) = conn.remote_addr {
+                        self.core.notify(
+                            request.method(),
+                            original_uri,
+                            RequestPhase::TcpConnected {
+                                remote_addr: addr,
+                                duration: tcp_dur,
+                                protocol: HttpEngineCore::connection_protocol(&conn),
+                            },
+                        );
+                    }
+                    self.core.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::TlsHandshakeComplete {
+                            duration: tls_dur,
+                            alpn_protocol: match &conn.conn {
+                                crate::pool::HttpConnection::H2(_) => Some("h2".into()),
+                                crate::pool::HttpConnection::H1(_) => Some("http/1.1".into()),
+                                #[cfg(all(feature = "http3", feature = "rustls"))]
+                                crate::pool::HttpConnection::H3(_) => Some("h3".into()),
+                            },
+                            peer_certificate_der: conn
+                                .tls_info
+                                .as_ref()
+                                .and_then(|t| t.peer_certificate())
+                                .map(|c| c.to_vec()),
+                        },
+                    );
+                } else {
+                    timing.tcp_connect = Some(tcp_tls_elapsed);
+                    if let Some(addr) = conn.remote_addr {
+                        self.core.notify(
+                            request.method(),
+                            original_uri,
+                            RequestPhase::TcpConnected {
+                                remote_addr: addr,
+                                duration: tcp_tls_elapsed,
+                                protocol: HttpEngineCore::connection_protocol(&conn),
+                            },
+                        );
+                    }
+                }
+            } else {
+                timing.tcp_connect = Some(tcp_tls_elapsed);
+                if let Some(addr) = conn.remote_addr {
+                    self.core.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::TcpConnected {
+                            remote_addr: addr,
+                            duration: tcp_tls_elapsed,
+                            protocol: HttpEngineCore::connection_protocol(&conn),
+                        },
+                    );
+                }
             }
             conn
         };

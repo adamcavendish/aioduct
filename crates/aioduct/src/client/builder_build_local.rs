@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use crate::pool::ConnectionPool;
 use crate::runtime::{Connector, Resolve, RuntimeLocal};
+#[cfg(feature = "rustls")]
+use crate::tls::TlsVersion;
 
 use super::builder::HttpEngineBuilder;
 use super::{HttpEngineCore, HttpEngineLocal};
@@ -27,10 +29,88 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineBuilder<R, C> {
         };
 
         #[cfg(feature = "rustls")]
-        let tls = if self.tls.is_some() {
-            self.tls
-        } else {
-            Some(Arc::new(crate::tls::RustlsConnector::with_webpki_roots()))
+        let tls = {
+            let has_version_constraints =
+                self.min_tls_version.is_some() || self.max_tls_version.is_some();
+            let has_extra_config =
+                !self.extra_root_certs.is_empty() || self.client_identity.is_some();
+            let has_crls = !self.crls.is_empty();
+            let needs_configured = has_crls || self.danger_accept_invalid_hostnames;
+            let needs_sni_update = self.tls_sni == Some(false);
+
+            let mut connector = if self.tls.is_some()
+                && !has_version_constraints
+                && !has_extra_config
+                && !needs_configured
+            {
+                self.tls
+            } else if needs_configured || has_extra_config || has_version_constraints {
+                let versions: Vec<&'static rustls::SupportedProtocolVersion> =
+                    if has_version_constraints {
+                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)
+                    } else {
+                        vec![&rustls::version::TLS12, &rustls::version::TLS13]
+                    };
+
+                if needs_configured {
+                    let mut root_store = rustls::RootCertStore::from_iter(
+                        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+                    );
+                    for cert in &self.extra_root_certs {
+                        #[allow(clippy::expect_used)]
+                        root_store
+                            .add(cert.der.clone())
+                            .expect("invalid extra root certificate");
+                    }
+                    let crls: Vec<_> = self.crls.into_iter().map(|c| c.der).collect();
+                    let identity = self.client_identity.map(|id| (id.certs, id.key));
+                    Some(Arc::new(
+                        #[allow(clippy::expect_used)]
+                        crate::tls::RustlsConnector::build_configured(
+                            root_store,
+                            &versions,
+                            crls,
+                            self.danger_accept_invalid_hostnames,
+                            identity,
+                        )
+                        .expect(
+                            "failed to build TLS configuration — check CRLs and client identity",
+                        ),
+                    ))
+                } else if let Some(identity) = self.client_identity {
+                    Some(Arc::new(
+                        #[allow(clippy::expect_used)]
+                        crate::tls::RustlsConnector::with_identity_versioned(
+                            &self.extra_root_certs,
+                            identity,
+                            &versions,
+                        )
+                        .expect("failed to build TLS configuration — check client identity (cert/key pair)"),
+                    ))
+                } else if !self.extra_root_certs.is_empty() {
+                    Some(Arc::new(
+                        crate::tls::RustlsConnector::with_extra_roots_versioned(
+                            &self.extra_root_certs,
+                            &versions,
+                        ),
+                    ))
+                } else {
+                    Some(Arc::new(
+                        crate::tls::RustlsConnector::with_webpki_roots_versioned(&versions),
+                    ))
+                }
+            } else {
+                Some(Arc::new(crate::tls::RustlsConnector::with_webpki_roots()))
+            };
+
+            if needs_sni_update {
+                let c = connector.get_or_insert_with(|| {
+                    Arc::new(crate::tls::RustlsConnector::with_webpki_roots())
+                });
+                Arc::make_mut(c).config_mut().enable_sni = false;
+            }
+
+            connector
         };
 
         HttpEngineLocal {
@@ -82,7 +162,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineBuilder<R, C> {
                     .h2c_probe_ttl
                     .map(crate::h2c_probe::H2cProbeCache::with_ttl)
                     .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
-                connection_coalescing: false,
+                connection_coalescing: self.connection_coalescing,
                 sensitive_headers: self.sensitive_headers,
                 observer: self.observer,
                 #[cfg(feature = "rustls")]
