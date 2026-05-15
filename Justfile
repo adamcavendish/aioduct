@@ -66,6 +66,11 @@ test-all:
 test-features features:
     cargo nextest run --features {{ features }}
 
+# Run WASI-P2 unit tests under wasmtime
+test-wasi-p2:
+    CARGO_TARGET_WASM32_WASIP2_RUNNER="wasmtime run --" \
+        cargo test -p aioduct --target wasm32-wasip2 --features wasi-p2,json --lib
+
 # Run WASM integration tests in headless Chrome (requires wasm-pack + Chrome)
 test-wasm:
     cargo run -p wasm-test-server & SERVER_PID=$!; \

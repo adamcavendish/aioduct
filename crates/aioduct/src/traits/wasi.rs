@@ -74,3 +74,15 @@ impl ResponseExt for WasiResponse {
         self.text()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_http_client<C: HttpClient>() {}
+
+    #[test]
+    fn wasi_client_implements_http_client() {
+        assert_http_client::<WasiClient>();
+    }
+}
