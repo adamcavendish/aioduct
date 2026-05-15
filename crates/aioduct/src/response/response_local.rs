@@ -44,6 +44,24 @@ impl Response {
 // ── Body consumption for Response<ResponseBoxLocalBody> ──────────────────────
 
 impl Response<crate::body::ResponseBoxLocalBody> {
+    /// Wrap the local body with a bandwidth limiter.
+    pub(crate) fn apply_bandwidth_limit_local<R: crate::runtime::RuntimeCompletion>(
+        self,
+        limiter: crate::bandwidth::BandwidthLimiter,
+    ) -> Self {
+        let (parts, body) = self.inner.into_parts();
+        let wrapped = crate::bandwidth::BandwidthResponseBody::<R>::new(body, limiter);
+        let local_body: crate::body::ResponseBoxLocalBody = Box::pin(wrapped);
+        Self {
+            inner: http::Response::from_parts(parts, local_body),
+            url: self.url,
+            remote_addr: self.remote_addr,
+            tls_info: self.tls_info,
+            timings: self.timings,
+            observer_ctx: self.observer_ctx,
+        }
+    }
+
     /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes, Error> {
         let body = self.inner.into_body();
