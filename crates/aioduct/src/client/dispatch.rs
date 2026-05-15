@@ -2,6 +2,7 @@ use crate::clock::Instant;
 
 use http::Uri;
 
+#[cfg(all(feature = "http3", feature = "rustls"))]
 use crate::body::RequestBoxBody;
 use crate::error::Error;
 use crate::observer::{self, RequestEvent, RequestPhase};
@@ -12,9 +13,9 @@ use super::HttpEngineCore;
 
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
-impl HttpEngineCore {
+impl<B: 'static> HttpEngineCore<B> {
     #[cfg(feature = "rustls")]
-    fn populate_sans(conn: &mut PooledConnection) {
+    fn populate_sans(conn: &mut PooledConnection<B>) {
         if conn.is_h2_or_h3()
             && conn.sans.is_empty()
             && let Some(der) = conn.tls_info.as_ref().and_then(|t| t.peer_certificate())
@@ -24,9 +25,13 @@ impl HttpEngineCore {
     }
 
     #[cfg(not(feature = "rustls"))]
-    fn populate_sans(_conn: &mut PooledConnection) {}
+    fn populate_sans(_conn: &mut PooledConnection<B>) {}
 
-    pub(super) fn checkin_connection(&self, key: crate::pool::PoolKey, mut conn: PooledConnection) {
+    pub(super) fn checkin_connection(
+        &self,
+        key: crate::pool::PoolKey,
+        mut conn: PooledConnection<B>,
+    ) {
         Self::populate_sans(&mut conn);
         if conn.is_multiplex_clone {
             self.fire_connection_metrics(&conn, false);
@@ -36,7 +41,7 @@ impl HttpEngineCore {
         self.pool.checkin(key, conn);
     }
 
-    pub(super) fn fire_connection_metrics(&self, conn: &PooledConnection, closed: bool) {
+    pub(super) fn fire_connection_metrics(&self, conn: &PooledConnection<B>, closed: bool) {
         if let Some(ref obs) = self.observer
             && let Some(remote_addr) = conn.remote_addr
         {
@@ -78,7 +83,7 @@ impl HttpEngineCore {
         }
     }
 
-    pub(super) fn connection_protocol(conn: &PooledConnection) -> observer::NegotiatedProtocol {
+    pub(super) fn connection_protocol(conn: &PooledConnection<B>) -> observer::NegotiatedProtocol {
         match &conn.conn {
             HttpConnection::H1(_) => observer::NegotiatedProtocol::Http1,
             HttpConnection::H2(_) => observer::NegotiatedProtocol::Http2,
@@ -87,11 +92,41 @@ impl HttpEngineCore {
         }
     }
 
+    pub(super) fn is_stale_connection_error(err: &Error) -> bool {
+        match err {
+            Error::Hyper(e) => {
+                if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
+                    return true;
+                }
+                use std::error::Error as _;
+                if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
+                    return matches!(
+                        io_err.kind(),
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionAborted
+                    );
+                }
+                false
+            }
+            Error::Io(e) => matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionAborted
+            ),
+            _ => false,
+        }
+    }
+
     pub(super) async fn send_on_connection(
-        conn: &mut PooledConnection,
-        request: http::Request<RequestBoxBody>,
+        conn: &mut PooledConnection<B>,
+        request: http::Request<B>,
         url: Uri,
-    ) -> Result<Response, Error> {
+    ) -> Result<Response, Error>
+    where
+        B: http_body::Body<Data = bytes::Bytes, Error = crate::error::Error>,
+    {
         #[cfg(feature = "tracing")]
         let proto = match &conn.conn {
             HttpConnection::H1(_) => "h1",
@@ -125,6 +160,13 @@ impl HttpEngineCore {
             }
             #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(sender) => {
+                use http_body_util::BodyExt as _;
+                let (parts, body) = request.into_parts();
+                let collected = body.collect().await?;
+                let boxed: RequestBoxBody = http_body_util::Full::new(collected.to_bytes())
+                    .map_err(|never| match never {})
+                    .boxed_unsync();
+                let request = http::Request::from_parts(parts, boxed);
                 crate::h3_transport::send_on_h3(sender, request, url).await
             }
         };
@@ -141,32 +183,5 @@ impl HttpEngineCore {
         }
 
         result
-    }
-
-    pub(super) fn is_stale_connection_error(err: &Error) -> bool {
-        match err {
-            Error::Hyper(e) => {
-                if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
-                    return true;
-                }
-                use std::error::Error as _;
-                if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
-                    return matches!(
-                        io_err.kind(),
-                        std::io::ErrorKind::ConnectionReset
-                            | std::io::ErrorKind::BrokenPipe
-                            | std::io::ErrorKind::ConnectionAborted
-                    );
-                }
-                false
-            }
-            Error::Io(e) => matches!(
-                e.kind(),
-                std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::ConnectionAborted
-            ),
-            _ => false,
-        }
     }
 }

@@ -299,12 +299,13 @@ pub mod __bench {
     use std::net::{IpAddr, SocketAddr};
     use std::time::Duration;
 
+    use crate::body::RequestBoxBody;
     use crate::pool::{ConnectionPool, PoolKey, PooledConnection};
     use crate::runtime::TokioRuntime;
     use http::uri::{Authority, Scheme};
 
-    pub struct BenchPool(ConnectionPool);
-    pub struct BenchConn(Option<PooledConnection>);
+    pub struct BenchPool(ConnectionPool<RequestBoxBody>);
+    pub struct BenchConn(Option<PooledConnection<RequestBoxBody>>);
     pub struct BenchKey(PoolKey);
 
     pub fn new_pool(max_idle: usize, timeout: Duration) -> BenchPool {
