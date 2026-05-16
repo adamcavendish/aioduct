@@ -11,6 +11,28 @@ use super::builder::HttpEngineBuilder;
 use super::{HttpEngineCore, HttpEngineLocal};
 
 impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineBuilder<R, C> {
+    #[cfg(feature = "tower")]
+    /// Wrap the TCP connector with a tower `Layer`.
+    ///
+    /// The layer wraps the default runtime connector, which connects to a
+    /// resolved `SocketAddr`. Use this to add cross-cutting transport concerns
+    /// like metrics, tracing, or connection-level rate limiting.
+    pub fn connector_layer_local<L>(mut self, layer: L) -> Self
+    where
+        L: tower_layer::Layer<crate::connector::ConnectorServiceLocal<C>>,
+        L::Service: tower_service::Service<
+                crate::connector::ConnectInfo,
+                Response = C::Stream,
+                Error = std::io::Error,
+            > + Clone
+            + 'static,
+    {
+        self.tower_connector_local = Some(crate::connector::TowerConnectorLocalSlot::new(
+            crate::connector::apply_layer_local(self.connector.clone(), layer),
+        ));
+        self
+    }
+
     #[allow(unreachable_code)]
     fn default_local_resolver() -> Option<Arc<dyn crate::runtime::Resolve>> {
         #[cfg(feature = "compio")]
@@ -177,6 +199,8 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineBuilder<R, C> {
                 alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             },
             connector: self.connector,
+            #[cfg(feature = "tower")]
+            tower_connector_local: self.tower_connector_local,
             _phantom: PhantomData,
         }
     }

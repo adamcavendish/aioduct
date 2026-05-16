@@ -21,7 +21,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
     /// like metrics, tracing, or connection-level rate limiting.
     pub fn connector_layer<L>(mut self, layer: L) -> Self
     where
-        L: tower_layer::Layer<crate::connector::ConnectorService<C>>,
+        L: tower_layer::Layer<crate::connector::ConnectorServiceSend<C>>,
         L::Service: tower_service::Service<
                 crate::connector::ConnectInfo,
                 Response = C::Stream,
@@ -33,8 +33,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         <L::Service as tower_service::Service<crate::connector::ConnectInfo>>::Future:
             Send + 'static,
     {
-        self.tower_connector = Some(crate::connector::TowerConnectorSlot::new(
-            crate::connector::apply_layer(self.connector.clone(), layer),
+        self.tower_connector = Some(crate::connector::TowerConnectorSendSlot::new(
+            crate::connector::apply_layer_send(self.connector.clone(), layer),
         ));
         self
     }
