@@ -155,6 +155,12 @@ impl Connector for TcpConnector {
         let tokio_stream = tokio::net::TcpStream::from_std(stream)?;
         Ok(TokioIo::new(tokio_stream))
     }
+
+    fn into_std_tcp(&self, stream: Self::Stream) -> io::Result<std::net::TcpStream> {
+        let std_stream = stream.into_inner().into_std()?;
+        std_stream.set_nonblocking(false)?;
+        Ok(std_stream)
+    }
 }
 
 #[allow(clippy::manual_async_fn)]
@@ -192,6 +198,12 @@ impl super::ConnectorSend for TcpConnector {
         stream.set_nodelay(true)?;
         let tokio_stream = tokio::net::TcpStream::from_std(stream)?;
         Ok(TokioIo::new(tokio_stream))
+    }
+
+    fn into_std_tcp(&self, stream: Self::Stream) -> io::Result<std::net::TcpStream> {
+        let std_stream = stream.into_inner().into_std()?;
+        std_stream.set_nonblocking(false)?;
+        Ok(std_stream)
     }
 }
 
@@ -277,6 +289,11 @@ impl<T> TokioIo<T> {
     /// Get a reference to the inner I/O type.
     pub fn inner(&self) -> &T {
         &self.inner
+    }
+
+    /// Consume the adapter and return the inner I/O type.
+    pub fn into_inner(self) -> T {
+        self.inner
     }
 }
 

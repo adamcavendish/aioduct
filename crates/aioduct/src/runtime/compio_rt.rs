@@ -165,6 +165,15 @@ impl Connector for TcpConnector {
         let compio_stream = compio_net::TcpStream::from_std(stream)?;
         Ok(CompioTcpStream::new(compio_stream))
     }
+
+    fn into_std_tcp(&self, stream: Self::Stream) -> io::Result<std::net::TcpStream> {
+        use socket2::SockRef;
+        let sock = SockRef::from(&stream.socket_handle).try_clone()?;
+        drop(stream);
+        let std_stream: std::net::TcpStream = sock.into();
+        std_stream.set_nonblocking(false)?;
+        Ok(std_stream)
+    }
 }
 
 // ── CompioTcpStream ──────────────────────────────────────────────────────────

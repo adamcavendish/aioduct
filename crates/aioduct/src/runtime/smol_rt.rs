@@ -160,6 +160,16 @@ impl Connector for TcpConnector {
         let async_stream = smol::net::TcpStream::try_from(stream)?;
         Ok(SmolIo::new(async_stream))
     }
+
+    fn into_std_tcp(&self, stream: Self::Stream) -> io::Result<std::net::TcpStream> {
+        use socket2::SockRef;
+        let smol_stream = stream.into_inner();
+        let sock = SockRef::from(&smol_stream).try_clone()?;
+        drop(smol_stream);
+        let std_stream: std::net::TcpStream = sock.into();
+        std_stream.set_nonblocking(false)?;
+        Ok(std_stream)
+    }
 }
 
 #[allow(clippy::manual_async_fn)]
@@ -206,6 +216,16 @@ impl super::ConnectorSend for TcpConnector {
         stream.set_nodelay(true)?;
         let async_stream = smol::net::TcpStream::try_from(stream)?;
         Ok(SmolIo::new(async_stream))
+    }
+
+    fn into_std_tcp(&self, stream: Self::Stream) -> io::Result<std::net::TcpStream> {
+        use socket2::SockRef;
+        let smol_stream = stream.into_inner();
+        let sock = SockRef::from(&smol_stream).try_clone()?;
+        drop(smol_stream);
+        let std_stream: std::net::TcpStream = sock.into();
+        std_stream.set_nonblocking(false)?;
+        Ok(std_stream)
     }
 }
 
@@ -295,6 +315,11 @@ impl<T> SmolIo<T> {
     /// Get a reference to the inner I/O type.
     pub fn inner(&self) -> &T {
         &self.inner
+    }
+
+    /// Consume the adapter and return the inner I/O type.
+    pub fn into_inner(self) -> T {
+        self.inner
     }
 }
 

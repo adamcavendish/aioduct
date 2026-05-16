@@ -398,6 +398,7 @@ mod tests_sync {
 
     /// When the mutex is poisoned, checkout should return None rather than panic.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn checkout_returns_none_on_poisoned_mutex() {
         let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
@@ -420,6 +421,7 @@ mod tests_sync {
 
     /// When the mutex is poisoned, checkin should silently return.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn checkin_returns_on_poisoned_mutex() {
         let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
 
@@ -440,6 +442,7 @@ mod tests_sync {
 
     /// When the mutex is poisoned, mark_connecting_h2 should return false.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn mark_connecting_h2_returns_false_on_poisoned_mutex() {
         let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
@@ -458,6 +461,7 @@ mod tests_sync {
 
     /// When the mutex is poisoned, unmark_connecting_h2 should not panic.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn unmark_connecting_h2_no_panic_on_poisoned_mutex() {
         let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
@@ -476,6 +480,7 @@ mod tests_sync {
 
     /// When the mutex is poisoned, checkout_coalesced should return None.
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn checkout_coalesced_returns_none_on_poisoned_mutex() {
         let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
 
