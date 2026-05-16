@@ -251,6 +251,24 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
         self
     }
 
+    /// Build the request without sending it.
+    ///
+    /// Returns the configured `http::Request` for inspection or manual sending.
+    pub fn build(mut self) -> Result<http::Request<RequestBody>, Error> {
+        let body = self
+            .body
+            .take()
+            .unwrap_or(RequestBody::Buffered(Bytes::new()));
+        let mut builder = http::Request::builder().method(self.method).uri(self.uri);
+        if let Some(ver) = self.version {
+            builder = builder.version(ver);
+        }
+        for (name, value) in &self.headers {
+            builder = builder.header(name, value);
+        }
+        builder.body(body).map_err(Error::Http)
+    }
+
     /// Clone this request builder if the body is buffered.
     pub fn try_clone(&self) -> Option<Self> {
         let body = match &self.body {
@@ -286,5 +304,346 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
             }
             None => execute_fut.await,
         }
+    }
+}
+
+#[cfg(all(test, feature = "compio"))]
+mod tests {
+    use super::*;
+    use crate::body::RequestBody;
+    use crate::client::HttpEngineLocal;
+    use crate::runtime::compio_rt::{CompioRuntime, TcpConnector};
+
+    fn test_client() -> HttpEngineLocal<CompioRuntime, TcpConnector> {
+        HttpEngineLocal::new_local(TcpConnector)
+    }
+
+    #[test]
+    fn header_sets_value() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let rb = rb.header(http::header::ACCEPT, HeaderValue::from_static("text/html"));
+        let req = rb.build().unwrap();
+        assert_eq!(req.headers().get("accept").unwrap(), "text/html");
+    }
+
+    #[test]
+    fn headers_extends() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let mut hm = HeaderMap::new();
+        hm.insert(
+            http::header::ACCEPT,
+            HeaderValue::from_static("application/json"),
+        );
+        hm.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        );
+        let rb = rb.headers(hm);
+        let req = rb.build().unwrap();
+        assert!(req.headers().contains_key("accept"));
+        assert!(req.headers().contains_key("cache-control"));
+    }
+
+    #[test]
+    fn header_str_valid() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let rb = rb.header_str("x-custom", "value").unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(req.headers().get("x-custom").unwrap(), "value");
+    }
+
+    #[test]
+    fn header_str_invalid_name() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let result = rb.header_str("invalid header\n", "value");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn header_str_invalid_value() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let result = rb.header_str("x-custom", "bad\0value");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bearer_auth_sets_authorization() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let rb = rb.bearer_auth("mytoken");
+        let req = rb.build().unwrap();
+        let auth = req
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth.starts_with("Bearer "));
+        assert!(auth.contains("mytoken"));
+    }
+
+    #[test]
+    fn basic_auth_with_password() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let rb = rb.basic_auth("user", Some("pass"));
+        let req = rb.build().unwrap();
+        let auth = req
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth.starts_with("Basic "));
+    }
+
+    #[test]
+    fn basic_auth_without_password() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let rb = rb.basic_auth("user", None);
+        let req = rb.build().unwrap();
+        assert!(req.headers().contains_key("authorization"));
+    }
+
+    #[test]
+    fn query_appends_params() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com/path").unwrap();
+        let rb = rb.query(&[("key", "value"), ("a", "b")]);
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(uri.contains("key=value"));
+        assert!(uri.contains("a=b"));
+    }
+
+    #[test]
+    fn query_appends_to_existing() {
+        let client = test_client();
+        let rb = client
+            .get_local("http://example.com/path?existing=1")
+            .unwrap();
+        let rb = rb.query(&[("new", "2")]);
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(uri.contains("existing=1"));
+        assert!(uri.contains("new=2"));
+    }
+
+    #[test]
+    fn query_encodes_special_chars() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com/path").unwrap();
+        let rb = rb.query(&[("key", "hello world"), ("tag", "a&b=c")]);
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(uri.contains("hello%20world"));
+        assert!(uri.contains("a%26b%3Dc"));
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn query_serde_appends_params() {
+        #[derive(serde::Serialize)]
+        struct Params {
+            key: String,
+            num: i32,
+        }
+        let client = test_client();
+        let rb = client.get_local("http://example.com/").unwrap();
+        let rb = rb
+            .query_serde(&Params {
+                key: "val".into(),
+                num: 42,
+            })
+            .unwrap();
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(uri.contains("key=val"));
+        assert!(uri.contains("num=42"));
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn query_serde_empty_struct() {
+        #[derive(serde::Serialize)]
+        struct Empty {}
+        let client = test_client();
+        let rb = client.get_local("http://example.com/path").unwrap();
+        let rb = rb.query_serde(&Empty {}).unwrap();
+        let req = rb.build().unwrap();
+        let uri = req.uri().to_string();
+        assert!(!uri.contains('?'));
+    }
+
+    #[test]
+    fn body_sets_buffered() {
+        let client = test_client();
+        let rb = client.post_local("http://example.com").unwrap();
+        let rb = rb.body("hello");
+        let req = rb.build().unwrap();
+        match req.into_body() {
+            RequestBody::Buffered(b) => assert_eq!(b, "hello"),
+            _ => panic!("expected buffered"),
+        }
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn json_sets_content_type_and_body() {
+        let client = test_client();
+        let rb = client.post_local("http://example.com").unwrap();
+        let rb = rb.json(&serde_json::json!({"key": "value"})).unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(
+            req.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn json_preserves_existing_content_type() {
+        let client = test_client();
+        let rb = client.post_local("http://example.com").unwrap();
+        let rb = rb
+            .header(
+                http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/vnd.api+json"),
+            )
+            .json(&serde_json::json!({"key": "value"}))
+            .unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(
+            req.headers().get("content-type").unwrap(),
+            "application/vnd.api+json"
+        );
+    }
+
+    #[test]
+    fn form_sets_content_type_and_body() {
+        let client = test_client();
+        let rb = client.post_local("http://example.com").unwrap();
+        let rb = rb.form(&[("a", "1"), ("b", "2")]);
+        let req = rb.build().unwrap();
+        assert_eq!(
+            req.headers().get("content-type").unwrap(),
+            "application/x-www-form-urlencoded"
+        );
+        match req.into_body() {
+            RequestBody::Buffered(b) => {
+                let s = String::from_utf8(b.to_vec()).unwrap();
+                assert!(s.contains("a=1"));
+                assert!(s.contains("b=2"));
+            }
+            _ => panic!("expected buffered"),
+        }
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn form_serde_sets_body() {
+        #[derive(serde::Serialize)]
+        struct FormData {
+            name: String,
+        }
+        let client = test_client();
+        let rb = client.post_local("http://example.com").unwrap();
+        let rb = rb
+            .form_serde(&FormData {
+                name: "test".into(),
+            })
+            .unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(
+            req.headers().get("content-type").unwrap(),
+            "application/x-www-form-urlencoded"
+        );
+    }
+
+    #[test]
+    fn version_sets_http_version() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let rb = rb.version(Version::HTTP_11);
+        let req = rb.build().unwrap();
+        assert_eq!(req.version(), Version::HTTP_11);
+    }
+
+    #[test]
+    fn build_default_body() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let req = rb.build().unwrap();
+        assert_eq!(*req.method(), Method::GET);
+    }
+
+    #[test]
+    fn try_clone_buffered() {
+        let client = test_client();
+        let rb = client
+            .post_local("http://example.com")
+            .unwrap()
+            .body("data");
+        let cloned = rb.try_clone();
+        assert!(cloned.is_some());
+    }
+
+    #[test]
+    fn try_clone_no_body() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let cloned = rb.try_clone();
+        assert!(cloned.is_some());
+    }
+
+    #[test]
+    fn try_clone_streaming_returns_none() {
+        use http_body_util::BodyExt;
+        let client = test_client();
+        let rb = client.post_local("http://example.com").unwrap();
+        let stream_body: crate::body::RequestBoxBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let rb = rb.body_stream(stream_body);
+        let cloned = rb.try_clone();
+        assert!(cloned.is_none());
+    }
+
+    #[test]
+    fn upgrade_sets_headers() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com").unwrap();
+        let rb = rb.upgrade();
+        let req = rb.build().unwrap();
+        assert_eq!(req.headers().get("connection").unwrap(), "Upgrade");
+        assert_eq!(req.headers().get("upgrade").unwrap(), "websocket");
+        assert_eq!(req.version(), Version::HTTP_11);
+    }
+
+    #[test]
+    fn multipart_sets_content_type() {
+        let mp = crate::multipart::Multipart::new().text("field", "value");
+        let client = test_client();
+        let rb = client.post_local("http://example.com").unwrap();
+        let rb = rb.multipart(mp);
+        let req = rb.build().unwrap();
+        let ct = req.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.starts_with("multipart/form-data; boundary="));
+    }
+
+    #[test]
+    fn timeout_setter() {
+        let client = test_client();
+        let rb = client
+            .get_local("http://example.com")
+            .unwrap()
+            .timeout(Duration::from_secs(5));
+        let _req = rb.build().unwrap();
     }
 }

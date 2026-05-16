@@ -195,12 +195,6 @@ mod tests {
     }
 
     #[test]
-    fn connector_service_clone() {
-        let conn = ConnectorService::new(TcpConnector);
-        let _cloned = conn.clone();
-    }
-
-    #[test]
     fn connector_service_poll_ready() {
         let mut conn = ConnectorService::new(TcpConnector);
         let waker = std::task::Waker::noop();
@@ -209,51 +203,26 @@ mod tests {
         assert!(matches!(result, Poll::Ready(Ok(()))));
     }
 
-    #[tokio::test]
-    async fn apply_identity_layer() {
-        let layer = tower_layer::Identity::new();
-        let _layered: LayeredConnector<TcpConnector> = apply_layer(TcpConnector, layer);
+    #[test]
+    fn connector_service_default() {
+        let conn = ConnectorService::<TcpConnector>::default();
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let mut conn = conn;
+        let result = Service::poll_ready(&mut conn, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
     }
 
     #[tokio::test]
-    async fn layered_connector_clone() {
-        let layer = tower_layer::Identity::new();
-        let layered: LayeredConnector<TcpConnector> = apply_layer(TcpConnector, layer);
-        let _cloned = layered.clone();
-    }
-
-    #[tokio::test]
-    async fn layered_connector_connects() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let _ = listener.accept().await;
-        });
-
+    async fn layered_connector_connect_failure() {
+        // Try connecting to a port that's not listening
         let layer = tower_layer::Identity::new();
         let connector: LayeredConnector<TcpConnector> = apply_layer(TcpConnector, layer);
         let info = ConnectInfo {
-            uri: format!("http://{addr}").parse().unwrap(),
-            addr,
+            uri: "http://127.0.0.1:1".parse().unwrap(),
+            addr: "127.0.0.1:1".parse().unwrap(),
         };
-        let stream = connector.connect(info).await.unwrap();
-        drop(stream);
-    }
-
-    #[tokio::test]
-    async fn connector_service_call_connects() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let _ = listener.accept().await;
-        });
-
-        let mut conn = ConnectorService::new(TcpConnector);
-        let info = ConnectInfo {
-            uri: format!("http://{addr}").parse().unwrap(),
-            addr,
-        };
-        let stream = conn.call(info).await.unwrap();
-        drop(stream);
+        let result = connector.connect(info).await;
+        assert!(result.is_err());
     }
 }

@@ -577,4 +577,150 @@ mod tests {
         assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         assert_eq!(addr.port(), 0);
     }
+
+    // ── is_h3_no_error_stop_sending tests ────────────────────────────────
+    // NOTE: h3::error::StreamError variants are #[non_exhaustive] and cannot be
+    // constructed from outside the crate. The function is tested transitively via
+    // integration tests that exercise actual H3 connections.
+
+    // ── build_quinn_endpoint tests ───────────────────────────────────────
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn build_quinn_endpoint_succeeds_with_defaults() {
+        let config = make_rustls_config(&[b"h3"]);
+        let result = build_quinn_endpoint(config, None, false);
+        assert!(
+            result.is_ok(),
+            "build_quinn_endpoint failed: {:?}",
+            result.err()
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn build_quinn_endpoint_with_ipv4_local_address() {
+        let config = make_rustls_config(&[b"h3"]);
+        let local = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let result = build_quinn_endpoint(config, Some(local), false);
+        assert!(
+            result.is_ok(),
+            "build_quinn_endpoint failed: {:?}",
+            result.err()
+        );
+        let ep = result.unwrap();
+        assert!(ep.local_addr().unwrap().is_ipv4());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn build_quinn_endpoint_with_0rtt_enabled() {
+        let config = make_rustls_config(&[b"h3"]);
+        let result = build_quinn_endpoint(config, None, true);
+        assert!(
+            result.is_ok(),
+            "build_quinn_endpoint failed: {:?}",
+            result.err()
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn build_quinn_endpoint_adds_h3_alpn_if_missing() {
+        // Pass a config without h3 ALPN; build_quinn_endpoint should add it
+        let config = make_rustls_config(&[b"h2"]);
+        let result = build_quinn_endpoint(config, None, false);
+        assert!(
+            result.is_ok(),
+            "build_quinn_endpoint failed: {:?}",
+            result.err()
+        );
+    }
+
+    // ── filter_h3_addrs additional coverage ──────────────────────────────
+
+    #[test]
+    fn filter_h3_addrs_multiple_ipv4_with_ipv4_endpoint() {
+        let a1 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443);
+        let a2 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 443);
+        let a3 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
+        let addrs = filter_h3_addrs(&[a1, a2, a3], None, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(addrs, vec![a1, a2]);
+    }
+
+    #[test]
+    fn filter_h3_addrs_multiple_ipv6_with_ipv6_endpoint() {
+        let a1 = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), 443);
+        let a2 = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2)), 443);
+        let a3 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443);
+        // With IPv6 endpoint and no local_address, interleave_addrs is called
+        let addrs = filter_h3_addrs(&[a1, a2, a3], None, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+        // interleave_addrs interleaves IPv6 and IPv4
+        assert_eq!(addrs.len(), 3);
+        // First should be IPv6 (interleaving puts IPv6 first)
+        assert!(addrs[0].is_ipv6());
+    }
+
+    #[test]
+    fn filter_h3_addrs_local_address_filters_all() {
+        // All addresses are IPv6, but local_address is IPv4 -> empty
+        let a1 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
+        let a2 = SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2)), 443);
+        let addrs = filter_h3_addrs(
+            &[a1, a2],
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        );
+        assert!(addrs.is_empty());
+    }
+
+    // ── SelectQuicConnect done=true returns Pending ───────────────────────
+
+    #[test]
+    fn select_quic_connect_done_returns_pending() {
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+        fn noop(_: *const ()) {}
+        fn clone_fn(p: *const ()) -> RawWaker {
+            RawWaker::new(p, &VTABLE)
+        }
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, noop, noop, noop);
+        let raw = RawWaker::new(std::ptr::null(), &VTABLE);
+        let waker = unsafe { Waker::from_raw(raw) };
+        let mut cx = Context::from_waker(&waker);
+
+        let mut select = SelectQuicConnect {
+            connect: Box::pin(async { Err(Error::Timeout) }),
+            sleep: Box::pin(async {}),
+            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443),
+            done: true,
+        };
+
+        let pin = unsafe { Pin::new_unchecked(&mut select) };
+        assert!(matches!(pin.poll(&mut cx), Poll::Pending));
+    }
+
+    #[test]
+    fn select_quic_connect_0rtt_done_returns_pending() {
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+        fn noop(_: *const ()) {}
+        fn clone_fn(p: *const ()) -> RawWaker {
+            RawWaker::new(p, &VTABLE)
+        }
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, noop, noop, noop);
+        let raw = RawWaker::new(std::ptr::null(), &VTABLE);
+        let waker = unsafe { Waker::from_raw(raw) };
+        let mut cx = Context::from_waker(&waker);
+
+        let mut select = SelectQuicConnect0rtt {
+            connect: Box::pin(async { Err(Error::Timeout) }),
+            sleep: Box::pin(async {}),
+            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443),
+            done: true,
+        };
+
+        let pin = unsafe { Pin::new_unchecked(&mut select) };
+        assert!(matches!(pin.poll(&mut cx), Poll::Pending));
+    }
 }

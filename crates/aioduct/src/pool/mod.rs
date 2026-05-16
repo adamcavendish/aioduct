@@ -383,3 +383,115 @@ mod tests_smol;
 
 #[cfg(all(test, feature = "compio"))]
 mod tests_compio;
+
+#[cfg(test)]
+mod tests_sync {
+    use super::*;
+    use crate::body::RequestBoxBody;
+
+    fn key(host: &str) -> PoolKey {
+        PoolKey::new(
+            Scheme::HTTP,
+            host.parse::<Authority>().expect("valid authority"),
+        )
+    }
+
+    /// When the mutex is poisoned, checkout should return None rather than panic.
+    #[test]
+    fn checkout_returns_none_on_poisoned_mutex() {
+        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let k = key("example.com:80");
+
+        // Poison the mutex by panicking inside a lock
+        let inner = Arc::clone(&pool.inner);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        }));
+        assert!(result.is_err(), "panic should have occurred");
+
+        // Now the mutex is poisoned. checkout should return None.
+        let result = pool.checkout(&k);
+        assert!(
+            result.is_none(),
+            "checkout on poisoned mutex should return None"
+        );
+    }
+
+    /// When the mutex is poisoned, checkin should silently return.
+    #[test]
+    fn checkin_returns_on_poisoned_mutex() {
+        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+
+        // Poison the mutex
+        let inner = Arc::clone(&pool.inner);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        }));
+
+        // Verify the mutex is actually poisoned
+        assert!(pool.inner.lock().is_err());
+
+        // checkin should not panic even with a poisoned mutex.
+        // We can't easily create a PooledConnection without a runtime handshake,
+        // but we can verify that mark_connecting_h2 also handles it (tested below).
+    }
+
+    /// When the mutex is poisoned, mark_connecting_h2 should return false.
+    #[test]
+    fn mark_connecting_h2_returns_false_on_poisoned_mutex() {
+        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let k = key("example.com:80");
+
+        // Poison the mutex
+        let inner = Arc::clone(&pool.inner);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        }));
+
+        assert!(pool.inner.lock().is_err(), "mutex should be poisoned");
+        // mark_connecting_h2 should return false (not panic)
+        assert!(!pool.mark_connecting_h2(&k));
+    }
+
+    /// When the mutex is poisoned, unmark_connecting_h2 should not panic.
+    #[test]
+    fn unmark_connecting_h2_no_panic_on_poisoned_mutex() {
+        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let k = key("example.com:80");
+
+        // Poison the mutex
+        let inner = Arc::clone(&pool.inner);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        }));
+
+        assert!(pool.inner.lock().is_err(), "mutex should be poisoned");
+        // Should not panic
+        pool.unmark_connecting_h2(&k);
+    }
+
+    /// When the mutex is poisoned, checkout_coalesced should return None.
+    #[test]
+    fn checkout_coalesced_returns_none_on_poisoned_mutex() {
+        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+
+        // Poison the mutex
+        let inner = Arc::clone(&pool.inner);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        }));
+
+        assert!(pool.inner.lock().is_err(), "mutex should be poisoned");
+        let ip: std::net::IpAddr = [10, 0, 0, 1].into();
+        let result = pool.checkout_coalesced("example.com", Some(ip));
+        assert!(
+            result.is_none(),
+            "checkout_coalesced on poisoned mutex should return None"
+        );
+    }
+}

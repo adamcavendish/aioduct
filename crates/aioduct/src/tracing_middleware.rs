@@ -119,12 +119,6 @@ mod tests {
     }
 
     #[test]
-    fn new_and_default() {
-        let _m = TracingMiddleware::new();
-        let _d = TracingMiddleware;
-    }
-
-    #[test]
     fn on_request_emits_event() {
         let (_guard, events) = setup_collector();
         let m = TracingMiddleware::new();

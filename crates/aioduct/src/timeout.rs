@@ -246,4 +246,157 @@ mod tests {
             other => panic!("expected data frame, got {:?}", other),
         }
     }
+
+    #[tokio::test]
+    async fn read_timeout_body_fires_on_pending() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+        use http_body::Body;
+
+        struct PendingBody;
+
+        impl http_body::Body for PendingBody {
+            type Data = Bytes;
+            type Error = crate::error::Error;
+
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                Poll::Pending
+            }
+
+            fn is_end_stream(&self) -> bool {
+                false
+            }
+        }
+
+        use http_body_util::BodyExt;
+        let inner: crate::body::RequestBoxBody = PendingBody.boxed_unsync();
+        let body = ReadTimeoutBody::<TokioRuntime>::new(inner, Duration::from_millis(1));
+        let mut boxed = Box::pin(body);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let _ = boxed.as_mut().poll_frame(&mut cx);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let result = boxed.as_mut().poll_frame(&mut cx);
+        assert!(
+            matches!(
+                result,
+                Poll::Ready(Some(Err(crate::error::Error::ReadTimeout)))
+            ),
+            "expected ReadTimeout, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn response_read_timeout_body_end_stream() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+        use http_body::Body;
+        use http_body_util::BodyExt;
+
+        let inner: crate::body::RequestBoxBody = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let body = ReadTimeoutResponseBody::<TokioRuntime>::new(
+            crate::response::ResponseBoxSendBody::from_boxed(inner),
+            Duration::from_secs(1),
+        );
+        assert!(body.is_end_stream());
+    }
+
+    #[tokio::test]
+    async fn response_read_timeout_body_size_hint() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+        use http_body::Body;
+        use http_body_util::BodyExt;
+
+        let inner: crate::body::RequestBoxBody = http_body_util::Full::new(Bytes::from("hello"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let body = ReadTimeoutResponseBody::<TokioRuntime>::new(
+            crate::response::ResponseBoxSendBody::from_boxed(inner),
+            Duration::from_secs(1),
+        );
+        assert_eq!(body.size_hint().exact(), Some(5));
+    }
+
+    #[tokio::test]
+    async fn response_read_timeout_body_passes_data() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+        use http_body::Body;
+        use http_body_util::BodyExt;
+
+        let inner: crate::body::RequestBoxBody = http_body_util::Full::new(Bytes::from("data"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let body = ReadTimeoutResponseBody::<TokioRuntime>::new(
+            crate::response::ResponseBoxSendBody::from_boxed(inner),
+            Duration::from_secs(1),
+        );
+        let mut boxed = Box::pin(body);
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let frame = boxed.as_mut().poll_frame(&mut cx);
+        match frame {
+            Poll::Ready(Some(Ok(f))) => {
+                let data = f.into_data().unwrap();
+                assert_eq!(data, Bytes::from("data"));
+            }
+            other => panic!("expected data frame, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_read_timeout_body_fires_on_pending() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+        use http_body::Body;
+
+        struct PendingResponseBody;
+
+        impl http_body::Body for PendingResponseBody {
+            type Data = Bytes;
+            type Error = crate::error::Error;
+
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                Poll::Pending
+            }
+
+            fn is_end_stream(&self) -> bool {
+                false
+            }
+        }
+
+        use http_body_util::BodyExt;
+        let inner: crate::body::RequestBoxBody = PendingResponseBody.boxed_unsync();
+        let body = ReadTimeoutResponseBody::<TokioRuntime>::new(
+            crate::response::ResponseBoxSendBody::from_boxed(inner),
+            Duration::from_millis(1),
+        );
+        let mut boxed = Box::pin(body);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let _ = boxed.as_mut().poll_frame(&mut cx);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let result = boxed.as_mut().poll_frame(&mut cx);
+        assert!(
+            matches!(
+                result,
+                Poll::Ready(Some(Err(crate::error::Error::ReadTimeout)))
+            ),
+            "expected ReadTimeout, got {:?}",
+            result
+        );
+    }
 }

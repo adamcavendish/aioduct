@@ -183,19 +183,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn into_inner_returns_hyper_type() {
-        let (upgraded, _server) = upgraded_from_handshake().await;
-        let _inner: hyper::upgrade::Upgraded = upgraded.into_inner();
-    }
-
-    #[tokio::test]
-    async fn from_trait_impl() {
-        let (upgraded, _server) = upgraded_from_handshake().await;
-        let inner = upgraded.into_inner();
-        let _back: Upgraded = Upgraded::from(inner);
-    }
-
-    #[tokio::test]
     async fn async_read_write_round_trip() {
         let (mut upgraded, mut server) = upgraded_from_handshake().await;
 
@@ -221,5 +208,87 @@ mod tests {
         let mut buf = [0u8; 1];
         let n = server.read(&mut buf).await.unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn hyper_read_write_round_trip() {
+        use std::future::poll_fn;
+        use std::pin::Pin;
+
+        let (mut upgraded, mut server) = upgraded_from_handshake().await;
+
+        let data = b"hyper-test";
+        let n = poll_fn(|cx| hyper::rt::Write::poll_write(Pin::new(&mut upgraded), cx, data))
+            .await
+            .unwrap();
+        assert_eq!(n, data.len());
+
+        poll_fn(|cx| hyper::rt::Write::poll_flush(Pin::new(&mut upgraded), cx))
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 10];
+        server.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, data);
+
+        server.write_all(b"back").await.unwrap();
+        server.flush().await.unwrap();
+
+        let mut read_buf = vec![0u8; 4];
+        poll_fn(|cx| {
+            let mut hbuf = hyper::rt::ReadBuf::new(&mut read_buf);
+            match hyper::rt::Read::poll_read(Pin::new(&mut upgraded), cx, hbuf.unfilled()) {
+                std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(hbuf.filled().len())),
+                std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn hyper_write_shutdown() {
+        use std::future::poll_fn;
+        use std::pin::Pin;
+
+        let (mut upgraded, mut server) = upgraded_from_handshake().await;
+        poll_fn(|cx| hyper::rt::Write::poll_shutdown(Pin::new(&mut upgraded), cx))
+            .await
+            .unwrap();
+        let mut buf = [0u8; 1];
+        let n = server.read(&mut buf).await.unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn tokio_async_read_returns_data_correctly() {
+        // Exercises the tokio::io::AsyncRead impl success path (lines 83-89)
+        // specifically the buf.advance(n) path with actual data
+        let (mut upgraded, mut server) = upgraded_from_handshake().await;
+
+        // Server sends data
+        server.write_all(b"test-data").await.unwrap();
+        server.flush().await.unwrap();
+
+        // Read using tokio AsyncRead (not read_exact, to see the raw poll behavior)
+        let mut buf = vec![0u8; 64];
+        let n = upgraded.read(&mut buf).await.unwrap();
+        assert!(n > 0, "should read some bytes");
+        assert_eq!(&buf[..n], b"test-data");
+    }
+
+    #[tokio::test]
+    async fn tokio_async_read_eof_after_server_close() {
+        // Exercises the path where hyper::rt::Read returns Ok(()) with 0 bytes filled
+        let (mut upgraded, server) = upgraded_from_handshake().await;
+
+        // Drop server to close the write side
+        drop(server);
+
+        // Read should return 0 (EOF)
+        let mut buf = vec![0u8; 64];
+        let n = upgraded.read(&mut buf).await.unwrap();
+        assert_eq!(n, 0, "should get EOF after server closes");
     }
 }

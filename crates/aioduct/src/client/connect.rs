@@ -349,4 +349,575 @@ mod tests {
             403
         );
     }
+
+    #[test]
+    fn parse_non_numeric_status_code_returns_error() {
+        assert!(parse_connect_status("HTTP/1.1 abc Forbidden").is_err());
+    }
+
+    #[test]
+    fn parse_no_second_token_returns_error() {
+        assert!(parse_connect_status("HTTP/1.1").is_err());
+    }
+
+    #[test]
+    fn parse_301_redirect() {
+        assert_eq!(
+            parse_connect_status("HTTP/1.1 301 Moved Permanently").unwrap(),
+            301
+        );
+    }
+
+    #[test]
+    fn parse_503_service_unavailable() {
+        assert_eq!(
+            parse_connect_status("HTTP/1.1 503 Service Unavailable").unwrap(),
+            503
+        );
+    }
+}
+
+#[cfg(all(test, feature = "tokio"))]
+mod tokio_tests {
+    use super::super::HttpEngineSend;
+    use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
+
+    /// Helper: build an HttpEngineSend with default http2_prior_knowledge = false.
+    fn make_engine() -> HttpEngineSend<TokioRuntime, TcpConnector> {
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build()
+    }
+
+    /// Helper: build an HttpEngineSend with http2_prior_knowledge = true.
+    fn make_h2_engine() -> HttpEngineSend<TokioRuntime, TcpConnector> {
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .http2_prior_knowledge()
+            .build()
+    }
+
+    #[tokio::test]
+    async fn connect_h1_succeeds_with_duplex() {
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+
+        // Keep server alive to allow h1 handshake
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 4096];
+            loop {
+                match server_io.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let io = TokioIo::new(client_io);
+        let engine = make_engine();
+        let result = engine.connect_h1(io).await;
+        assert!(result.is_ok());
+        let pooled = result.unwrap();
+        // Verify it's an H1 connection
+        assert!(matches!(pooled.conn, crate::pool::HttpConnection::H1(_)));
+    }
+
+    #[tokio::test]
+    async fn connect_h2_prior_knowledge_succeeds_with_duplex() {
+        let (client_io, server_io) = tokio::io::duplex(65536);
+
+        // Spawn an h2 server that accepts the connection
+        tokio::spawn(async move {
+            let io = TokioIo::new(server_io);
+            let builder = hyper::server::conn::http2::Builder::new(
+                crate::runtime::executor::poll_executor::<TokioRuntime>(),
+            );
+            let _ = builder
+                .serve_connection(
+                    io,
+                    hyper::service::service_fn(|_req| async {
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(
+                            http_body_util::Empty::<bytes::Bytes>::new(),
+                        ))
+                    }),
+                )
+                .await;
+        });
+
+        let io = TokioIo::new(client_io);
+        let engine = make_engine();
+        let result = engine.connect_h2_prior_knowledge(io).await;
+        assert!(result.is_ok());
+        let pooled = result.unwrap();
+        // Verify it's an H2 connection
+        assert!(matches!(pooled.conn, crate::pool::HttpConnection::H2(_)));
+    }
+
+    #[tokio::test]
+    async fn connect_plaintext_defaults_to_h1() {
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+
+        // Keep server alive
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 4096];
+            loop {
+                match server_io.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let io = TokioIo::new(client_io);
+        let engine = make_engine();
+        let result = engine.connect_plaintext(io).await;
+        assert!(result.is_ok());
+        let pooled = result.unwrap();
+        assert!(matches!(pooled.conn, crate::pool::HttpConnection::H1(_)));
+    }
+
+    #[tokio::test]
+    async fn connect_plaintext_with_hint_false_uses_h1() {
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 4096];
+            loop {
+                match server_io.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let io = TokioIo::new(client_io);
+        let engine = make_engine();
+        let result = engine.connect_plaintext_with_hint(io, false).await;
+        assert!(result.is_ok());
+        let pooled = result.unwrap();
+        assert!(matches!(pooled.conn, crate::pool::HttpConnection::H1(_)));
+    }
+
+    #[tokio::test]
+    async fn connect_plaintext_with_hint_true_uses_h2() {
+        let (client_io, server_io) = tokio::io::duplex(65536);
+
+        // Spawn an h2 server
+        tokio::spawn(async move {
+            let io = TokioIo::new(server_io);
+            let builder = hyper::server::conn::http2::Builder::new(
+                crate::runtime::executor::poll_executor::<TokioRuntime>(),
+            );
+            let _ = builder
+                .serve_connection(
+                    io,
+                    hyper::service::service_fn(|_req| async {
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(
+                            http_body_util::Empty::<bytes::Bytes>::new(),
+                        ))
+                    }),
+                )
+                .await;
+        });
+
+        let io = TokioIo::new(client_io);
+        let engine = make_engine();
+        let result = engine.connect_plaintext_with_hint(io, true).await;
+        assert!(result.is_ok());
+        let pooled = result.unwrap();
+        assert!(matches!(pooled.conn, crate::pool::HttpConnection::H2(_)));
+    }
+
+    #[tokio::test]
+    async fn connect_plaintext_with_http2_prior_knowledge_uses_h2() {
+        let (client_io, server_io) = tokio::io::duplex(65536);
+
+        // Spawn an h2 server
+        tokio::spawn(async move {
+            let io = TokioIo::new(server_io);
+            let builder = hyper::server::conn::http2::Builder::new(
+                crate::runtime::executor::poll_executor::<TokioRuntime>(),
+            );
+            let _ = builder
+                .serve_connection(
+                    io,
+                    hyper::service::service_fn(|_req| async {
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(
+                            http_body_util::Empty::<bytes::Bytes>::new(),
+                        ))
+                    }),
+                )
+                .await;
+        });
+
+        let io = TokioIo::new(client_io);
+        let engine = make_h2_engine();
+        // http2_prior_knowledge = true means connect_plaintext should use h2
+        let result = engine.connect_plaintext(io).await;
+        assert!(result.is_ok());
+        let pooled = result.unwrap();
+        assert!(matches!(pooled.conn, crate::pool::HttpConnection::H2(_)));
+    }
+
+    #[tokio::test]
+    async fn connect_h1_server_closes_immediately() {
+        let (client_io, server_io) = tokio::io::duplex(8192);
+        // Drop server immediately — handshake should still succeed because
+        // hyper's h1 handshake doesn't require server data.
+        drop(server_io);
+
+        let io = TokioIo::new(client_io);
+        let engine = make_engine();
+        let result = engine.connect_h1(io).await;
+        // h1 handshake does not require server response — it just creates the sender
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn connect_h2_server_closes_immediately_fails() {
+        let (client_io, server_io) = tokio::io::duplex(8192);
+        // Drop server immediately — h2 handshake requires preface exchange
+        drop(server_io);
+
+        let io = TokioIo::new(client_io);
+        let engine = make_engine();
+        let result = engine.connect_h2_prior_knowledge(io).await;
+        // h2 handshake needs server preface; will fail with closed connection
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn connect_tls_on_plain_tcp_stream_fails() {
+        // Trying to do TLS handshake on a non-TLS TCP stream should fail
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server sends garbage (not TLS) and closes
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            use tokio::io::AsyncWriteExt;
+            let _ = conn.write_all(b"this is not TLS").await;
+            let _ = conn.shutdown().await;
+        });
+
+        let engine = make_engine();
+        let connector = TcpConnector;
+        let stream = <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, addr)
+            .await
+            .unwrap();
+        // The TLS handshake should fail quickly since the server responds with non-TLS data
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            engine.connect_tls(stream, "example.com"),
+        )
+        .await
+        .expect("tls handshake should complete within timeout");
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_success_200() {
+        // Simulate a CONNECT proxy that responds with 200 OK then drops
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            // Read the CONNECT request
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            // Verify it's a CONNECT request
+            let req_str = String::from_utf8_lossy(&request);
+            assert!(
+                req_str.starts_with("CONNECT "),
+                "should be a CONNECT request"
+            );
+            assert!(
+                req_str.contains("target.example.com:443"),
+                "should target the correct host"
+            );
+
+            // Respond with 200
+            server_io
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+
+            // Drop the connection immediately so TLS handshake fails with EOF
+            drop(server_io);
+        });
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080").unwrap();
+        let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
+
+        // connect_tunnel will succeed the CONNECT handshake but then try TLS
+        // which will fail since no TLS connector is configured (make_engine() has no TLS)
+        let result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+        assert!(
+            result.is_err(),
+            "should fail because no TLS connector configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_proxy_returns_403() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            // Respond with 403 Forbidden
+            server_io
+                .write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080").unwrap();
+        let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
+
+        let result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+        assert!(result.is_err());
+        let err = format!("{}", result.err().unwrap());
+        assert!(
+            err.contains("CONNECT tunnel failed"),
+            "error should mention tunnel failure, got: {err}"
+        );
+        assert!(
+            err.contains("403"),
+            "error should contain the status code, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_proxy_closes_connection() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            // Read the full CONNECT request first
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            // Drop without sending any response - client sees EOF during read
+            drop(server_io);
+        });
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080").unwrap();
+        let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
+
+        let result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+        assert!(result.is_err());
+        let err = format!("{}", result.err().unwrap());
+        assert!(
+            err.contains("proxy closed connection"),
+            "error should mention proxy closure, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_plaintext_returns_h1_by_default() {
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = [0u8; 4096];
+            loop {
+                match server_io.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let io = TokioIo::new(client_io);
+        let engine = make_engine();
+        // connect_plaintext with default engine (no http2_prior_knowledge) should use H1
+        let result = engine.connect_plaintext(io).await;
+        assert!(result.is_ok());
+        let pooled = result.unwrap();
+        assert!(
+            !pooled.is_h2_or_h3(),
+            "default plaintext connection should be H1"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_sends_proxy_auth_header() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        let (captured_tx, mut captured_rx) = tokio::sync::oneshot::channel::<String>();
+
+        tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            // Read the full CONNECT request
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let req_str = String::from_utf8_lossy(&request).to_string();
+            let _ = captured_tx.send(req_str);
+
+            // Respond with 200
+            server_io
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            // Drop to trigger TLS failure
+            drop(server_io);
+        });
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080")
+            .unwrap()
+            .basic_auth("user", "password");
+        let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
+
+        // connect_tunnel will succeed the CONNECT handshake, send auth header,
+        // then TLS fails because no TLS connector configured
+        let _result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+
+        // Verify the captured request contains the Proxy-Authorization header
+        let captured = captured_rx.try_recv().unwrap();
+        assert!(
+            captured.contains("Proxy-Authorization: Basic"),
+            "CONNECT request should include Proxy-Authorization header, got: {captured}"
+        );
+        assert!(
+            captured.contains("CONNECT target.example.com:443"),
+            "CONNECT request should target the correct host, got: {captured}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_response_too_large() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            // Read the full CONNECT request
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            // Send a huge response (> 8192 bytes) without ending with \r\n\r\n
+            let big_chunk = vec![b'A'; 9000];
+            server_io.write_all(&big_chunk).await.unwrap();
+        });
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080").unwrap();
+        let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
+
+        let result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+        assert!(result.is_err());
+        let err = format!("{}", result.err().unwrap());
+        assert!(
+            err.contains("too large"),
+            "error should mention response too large, got: {err}"
+        );
+    }
 }

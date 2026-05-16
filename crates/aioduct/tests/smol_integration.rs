@@ -581,3 +581,211 @@ fn test_smol_default_headers() {
         assert_eq!(resp.text().await.unwrap(), "smol-default");
     });
 }
+
+#[test]
+fn test_smol_tcp_keepalive_request() {
+    smol::block_on(async {
+        let addr = start_server().await;
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder(
+                aioduct::runtime::smol_rt::TcpConnector,
+            )
+            .tcp_keepalive(Duration::from_secs(60))
+            .tcp_keepalive_interval(Duration::from_secs(10))
+            .tcp_keepalive_retries(3)
+            .build();
+
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+    });
+}
+
+// ── Smol TLS integration tests ─────────────────────────────────────
+#[cfg(all(feature = "smol", feature = "tokio", feature = "rustls"))]
+mod smol_tls_tests {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use hyper::Response;
+    use hyper::service::service_fn;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    use aioduct::HttpEngineSend;
+    use aioduct::runtime::smol_rt::{SmolRuntime, TcpConnector};
+
+    fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+        Arc::new(rustls::crypto::ring::default_provider())
+    }
+
+    fn install_crypto() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    struct CaBundle {
+        params: rcgen::CertificateParams,
+        key: rcgen::KeyPair,
+        cert_der: CertificateDer<'static>,
+    }
+
+    fn generate_ca() -> CaBundle {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+        ];
+        let cert = params.self_signed(&key).unwrap();
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+        CaBundle {
+            params,
+            key,
+            cert_der,
+        }
+    }
+
+    fn generate_signed_cert(
+        ca: &CaBundle,
+        domains: Vec<String>,
+    ) -> (CertificateDer<'static>, PrivateKeyDer<'static>) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let params = rcgen::CertificateParams::new(domains).unwrap();
+        let issuer = rcgen::Issuer::from_params(&ca.params, &ca.key);
+        let cert = params.signed_by(&key, &issuer).unwrap();
+        let cert_der = CertificateDer::from(cert.der().to_vec());
+        let key_der = PrivateKeyDer::Pkcs8(key.serialize_der().into());
+        (cert_der, key_der)
+    }
+
+    fn start_tls_h1_server(
+        cert_der: CertificateDer<'static>,
+        key_der: PrivateKeyDer<'static>,
+    ) -> SocketAddr {
+        let mut config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)
+            .unwrap();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let config = Arc::new(config);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let acceptor = tokio_rustls::TlsAcceptor::from(config);
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                tx.send(addr).unwrap();
+
+                loop {
+                    let (stream, _) = match listener.accept().await {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let acceptor = acceptor.clone();
+                    tokio::spawn(async move {
+                        let tls_stream = match acceptor.accept(stream).await {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        };
+                        let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(
+                                io,
+                                service_fn(|_req| async {
+                                    Ok::<_, std::convert::Infallible>(Response::new(Full::new(
+                                        Bytes::from("hello smol tls"),
+                                    )))
+                                }),
+                            )
+                            .await;
+                    });
+                }
+            });
+        });
+        rx.recv().unwrap()
+    }
+
+    #[test]
+    fn smol_tls_basic_h1_get() {
+        install_crypto();
+        let ca = generate_ca();
+        let (cert, key) = generate_signed_cert(&ca, vec!["localhost".into()]);
+        let addr = start_tls_h1_server(cert, key);
+
+        smol::block_on(async {
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.add(ca.cert_der.clone()).unwrap();
+            let config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            let tls_config = aioduct::tls::RustlsConnector::new(Arc::new(config));
+
+            let client = HttpEngineSend::<SmolRuntime, TcpConnector>::builder(TcpConnector)
+                .tls(tls_config)
+                .timeout(std::time::Duration::from_secs(5))
+                .resolve("localhost", addr)
+                .build();
+
+            let resp = client
+                .get(&format!("https://localhost:{}/", addr.port()))
+                .unwrap()
+                .send()
+                .await
+                .unwrap();
+
+            assert_eq!(resp.status(), 200);
+            let body = resp.text().await.unwrap();
+            assert_eq!(body, "hello smol tls");
+        });
+    }
+
+    #[test]
+    fn smol_tls_connection_reuse() {
+        install_crypto();
+        let ca = generate_ca();
+        let (cert, key) = generate_signed_cert(&ca, vec!["localhost".into()]);
+        let addr = start_tls_h1_server(cert, key);
+
+        smol::block_on(async {
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.add(ca.cert_der.clone()).unwrap();
+            let config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            let tls_config = aioduct::tls::RustlsConnector::new(Arc::new(config));
+
+            let client = HttpEngineSend::<SmolRuntime, TcpConnector>::builder(TcpConnector)
+                .tls(tls_config)
+                .pool_idle_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(5))
+                .resolve("localhost", addr)
+                .build();
+
+            let url = format!("https://localhost:{}/", addr.port());
+
+            let resp1 = client.get(&url).unwrap().send().await.unwrap();
+            assert_eq!(resp1.status(), 200);
+            let _ = resp1.text().await.unwrap();
+
+            let resp2 = client.get(&url).unwrap().send().await.unwrap();
+            assert_eq!(resp2.status(), 200);
+            assert_eq!(resp2.text().await.unwrap(), "hello smol tls");
+        });
+    }
+}

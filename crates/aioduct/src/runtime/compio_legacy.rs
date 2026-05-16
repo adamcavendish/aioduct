@@ -213,3 +213,127 @@ impl<F: Future> Future for AssertSend<F> {
         inner.poll(cx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_spawn() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let flag = Arc::new(AtomicBool::new(false));
+            let flag2 = flag.clone();
+            CompioRuntime::spawn(async move {
+                flag2.store(true, Ordering::SeqCst);
+            });
+            compio_runtime::time::sleep(Duration::from_millis(50)).await;
+            assert!(flag.load(Ordering::SeqCst));
+        });
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_connect() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect(addr).await;
+            assert!(stream.is_ok());
+        });
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_connect_bound() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let local: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect_bound(addr, local).await;
+            assert!(stream.is_ok());
+        });
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_from_std_tcp() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let result = CompioRuntime::from_std_tcp(stream);
+            assert!(result.is_ok());
+        });
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_resolve_all() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let addrs = CompioRuntime::resolve_all("localhost", 80).await;
+            assert!(addrs.is_ok());
+            assert!(!addrs.unwrap().is_empty());
+        });
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_set_tcp_keepalive() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect(addr).await.unwrap();
+            let result = CompioRuntime::set_tcp_keepalive(
+                &stream,
+                Duration::from_secs(60),
+                Some(Duration::from_secs(10)),
+                Some(3),
+            );
+            assert!(result.is_ok());
+        });
+    }
+
+    #[cfg(unix)]
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_connect_unix() {
+        let dir = std::env::temp_dir().join("aioduct_legacy_compio_unix");
+        let _ = std::fs::create_dir_all(&dir);
+        let sock_path = dir.join("legacy_test.sock");
+        let _ = std::fs::remove_file(&sock_path);
+
+        let _listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect_unix(&sock_path).await;
+            assert!(stream.is_ok());
+        });
+
+        let _ = std::fs::remove_file(&sock_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_set_tcp_keepalive_no_interval_no_retries() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect(addr).await.unwrap();
+            let result =
+                CompioRuntime::set_tcp_keepalive(&stream, Duration::from_secs(60), None, None);
+            assert!(result.is_ok());
+        });
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_compio_resolve_default() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let addr = CompioRuntime::resolve("localhost", 80).await;
+            assert!(addr.is_ok());
+        });
+    }
+}

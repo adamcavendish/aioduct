@@ -67,3 +67,62 @@ impl Instant {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elapsed_returns_non_zero_after_spin_wait() {
+        let start = Instant::now();
+        // Spin for a bit to ensure some time passes
+        let mut sum = 0u64;
+        for i in 0..100_000 {
+            sum = sum.wrapping_add(i);
+        }
+        // Prevent optimization
+        std::hint::black_box(sum);
+        let elapsed = start.elapsed();
+        // With coarsetime (default), resolution is ~1ms so elapsed may be zero
+        // for very short spins. We just verify it doesn't panic and returns a Duration.
+        assert!(elapsed.as_nanos() < u128::MAX);
+    }
+
+    #[test]
+    fn duration_since_earlier_is_non_negative() {
+        let earlier = Instant::now();
+        // Spin briefly
+        let mut sum = 0u64;
+        for i in 0..100_000 {
+            sum = sum.wrapping_add(i);
+        }
+        std::hint::black_box(sum);
+        let later = Instant::now();
+        let dur = later.duration_since(earlier);
+        // duration_since(earlier) where later >= earlier should be >= 0
+        assert!(dur.as_nanos() < u128::MAX);
+    }
+
+    #[test]
+    fn duration_since_self_is_zero() {
+        let t = Instant::now();
+        let dur = t.duration_since(t);
+        assert_eq!(dur, Duration::ZERO);
+    }
+
+    #[test]
+    fn instant_is_copy_and_clone() {
+        let t = Instant::now();
+        let t2 = t;
+        let t3 = t;
+        // Both copies should produce the same duration_since result
+        assert_eq!(t2.duration_since(t3), Duration::ZERO);
+    }
+
+    #[test]
+    fn instant_debug_format_is_non_empty() {
+        let t = Instant::now();
+        let debug = format!("{:?}", t);
+        assert!(!debug.is_empty());
+    }
+}

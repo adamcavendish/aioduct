@@ -264,4 +264,143 @@ mod tests {
         assert!(entries[0].host.is_none());
         assert_eq!(entries[0].port, 8443);
     }
+
+    #[test]
+    fn test_is_expired_fresh() {
+        let entry = AltSvcEntry {
+            protocol: "h3".to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(3600),
+            recorded_at: Instant::now(),
+        };
+        assert!(!entry.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_stale() {
+        let entry = AltSvcEntry {
+            protocol: "h3".to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(0),
+            recorded_at: Instant::now() - Duration::from_secs(1),
+        };
+        assert!(entry.is_expired());
+    }
+
+    #[test]
+    fn test_supports_h3_false_for_other_protocol() {
+        let entry = AltSvcEntry {
+            protocol: "h2".to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(3600),
+            recorded_at: Instant::now(),
+        };
+        assert!(!entry.supports_h3());
+    }
+
+    #[test]
+    fn test_cache_clone_shares_state() {
+        let cache = AltSvcCache::new();
+        let cloned = cache.clone();
+        let authority: Authority = "shared.com:443".parse().unwrap();
+        let entries = vec![AltSvcEntry {
+            protocol: "h3".to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(3600),
+            recorded_at: Instant::now(),
+        }];
+        cache.insert(authority.clone(), entries);
+        assert!(cloned.lookup_h3(&authority).is_some());
+    }
+
+    #[test]
+    fn test_parse_malformed_ma_value() {
+        let entries = parse_alt_svc("h3=\":443\"; ma=notanumber");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].max_age, Duration::from_secs(86400));
+    }
+
+    #[test]
+    fn test_parse_no_equals_in_entry() {
+        let entries = parse_alt_svc("garbage");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_invalid_port() {
+        let entries = parse_alt_svc("h3=\":notaport\"");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_cache_mixed_h3_and_non_h3() {
+        let cache = AltSvcCache::new();
+        let authority: Authority = "example.com:443".parse().unwrap();
+        let entries = vec![
+            AltSvcEntry {
+                protocol: "h2".to_owned(),
+                host: None,
+                port: 443,
+                max_age: Duration::from_secs(3600),
+                recorded_at: Instant::now(),
+            },
+            AltSvcEntry {
+                protocol: "h3".to_owned(),
+                host: Some("alt.com".to_owned()),
+                port: 8443,
+                max_age: Duration::from_secs(3600),
+                recorded_at: Instant::now(),
+            },
+        ];
+        cache.insert(authority.clone(), entries);
+        let result = cache.lookup_h3(&authority).unwrap();
+        assert_eq!(result.0.as_deref(), Some("alt.com"));
+        assert_eq!(result.1, 8443);
+    }
+
+    #[test]
+    fn test_cache_lookup_evicts_all_expired() {
+        let cache = AltSvcCache::new();
+        let authority: Authority = "example.com:443".parse().unwrap();
+        let entries = vec![AltSvcEntry {
+            protocol: "h3".to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(0),
+            recorded_at: Instant::now() - Duration::from_secs(1),
+        }];
+        cache.insert(authority.clone(), entries);
+        assert!(cache.lookup_h3(&authority).is_none());
+        // After eviction, the authority should be removed entirely
+        let map = cache.inner.lock().unwrap();
+        assert!(!map.contains_key(&authority));
+    }
+
+    #[test]
+    fn test_parse_authority_without_colon() {
+        let result = parse_authority("443");
+        assert!(result.is_some());
+        let (host, port) = result.unwrap();
+        assert!(host.is_empty());
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn test_entry_debug_and_clone() {
+        let entry = AltSvcEntry {
+            protocol: "h3".to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(3600),
+            recorded_at: Instant::now(),
+        };
+        let cloned = entry.clone();
+        assert_eq!(entry.protocol, cloned.protocol);
+        let dbg = format!("{:?}", entry);
+        assert!(dbg.contains("h3"));
+    }
 }
