@@ -10,14 +10,13 @@ use crate::error::{Error, SendError};
 use crate::response::Response;
 use crate::runtime::{Connector, RuntimeLocal};
 
-/// An owned request builder for the Local runtime path.
+/// An owned request builder that does not borrow the [`HttpEngineLocal`].
+///
+/// Returned by [`HttpClient::request()`] on [`HttpEngineLocal`]. Internally wraps
+/// a standard [`RequestBuilderLocal`](crate::request::RequestBuilderLocal) with an
+/// owned client reference.
 pub struct OwnedRequestBuilderLocal<R: RuntimeLocal, C: Connector + Clone> {
-    client: HttpEngineLocal<R, C>,
-    method: Method,
-    uri: http::Uri,
-    headers: HeaderMap,
-    body: Option<crate::body::RequestBody>,
-    timeout: Option<Duration>,
+    inner: crate::request::RequestBuilderLocal<'static, R, C>,
 }
 
 impl<R: RuntimeLocal, C: Connector + Clone> HttpClient for HttpEngineLocal<R, C> {
@@ -26,12 +25,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpClient for HttpEngineLocal<R, C>
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {
         let uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(OwnedRequestBuilderLocal {
-            client: self.clone(),
-            method,
-            uri,
-            headers: HeaderMap::new(),
-            body: None,
-            timeout: None,
+            inner: crate::request::RequestBuilderLocal::new_owned(self.clone(), method, uri),
         })
     }
 }
@@ -40,53 +34,33 @@ impl<R: RuntimeLocal, C: Connector + Clone> RequestBuilderExt for OwnedRequestBu
     type Response = Response<ResponseBoxLocalBody>;
 
     fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
-        self.headers.insert(name, value);
+        self.inner = self.inner.header(name, value);
         self
     }
 
     fn headers(mut self, headers: HeaderMap) -> Self {
-        self.headers.extend(headers);
+        self.inner = self.inner.headers(headers);
         self
     }
 
     fn bearer_auth(mut self, token: &str) -> Self {
-        let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
-            return self;
-        };
-        self.headers.insert(http::header::AUTHORIZATION, value);
+        self.inner = self.inner.bearer_auth(token);
         self
     }
 
     fn body(mut self, body: impl Into<Bytes>) -> Self {
-        self.body = Some(crate::body::RequestBody::Buffered(body.into()));
+        self.inner = self.inner.body(body);
         self
     }
 
     fn timeout(mut self, duration: Duration) -> Self {
-        self.timeout = Some(duration);
+        self.inner = self.inner.timeout(duration);
         self
     }
 
     async fn send(self) -> Result<Response<ResponseBoxLocalBody>, SendError> {
-        let url = self.uri.clone();
-        let effective_timeout = self.timeout.or(self.client.core.timeout);
-
-        let execute_fut =
-            self.client
-                .execute_local(self.method, self.uri, self.headers, self.body, None);
-
-        let result = match effective_timeout {
-            Some(duration) => {
-                crate::timeout::Timeout::WithTimeout {
-                    future: execute_fut,
-                    sleep: R::sleep(duration),
-                }
-                .await
-            }
-            None => execute_fut.await,
-        };
-
-        result.map_err(|error| SendError::new(error, url))
+        let url = self.inner.uri().clone();
+        self.inner.send().await.map_err(|e| SendError::new(e, url))
     }
 }
 

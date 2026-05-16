@@ -6,7 +6,7 @@ use bytes::{BufMut, BytesMut};
 use http::HeaderValue;
 use http::header::{ACCEPT_RANGES, CONTENT_LENGTH, RANGE};
 
-use crate::chunk_download::ChunkDownloadResult;
+use super::ChunkDownloadResult;
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
 use crate::runtime::{Connector, RuntimeLocal};

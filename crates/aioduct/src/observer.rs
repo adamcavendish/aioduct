@@ -14,7 +14,7 @@ pub use coarsetime::Instant;
 #[cfg(feature = "precise-timing")]
 pub use std::time::Instant;
 
-#[cfg(feature = "serde")]
+#[cfg(feature = "json")]
 mod serde_status_code {
     use http::StatusCode;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -31,7 +31,7 @@ mod serde_status_code {
 
 /// How the connection was obtained for this request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub enum PoolOutcome {
     /// Exact pool key match — connection reused.
     Hit,
@@ -45,7 +45,7 @@ pub enum PoolOutcome {
 
 /// The HTTP protocol negotiated on the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub enum NegotiatedProtocol {
     /// HTTP/1.0 or HTTP/1.1.
     Http1,
@@ -57,7 +57,7 @@ pub enum NegotiatedProtocol {
 
 /// Direction of data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub enum TransferDirection {
     /// Client → Server (request body, WebSocket send).
     Upload,
@@ -71,7 +71,7 @@ pub enum TransferDirection {
 /// Phases that are skipped (e.g., DNS for pool hits, TLS for plain HTTP)
 /// simply don't fire.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub enum RequestPhase {
     /// Request execution has started (after rate limiting, if any).
     Started,
@@ -127,7 +127,7 @@ pub enum RequestPhase {
     /// Response headers fully received.
     ResponseComplete {
         /// HTTP status code.
-        #[cfg_attr(feature = "serde", serde(with = "serde_status_code"))]
+        #[cfg_attr(feature = "json", serde(with = "serde_status_code"))]
         status: StatusCode,
         /// Protocol used for the response.
         protocol: NegotiatedProtocol,
@@ -221,7 +221,7 @@ pub trait RequestObserver: Send + Sync + 'static {
 
 /// Connection-level event (not tied to a specific request).
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub enum ConnectionPhase {
     /// Connection-level metrics (fires at pool checkin or connection close).
     Metrics {
