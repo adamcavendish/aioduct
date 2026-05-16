@@ -2068,51 +2068,53 @@ async fn redirect_custom_policy_stop_returns_response() {
     );
 }
 
-// BUG: HSTS should upgrade redirect target URIs, not just the initial URI.
-// execute_send.rs:30 calls maybe_upgrade_hsts() once before the redirect loop.
-// After following a redirect to http://foo.com, the HSTS store is not consulted
-// again for the redirect target.
+// HSTS upgrades redirect target URIs (not just the initial URI).
+// execute_send.rs:30 and the redirect loop tail both call maybe_upgrade_hsts().
 #[tokio::test]
-async fn redirect_target_not_hsts_upgraded() {
-    // This test documents the feature gap. If we had two servers:
-    // 1. An HTTPS server with HSTS enabled that redirects to an HTTP URL
-    // 2. An HTTP server for that URL
-    // The redirect target should be upgraded to HTTPS by HSTS, but it isn't
-    // because maybe_upgrade_hsts() is only called once before the redirect loop.
-    //
-    // For now, just verify that maybe_upgrade_hsts is only called once:
-    let (addr, _) = h1_server_with(|req| async move {
-        let path = req.uri().path().to_string();
-        if path == "/first" {
+async fn redirect_target_is_hsts_upgraded() {
+    let hsts_store = aioduct::hsts::HstsStore::new();
+    let mut sts_headers = http::HeaderMap::new();
+    sts_headers.insert("strict-transport-security", "max-age=3600".parse().unwrap());
+    hsts_store.store_from_response("localhost", &sts_headers);
+
+    let (plain_addr, _) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("plain-http"))))
+    })
+    .await;
+
+    let (redirect_addr, _) = h1_server_with(move |_req| {
+        let target = format!("http://localhost:{}/final", plain_addr.port());
+        async move {
             Ok::<_, Infallible>(
                 Response::builder()
                     .status(302)
-                    .header("Location", "/second")
+                    .header("Location", target)
                     .body(Full::new(Bytes::new()))
                     .unwrap(),
             )
-        } else {
-            let scheme = req.uri().scheme_str().unwrap_or("none");
-            Ok(Response::new(Full::new(Bytes::from(format!(
-                "scheme={scheme}"
-            )))))
         }
     })
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
-        .timeout(Duration::from_secs(5))
+        .hsts(hsts_store)
+        .timeout(Duration::from_secs(2))
         .build();
 
-    let resp = client
-        .get(&format!("http://{addr}/first"))
+    // The redirect target http://localhost:{port}/final should be HSTS-upgraded
+    // to https://localhost:{port}/final. Since the target is a plain HTTP server,
+    // a TLS handshake will fail — proving the upgrade happened. Without the fix,
+    // the client would follow the redirect as plain HTTP and get "plain-http".
+    let result = client
+        .get(&format!("http://{redirect_addr}/start"))
         .unwrap()
         .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    // This test passes because HSTS isn't active, but it documents
-    // the gap: redirect targets don't get HSTS-upgraded.
+        .await;
+
+    assert!(
+        result.is_err(),
+        "should fail: redirect target was HSTS-upgraded to HTTPS but server is plain HTTP"
+    );
 }
 // ── More Bug-Finding Tests ────────────────────────────────────────────
 
