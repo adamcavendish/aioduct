@@ -444,4 +444,468 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("server requires auth"));
     }
+
+    #[tokio::test]
+    async fn handshake_reply_connection_not_allowed() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x02, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("connection not allowed by ruleset")
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_reply_network_unreachable() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x03, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("network unreachable"));
+    }
+
+    #[tokio::test]
+    async fn handshake_reply_host_unreachable() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x04, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("host unreachable"));
+    }
+
+    #[tokio::test]
+    async fn handshake_reply_ttl_expired() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x06, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("TTL expired"));
+    }
+
+    #[tokio::test]
+    async fn handshake_reply_command_not_supported() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x07, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("command not supported"));
+    }
+
+    #[tokio::test]
+    async fn handshake_reply_address_type_not_supported() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&[SOCKS5_VERSION, 0x08, 0x00, 0x01]);
+        reply.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("address type not supported"));
+    }
+
+    struct WriteZeroStream {
+        read_data: VecDeque<u8>,
+    }
+
+    impl hyper::rt::Read for WriteZeroStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            mut buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(byte) = self.read_data.pop_front() {
+                unsafe {
+                    let dst = buf.as_mut();
+                    if !dst.is_empty() {
+                        dst[0].write(byte);
+                        buf.advance(1);
+                    }
+                }
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hyper::rt::Write for WriteZeroStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(0))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn write_zero_returns_error() {
+        let mut stream = WriteZeroStream {
+            read_data: VecDeque::new(),
+        };
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    }
+
+    struct EofStream;
+
+    impl hyper::rt::Read for EofStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hyper::rt::Write for EofStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn read_eof_returns_error() {
+        let mut stream = EofStream;
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn handshake_no_auth_domain_reply() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&domain_reply("bound.example.com"));
+        let mut stream = MockStream::new(&reply);
+        let result = socks5_handshake(&mut stream, "example.com", 80, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn handshake_no_auth_ipv6_reply() {
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&ipv6_reply());
+        let mut stream = MockStream::new(&reply);
+        let result = socks5_handshake(&mut stream, "example.com", 80, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn handshake_auth_required_but_none_provided() {
+        let reply = vec![SOCKS5_VERSION, AUTH_USERNAME_PASSWORD];
+        let mut stream = MockStream::new(&reply);
+        let err = socks5_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("server requires auth but none provided")
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_auth_sends_correct_subneg_message() {
+        // Verify the username/password sub-negotiation message format
+        let mut reply = vec![SOCKS5_VERSION, AUTH_USERNAME_PASSWORD];
+        reply.extend_from_slice(&[0x01, 0x00]); // auth success
+        reply.extend_from_slice(&ipv4_reply());
+        let mut stream = MockStream::new(&reply);
+        let auth = ProxyAuth {
+            username: "admin".into(),
+            password: "secret".into(),
+        };
+        let result = socks5_handshake(&mut stream, "target.com", 443, Some(&auth)).await;
+        assert!(result.is_ok());
+
+        // Verify the greeting offered both auth methods
+        assert_eq!(stream.written[0], SOCKS5_VERSION);
+        assert_eq!(stream.written[1], 2); // 2 methods
+        assert_eq!(stream.written[2], AUTH_NONE);
+        assert_eq!(stream.written[3], AUTH_USERNAME_PASSWORD);
+
+        // Verify the auth sub-negotiation message (starts at offset 4)
+        assert_eq!(stream.written[4], USERNAME_PASSWORD_VERSION); // sub-neg version
+        assert_eq!(stream.written[5], 5); // username length "admin"
+        assert_eq!(&stream.written[6..11], b"admin");
+        assert_eq!(stream.written[11], 6); // password length "secret"
+        assert_eq!(&stream.written[12..18], b"secret");
+    }
+
+    #[tokio::test]
+    async fn handshake_connect_message_format() {
+        // Verify the CONNECT request message format
+        let mut reply = vec![SOCKS5_VERSION, AUTH_NONE];
+        reply.extend_from_slice(&ipv4_reply());
+        let mut stream = MockStream::new(&reply);
+        let result = socks5_handshake(&mut stream, "test.io", 8080, None).await;
+        assert!(result.is_ok());
+
+        // The connect message starts after the greeting (3 bytes: VER, NMETHODS, METHOD)
+        let connect_start = 3; // greeting is 3 bytes for no-auth
+        let msg = &stream.written[connect_start..];
+        assert_eq!(msg[0], SOCKS5_VERSION);
+        assert_eq!(msg[1], CMD_CONNECT);
+        assert_eq!(msg[2], 0x00); // reserved
+        assert_eq!(msg[3], ATYP_DOMAIN);
+        assert_eq!(msg[4], 7); // "test.io" length
+        assert_eq!(&msg[5..12], b"test.io");
+        // Port 8080 = 0x1F90
+        assert_eq!(msg[12], 0x1F);
+        assert_eq!(msg[13], 0x90);
+    }
+
+    #[tokio::test]
+    async fn write_zero_during_auth_phase() {
+        // A stream that allows the greeting write but returns 0 on subsequent writes
+        struct WriteOnceStream {
+            read_data: VecDeque<u8>,
+            writes_allowed: usize,
+            written: Vec<u8>,
+        }
+
+        impl hyper::rt::Read for WriteOnceStream {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                mut buf: hyper::rt::ReadBufCursor<'_>,
+            ) -> Poll<io::Result<()>> {
+                if let Some(byte) = self.read_data.pop_front() {
+                    unsafe {
+                        let dst = buf.as_mut();
+                        if !dst.is_empty() {
+                            dst[0].write(byte);
+                            buf.advance(1);
+                        }
+                    }
+                }
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        impl hyper::rt::Write for WriteOnceStream {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                if self.writes_allowed > 0 {
+                    self.writes_allowed -= 1;
+                    self.written.extend_from_slice(buf);
+                    Poll::Ready(Ok(buf.len()))
+                } else {
+                    Poll::Ready(Ok(0))
+                }
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        // Allow the greeting to be written, then fail on auth sub-negotiation
+        let mut read_data = VecDeque::new();
+        // Server responds with AUTH_USERNAME_PASSWORD
+        read_data.extend(&[SOCKS5_VERSION, AUTH_USERNAME_PASSWORD]);
+        let mut stream = WriteOnceStream {
+            read_data,
+            writes_allowed: 1, // only the greeting write succeeds
+            written: Vec::new(),
+        };
+        let auth = ProxyAuth {
+            username: "user".into(),
+            password: "pass".into(),
+        };
+        let err = socks5_handshake(&mut stream, "example.com", 80, Some(&auth))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    }
+
+    // --- Tests for mock stream methods to cover poll_flush/poll_shutdown ---
+
+    #[test]
+    fn mock_stream_poll_flush_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = MockStream::new(&[]);
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_flush(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn mock_stream_poll_shutdown_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = MockStream::new(&[]);
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_shutdown(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn write_zero_stream_poll_flush_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = WriteZeroStream {
+            read_data: VecDeque::new(),
+        };
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_flush(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn write_zero_stream_poll_shutdown_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = WriteZeroStream {
+            read_data: VecDeque::new(),
+        };
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_shutdown(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn write_zero_stream_poll_read_with_data() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = WriteZeroStream {
+            read_data: VecDeque::from(vec![0xAB, 0xCD]),
+        };
+        let mut buf_storage = [0u8; 4];
+        let mut read_buf = hyper::rt::ReadBuf::new(&mut buf_storage);
+        let result =
+            hyper::rt::Read::poll_read(Pin::new(&mut stream), &mut cx, read_buf.unfilled());
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+        assert_eq!(stream.read_data.len(), 1);
+        assert_eq!(stream.read_data[0], 0xCD);
+    }
+
+    #[test]
+    fn eof_stream_poll_flush_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = EofStream;
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_flush(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn eof_stream_poll_shutdown_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = EofStream;
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_shutdown(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
 }

@@ -658,4 +658,169 @@ mod tests {
             msg("message", " two spaces")
         );
     }
+
+    #[test]
+    fn default_decoder_equivalent_to_new() {
+        let mut d1 = SseDecoder::new();
+        let mut d2 = SseDecoder::default();
+        let mut buf1 = BytesMut::from(&b"data: hello\n\n"[..]);
+        let mut buf2 = BytesMut::from(&b"data: hello\n\n"[..]);
+        let e1 = d1.decode(&mut buf1).unwrap().unwrap();
+        let e2 = d2.decode(&mut buf2).unwrap().unwrap();
+        assert_eq!(e1, e2);
+        assert_eq!(e1, msg("message", "hello"));
+    }
+
+    #[test]
+    fn retry_standalone_with_id_yields_retry() {
+        // retry with id but no data and no event_type: should yield Retry
+        // This exercises line 169: retry_val returned when has_data_field is false
+        // and there's an id present but the standalone retry short-circuit (line 157-163) doesn't fire
+        let event = decode_one(b"id: 99\nretry: 2000\n\n");
+        assert_eq!(event, SseEvent::Retry(2000));
+    }
+
+    #[test]
+    fn retry_with_event_type_no_data_yields_retry() {
+        // retry with event_type but no data: the standalone retry short-circuit
+        // at line 157-163 won't fire (event_type.is_none() is false), so it falls
+        // to line 168 where retry is returned since has_data_field is false
+        let event = decode_one(b"event: ping\nretry: 4000\n\n");
+        assert_eq!(event, SseEvent::Retry(4000));
+    }
+
+    #[test]
+    fn consume_line_ending_at_end_of_buffer() {
+        // This tests the edge case where pos >= bytes.len() in consume_line_ending
+        let result = consume_line_ending(b"", 0);
+        assert_eq!(result, (0, 0));
+
+        let result = consume_line_ending(b"abc", 5);
+        assert_eq!(result, (5, 5));
+    }
+
+    #[test]
+    fn consume_line_ending_non_newline_byte() {
+        // Tests the fallthrough case where byte is neither \r nor \n
+        let result = consume_line_ending(b"abc", 0);
+        assert_eq!(result, (0, 0));
+
+        let result = consume_line_ending(b"x\ny", 0);
+        // 'x' is not a line ending
+        assert_eq!(result, (0, 0));
+    }
+
+    #[test]
+    fn consume_line_ending_cr_without_lf() {
+        let result = consume_line_ending(b"\rx", 0);
+        assert_eq!(result, (1, 1));
+    }
+
+    #[test]
+    fn consume_line_ending_crlf() {
+        let result = consume_line_ending(b"\r\n", 0);
+        assert_eq!(result, (2, 2));
+    }
+
+    #[test]
+    fn consume_line_ending_lf() {
+        let result = consume_line_ending(b"\n", 0);
+        assert_eq!(result, (1, 1));
+    }
+
+    #[test]
+    fn consume_line_ending_cr_at_end() {
+        // \r at last position with no following byte
+        let result = consume_line_ending(b"\r", 0);
+        assert_eq!(result, (1, 1));
+    }
+
+    #[test]
+    fn corrupted_state_skips_next_block() {
+        // Test that if somehow corrupted is true, the next event block is skipped.
+        // We can trigger this by having TWO consecutive too-large payloads.
+        // After the first too-large error is returned, the decoder should handle
+        // the next block correctly.
+        //
+        // NOTE: In the current implementation, `corrupted` is set to `false` (not true)
+        // when a too-large payload is detected. This means the `if self.corrupted`
+        // branch (lines 89-92) is unreachable dead code. The test below verifies
+        // that after a too-large event, normal decoding resumes correctly.
+        let mut buf =
+            BytesMut::from(&b"data: AAAAAAAAAAAAAAA\n\ndata: BBBBBBBBBBBBBBB\n\ndata: ok\n\n"[..]);
+        let mut decoder = SseDecoder::with_max_payload_size(10);
+
+        // First too-large event returns error
+        let e1 = decoder.decode(&mut buf).unwrap();
+        assert!(e1.is_err());
+
+        // Second too-large event also returns error (corrupted is NOT set)
+        let e2 = decoder.decode(&mut buf).unwrap();
+        assert!(e2.is_err());
+
+        // Third event is within size and succeeds
+        let e3 = decoder.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(e3, msg("message", "ok"));
+    }
+
+    #[test]
+    fn next_line_str_crlf() {
+        let (line, rest) = next_line_str("hello\r\nworld");
+        assert_eq!(line, "hello");
+        assert_eq!(rest, "world");
+    }
+
+    #[test]
+    fn next_line_str_lf_only() {
+        let (line, rest) = next_line_str("hello\nworld");
+        assert_eq!(line, "hello");
+        assert_eq!(rest, "world");
+    }
+
+    #[test]
+    fn next_line_str_cr_only() {
+        let (line, rest) = next_line_str("hello\rworld");
+        assert_eq!(line, "hello");
+        assert_eq!(rest, "world");
+    }
+
+    #[test]
+    fn next_line_str_no_newline() {
+        let (line, rest) = next_line_str("hello");
+        assert_eq!(line, "hello");
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn find_event_boundary_returns_none_for_no_double_newline() {
+        // Only a single line ending, no event boundary
+        assert!(find_event_boundary(b"data: hello\n").is_none());
+        assert!(find_event_boundary(b"data: hello\r").is_none());
+        assert!(find_event_boundary(b"data: hello\r\n").is_none());
+    }
+
+    #[test]
+    fn find_event_boundary_returns_none_for_empty() {
+        assert!(find_event_boundary(b"").is_none());
+    }
+
+    #[test]
+    fn find_event_boundary_lf_at_buffer_end() {
+        // The second newline is at the very end of the buffer — no "rest" after
+        let b = find_event_boundary(b"data: x\n\n");
+        // Should still return None because there's nothing after the boundary to confirm
+        // Actually, looking at the code: next_start would be 8 (the second \n), then
+        // bytes[next_start] == b'\n', so it tries to consume_line_ending at pos 8,
+        // which gives (9, 9). Since consume_end=9 and bytes.len()=9... let me check
+        // Actually wait, the buffer is "data: x\n\n" which is 9 bytes.
+        // pos=0, memchr2 finds \n at index 7, abs=7, block_end=7
+        // consume_line_ending(bytes, 7) for \n: (8, 8)
+        // next_start=8, 8 < 9 so we proceed
+        // bytes[8] = b'\n', so we consume_line_ending(bytes, 8) for \n: (9, 9)
+        // Returns Some(EventBoundary { block_end: 7, consume: 9 })
+        assert!(b.is_some());
+        let b = b.unwrap();
+        assert_eq!(b.block_end, 7);
+        assert_eq!(b.consume, 9);
+    }
 }

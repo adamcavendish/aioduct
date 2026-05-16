@@ -264,15 +264,6 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[test]
-    fn blocking_tokio_client_builds() {
-        use crate::runtime::tokio_rt::TcpConnector;
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
-        let _client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
-    }
-
-    #[cfg(feature = "tokio")]
-    #[test]
     fn blocking_tokio_default_headers() {
         use crate::runtime::tokio_rt::TcpConnector;
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::builder(
@@ -283,5 +274,432 @@ mod tests {
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let result = client.get("http://127.0.0.1:1/nonexistent");
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_client_all_methods() {
+        use crate::runtime::tokio_rt::TcpConnector;
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        assert!(client.get("http://127.0.0.1:1/").is_ok());
+        assert!(client.head("http://127.0.0.1:1/").is_ok());
+        assert!(client.post("http://127.0.0.1:1/").is_ok());
+        assert!(client.put("http://127.0.0.1:1/").is_ok());
+        assert!(client.patch("http://127.0.0.1:1/").is_ok());
+        assert!(client.delete("http://127.0.0.1:1/").is_ok());
+        assert!(
+            client
+                .request(Method::OPTIONS, "http://127.0.0.1:1/")
+                .is_ok()
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_client_invalid_url() {
+        use crate::runtime::tokio_rt::TcpConnector;
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        assert!(client.get("not a valid url\n").is_err());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_client_invalid_url_all_methods() {
+        use crate::runtime::tokio_rt::TcpConnector;
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let bad_url = "not a valid url\n";
+        assert!(client.head(bad_url).is_err());
+        assert!(client.post(bad_url).is_err());
+        assert!(client.put(bad_url).is_err());
+        assert!(client.patch(bad_url).is_err());
+        assert!(client.delete(bad_url).is_err());
+        assert!(client.request(Method::OPTIONS, bad_url).is_err());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_error_for_status_ok() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server();
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert!(resp.error_for_status().is_ok());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_error_for_status_ref_ok() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server();
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert!(resp.error_for_status_ref().is_ok());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_debug() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server();
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        let dbg = format!("{:?}", resp);
+        assert!(dbg.contains("BlockingResponse"));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_bytes_and_text() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server();
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        let body = resp.bytes().unwrap();
+        assert!(!body.is_empty());
+
+        let resp2 = client
+            .get(&format!("http://{}/", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        let text = resp2.text().unwrap();
+        assert!(!text.is_empty());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_url_and_version() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server();
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert!(resp.url().to_string().contains(&addr.to_string()));
+        assert_eq!(resp.version(), http::Version::HTTP_11);
+        assert!(resp.remote_addr().is_some());
+        assert!(resp.tls_info().is_none());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_head_sends_and_returns_status() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .head(&format!("http://{}/test", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_post_sends_body_and_returns_echo() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .post(&format!("http://{}/submit", addr))
+            .unwrap()
+            .body("payload")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = resp.text().unwrap();
+        assert!(
+            text.contains("method=POST"),
+            "expected POST method in echo: {text}"
+        );
+        assert!(
+            text.contains("body=payload"),
+            "expected body in echo: {text}"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_put_sends_and_echoes_method() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .put(&format!("http://{}/resource", addr))
+            .unwrap()
+            .body("update")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = resp.text().unwrap();
+        assert!(
+            text.contains("method=PUT"),
+            "expected PUT method in echo: {text}"
+        );
+        assert!(
+            text.contains("body=update"),
+            "expected body in echo: {text}"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_patch_sends_and_echoes_method() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .patch(&format!("http://{}/resource", addr))
+            .unwrap()
+            .body("partial")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = resp.text().unwrap();
+        assert!(
+            text.contains("method=PATCH"),
+            "expected PATCH method in echo: {text}"
+        );
+        assert!(
+            text.contains("body=partial"),
+            "expected body in echo: {text}"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_delete_sends_and_echoes_method() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .delete(&format!("http://{}/resource/42", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = resp.text().unwrap();
+        assert!(
+            text.contains("method=DELETE"),
+            "expected DELETE method in echo: {text}"
+        );
+        assert!(
+            text.contains("path=/resource/42"),
+            "expected path in echo: {text}"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_custom_method_sends_and_echoes() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .request(Method::OPTIONS, &format!("http://{}/options", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = resp.text().unwrap();
+        assert!(
+            text.contains("method=OPTIONS"),
+            "expected OPTIONS method in echo: {text}"
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_error_for_status_4xx() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(|_req| async {
+            Ok(hyper::Response::builder()
+                .status(404)
+                .body(http_body_util::Full::new(bytes::Bytes::from("not found")))
+                .unwrap())
+        });
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/missing", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let err = resp.error_for_status().unwrap_err();
+        match err {
+            crate::error::Error::Status(s) => assert_eq!(s, StatusCode::NOT_FOUND),
+            other => panic!("expected Error::Status, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_error_for_status_5xx() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(|_req| async {
+            Ok(hyper::Response::builder()
+                .status(500)
+                .body(http_body_util::Full::new(bytes::Bytes::from(
+                    "internal error",
+                )))
+                .unwrap())
+        });
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/fail", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let err = resp.error_for_status().unwrap_err();
+        match err {
+            crate::error::Error::Status(s) => assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR),
+            other => panic!("expected Error::Status, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_error_for_status_ref_4xx() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(|_req| async {
+            Ok(hyper::Response::builder()
+                .status(403)
+                .body(http_body_util::Full::new(bytes::Bytes::from("forbidden")))
+                .unwrap())
+        });
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/secret", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let err = resp.error_for_status_ref().unwrap_err();
+        match err {
+            crate::error::Error::Status(s) => assert_eq!(s, StatusCode::FORBIDDEN),
+            other => panic!("expected Error::Status, got: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_content_length_present() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(|_req| async {
+            Ok(hyper::Response::builder()
+                .header("content-length", "7")
+                .body(http_body_util::Full::new(bytes::Bytes::from("1234567")))
+                .unwrap())
+        });
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert_eq!(resp.content_length(), Some(7));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_json_deserialization() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let addr = aioduct_test_server::h1::spawn_h1_server_with(|_req| async {
+            let body = r#"{"name":"aioduct","version":1}"#;
+            Ok(hyper::Response::builder()
+                .header("content-type", "application/json")
+                .body(http_body_util::Full::new(bytes::Bytes::from(body)))
+                .unwrap())
+        });
+        let engine =
+            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let resp = client
+            .get(&format!("http://{}/", addr))
+            .unwrap()
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        #[derive(serde::Deserialize, Debug)]
+        struct Info {
+            name: String,
+            version: u32,
+        }
+        let info: Info = resp.json().unwrap();
+        assert_eq!(info.name, "aioduct");
+        assert_eq!(info.version, 1);
     }
 }

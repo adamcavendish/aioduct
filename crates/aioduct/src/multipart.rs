@@ -486,6 +486,27 @@ mod tests {
         assert!(!bytes.is_empty());
     }
 
+    #[test]
+    fn multipart_debug_impl() {
+        let mp = Multipart::new();
+        let debug = format!("{:?}", mp);
+        assert!(
+            debug.contains("Multipart"),
+            "Debug should contain struct name"
+        );
+    }
+
+    #[test]
+    fn part_debug_impl() {
+        let part = Part::text("my_field", "some value");
+        let debug = format!("{:?}", part);
+        assert!(debug.contains("Part"), "Debug should contain struct name");
+        assert!(
+            debug.contains("my_field"),
+            "Debug should contain the field name"
+        );
+    }
+
     use http_body_util::BodyExt;
 
     #[test]
@@ -669,6 +690,59 @@ mod streaming_tests {
         let body = collect_streaming(mp).await;
 
         assert_eq!(body, format!("--{boundary}--\r\n"));
+    }
+
+    #[tokio::test]
+    async fn streaming_body_with_trailers_frame() {
+        // Test the path where a streaming body returns a non-data frame (trailers).
+        // The stream should skip it (continue) and eventually get the body data.
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct TrailerThenDataBody {
+            sent_trailer: bool,
+            sent_data: bool,
+        }
+
+        impl http_body::Body for TrailerThenDataBody {
+            type Data = bytes::Bytes;
+            type Error = crate::error::Error;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+                if !self.sent_trailer {
+                    self.sent_trailer = true;
+                    // Return a trailers frame (not data) - this triggers the `continue` path
+                    let mut map = http::HeaderMap::new();
+                    map.insert("x-trailer", http::HeaderValue::from_static("value"));
+                    Poll::Ready(Some(Ok(hyper::body::Frame::trailers(map))))
+                } else if !self.sent_data {
+                    self.sent_data = true;
+                    Poll::Ready(Some(Ok(hyper::body::Frame::data(bytes::Bytes::from(
+                        "actual data",
+                    )))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+
+        let body: crate::body::RequestBoxBody = TrailerThenDataBody {
+            sent_trailer: false,
+            sent_data: false,
+        }
+        .boxed_unsync();
+
+        let part = Part::stream("field", body);
+        let mp = Multipart::new().part(part);
+        let body_out = collect_streaming(mp).await;
+
+        assert!(
+            body_out.contains("actual data"),
+            "should contain the actual data after skipping trailer frame"
+        );
     }
 
     #[tokio::test]

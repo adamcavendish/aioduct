@@ -240,4 +240,237 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
+
+    struct WriteZeroStream {
+        read_data: VecDeque<u8>,
+    }
+
+    impl hyper::rt::Read for WriteZeroStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            mut buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(byte) = self.read_data.pop_front() {
+                unsafe {
+                    let dst = buf.as_mut();
+                    if !dst.is_empty() {
+                        dst[0].write(byte);
+                        buf.advance(1);
+                    }
+                }
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hyper::rt::Write for WriteZeroStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(0))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn write_zero_returns_error() {
+        let mut stream = WriteZeroStream {
+            read_data: VecDeque::new(),
+        };
+        let err = socks4a_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    }
+
+    #[tokio::test]
+    async fn handshake_socks4a_message_format_no_auth() {
+        // Verify the exact byte format of the SOCKS4a CONNECT request
+        let reply = make_reply(0x5A);
+        let mut stream = MockStream::new(&reply);
+        socks4a_handshake(&mut stream, "target.host", 443, None)
+            .await
+            .unwrap();
+
+        let msg = &stream.written;
+        assert_eq!(msg[0], SOCKS4_VERSION);
+        assert_eq!(msg[1], CMD_CONNECT);
+        // Port 443 = 0x01BB
+        assert_eq!(msg[2], 0x01);
+        assert_eq!(msg[3], 0xBB);
+        // DSTIP = 0.0.0.1 (SOCKS4a indicator)
+        assert_eq!(&msg[4..8], &[0, 0, 0, 1]);
+        // Empty userid followed by NULL
+        assert_eq!(msg[8], 0x00);
+        // Domain name followed by NULL
+        assert_eq!(&msg[9..20], b"target.host");
+        assert_eq!(msg[20], 0x00);
+    }
+
+    #[tokio::test]
+    async fn handshake_socks4a_message_format_with_auth() {
+        // Verify userid is included in the message
+        let reply = make_reply(0x5A);
+        let mut stream = MockStream::new(&reply);
+        let auth = ProxyAuth {
+            username: "testuser".into(),
+            password: "ignored-in-socks4".into(),
+        };
+        socks4a_handshake(&mut stream, "host.io", 8080, Some(&auth))
+            .await
+            .unwrap();
+
+        let msg = &stream.written;
+        assert_eq!(msg[0], SOCKS4_VERSION);
+        assert_eq!(msg[1], CMD_CONNECT);
+        // Port 8080 = 0x1F90
+        assert_eq!(msg[2], 0x1F);
+        assert_eq!(msg[3], 0x90);
+        // DSTIP
+        assert_eq!(&msg[4..8], &[0, 0, 0, 1]);
+        // Userid "testuser" followed by NULL
+        assert_eq!(&msg[8..16], b"testuser");
+        assert_eq!(msg[16], 0x00);
+        // Domain "host.io" followed by NULL
+        assert_eq!(&msg[17..24], b"host.io");
+        assert_eq!(msg[24], 0x00);
+    }
+
+    #[tokio::test]
+    async fn handshake_eof_immediately() {
+        // Server returns no bytes at all
+        let mut stream = MockStream::new(&[]);
+        let err = socks4a_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn handshake_partial_reply_eof() {
+        // Server sends only 3 bytes of the 8-byte reply
+        let mut stream = MockStream::new(&[0x00, 0x5A, 0x00]);
+        let err = socks4a_handshake(&mut stream, "example.com", 80, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    // --- Tests for mock stream methods to cover poll_flush/poll_shutdown ---
+
+    #[test]
+    fn mock_stream_poll_flush_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = MockStream::new(&[]);
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_flush(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn mock_stream_poll_shutdown_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = MockStream::new(&[]);
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_shutdown(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn write_zero_stream_poll_flush_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = WriteZeroStream {
+            read_data: VecDeque::new(),
+        };
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_flush(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn write_zero_stream_poll_shutdown_returns_ready_ok() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = WriteZeroStream {
+            read_data: VecDeque::new(),
+        };
+        let pinned = Pin::new(&mut stream);
+        let result = hyper::rt::Write::poll_shutdown(pinned, &mut cx);
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn write_zero_stream_poll_read_with_data() {
+        use std::task::{RawWaker, RawWakerVTable, Waker};
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
+            const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut stream = WriteZeroStream {
+            read_data: VecDeque::from(vec![0xAB, 0xCD]),
+        };
+        let mut buf_storage = [0u8; 4];
+        let mut read_buf = hyper::rt::ReadBuf::new(&mut buf_storage);
+        let result =
+            hyper::rt::Read::poll_read(Pin::new(&mut stream), &mut cx, read_buf.unfilled());
+        assert!(matches!(result, Poll::Ready(Ok(()))));
+        // After reading, the first byte should have been consumed
+        assert_eq!(stream.read_data.len(), 1);
+        assert_eq!(stream.read_data[0], 0xCD);
+    }
 }

@@ -561,4 +561,196 @@ mod tests {
             .await;
         assert!(result.is_err());
     }
+
+    // ── block_on tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn block_on_returns_value() {
+        use crate::runtime::RuntimeCompletion;
+        let result = TokioRuntime::block_on(async { 123 + 456 }).unwrap();
+        assert_eq!(result, 579);
+    }
+
+    #[test]
+    fn block_on_runs_async_io() {
+        use crate::runtime::RuntimeCompletion;
+        let result = TokioRuntime::block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        })
+        .unwrap();
+        assert!(result > 0);
+    }
+
+    // ── TokioIo read/write edge cases ──────────────────────────────────
+
+    #[tokio::test]
+    async fn tokio_io_read_eof_returns_zero_advance() {
+        use std::future::poll_fn;
+        let (client, server) = tokio::io::duplex(1024);
+        drop(server); // immediately close the write end
+
+        let mut io = TokioIo::new(client);
+        let mut buf = [0u8; 64];
+        let mut read_buf = hyper::rt::ReadBuf::new(&mut buf);
+
+        poll_fn(|cx| Pin::new(&mut io).poll_read(cx, read_buf.unfilled()))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_buf.filled().len(),
+            0,
+            "EOF should produce 0 filled bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn tokio_io_write_and_flush() {
+        use std::future::poll_fn;
+        use tokio::io::AsyncReadExt;
+
+        let (client, mut server) = tokio::io::duplex(1024);
+        let mut io = TokioIo::new(client);
+
+        let data = b"tokio io test";
+        let n = poll_fn(|cx| Pin::new(&mut io).poll_write(cx, data))
+            .await
+            .unwrap();
+        assert_eq!(n, data.len());
+
+        poll_fn(|cx| Pin::new(&mut io).poll_flush(cx))
+            .await
+            .unwrap();
+
+        let mut buf = vec![0u8; data.len()];
+        server.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, data);
+    }
+
+    #[tokio::test]
+    async fn tokio_io_shutdown_closes_write() {
+        use std::future::poll_fn;
+        use tokio::io::AsyncReadExt;
+
+        let (client, mut server) = tokio::io::duplex(1024);
+        let mut io = TokioIo::new(client);
+
+        poll_fn(|cx| Pin::new(&mut io).poll_shutdown(cx))
+            .await
+            .unwrap();
+
+        // Server should see EOF
+        let mut buf = [0u8; 1];
+        let n = server.read(&mut buf).await.unwrap();
+        assert_eq!(n, 0);
+    }
+
+    // ── Connector connect_bound IPv6 path ──────────────────────────────
+
+    #[tokio::test]
+    async fn connector_connect_bound_works_local() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connector = TcpConnector;
+        let stream = <TcpConnector as crate::runtime::Connector>::connect_bound(
+            &connector,
+            addr,
+            "127.0.0.1".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(stream.inner().peer_addr().is_ok());
+    }
+
+    // ── TokioSleep ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn tokio_sleep_completes() {
+        use crate::runtime::RuntimeCompletion;
+        let start = std::time::Instant::now();
+        <TokioRuntime as RuntimeCompletion>::sleep(Duration::from_millis(20)).await;
+        assert!(start.elapsed() >= Duration::from_millis(20));
+    }
+
+    // ── DefaultResolver resolve_all ────────────────────────────────────
+
+    #[tokio::test]
+    async fn default_resolver_resolve_all_returns_multiple() {
+        use crate::runtime::Resolve;
+        let resolver = DefaultResolver;
+        let addrs = resolver.resolve_all("localhost", 80).await.unwrap();
+        assert!(!addrs.is_empty());
+        for addr in &addrs {
+            assert_eq!(addr.port(), 80);
+        }
+    }
+
+    #[tokio::test]
+    async fn default_resolver_resolve_all_invalid_host_errors() {
+        use crate::runtime::Resolve;
+        let resolver = DefaultResolver;
+        let result = resolver
+            .resolve_all("this.host.does.not.exist.invalid", 80)
+            .await;
+        assert!(result.is_err());
+    }
+
+    // ── Connector from_std_tcp (Connector trait, not ConnectorSend) ────
+
+    #[tokio::test]
+    async fn connector_trait_from_std_tcp_works() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let std_stream = std::net::TcpStream::connect(addr).unwrap();
+        let connector = TcpConnector;
+        let result =
+            <TcpConnector as crate::runtime::Connector>::from_std_tcp(&connector, std_stream);
+        assert!(result.is_ok());
+        let stream = result.unwrap();
+        assert!(stream.inner().peer_addr().is_ok());
+    }
+
+    // ── Connector connect_bound IPv6 path ─────────────────────────────
+
+    #[tokio::test]
+    async fn connector_connect_bound_ipv6() {
+        // Bind a listener on IPv6 loopback
+        let listener = match tokio::net::TcpListener::bind("[::1]:0").await {
+            Ok(l) => l,
+            Err(_) => return, // Skip if IPv6 not available
+        };
+        let addr = listener.local_addr().unwrap();
+        let connector = TcpConnector;
+        let stream = <TcpConnector as crate::runtime::Connector>::connect_bound(
+            &connector,
+            addr,
+            "::1".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(stream.inner().peer_addr().is_ok());
+        assert!(stream.inner().peer_addr().unwrap().is_ipv6());
+    }
+
+    // ── ConnectorSend connect_bound IPv6 path ─────────────────────────
+
+    #[tokio::test]
+    async fn connector_send_connect_bound_ipv6() {
+        // Bind a listener on IPv6 loopback
+        let listener = match tokio::net::TcpListener::bind("[::1]:0").await {
+            Ok(l) => l,
+            Err(_) => return, // Skip if IPv6 not available
+        };
+        let addr = listener.local_addr().unwrap();
+        let connector = TcpConnector;
+        let stream = <TcpConnector as crate::runtime::ConnectorSend>::connect_bound(
+            &connector,
+            addr,
+            "::1".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(stream.inner().peer_addr().is_ok());
+        assert!(stream.inner().peer_addr().unwrap().is_ipv6());
+    }
 }

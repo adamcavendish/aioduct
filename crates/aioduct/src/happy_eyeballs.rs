@@ -529,4 +529,190 @@ mod tests {
             assert!(result.is_err());
         });
     }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn connect_single_addr_with_local_address() {
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+        let connector = TcpConnector;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let local_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let result = connect_happy_eyeballs::<TokioRuntime, TcpConnector>(
+            &connector,
+            &[addr],
+            Some(local_ip),
+        )
+        .await;
+        assert!(result.is_ok());
+        let (_, connected_addr) = result.unwrap();
+        assert_eq!(connected_addr, addr);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn connect_multi_with_local_address() {
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+        let connector = TcpConnector;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_addr = listener.local_addr().unwrap();
+        let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let local_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let result = connect_happy_eyeballs::<TokioRuntime, TcpConnector>(
+            &connector,
+            &[bad_addr, good_addr],
+            Some(local_ip),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "compio")]
+    #[test]
+    fn local_connect_single_with_local_address() {
+        use crate::runtime::compio_rt::{CompioRuntime, TcpConnector};
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let connector = TcpConnector;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let local_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+            let result = connect_happy_eyeballs_local::<CompioRuntime, TcpConnector>(
+                &connector,
+                &[addr],
+                Some(local_ip),
+            )
+            .await;
+            assert!(result.is_ok());
+        });
+    }
+
+    #[cfg(feature = "compio")]
+    #[test]
+    fn local_connect_multi_with_local_address() {
+        use crate::runtime::compio_rt::{CompioRuntime, TcpConnector};
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let connector = TcpConnector;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let good_addr = listener.local_addr().unwrap();
+            let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let local_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+            let result = connect_happy_eyeballs_local::<CompioRuntime, TcpConnector>(
+                &connector,
+                &[bad_addr, good_addr],
+                Some(local_ip),
+            )
+            .await;
+            assert!(result.is_ok());
+        });
+    }
+
+    // ── smol tests ────────────────────────────────────────────────────
+
+    #[cfg(feature = "smol")]
+    #[test]
+    fn smol_connect_empty_addrs_errors() {
+        use crate::runtime::smol_rt::{SmolRuntime, TcpConnector};
+        smol::block_on(async {
+            let connector = TcpConnector;
+            let result =
+                connect_happy_eyeballs::<SmolRuntime, TcpConnector>(&connector, &[], None).await;
+            let err = result.err().expect("should be an error");
+            assert_eq!(err.kind(), io::ErrorKind::AddrNotAvailable);
+        });
+    }
+
+    #[cfg(feature = "smol")]
+    #[test]
+    fn smol_connect_single_addr_succeeds() {
+        use crate::runtime::smol_rt::{SmolRuntime, TcpConnector};
+        smol::block_on(async {
+            let connector = TcpConnector;
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (_stream, connected_addr) =
+                connect_happy_eyeballs::<SmolRuntime, TcpConnector>(&connector, &[addr], None)
+                    .await
+                    .unwrap();
+            assert_eq!(connected_addr, addr);
+        });
+    }
+
+    #[cfg(feature = "smol")]
+    #[test]
+    fn smol_connect_multi_addrs_second_succeeds() {
+        use crate::runtime::smol_rt::{SmolRuntime, TcpConnector};
+        smol::block_on(async {
+            let connector = TcpConnector;
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let good_addr = listener.local_addr().unwrap();
+            let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let (_stream, connected_addr) = connect_happy_eyeballs::<SmolRuntime, TcpConnector>(
+                &connector,
+                &[bad_addr, good_addr],
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(connected_addr, good_addr);
+        });
+    }
+
+    #[cfg(feature = "smol")]
+    #[test]
+    fn smol_connect_all_fail() {
+        use crate::runtime::smol_rt::{SmolRuntime, TcpConnector};
+        smol::block_on(async {
+            let connector = TcpConnector;
+            let bad1: SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let bad2: SocketAddr = "127.0.0.1:2".parse().unwrap();
+            let result = connect_happy_eyeballs::<SmolRuntime, TcpConnector>(
+                &connector,
+                &[bad1, bad2],
+                None,
+            )
+            .await;
+            assert!(result.is_err());
+        });
+    }
+
+    #[cfg(feature = "smol")]
+    #[test]
+    fn smol_connect_single_with_local_address() {
+        use crate::runtime::smol_rt::{SmolRuntime, TcpConnector};
+        smol::block_on(async {
+            let connector = TcpConnector;
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let local_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+            let result = connect_happy_eyeballs::<SmolRuntime, TcpConnector>(
+                &connector,
+                &[addr],
+                Some(local_ip),
+            )
+            .await;
+            assert!(result.is_ok());
+        });
+    }
+
+    /// Tests the DeadlineReached path: first address is non-routable (hangs),
+    /// so the happy-eyeballs timer fires and tries the second (good) address.
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn connect_deadline_reached_then_second_succeeds() {
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+        let connector = TcpConnector;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_addr = listener.local_addr().unwrap();
+        // TEST-NET-1: non-routable, connection will hang (triggers DeadlineReached)
+        let hanging_addr: SocketAddr = "192.0.2.1:80".parse().unwrap();
+        let (stream, connected_addr) = connect_happy_eyeballs::<TokioRuntime, TcpConnector>(
+            &connector,
+            &[hanging_addr, good_addr],
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(connected_addr, good_addr);
+        drop(stream);
+    }
 }

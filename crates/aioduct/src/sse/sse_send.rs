@@ -70,3 +70,120 @@ impl SseStreamSend {
         }
     }
 }
+
+#[cfg(all(test, feature = "tokio"))]
+mod tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    fn sse_body(data: &[u8]) -> RequestBoxBody {
+        http_body_util::Full::new(bytes::Bytes::from(data.to_vec()))
+            .map_err(|never| match never {})
+            .boxed_unsync()
+    }
+
+    #[tokio::test]
+    async fn next_returns_single_event() {
+        let body = sse_body(b"data: hello\n\n");
+        let mut stream = SseStreamSend::new(body);
+        let event = stream.next().await.unwrap().unwrap();
+        match event {
+            SseEvent::Message(m) => assert_eq!(m.data, "hello"),
+            _ => panic!("expected message"),
+        }
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_returns_multiple_events() {
+        let body = sse_body(b"data: first\n\ndata: second\n\n");
+        let mut stream = SseStreamSend::new(body);
+        let e1 = stream.next().await.unwrap().unwrap();
+        let e2 = stream.next().await.unwrap().unwrap();
+        match (&e1, &e2) {
+            (SseEvent::Message(m1), SseEvent::Message(m2)) => {
+                assert_eq!(m1.data, "first");
+                assert_eq!(m2.data, "second");
+            }
+            _ => panic!("expected two messages"),
+        }
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_returns_none_on_empty_body() {
+        let body = sse_body(b"");
+        let mut stream = SseStreamSend::new(body);
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_with_event_type() {
+        let body = sse_body(b"event: update\ndata: payload\n\n");
+        let mut stream = SseStreamSend::new(body);
+        let event = stream.next().await.unwrap().unwrap();
+        match event {
+            SseEvent::Message(m) => {
+                assert_eq!(m.event, "update");
+                assert_eq!(m.data, "payload");
+            }
+            _ => panic!("expected message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn done_stays_none() {
+        let body = sse_body(b"data: x\n\n");
+        let mut stream = SseStreamSend::new(body);
+        let _ = stream.next().await;
+        assert!(stream.next().await.is_none());
+        assert!(stream.next().await.is_none());
+    }
+
+    #[test]
+    fn debug_impl() {
+        let body = sse_body(b"");
+        let stream = SseStreamSend::new(body);
+        let dbg = format!("{stream:?}");
+        assert!(dbg.contains("SseStreamSend"));
+    }
+
+    #[tokio::test]
+    async fn with_max_payload_size_works() {
+        let body = sse_body(b"data: short\n\n");
+        let mut stream = SseStreamSend::with_max_payload_size(body, 1024);
+        let event = stream.next().await.unwrap().unwrap();
+        match event {
+            SseEvent::Message(m) => assert_eq!(m.data, "short"),
+            _ => panic!("expected message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_propagates_body_error() {
+        use bytes::Bytes;
+        use http_body::Body;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct ErrorBody;
+
+        impl Body for ErrorBody {
+            type Data = Bytes;
+            type Error = crate::error::Error;
+
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                Poll::Ready(Some(Err(crate::error::Error::Other("stream error".into()))))
+            }
+        }
+
+        let body: RequestBoxBody = http_body_util::BodyExt::boxed_unsync(ErrorBody);
+        let mut stream = SseStreamSend::new(body);
+        let result = stream.next().await;
+        assert!(result.is_some());
+        assert!(result.unwrap().is_err());
+    }
+}

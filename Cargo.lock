@@ -62,6 +62,7 @@ dependencies = [
  "smol",
  "socket2",
  "thiserror",
+ "time",
  "tokio",
  "tokio-rustls",
  "tower-layer",
