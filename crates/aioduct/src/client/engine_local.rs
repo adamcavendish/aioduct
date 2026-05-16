@@ -28,9 +28,9 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
     pub fn get_local(
         &self,
         uri: &str,
-    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
+    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(crate::request_local::RequestBuilderLocal::new(
+        Ok(crate::request::RequestBuilderLocal::new(
             self,
             Method::GET,
             uri,
@@ -41,9 +41,9 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
     pub fn post_local(
         &self,
         uri: &str,
-    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
+    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(crate::request_local::RequestBuilderLocal::new(
+        Ok(crate::request::RequestBuilderLocal::new(
             self,
             Method::POST,
             uri,
@@ -55,19 +55,17 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         &self,
         method: Method,
         uri: &str,
-    ) -> Result<crate::request_local::RequestBuilderLocal<'_, R, C>, Error> {
+    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(crate::request_local::RequestBuilderLocal::new(
-            self, method, uri,
-        ))
+        Ok(crate::request::RequestBuilderLocal::new(self, method, uri))
     }
 
     /// Start a parallel chunk download for the given URL.
     pub fn chunk_download_local(
         &self,
         url: &str,
-    ) -> crate::chunk_download_local::ChunkDownloadLocal<R, C> {
-        crate::chunk_download_local::ChunkDownloadLocal::new(self.clone(), url.to_owned())
+    ) -> crate::chunk_download::ChunkDownloadLocal<R, C> {
+        crate::chunk_download::ChunkDownloadLocal::new(self.clone(), url.to_owned())
     }
 
     /// Forward an incoming HTTP request to an upstream server.

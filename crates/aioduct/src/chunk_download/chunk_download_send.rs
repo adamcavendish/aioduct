@@ -9,6 +9,8 @@ use crate::client::HttpEngineSend;
 use crate::error::Error;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
+use super::ChunkDownloadResult;
+
 /// Parallel range-request downloader for large files.
 pub struct ChunkDownload<R: RuntimePoll, C: ConnectorSend> {
     client: HttpEngineSend<R, C>,
@@ -23,15 +25,6 @@ impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for ChunkDownload<R, C> {
             .field("url", &self.url)
             .finish()
     }
-}
-
-/// Result of a parallel chunk download.
-#[derive(Debug)]
-pub struct ChunkDownloadResult {
-    /// Total size of the downloaded file in bytes.
-    pub total_size: u64,
-    /// The reassembled file data.
-    pub data: bytes::Bytes,
 }
 
 type ChunkResults = Arc<Mutex<Vec<Option<std::result::Result<bytes::Bytes, Error>>>>>;
