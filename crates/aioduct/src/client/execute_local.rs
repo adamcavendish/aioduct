@@ -483,14 +483,41 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
 
             let tcp_start = Instant::now();
             let connect_fut = async {
-                let (tcp_stream, addr) =
+                let local_address = self.core.local_address;
+                let (tcp_stream, addr) = if addrs.len() > 1 && local_address.is_none() {
+                    #[cfg(feature = "tower")]
+                    let _ = original_uri;
                     crate::happy_eyeballs::connect_happy_eyeballs_local::<R, C>(
                         &self.connector,
                         &addrs,
-                        self.core.local_address,
+                        local_address,
                     )
                     .await
-                    .map_err(Error::Io)?;
+                    .map_err(Error::Io)?
+                } else {
+                    let addr = addrs[0];
+                    let stream = if let Some(local_addr) = local_address {
+                        self.connector
+                            .connect_bound(addr, local_addr)
+                            .await
+                            .map_err(Error::Io)?
+                    } else {
+                        #[cfg(feature = "tower")]
+                        if let Some(ref tower_slot) = self.tower_connector_local {
+                            let tower_conn = tower_slot.get::<C>();
+                            let info = crate::connector::ConnectInfo {
+                                uri: original_uri.clone(),
+                                addr,
+                            };
+                            tower_conn.connect(info).await.map_err(Error::Io)?
+                        } else {
+                            self.connector.connect(addr).await.map_err(Error::Io)?
+                        }
+                        #[cfg(not(feature = "tower"))]
+                        self.connector.connect(addr).await.map_err(Error::Io)?
+                    };
+                    (stream, addr)
+                };
 
                 if let Some(time) = self.core.tcp_keepalive {
                     tcp_stream
