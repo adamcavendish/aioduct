@@ -84,9 +84,6 @@ pub mod blocking;
 /// Parallel range-request file downloader.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chunk_download;
-/// Parallel range-request downloader for `!Send` runtimes.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod chunk_download_local;
 /// HTTP client with connection pooling and redirect handling.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod client;
@@ -107,9 +104,6 @@ pub(crate) mod pool;
 /// Request builder for configuring and sending HTTP requests.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod request;
-/// Request builder for `!Send` runtimes (compio, io_uring).
-#[cfg(not(target_arch = "wasm32"))]
-pub mod request_local;
 /// HTTP response type with status, headers, and body.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod response;
@@ -193,7 +187,7 @@ pub use problem::ProblemDetails;
 #[cfg(not(target_arch = "wasm32"))]
 pub use chunk_download::ChunkDownload;
 #[cfg(not(target_arch = "wasm32"))]
-pub use chunk_download_local::ChunkDownloadLocal;
+pub use chunk_download::ChunkDownloadLocal;
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::HttpEngineBuilder;
 #[cfg(not(target_arch = "wasm32"))]
@@ -210,9 +204,9 @@ pub use forward::forward_local::ForwardBuilderLocal;
 #[cfg(feature = "hickory-dns")]
 pub use hickory::HickoryResolver;
 #[cfg(not(target_arch = "wasm32"))]
-pub use request::RequestBuilderSend;
+pub use request::RequestBuilderLocal;
 #[cfg(not(target_arch = "wasm32"))]
-pub use request_local::RequestBuilderLocal;
+pub use request::RequestBuilderSend;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[deprecated(since = "0.2.0", note = "Renamed to `RequestBuilderSend`")]
