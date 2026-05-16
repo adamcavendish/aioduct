@@ -109,6 +109,16 @@ pub trait Connector: 'static {
             "from_std_tcp not supported by this connector",
         ))
     }
+
+    /// Convert the connector's stream type into a blocking `std::net::TcpStream`.
+    #[allow(clippy::wrong_self_convention)]
+    fn into_std_tcp(&self, stream: Self::Stream) -> io::Result<std::net::TcpStream> {
+        let _ = stream;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "into_std_tcp not supported by this connector",
+        ))
+    }
 }
 
 /// `Send`-safe connector for poll-based runtimes (tokio, smol).
@@ -144,6 +154,16 @@ pub trait ConnectorSend: Clone + Send + Sync + 'static {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "from_std_tcp not supported by this connector",
+        ))
+    }
+
+    /// Convert the connector's stream type into a blocking `std::net::TcpStream`.
+    #[allow(clippy::wrong_self_convention)]
+    fn into_std_tcp(&self, stream: Self::Stream) -> io::Result<std::net::TcpStream> {
+        let _ = stream;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "into_std_tcp not supported by this connector",
         ))
     }
 }

@@ -138,7 +138,7 @@ async fn test_no_proxy_bare_domain_matches_subdomains() {
     assert!(no_proxy.matches("foo.example.com"));
     assert!(!no_proxy.matches("notexample.com"));
 }
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_socks5_proxy() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -203,7 +203,7 @@ async fn test_socks5_proxy() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_socks5_proxy_with_auth() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

@@ -164,6 +164,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn poisoned_mutex_lookup_returns_none() {
         let cache = H2cProbeCache::new();
         // Poison the mutex by panicking inside a lock scope
@@ -179,6 +180,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn poisoned_mutex_record_h2c_does_not_panic() {
         let cache = H2cProbeCache::new();
         let cache_clone = cache.clone();
@@ -195,6 +197,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn poisoned_mutex_record_h1_only_does_not_panic() {
         let cache = H2cProbeCache::new();
         let cache_clone = cache.clone();

@@ -2298,6 +2298,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_poisoned_lock_get_returns_none() {
         // Poison the mutex by panicking inside a lock scope
         let store = std::sync::Arc::new(InMemoryCacheStore::new(256));
@@ -2315,6 +2316,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_poisoned_lock_put_is_noop() {
         let store = std::sync::Arc::new(InMemoryCacheStore::new(256));
         let store_clone = store.clone();
@@ -2348,6 +2350,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_poisoned_lock_remove_is_noop() {
         let store = std::sync::Arc::new(InMemoryCacheStore::new(256));
         let store_clone = store.clone();
@@ -2363,6 +2366,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_poisoned_lock_clear_is_noop() {
         let store = std::sync::Arc::new(InMemoryCacheStore::new(256));
         let store_clone = store.clone();

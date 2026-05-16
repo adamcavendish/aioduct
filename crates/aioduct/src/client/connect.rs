@@ -22,7 +22,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .core
             .resolve_authority(proxy_authority, default_port)
             .await?;
-        let mut tcp_stream = if let Some(local_addr) = self.core.local_address {
+        let tcp_stream = if let Some(local_addr) = self.core.local_address {
             self.connector
                 .connect_bound(proxy_addr, local_addr)
                 .await
@@ -55,9 +55,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let port = target_authority
                 .port_u16()
                 .unwrap_or(if is_https { 443 } else { 80 });
-            crate::socks5::socks5_handshake(&mut tcp_stream, host, port, proxy.auth.as_ref())
-                .await
+            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            crate::socks5::socks5_handshake(&mut std_stream, host, port, proxy.auth.as_ref())
                 .map_err(Error::Io)?;
+            let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
                 self.connect_tls(tcp_stream, host).await
             } else {
@@ -68,9 +69,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let port = target_authority
                 .port_u16()
                 .unwrap_or(if is_https { 443 } else { 80 });
-            crate::socks4::socks4a_handshake(&mut tcp_stream, host, port, proxy.auth.as_ref())
-                .await
+            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            crate::socks4::socks4a_handshake(&mut std_stream, host, port, proxy.auth.as_ref())
                 .map_err(Error::Io)?;
+            let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
                 self.connect_tls(tcp_stream, host).await
             } else {
