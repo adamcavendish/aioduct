@@ -65,6 +65,14 @@ impl H2cProbeCache {
         let Ok(mut map) = self.inner.lock() else {
             return;
         };
+        if map.len() > 64 {
+            let ttl = self.ttl;
+            map.retain(|_, cap| match cap {
+                H2cCapability::SupportsH2c { probed_at } | H2cCapability::H1Only { probed_at } => {
+                    probed_at.elapsed() < ttl
+                }
+            });
+        }
         map.insert(
             authority,
             H2cCapability::SupportsH2c {
@@ -77,6 +85,14 @@ impl H2cProbeCache {
         let Ok(mut map) = self.inner.lock() else {
             return;
         };
+        if map.len() > 64 {
+            let ttl = self.ttl;
+            map.retain(|_, cap| match cap {
+                H2cCapability::SupportsH2c { probed_at } | H2cCapability::H1Only { probed_at } => {
+                    probed_at.elapsed() < ttl
+                }
+            });
+        }
         map.insert(
             authority,
             H2cCapability::H1Only {
@@ -211,5 +227,20 @@ mod tests {
         cache.record_h1_only(authority("poisoned.com:80"));
         // Verify it didn't panic — reaching here means success
         assert_eq!(cache.lookup(&authority("poisoned.com:80")), None);
+    }
+
+    #[test]
+    fn evicts_expired_when_over_capacity() {
+        let cache = H2cProbeCache::with_ttl(Duration::from_millis(1));
+        // Fill past threshold
+        for i in 0..66 {
+            cache.record_h2c(authority(&format!("host{i}.com:80")));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        // All entries are now expired. Next insert triggers eviction.
+        cache.record_h2c(authority("new.com:80"));
+        let map = cache.inner.lock().unwrap();
+        // Only the new entry should remain (all expired ones evicted)
+        assert_eq!(map.len(), 1);
     }
 }

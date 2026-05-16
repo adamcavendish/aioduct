@@ -206,6 +206,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let _ = resp.bytes().await;
 
             current_uri = self.core.maybe_upgrade_hsts(next_uri);
+
+            if self.core.https_only && current_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+                return Err(Error::HttpsOnly(
+                    current_uri.scheme_str().unwrap_or("none").to_owned(),
+                ));
+            }
+
             current_method = next_method;
             current_body = next_body;
         }
@@ -288,17 +295,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         } else {
             resp
         };
-        let resp = if let Some(read_timeout) = self.core.read_timeout {
-            resp.apply_read_timeout::<R>(read_timeout)
-        } else {
-            resp
-        };
-
-        let resp = if let Some(ref limiter) = self.core.bandwidth_limiter {
-            resp.apply_bandwidth_limit::<R>(limiter.clone())
-        } else {
-            resp
-        };
 
         if let Some(ref cache) = self.core.cache {
             let status = resp.status();
@@ -310,6 +306,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 return Ok(Response::from_boxed(cached_resp, uri));
             }
         }
+
+        let resp = if let Some(read_timeout) = self.core.read_timeout {
+            resp.apply_read_timeout::<R>(read_timeout)
+        } else {
+            resp
+        };
+
+        let resp = if let Some(ref limiter) = self.core.bandwidth_limiter {
+            resp.apply_bandwidth_limit::<R>(limiter.clone())
+        } else {
+            resp
+        };
 
         Ok(resp)
     }

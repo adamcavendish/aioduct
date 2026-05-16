@@ -416,6 +416,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                         && (resp.status().is_server_error()
                             || resp.status() == StatusCode::TOO_MANY_REQUESTS)
                         && attempt < config.max_retries
+                        && crate::retry::is_idempotent(&self.method)
                     {
                         if let Some(ref budget) = config.budget
                             && !budget.try_withdraw()
@@ -437,7 +438,10 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                     return Ok(resp);
                 }
                 Err(e) => {
-                    if attempt < config.max_retries && crate::retry::is_retryable_error(&e) {
+                    if attempt < config.max_retries
+                        && crate::retry::is_retryable_error(&e)
+                        && crate::retry::is_idempotent(&self.method)
+                    {
                         if let Some(ref budget) = config.budget
                             && !budget.try_withdraw()
                         {
