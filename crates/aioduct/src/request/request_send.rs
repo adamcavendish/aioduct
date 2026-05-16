@@ -1,6 +1,5 @@
 use std::fmt::Write as _;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -16,34 +15,11 @@ use crate::retry::RetryConfig;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 use crate::timeout::Timeout;
 
-pub(crate) enum ClientRef<'a, R: RuntimePoll, C: ConnectorSend> {
-    Borrowed(&'a HttpEngineSend<R, C>),
-    Owned(Box<HttpEngineSend<R, C>>),
-}
-
-impl<'a, R: RuntimePoll, C: ConnectorSend> ClientRef<'a, R, C> {
-    fn try_clone_for_lifetime(&self) -> ClientRef<'a, R, C> {
-        match self {
-            ClientRef::Borrowed(r) => ClientRef::Borrowed(r),
-            ClientRef::Owned(o) => ClientRef::Owned(o.clone()),
-        }
-    }
-}
-
-impl<R: RuntimePoll, C: ConnectorSend> Deref for ClientRef<'_, R, C> {
-    type Target = HttpEngineSend<R, C>;
-
-    fn deref(&self) -> &HttpEngineSend<R, C> {
-        match self {
-            ClientRef::Borrowed(r) => r,
-            ClientRef::Owned(o) => o,
-        }
-    }
-}
+use super::EngineRef;
 
 /// Builder for configuring and sending an HTTP request.
 pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
-    client: ClientRef<'a, R, C>,
+    client: EngineRef<'a, HttpEngineSend<R, C>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -66,7 +42,7 @@ impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilderSend<'_
 impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     pub(crate) fn new(client: &'a HttpEngineSend<R, C>, method: Method, uri: Uri) -> Self {
         Self {
-            client: ClientRef::Borrowed(client),
+            client: EngineRef::Borrowed(client),
             method,
             uri,
             headers: HeaderMap::new(),
@@ -80,7 +56,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     pub(crate) fn new_owned(client: HttpEngineSend<R, C>, method: Method, uri: Uri) -> Self {
         Self {
-            client: ClientRef::Owned(Box::new(client)),
+            client: EngineRef::Owned(Box::new(client)),
             method,
             uri,
             headers: HeaderMap::new(),

@@ -256,7 +256,7 @@ impl RustlsConnector {
 
 /// ALPN protocol negotiated during TLS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub enum AlpnProtocol {
     /// HTTP/1.1.
     H1,

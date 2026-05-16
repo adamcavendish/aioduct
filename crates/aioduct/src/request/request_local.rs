@@ -12,9 +12,11 @@ use crate::response::Response;
 use crate::runtime::{Connector, RuntimeLocal};
 use crate::timeout::Timeout;
 
+use super::EngineRef;
+
 /// Builder for configuring and sending an HTTP request on a `!Send` runtime.
 pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: Connector + Clone> {
-    client: &'a HttpEngineLocal<R, C>,
+    client: EngineRef<'a, HttpEngineLocal<R, C>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -26,7 +28,19 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: Connector + Clone> {
 impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
     pub(crate) fn new(client: &'a HttpEngineLocal<R, C>, method: Method, uri: Uri) -> Self {
         Self {
-            client,
+            client: EngineRef::Borrowed(client),
+            method,
+            uri,
+            headers: HeaderMap::new(),
+            body: None,
+            version: None,
+            timeout: None,
+        }
+    }
+
+    pub(crate) fn new_owned(client: HttpEngineLocal<R, C>, method: Method, uri: Uri) -> Self {
+        Self {
+            client: EngineRef::Owned(Box::new(client)),
             method,
             uri,
             headers: HeaderMap::new(),
@@ -110,7 +124,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
         self
     }
 
-    #[cfg(feature = "serde")]
+    #[cfg(feature = "json")]
     /// Append query parameters from a serializable value.
     pub fn query_serde(mut self, params: &impl serde::Serialize) -> Result<Self, Error> {
         let query_string =
@@ -179,7 +193,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
         self
     }
 
-    #[cfg(feature = "serde")]
+    #[cfg(feature = "json")]
     /// Set a form-encoded request body from a serializable value.
     pub fn form_serde(mut self, value: &impl serde::Serialize) -> Result<Self, Error> {
         let encoded = serde_urlencoded::to_string(value).map_err(|e| Error::Other(Box::new(e)))?;
@@ -218,6 +232,10 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
         self
     }
 
+    pub(crate) fn uri(&self) -> &Uri {
+        &self.uri
+    }
+
     /// Set upgrade headers for a WebSocket handshake.
     ///
     /// This sets `Connection: Upgrade`, `Upgrade: websocket`, and forces HTTP/1.1.
@@ -240,7 +258,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
             None => None,
         };
         Some(Self {
-            client: self.client,
+            client: self.client.try_clone_for_lifetime(),
             method: self.method.clone(),
             uri: self.uri.clone(),
             headers: self.headers.clone(),
