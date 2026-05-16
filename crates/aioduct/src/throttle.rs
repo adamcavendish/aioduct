@@ -81,7 +81,7 @@ impl RateLimiter {
         let new_tokens = elapsed_ns / refill_ns;
         if new_tokens > 0 {
             let consumed_ns = new_tokens * refill_ns;
-            inner
+            let won_refill = inner
                 .last_refill_ns
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |l| {
                     if l == last {
@@ -90,13 +90,15 @@ impl RateLimiter {
                         None
                     }
                 })
-                .ok();
-            inner
-                .tokens
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    Some(current.saturating_add(new_tokens).min(inner.max_tokens))
-                })
-                .ok();
+                .is_ok();
+            if won_refill {
+                inner
+                    .tokens
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                        Some(current.saturating_add(new_tokens).min(inner.max_tokens))
+                    })
+                    .ok();
+            }
         }
     }
 }

@@ -351,6 +351,11 @@ impl HttpCache {
             return;
         }
 
+        let has_validators = headers.contains_key(ETAG) || headers.contains_key(LAST_MODIFIED);
+        if directives.no_cache && !has_validators {
+            return;
+        }
+
         let vary = headers
             .get(http::header::VARY)
             .and_then(|v| v.to_str().ok())
@@ -481,6 +486,7 @@ impl CachedResponse {
 
 struct CacheDirectives {
     max_age: Option<Duration>,
+    s_maxage_set: bool,
     no_store: bool,
     no_cache: bool,
     private: bool,
@@ -493,6 +499,7 @@ struct CacheDirectives {
 fn parse_cache_control(headers: &HeaderMap) -> CacheDirectives {
     let mut directives = CacheDirectives {
         max_age: None,
+        s_maxage_set: false,
         no_store: false,
         no_cache: false,
         private: false,
@@ -523,11 +530,14 @@ fn parse_cache_control(headers: &HeaderMap) -> CacheDirectives {
         } else if let Some(age_str) = part.strip_prefix("max-age=")
             && let Ok(secs) = age_str.trim().parse::<u64>()
         {
-            directives.max_age = Some(Duration::from_secs(secs));
+            if !directives.s_maxage_set {
+                directives.max_age = Some(Duration::from_secs(secs));
+            }
         } else if let Some(age_str) = part.strip_prefix("s-maxage=")
             && let Ok(secs) = age_str.trim().parse::<u64>()
         {
             directives.max_age = Some(Duration::from_secs(secs));
+            directives.s_maxage_set = true;
         } else if part == "immutable" {
             directives.immutable = true;
         } else if let Some(age_str) = part.strip_prefix("stale-while-revalidate=")
@@ -2394,5 +2404,63 @@ mod tests {
         assert!(!directives.private);
         assert!(!directives.must_revalidate);
         assert!(!directives.immutable);
+    }
+
+    #[test]
+    fn test_s_maxage_takes_precedence_over_max_age() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "s-maxage=3600, max-age=60".parse().unwrap());
+        let directives = parse_cache_control(&headers);
+        assert_eq!(directives.max_age, Some(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn test_s_maxage_precedence_reverse_order() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=60, s-maxage=3600".parse().unwrap());
+        let directives = parse_cache_control(&headers);
+        assert_eq!(directives.max_age, Some(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn test_no_cache_without_validators_not_stored() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/nc-no-val".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "no-cache, max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+            &HeaderMap::new(),
+        );
+        assert!(
+            cache.is_empty(),
+            "no-cache without validators should not be stored"
+        );
+    }
+
+    #[test]
+    fn test_no_cache_with_etag_is_stored() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/nc-etag".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "no-cache".parse().unwrap());
+        headers.insert(ETAG, "\"v1\"".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("x"),
+            &HeaderMap::new(),
+        );
+        assert_eq!(
+            cache.len(),
+            1,
+            "no-cache with etag validator should be stored"
+        );
     }
 }

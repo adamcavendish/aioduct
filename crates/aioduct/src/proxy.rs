@@ -19,10 +19,19 @@ pub struct ProxyConfig {
     pub(crate) auth: Option<ProxyAuth>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct ProxyAuth {
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for ProxyAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyAuth")
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
 }
 
 impl ProxyConfig {
@@ -186,13 +195,13 @@ impl ProxySettings {
     }
 
     pub(crate) fn proxy_for(&self, uri: &Uri) -> Option<ProxyConfig> {
-        if let Some(ref custom) = self.custom {
-            return custom.proxy_for(uri);
-        }
         if let Some(host) = uri.host()
             && self.no_proxy.matches(host)
         {
             return None;
+        }
+        if let Some(ref custom) = self.custom {
+            return custom.proxy_for(uri);
         }
         match uri.scheme_str() {
             Some("https") => self.https_proxy.clone(),
@@ -612,5 +621,22 @@ mod tests {
                 .is_some()
         );
         assert!(f.proxy_for(&"http://other.com/".parse().unwrap()).is_none());
+    }
+
+    #[test]
+    fn no_proxy_takes_precedence_over_custom() {
+        let settings = ProxySettings::all(ProxyConfig::http("http://p:80").unwrap())
+            .no_proxy(NoProxy::new("localhost"))
+            .custom(|_uri: &Uri| Some(ProxyConfig::http("http://custom:80").unwrap()));
+        let uri: Uri = "http://localhost/path".parse().unwrap();
+        assert!(
+            settings.proxy_for(&uri).is_none(),
+            "no_proxy should bypass even custom proxy"
+        );
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        assert!(
+            settings.proxy_for(&uri).is_some(),
+            "non-bypassed host should use custom proxy"
+        );
     }
 }
