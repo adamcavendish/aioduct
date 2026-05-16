@@ -3154,12 +3154,7 @@ fn start_http_proxy_tokio() -> std::net::SocketAddr {
 }
 
 #[test]
-// BUG(#68): SOCKS5 poll_fn handshake hangs under compio completion-based I/O
 fn test_compio_socks5_proxy_local() {
-    // BUG: This test exposes a hang in the SOCKS5 handshake when using
-    // compio's CompioTcpStream. The poll_fn-based read/write in socks5_handshake
-    // does not complete under the compio completion-based I/O runtime.
-    // The test uses a timeout to avoid hanging forever.
     let target_addr = start_server_tokio();
     let socks5_addr = start_socks5_proxy_tokio();
 
@@ -3175,8 +3170,6 @@ fn test_compio_socks5_proxy_local() {
             .send()
             .await;
 
-        // This SHOULD succeed but currently times out due to compio I/O
-        // compat issue with poll_fn-based SOCKS5 handshake.
         assert!(
             result.is_ok(),
             "SOCKS5 proxy via compio local engine failed: {:?}",
@@ -3186,10 +3179,7 @@ fn test_compio_socks5_proxy_local() {
 }
 
 #[test]
-// BUG(#68): SOCKS5 poll_fn handshake hangs under compio completion-based I/O
 fn test_compio_socks5_proxy_with_auth_local() {
-    // BUG: Same issue as test_compio_socks5_proxy_local -- SOCKS5 handshake
-    // poll_fn I/O hangs under compio's completion-based runtime.
     let target_addr = start_server_tokio();
     let socks5_addr = start_socks5_auth_proxy_tokio();
 
@@ -3218,10 +3208,7 @@ fn test_compio_socks5_proxy_with_auth_local() {
 }
 
 #[test]
-// BUG(#68): SOCKS4 poll_fn handshake hangs under compio completion-based I/O
 fn test_compio_socks4_proxy_local() {
-    // BUG: Same issue as test_compio_socks5_proxy_local -- SOCKS4 handshake
-    // poll_fn I/O hangs under compio's completion-based runtime.
     let target_addr = start_server_tokio();
     let socks4_addr = start_socks4_proxy_tokio();
 
@@ -3353,10 +3340,7 @@ fn test_compio_http_proxy_with_auth_local() {
 }
 
 #[test]
-// BUG(#68): SOCKS5 poll_fn handshake hangs under compio completion-based I/O
 fn test_compio_socks5_proxy_with_keepalive_and_fast_open() {
-    // BUG: Same compio SOCKS5 handshake hang. This test verifies that
-    // tcp_keepalive and tcp_fast_open options are set on proxy connections.
     let target_addr = start_server_tokio();
     let socks5_addr = start_socks5_proxy_tokio();
 
@@ -3771,9 +3755,7 @@ fn test_compio_http_connect_tunnel_with_auth_local() {
 // ── TCP keepalive through proxy connections ──────────────────────────
 
 #[test]
-// BUG(#68): SOCKS5 poll_fn handshake hangs under compio completion-based I/O
 fn test_compio_socks5_proxy_with_tcp_keepalive() {
-    // BUG: Same compio SOCKS5 handshake hang as test_compio_socks5_proxy_local.
     let target_addr = start_server_tokio();
     let socks5_addr = start_socks5_proxy_tokio();
 
@@ -3846,9 +3828,7 @@ fn test_compio_http_proxy_connection_reuse_local() {
 // ── Socks4 with TCP fast open and keepalive ─────────────────────────
 
 #[test]
-// BUG(#68): SOCKS4 poll_fn handshake hangs under compio completion-based I/O
 fn test_compio_socks4_proxy_with_tcp_options() {
-    // BUG: Same compio SOCKS4 handshake hang as test_compio_socks4_proxy_local.
     let target_addr = start_server_tokio();
     let socks4_addr = start_socks4_proxy_tokio();
 

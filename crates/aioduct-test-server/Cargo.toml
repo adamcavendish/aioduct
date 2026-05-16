@@ -27,4 +27,4 @@ tokio-rustls = { workspace = true, optional = true }
 # H3 (optional)
 h3 = { workspace = true, optional = true }
 h3-quinn = { workspace = true, optional = true }
-quinn = { workspace = true, optional = true }
+quinn = { workspace = true, optional = true, features = ["runtime-tokio", "rustls-ring"] }

@@ -107,7 +107,7 @@ serde_json.workspace = true
 wasm-bindgen-test.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-aioduct-test-server = { workspace = true, features = ["rustls"] }
+aioduct-test-server = { workspace = true, features = ["http3"] }
 async-io.workspace = true
 flate2.workspace = true
 futures-io.workspace = true

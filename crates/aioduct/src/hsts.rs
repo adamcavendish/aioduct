@@ -214,6 +214,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn poisoned_lock_store_from_response_does_not_panic() {
         let store = HstsStore::new();
 
@@ -234,6 +235,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn poisoned_lock_should_upgrade_returns_false() {
         let store = HstsStore::new();
 
@@ -251,6 +253,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn poisoned_lock_clear_does_not_panic() {
         let store = HstsStore::new();
 
