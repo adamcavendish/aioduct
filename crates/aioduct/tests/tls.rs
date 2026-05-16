@@ -412,36 +412,45 @@ async fn https_connection_not_reused_for_http() {
     );
 }
 
-// HSTS should upgrade redirect targets (not just the initial request).
-// execute_send.rs:29 applies HSTS once — after a redirect to http://foo.com,
-// HSTS is NOT re-checked for the redirect target.
+// HSTS must upgrade redirect targets, not just the initial URI.
 #[cfg(feature = "rustls")]
 #[tokio::test]
-async fn hsts_not_reapplied_to_redirect_targets() {
+async fn hsts_upgrades_redirect_targets() {
     aioduct_test_server::tls::install_crypto_provider();
 
-    // This test documents the known gap: HSTS is only applied to the initial
-    // request URI, not to redirect targets. A full test would require:
-    // 1. An HSTS entry for a host
-    // 2. A redirect from HTTPS to HTTP on that host
-    // 3. Verification that the HTTP redirect target was upgraded to HTTPS
-    //
-    // For now, verify the simpler case: after visiting an HTTPS site that
-    // sends Strict-Transport-Security, a subsequent http:// request to the
-    // same host should be upgraded to https://.
-
     let (tls_addr, cert_der, _counter) =
-        aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
+        aioduct_test_server::tls::tls_server_with(&[b"http/1.1"], |req| async move {
+            let path = req.uri().path().to_string();
+            let mut resp = if path == "/redirect" {
+                let host = req
+                    .headers()
+                    .get("host")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("localhost");
+                Response::builder()
+                    .status(302)
+                    .header("Location", format!("http://{host}/final"))
+                    .body(Full::new(Bytes::new()))
+                    .unwrap()
+            } else {
+                Response::new(Full::new(Bytes::from("hsts-ok")))
+            };
+            resp.headers_mut()
+                .insert("strict-transport-security", "max-age=3600".parse().unwrap());
+            Ok(resp)
+        })
+        .await;
     let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
     let connector = aioduct::tls::RustlsConnector::new(client_config);
 
+    let hsts_store = aioduct::hsts::HstsStore::new();
     let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
         .tls(connector)
+        .hsts(hsts_store.clone())
         .timeout(Duration::from_secs(5))
         .build();
 
-    // Visit the HTTPS site (the test server doesn't send STS headers by default,
-    // but this documents the expected flow for when HSTS support is complete).
+    // 1. Visit HTTPS — STS header seeds the HSTS store with "localhost"
     let resp = client
         .get(&format!("https://localhost:{}/", tls_addr.port()))
         .unwrap()
@@ -449,10 +458,24 @@ async fn hsts_not_reapplied_to_redirect_targets() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    let _ = resp.text().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "hsts-ok");
+    assert!(
+        hsts_store.should_upgrade("localhost"),
+        "HSTS store should know localhost after receiving STS header"
+    );
 
-    // TODO: When HSTS is fully implemented:
-    // 1. The test server should send `Strict-Transport-Security: max-age=3600`
-    // 2. A subsequent `http://localhost:{port}/` should be upgraded to `https://`
-    // 3. The upgrade should also apply to redirect targets
+    // 2. Visit /redirect — server responds 302 to http://localhost:{port}/final.
+    //    The client must HSTS-upgrade the redirect target back to https://.
+    let resp = client
+        .get(&format!("https://localhost:{}/redirect", tls_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.text().await.unwrap(),
+        "hsts-ok",
+        "redirect target should have been HSTS-upgraded to HTTPS and reached the TLS server"
+    );
 }
