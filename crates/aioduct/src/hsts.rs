@@ -48,6 +48,9 @@ impl HstsStore {
             if max_age.is_zero() {
                 store.remove(host);
             } else {
+                if store.len() > 64 {
+                    store.retain(|_, e| Instant::now() < e.expires_at);
+                }
                 store.insert(
                     host.to_owned(),
                     HstsEntry {

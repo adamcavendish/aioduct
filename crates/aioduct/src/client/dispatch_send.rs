@@ -511,8 +511,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let may_h2 = force_h2c || is_https || self.core.http2_prior_knowledge;
         if may_h2 && !self.core.no_connection_reuse && self.core.pool.mark_connecting_h2(&pool_key)
         {
-            for _ in 0..20 {
-                R::sleep(std::time::Duration::from_millis(5)).await;
+            let wait_budget = self
+                .core
+                .connect_timeout
+                .unwrap_or(std::time::Duration::from_secs(5));
+            let poll_interval = std::time::Duration::from_millis(5);
+            let max_polls =
+                (wait_budget.as_millis() / poll_interval.as_millis().max(1)).clamp(1, 200);
+            for _ in 0..max_polls {
+                R::sleep(poll_interval).await;
                 if let Some(mut conn) = self.core.pool.checkout(&pool_key) {
                     self.core.notify(
                         request.method(),

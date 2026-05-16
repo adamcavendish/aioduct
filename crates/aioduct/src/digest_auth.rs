@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use http::header::{HeaderValue, WWW_AUTHENTICATE};
 use http::{HeaderMap, Method, StatusCode, Uri};
@@ -9,7 +8,7 @@ use http::{HeaderMap, Method, StatusCode, Uri};
 pub(crate) struct DigestAuth {
     username: String,
     password: String,
-    nonce_count: Arc<AtomicU32>,
+    nonce_counts: Arc<std::sync::Mutex<HashMap<String, u32>>>,
 }
 
 impl DigestAuth {
@@ -17,7 +16,7 @@ impl DigestAuth {
         Self {
             username,
             password,
-            nonce_count: Arc::new(AtomicU32::new(1)),
+            nonce_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -46,7 +45,17 @@ impl DigestAuth {
 
         let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
-        let nc = self.nonce_count.fetch_add(1, Ordering::Relaxed);
+        let nc = {
+            let Ok(mut counts) = self.nonce_counts.lock() else {
+                return None;
+            };
+            if counts.len() > 64 {
+                counts.clear();
+            }
+            let entry = counts.entry(nonce.to_string()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
         let nc_str = format!("{nc:08x}");
         let cnonce = format!("{:016x}", rand_u64());
 
@@ -55,7 +64,10 @@ impl DigestAuth {
             _ => md5_hex,
         };
 
-        let ha1 = hash_fn(&format!("{}:{}:{}", self.username, realm, self.password));
+        let mut ha1 = hash_fn(&format!("{}:{}:{}", self.username, realm, self.password));
+        if algorithm.ends_with("-sess") {
+            ha1 = hash_fn(&format!("{ha1}:{nonce}:{cnonce}"));
+        }
 
         let ha2 = hash_fn(&format!("{}:{}", method.as_str(), path));
 
@@ -563,6 +575,75 @@ mod tests {
         assert!(dbg.contains("myuser"));
         assert!(dbg.contains("[redacted]"));
         assert!(!dbg.contains("secret"));
+    }
+
+    #[test]
+    fn sess_algorithm_uses_double_hash() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(
+                r#"Digest realm="test", nonce="abc", qop="auth", algorithm=SHA-256-sess"#,
+            ),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v = value.to_str().unwrap().to_string();
+        assert!(v.contains("algorithm=SHA-256-sess"));
+
+        // Parse cnonce and nc from the output
+        let cnonce = v
+            .split("cnonce=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let nc = v
+            .split("nc=")
+            .nth(1)
+            .unwrap()
+            .split(',')
+            .next()
+            .unwrap()
+            .trim();
+        let response = v
+            .split("response=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+
+        // Independently compute the expected response using -sess double hash
+        let ha1_inner = sha256_hex("user:test:pass");
+        let ha1 = sha256_hex(&format!("{ha1_inner}:abc:{cnonce}"));
+        let ha2 = sha256_hex("GET:/path");
+        let expected = sha256_hex(&format!("{ha1}:abc:{nc}:{cnonce}:auth:{ha2}"));
+        assert_eq!(response, expected);
+    }
+
+    #[test]
+    fn nonce_count_is_per_nonce() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut h1 = HeaderMap::new();
+        h1.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="aaa", qop="auth""#),
+        );
+        let mut h2 = HeaderMap::new();
+        h2.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="bbb", qop="auth""#),
+        );
+        let v1 = auth.authorize(&Method::GET, &uri, &h1).unwrap();
+        assert!(v1.to_str().unwrap().contains("nc=00000001"));
+        let v2 = auth.authorize(&Method::GET, &uri, &h2).unwrap();
+        assert!(v2.to_str().unwrap().contains("nc=00000001"));
+        let v3 = auth.authorize(&Method::GET, &uri, &h1).unwrap();
+        assert!(v3.to_str().unwrap().contains("nc=00000002"));
     }
 
     #[test]

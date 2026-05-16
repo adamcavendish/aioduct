@@ -144,8 +144,7 @@ impl<B> HttpEngineCore<B> {
             headers.insert(HOST, host_value);
         }
 
-        let same_origin = current_uri.authority() == next_uri.authority()
-            && current_uri.scheme() == next_uri.scheme();
+        let same_origin = same_origin(current_uri, &next_uri);
         if !same_origin {
             headers.remove(http::header::AUTHORIZATION);
             headers.remove(COOKIE);
@@ -163,4 +162,18 @@ impl<B> HttpEngineCore<B> {
 
         Ok(Some((next_uri, next_method, next_body)))
     }
+}
+
+fn effective_port(uri: &Uri) -> u16 {
+    uri.port_u16().unwrap_or_else(|| {
+        if uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
+            443
+        } else {
+            80
+        }
+    })
+}
+
+fn same_origin(a: &Uri, b: &Uri) -> bool {
+    a.scheme() == b.scheme() && a.host() == b.host() && effective_port(a) == effective_port(b)
 }
