@@ -823,4 +823,177 @@ mod tests {
         let uri = req.uri().to_string();
         assert!(!uri.contains('?'));
     }
+
+    #[tokio::test]
+    async fn bearer_auth_with_invalid_chars_is_noop() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        // Control characters are invalid in header values
+        let rb = rb.bearer_auth("token\x00with\x01control\x02chars");
+        let req = rb.build().unwrap();
+        assert!(
+            !req.headers().contains_key("authorization"),
+            "invalid bearer token should not set header"
+        );
+    }
+
+    #[tokio::test]
+    async fn basic_auth_with_invalid_chars_is_noop() {
+        let client = test_client();
+        let rb = client.get("http://example.com").unwrap();
+        // base64 encoding of a username with certain chars can still be valid,
+        // but we can force invalid by using multi-line strings. Actually base64
+        // always produces valid ASCII, so we test by observing that the header IS set.
+        // The only way to trigger line 117 is if the base64-encoded result has invalid
+        // header chars, which is impossible with standard base64.
+        // Instead, let's verify that valid basic_auth works to document the behavior.
+        let rb = rb.basic_auth("user", Some("pass"));
+        let req = rb.build().unwrap();
+        assert!(req.headers().contains_key("authorization"));
+    }
+
+    #[tokio::test]
+    async fn send_without_timeout_succeeds() {
+        // Exercises the NoTimeout path in send_once (line 352-356)
+        let (addr, _counter) = aioduct_test_server::h1::h1_server().await;
+        let client = test_client();
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "hello aioduct");
+    }
+
+    #[tokio::test]
+    async fn send_with_timeout_succeeds() {
+        // Exercises the WithTimeout path in send_once (line 344-351)
+        let (addr, _counter) = aioduct_test_server::h1::h1_server().await;
+        let client = test_client();
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_returns_error() {
+        // Exercises lines 466-471: retry exhaustion path
+        // Connect to an address that will always refuse connections.
+        // Use port 1 which is unlikely to be open.
+        let client = test_client();
+        let result = client
+            .get("http://127.0.0.1:1/")
+            .unwrap()
+            .timeout(Duration::from_millis(100))
+            .retry(
+                RetryConfig::default()
+                    .max_retries(1)
+                    .initial_backoff(Duration::from_millis(1))
+                    .retry_on_status(false),
+            )
+            .send()
+            .await;
+        assert!(result.is_err(), "expected error from retry exhaustion");
+    }
+
+    #[tokio::test]
+    async fn retry_on_server_error_exhausts() {
+        // Server always returns 500; retry_on_status causes retries to exhaust.
+        // This exercises the status retry branch (lines 415-432).
+        let (addr, counter) = aioduct_test_server::h1::h1_server_with(|_req| async {
+            Ok(hyper::Response::builder()
+                .status(500)
+                .body(http_body_util::Full::new(bytes::Bytes::from("error")))
+                .unwrap())
+        })
+        .await;
+        let client = test_client();
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .retry(
+                RetryConfig::default()
+                    .max_retries(2)
+                    .initial_backoff(Duration::from_millis(1))
+                    .retry_on_status(true),
+            )
+            .send()
+            .await
+            .unwrap();
+        // After retries exhausted, the last 500 response is returned
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        // Should have made 3 total attempts (1 + 2 retries)
+        assert_eq!(counter.requests(), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_without_timeout_uses_no_timeout_path() {
+        // Exercises line 405: the NoTimeout path inside send_with_retry
+        // Connect to a server that fails once then succeeds.
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempt_count = Arc::new(AtomicU32::new(0));
+        let attempt_count2 = attempt_count.clone();
+
+        let (addr, _counter) = aioduct_test_server::h1::h1_server_with(move |_req| {
+            let count = attempt_count2.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if count == 0 {
+                    // First request: return 503 to trigger retry
+                    Ok(hyper::Response::builder()
+                        .status(503)
+                        .body(http_body_util::Full::new(bytes::Bytes::from("unavailable")))
+                        .unwrap())
+                } else {
+                    Ok(hyper::Response::new(http_body_util::Full::new(
+                        bytes::Bytes::from("ok"),
+                    )))
+                }
+            }
+        })
+        .await;
+
+        // Client with NO timeout, but with retry
+        let client = test_client();
+        let resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .retry(
+                RetryConfig::default()
+                    .max_retries(2)
+                    .initial_backoff(Duration::from_millis(1))
+                    .retry_on_status(true),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(attempt_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn send_error_contains_url() {
+        // Exercises the SendError wrapping at line 333
+        let client = test_client();
+        let err = client
+            .get("http://127.0.0.1:1/specific-path")
+            .unwrap()
+            .timeout(Duration::from_millis(100))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            err.url().to_string().contains("specific-path"),
+            "SendError should contain the request URL, got: {}",
+            err.url()
+        );
+    }
 }

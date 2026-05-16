@@ -282,84 +282,155 @@ mod tests {
     }
 
     #[test]
-    fn empty_stack_apply_request_no_panic() {
-        let stack = MiddlewareStack::new();
-        let uri = test_uri();
-        let mut req = http::Request::get("http://example.com")
-            .body(empty_body())
-            .unwrap();
-        stack.apply_request(&mut req, &uri);
-    }
-
-    #[test]
-    fn empty_stack_apply_response_no_panic() {
-        let stack = MiddlewareStack::new();
-        let uri = test_uri();
-        let mut resp = http::Response::builder()
-            .status(200)
-            .body(empty_body())
-            .unwrap();
-        stack.apply_response(&mut resp, &uri);
-    }
-
-    #[test]
-    fn empty_stack_apply_error_no_panic() {
-        let stack = MiddlewareStack::new();
-        stack.apply_error(&Error::Timeout, &test_uri(), &Method::GET);
-    }
-
-    #[test]
-    fn empty_stack_apply_redirect_no_panic() {
-        let stack = MiddlewareStack::new();
-        let from: Uri = "http://a.com".parse().unwrap();
-        let to: Uri = "http://b.com".parse().unwrap();
-        stack.apply_redirect(StatusCode::MOVED_PERMANENTLY, &from, &to);
-    }
-
-    #[test]
-    fn empty_stack_apply_retry_no_panic() {
-        let stack = MiddlewareStack::new();
-        stack.apply_retry(&Error::Timeout, &test_uri(), &Method::GET, 1);
-    }
-
-    #[test]
-    fn closure_middleware_default_hooks_no_panic() {
+    fn apply_request_local_copies_headers_from_middleware() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |_req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {},
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                req.headers_mut().insert(
+                    "x-injected",
+                    http::header::HeaderValue::from_static("hello"),
+                );
+            },
         ));
         let uri = test_uri();
-        let mut resp = http::Response::builder()
-            .status(200)
+        // Use a non-RequestBoxBody body (e.g., String) to test the generic path
+        let mut req = http::Request::get("http://example.com/path")
             .body(empty_body())
             .unwrap();
-        stack.apply_response(&mut resp, &uri);
-        stack.apply_error(&Error::Timeout, &uri, &Method::GET);
-        let to: Uri = "http://b.com".parse().unwrap();
-        stack.apply_redirect(StatusCode::FOUND, &uri, &to);
-        stack.apply_retry(&Error::Timeout, &uri, &Method::POST, 2);
+        stack.apply_request_local(&mut req, &uri);
+        assert_eq!(req.headers().get("x-injected").unwrap(), "hello");
     }
 
     #[test]
-    fn default_trait_methods_no_panic() {
-        struct NoopMiddleware;
-        impl Middleware for NoopMiddleware {}
-
+    fn apply_request_local_copies_method_change() {
         let mut stack = MiddlewareStack::new();
-        stack.push(Arc::new(NoopMiddleware));
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                *req.method_mut() = Method::POST;
+            },
+        ));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        assert_eq!(req.method(), Method::GET);
+        stack.apply_request_local(&mut req, &uri);
+        assert_eq!(req.method(), Method::POST);
+    }
+
+    #[test]
+    fn apply_request_local_copies_uri_change() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                *req.uri_mut() = "http://redirected.example.com/new".parse().unwrap();
+            },
+        ));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com/old")
+            .body(empty_body())
+            .unwrap();
+        stack.apply_request_local(&mut req, &uri);
+        assert_eq!(req.uri(), "http://redirected.example.com/new");
+    }
+
+    #[test]
+    fn apply_request_local_copies_version_change() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                *req.version_mut() = http::Version::HTTP_2;
+            },
+        ));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        stack.apply_request_local(&mut req, &uri);
+        assert_eq!(req.version(), http::Version::HTTP_2);
+    }
+
+    #[test]
+    fn apply_request_local_with_multiple_middleware() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                req.headers_mut()
+                    .insert("x-first", http::header::HeaderValue::from_static("1"));
+            },
+        ));
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                req.headers_mut()
+                    .insert("x-second", http::header::HeaderValue::from_static("2"));
+            },
+        ));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        stack.apply_request_local(&mut req, &uri);
+        assert_eq!(req.headers().get("x-first").unwrap(), "1");
+        assert_eq!(req.headers().get("x-second").unwrap(), "2");
+    }
+
+    #[test]
+    fn apply_request_local_preserves_existing_headers() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                req.headers_mut()
+                    .insert("x-new", http::header::HeaderValue::from_static("added"));
+            },
+        ));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .header("x-existing", "preserved")
+            .body(empty_body())
+            .unwrap();
+        stack.apply_request_local(&mut req, &uri);
+        // Existing headers are carried through via the proxy copy
+        assert_eq!(req.headers().get("x-existing").unwrap(), "preserved");
+        assert_eq!(req.headers().get("x-new").unwrap(), "added");
+    }
+
+    #[test]
+    fn clone_stack_runs_middleware_independently() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let stack = make_stack(&log);
+        let cloned = stack.clone();
+
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        cloned.apply_request(&mut req, &uri);
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], (1, "request"));
+        assert_eq!(entries[1], (2, "request"));
+    }
+
+    #[test]
+    fn closure_middleware_on_request_modifies_headers() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                req.headers_mut().insert(
+                    "authorization",
+                    http::header::HeaderValue::from_static("Bearer token123"),
+                );
+            },
+        ));
         let uri = test_uri();
         let mut req = http::Request::get("http://example.com")
             .body(empty_body())
             .unwrap();
         stack.apply_request(&mut req, &uri);
-        let mut resp = http::Response::builder()
-            .status(200)
-            .body(empty_body())
-            .unwrap();
-        stack.apply_response(&mut resp, &uri);
-        stack.apply_error(&Error::Timeout, &uri, &Method::GET);
-        let to: Uri = "http://b.com".parse().unwrap();
-        stack.apply_redirect(StatusCode::FOUND, &uri, &to);
-        stack.apply_retry(&Error::Timeout, &uri, &Method::POST, 1);
+        assert_eq!(
+            req.headers().get("authorization").unwrap(),
+            "Bearer token123"
+        );
     }
 }

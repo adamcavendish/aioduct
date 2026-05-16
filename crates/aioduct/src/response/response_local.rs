@@ -92,3 +92,97 @@ impl Response<crate::body::ResponseBoxLocalBody> {
         crate::upgrade::on_upgrade_local(&mut self.inner).await
     }
 }
+
+#[cfg(all(test, feature = "compio"))]
+mod tests {
+    use super::*;
+    use crate::body::ResponseBoxLocalBody;
+    use crate::response::Response;
+    use crate::runtime::compio_rt::CompioRuntime;
+
+    fn make_local_response(body_bytes: &[u8]) -> Response<ResponseBoxLocalBody> {
+        let body = http_body_util::Full::new(bytes::Bytes::from(body_bytes.to_vec()))
+            .map_err(|never| match never {});
+        let local_body: ResponseBoxLocalBody = Box::pin(body);
+        let inner = http::Response::builder()
+            .status(200)
+            .body(local_body)
+            .unwrap();
+        Response {
+            inner,
+            url: "http://example.com/".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        }
+    }
+
+    #[test]
+    fn bytes_local() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let resp = make_local_response(b"hello local");
+            let bytes = resp.bytes().await.unwrap();
+            assert_eq!(bytes, "hello local");
+        });
+    }
+
+    #[test]
+    fn text_local() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let resp = make_local_response(b"text body");
+            let text = resp.text().await.unwrap();
+            assert_eq!(text, "text body");
+        });
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
+    fn json_local() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let resp = make_local_response(b"{\"key\":\"value\"}");
+            let val: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(val["key"], "value");
+        });
+    }
+
+    #[test]
+    fn into_local_conversion() {
+        use crate::response::ResponseBoxSendBody;
+        let body = http_body_util::Full::new(bytes::Bytes::from_static(b"convert"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let inner = http::Response::builder()
+            .status(200)
+            .body(ResponseBoxSendBody::from_boxed(body))
+            .unwrap();
+        let resp = Response::new(inner, "http://example.com/".parse().unwrap());
+        let local_resp = resp.into_local();
+        assert_eq!(local_resp.status(), http::StatusCode::OK);
+    }
+
+    #[test]
+    fn into_local_with_read_timeout() {
+        use crate::response::ResponseBoxSendBody;
+        use std::time::Duration;
+        let body = http_body_util::Full::new(bytes::Bytes::from_static(b"timeout"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let inner = http::Response::builder()
+            .status(200)
+            .body(ResponseBoxSendBody::from_boxed(body))
+            .unwrap();
+        let resp = Response::new(inner, "http://example.com/".parse().unwrap());
+        let local_resp = resp.into_local_with_read_timeout::<CompioRuntime>(Duration::from_secs(5));
+        assert_eq!(local_resp.status(), http::StatusCode::OK);
+    }
+
+    #[test]
+    fn apply_bandwidth_limit_local() {
+        use crate::bandwidth::BandwidthLimiter;
+        let resp = make_local_response(b"bandwidth");
+        let limited =
+            resp.apply_bandwidth_limit_local::<CompioRuntime>(BandwidthLimiter::new(1024));
+        assert_eq!(limited.status(), http::StatusCode::OK);
+    }
+}

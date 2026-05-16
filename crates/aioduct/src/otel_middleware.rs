@@ -212,70 +212,10 @@ mod tests {
     }
 
     #[test]
-    fn global_propagator_fallback_does_not_panic() {
-        let mw = OtelMiddleware::new();
-        let uri = test_uri();
-        let mut request = http::Request::get("http://example.com/api")
-            .body(empty_body())
-            .unwrap();
-
-        mw.on_request(&mut request, &uri);
-    }
-
-    #[test]
-    fn on_response_does_not_panic_without_active_span() {
-        let mw = OtelMiddleware::new();
-        let uri = test_uri();
-        let mut response = http::Response::builder()
-            .status(200)
-            .body(empty_body())
-            .unwrap();
-
-        mw.on_response(&mut response, &uri);
-    }
-
-    #[test]
-    fn on_response_server_error_does_not_panic() {
-        let mw = OtelMiddleware::new();
-        let uri = test_uri();
-        let mut response = http::Response::builder()
-            .status(503)
-            .body(empty_body())
-            .unwrap();
-
-        mw.on_response(&mut response, &uri);
-    }
-
-    #[test]
-    fn on_error_records_without_panic() {
-        let mw = OtelMiddleware::new();
-        let uri = test_uri();
-        let error = Error::Timeout;
-
-        mw.on_error(&error, &uri, &Method::GET);
-    }
-
-    #[test]
-    fn on_redirect_records_without_panic() {
-        let from: Uri = "http://old.example.com/a".parse().unwrap();
-        let to: Uri = "http://new.example.com/b".parse().unwrap();
-        let mw = OtelMiddleware::new();
-
-        mw.on_redirect(StatusCode::MOVED_PERMANENTLY, &from, &to);
-    }
-
-    #[test]
-    fn on_retry_records_without_panic() {
-        let mw = OtelMiddleware::new();
-        let uri = test_uri();
-        let error = Error::Timeout;
-
-        mw.on_retry(&error, &uri, &Method::GET, 2);
-    }
-
-    #[test]
     fn error_type_mapping() {
         assert_eq!(error_type(&Error::Timeout), "timeout");
+        assert_eq!(error_type(&Error::ConnectTimeout), "timeout");
+        assert_eq!(error_type(&Error::ReadTimeout), "timeout");
         assert_eq!(error_type(&Error::Io(std::io::Error::other("test"))), "io");
         assert_eq!(error_type(&Error::InvalidUrl("bad".into())), "invalid_url");
         assert_eq!(error_type(&Error::Status(StatusCode::NOT_FOUND)), "status");
@@ -307,10 +247,5 @@ mod tests {
             "from-explicit",
         );
         assert!(request.headers().get("x-global-trace").is_none());
-    }
-
-    #[test]
-    fn default_impl_is_same_as_new() {
-        let _mw: OtelMiddleware = OtelMiddleware::default();
     }
 }

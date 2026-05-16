@@ -508,4 +508,272 @@ mod tests {
             assert!(Write::is_write_vectored(&stream));
         });
     }
+
+    #[test]
+    fn connector_send_connect_bound_works() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let connector = super::TcpConnector;
+            let local: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+            let stream =
+                crate::runtime::ConnectorSend::connect_bound(&connector, addr, local).await;
+            assert!(stream.is_ok());
+        });
+    }
+
+    #[test]
+    fn connector_send_from_std_tcp_works() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let std_stream = std::net::TcpStream::connect(addr).unwrap();
+            let connector = super::TcpConnector;
+            let result = crate::runtime::ConnectorSend::from_std_tcp(&connector, std_stream);
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn default_resolver_resolve_single() {
+        use crate::runtime::Resolve;
+        smol::block_on(async {
+            let resolver = super::DefaultResolver;
+            let addr = resolver.resolve("localhost", 80).await.unwrap();
+            assert_eq!(addr.port(), 80);
+        });
+    }
+
+    #[test]
+    fn block_on_works() {
+        use crate::runtime::RuntimeCompletion;
+        let result = SmolRuntime::block_on(async { 42 }).unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn set_keepalive_interval_none() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let stream = SmolRuntime::connect(addr).await.unwrap();
+            let result =
+                SmolRuntime::set_tcp_keepalive(&stream, Duration::from_secs(60), None, None);
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn connector_local_connect_bound_works() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let connector = super::TcpConnector;
+            let local: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+            let stream = crate::runtime::Connector::connect_bound(&connector, addr, local).await;
+            assert!(stream.is_ok());
+        });
+    }
+
+    #[test]
+    fn connector_local_from_std_tcp_works() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let std_stream = std::net::TcpStream::connect(addr).unwrap();
+            let connector = super::TcpConnector;
+            let result = crate::runtime::Connector::from_std_tcp(&connector, std_stream);
+            assert!(result.is_ok());
+        });
+    }
+
+    // ── Connector connect_bound IPv6 path ─────────────────────────────
+
+    #[test]
+    fn connector_local_connect_bound_ipv6() {
+        smol::block_on(async {
+            let listener = match smol::net::TcpListener::bind("[::1]:0").await {
+                Ok(l) => l,
+                Err(_) => return, // Skip if IPv6 not available
+            };
+            let addr = listener.local_addr().unwrap();
+            let connector = super::TcpConnector;
+            let local: std::net::IpAddr = "::1".parse().unwrap();
+            let stream = crate::runtime::Connector::connect_bound(&connector, addr, local).await;
+            assert!(stream.is_ok());
+        });
+    }
+
+    #[test]
+    fn connector_send_connect_bound_ipv6() {
+        smol::block_on(async {
+            let listener = match smol::net::TcpListener::bind("[::1]:0").await {
+                Ok(l) => l,
+                Err(_) => return, // Skip if IPv6 not available
+            };
+            let addr = listener.local_addr().unwrap();
+            let connector = super::TcpConnector;
+            let local: std::net::IpAddr = "::1".parse().unwrap();
+            let stream =
+                crate::runtime::ConnectorSend::connect_bound(&connector, addr, local).await;
+            assert!(stream.is_ok());
+        });
+    }
+
+    // ── DefaultResolver resolve_all error ─────────────────────────────
+
+    #[test]
+    fn default_resolver_resolve_all_invalid_host_errors() {
+        use crate::runtime::Resolve;
+        smol::block_on(async {
+            let resolver = super::DefaultResolver;
+            let result = resolver
+                .resolve_all("this.host.does.not.exist.invalid", 80)
+                .await;
+            assert!(result.is_err());
+        });
+    }
+
+    // ── SmolIo read/write edge cases ───────────────────────────────────
+
+    #[test]
+    fn smol_io_read_eof_returns_zero_advance() {
+        use std::future::poll_fn;
+
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let stream = smol::net::TcpStream::connect(addr).await.unwrap();
+            let (server, _) = listener.accept().await.unwrap();
+            drop(server); // close write end
+
+            let mut io = SmolIo::new(stream);
+            let mut buf = [0u8; 64];
+            let mut read_buf = hyper::rt::ReadBuf::new(&mut buf);
+
+            poll_fn(|cx| Pin::new(&mut io).poll_read(cx, read_buf.unfilled()))
+                .await
+                .unwrap();
+            assert_eq!(
+                read_buf.filled().len(),
+                0,
+                "EOF should produce 0 filled bytes"
+            );
+        });
+    }
+
+    #[test]
+    fn smol_io_write_and_flush() {
+        use std::future::poll_fn;
+
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let stream = smol::net::TcpStream::connect(addr).await.unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+
+            let mut io = SmolIo::new(stream);
+
+            let data = b"smol io test";
+            let n = poll_fn(|cx| Pin::new(&mut io).poll_write(cx, data))
+                .await
+                .unwrap();
+            assert_eq!(n, data.len());
+
+            poll_fn(|cx| Pin::new(&mut io).poll_flush(cx))
+                .await
+                .unwrap();
+
+            // Read from the other end
+            use futures_io::AsyncRead;
+            let mut buf = vec![0u8; data.len()];
+            let mut read = 0;
+            while read < data.len() {
+                let n = poll_fn(|cx| Pin::new(&mut server).poll_read(cx, &mut buf[read..]))
+                    .await
+                    .unwrap();
+                read += n;
+            }
+            assert_eq!(&buf, data);
+        });
+    }
+
+    #[test]
+    fn smol_io_shutdown_closes_write() {
+        use std::future::poll_fn;
+
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let stream = smol::net::TcpStream::connect(addr).await.unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+
+            let mut io = SmolIo::new(stream);
+
+            poll_fn(|cx| Pin::new(&mut io).poll_shutdown(cx))
+                .await
+                .unwrap();
+
+            // Reader should see EOF
+            use futures_io::AsyncRead;
+            let mut buf = [0u8; 1];
+            let n = poll_fn(|cx| Pin::new(&mut server).poll_read(cx, &mut buf))
+                .await
+                .unwrap();
+            assert_eq!(n, 0);
+        });
+    }
+
+    #[test]
+    fn smol_io_inner_accessor() {
+        smol::block_on(async {
+            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let stream = smol::net::TcpStream::connect(addr).await.unwrap();
+            let io = SmolIo::new(stream);
+            // inner() returns a reference to the TcpStream
+            let peer = io.inner().peer_addr();
+            assert!(peer.is_ok());
+        });
+    }
+
+    // ── DefaultResolver resolve_all ────────────────────────────────────
+
+    #[test]
+    fn default_resolver_resolve_all_multiple() {
+        use crate::runtime::Resolve;
+        smol::block_on(async {
+            let resolver = super::DefaultResolver;
+            let addrs = resolver.resolve_all("localhost", 80).await.unwrap();
+            assert!(!addrs.is_empty());
+            for addr in &addrs {
+                assert_eq!(addr.port(), 80);
+            }
+        });
+    }
+
+    #[test]
+    fn default_resolver_invalid_host_errors() {
+        use crate::runtime::Resolve;
+        smol::block_on(async {
+            let resolver = super::DefaultResolver;
+            let result = resolver
+                .resolve("this.host.does.not.exist.invalid", 80)
+                .await;
+            assert!(result.is_err());
+        });
+    }
+
+    // ── SmolSleep new() constructor ────────────────────────────────────
+
+    #[test]
+    fn smol_sleep_new_completes() {
+        smol::block_on(async {
+            let timer = async_io::Timer::after(Duration::from_millis(5));
+            let sleep = SmolSleep::new(timer);
+            let start = std::time::Instant::now();
+            sleep.await;
+            assert!(start.elapsed() >= Duration::from_millis(5));
+        });
+    }
 }

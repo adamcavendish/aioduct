@@ -348,3 +348,245 @@ fn blocking_remote_addr() {
     assert!(remote.is_some());
     assert_eq!(remote.unwrap().port(), addr.port());
 }
+
+#[test]
+fn blocking_patch_request() {
+    let addr = start_server_with(echo_body);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .patch(&format!("http://{addr}/"))
+        .unwrap()
+        .body("patch data")
+        .send()
+        .unwrap();
+    assert_eq!(resp.text().unwrap(), "patch data");
+}
+
+#[test]
+fn blocking_delete_request() {
+    let addr = start_server_with(hello);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .delete(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[test]
+fn blocking_custom_method() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        let method = req.method().to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(method))))
+    });
+
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .request(http::Method::OPTIONS, &format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert_eq!(resp.text().unwrap(), "OPTIONS");
+}
+
+#[test]
+fn blocking_bearer_auth() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        let auth = req
+            .headers()
+            .get("authorization")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(auth))))
+    });
+
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .bearer_auth("test-token")
+        .send()
+        .unwrap();
+    assert_eq!(resp.text().unwrap(), "Bearer test-token");
+}
+
+#[test]
+fn blocking_bulk_headers() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        let h1 = req
+            .headers()
+            .get("x-one")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let h2 = req
+            .headers()
+            .get("x-two")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!("{h1},{h2}")))))
+    });
+
+    let mut headers = http::HeaderMap::new();
+    headers.insert("x-one", "1".parse().unwrap());
+    headers.insert("x-two", "2".parse().unwrap());
+
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .headers(headers)
+        .send()
+        .unwrap();
+    assert_eq!(resp.text().unwrap(), "1,2");
+}
+
+#[test]
+fn blocking_error_for_status_ref_4xx() {
+    let addr = start_server_with(|_req: Request<hyper::body::Incoming>| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(403)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    });
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert!(resp.error_for_status_ref().is_err());
+    assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+}
+
+#[test]
+fn blocking_error_for_status_ref_ok() {
+    let addr = start_server_with(hello);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert!(resp.error_for_status_ref().is_ok());
+}
+
+#[test]
+fn blocking_url() {
+    let addr = start_server_with(hello);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/path"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert!(resp.url().to_string().contains("/path"));
+}
+
+#[test]
+fn blocking_version() {
+    let addr = start_server_with(hello);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert_eq!(resp.version(), http::Version::HTTP_11);
+}
+
+#[test]
+fn blocking_tls_info_none_for_http() {
+    let addr = start_server_with(hello);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert!(resp.tls_info().is_none());
+}
+
+#[test]
+fn blocking_bytes_method() {
+    let addr = start_server_with(|_req: Request<hyper::body::Incoming>| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("raw bytes data"))))
+    });
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    let bytes = resp.bytes().unwrap();
+    assert_eq!(bytes, Bytes::from("raw bytes data"));
+}
+
+#[test]
+fn blocking_response_debug_format() {
+    let addr = start_server_with(hello);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    let debug_str = format!("{resp:?}");
+    assert!(
+        debug_str.contains("BlockingResponse"),
+        "Debug format should contain BlockingResponse, got: {debug_str}"
+    );
+    assert!(
+        debug_str.contains("200"),
+        "Debug format should contain status code, got: {debug_str}"
+    );
+}
+
+#[test]
+fn blocking_error_for_status_ok_passes() {
+    let addr = start_server_with(hello);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    let resp = resp.error_for_status().unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[test]
+fn blocking_headers_accessor() {
+    let addr = start_server_with(|_req: Request<hyper::body::Incoming>| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("x-test", "test-val")
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap(),
+        )
+    });
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .unwrap();
+    assert_eq!(
+        resp.headers().get("x-test").unwrap().to_str().unwrap(),
+        "test-val"
+    );
+}
+
+#[test]
+fn blocking_request_timeout_per_request() {
+    let addr = start_server_with(slow);
+    let client = BlockingTokioClient::new(TokioClient::new(TcpConnector));
+    let result = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .timeout(Duration::from_millis(50))
+        .send();
+    assert!(result.is_err(), "per-request timeout should fire");
+}

@@ -127,4 +127,86 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1));
         assert_eq!(cache.lookup(&authority("expired.example.com:80")), None);
     }
+
+    #[test]
+    fn expired_h1_only_returns_none() {
+        let cache = H2cProbeCache::with_ttl(Duration::from_millis(0));
+        cache.record_h1_only(authority("expired.example.com:80"));
+        std::thread::sleep(Duration::from_millis(1));
+        assert_eq!(cache.lookup(&authority("expired.example.com:80")), None);
+    }
+
+    #[test]
+    fn overwrite_h1_with_h2c() {
+        let cache = H2cProbeCache::new();
+        cache.record_h1_only(authority("host.com:80"));
+        assert_eq!(cache.lookup(&authority("host.com:80")), Some(false));
+        cache.record_h2c(authority("host.com:80"));
+        assert_eq!(cache.lookup(&authority("host.com:80")), Some(true));
+    }
+
+    #[test]
+    fn multiple_authorities_independent() {
+        let cache = H2cProbeCache::new();
+        cache.record_h2c(authority("a.com:80"));
+        cache.record_h1_only(authority("b.com:80"));
+        assert_eq!(cache.lookup(&authority("a.com:80")), Some(true));
+        assert_eq!(cache.lookup(&authority("b.com:80")), Some(false));
+        assert_eq!(cache.lookup(&authority("c.com:80")), None);
+    }
+
+    #[test]
+    fn clone_shares_state() {
+        let cache = H2cProbeCache::new();
+        let cloned = cache.clone();
+        cache.record_h2c(authority("shared.com:80"));
+        assert_eq!(cloned.lookup(&authority("shared.com:80")), Some(true));
+    }
+
+    #[test]
+    fn poisoned_mutex_lookup_returns_none() {
+        let cache = H2cProbeCache::new();
+        // Poison the mutex by panicking inside a lock scope
+        let cache_clone = cache.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = cache_clone.inner.lock().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(result.is_err());
+
+        // The mutex is now poisoned; lookup should return None (graceful degradation)
+        assert_eq!(cache.lookup(&authority("example.com:80")), None);
+    }
+
+    #[test]
+    fn poisoned_mutex_record_h2c_does_not_panic() {
+        let cache = H2cProbeCache::new();
+        let cache_clone = cache.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = cache_clone.inner.lock().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(result.is_err());
+
+        // record_h2c on a poisoned mutex should silently do nothing
+        cache.record_h2c(authority("poisoned.com:80"));
+        // Verify it didn't panic — reaching here means success
+        assert_eq!(cache.lookup(&authority("poisoned.com:80")), None);
+    }
+
+    #[test]
+    fn poisoned_mutex_record_h1_only_does_not_panic() {
+        let cache = H2cProbeCache::new();
+        let cache_clone = cache.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = cache_clone.inner.lock().unwrap();
+            panic!("intentional poison");
+        }));
+        assert!(result.is_err());
+
+        // record_h1_only on a poisoned mutex should silently do nothing
+        cache.record_h1_only(authority("poisoned.com:80"));
+        // Verify it didn't panic — reaching here means success
+        assert_eq!(cache.lookup(&authority("poisoned.com:80")), None);
+    }
 }

@@ -157,3 +157,57 @@ impl<R: RuntimeLocal, C: Connector + Clone> ChunkDownloadLocal<R, C> {
         })
     }
 }
+
+#[cfg(all(test, feature = "compio"))]
+mod tests {
+    use super::*;
+    use crate::runtime::compio_rt::{CompioRuntime, TcpConnector};
+
+    fn test_client() -> HttpEngineLocal<CompioRuntime, TcpConnector> {
+        HttpEngineLocal::new_local(TcpConnector)
+    }
+
+    #[test]
+    fn debug_format() {
+        let client = test_client();
+        let dl = ChunkDownloadLocal::<CompioRuntime, TcpConnector>::new(
+            client,
+            "http://example.com/file.bin".into(),
+        );
+        let dbg = format!("{:?}", dl);
+        assert!(dbg.contains("ChunkDownloadLocal"));
+        assert!(dbg.contains("http://example.com/file.bin"));
+    }
+
+    #[test]
+    fn chunks_sets_value() {
+        let client = test_client();
+        let dl = ChunkDownloadLocal::<CompioRuntime, TcpConnector>::new(
+            client,
+            "http://example.com/file.bin".into(),
+        )
+        .chunks(8);
+        assert_eq!(dl.chunks, 8);
+    }
+
+    #[test]
+    fn chunks_clamps_to_one() {
+        let client = test_client();
+        let dl = ChunkDownloadLocal::<CompioRuntime, TcpConnector>::new(
+            client,
+            "http://example.com/file.bin".into(),
+        )
+        .chunks(0);
+        assert_eq!(dl.chunks, 1);
+    }
+
+    #[test]
+    fn default_chunks_is_four() {
+        let client = test_client();
+        let dl = ChunkDownloadLocal::<CompioRuntime, TcpConnector>::new(
+            client,
+            "http://example.com/file.bin".into(),
+        );
+        assert_eq!(dl.chunks, 4);
+    }
+}

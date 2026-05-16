@@ -210,4 +210,150 @@ mod tests {
             "got: {result:?}"
         );
     }
+
+    #[test]
+    fn non_data_frame_passes_through() {
+        use http_body::Body;
+
+        struct TrailerBody {
+            sent_data: bool,
+        }
+
+        impl Body for TrailerBody {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                if !self.sent_data {
+                    self.sent_data = true;
+                    let mut trailers = http::HeaderMap::new();
+                    trailers.insert("x-checksum", "abc123".parse().unwrap());
+                    Poll::Ready(Some(Ok(Frame::trailers(trailers))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+
+        let body: RequestBoxBody = TrailerBody { sent_data: false }.boxed_unsync();
+        let bw = BandwidthLimiter::new(1024);
+        let mut wrapped = Box::pin(BandwidthBody::<TokioRuntime>::new(body, bw));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        match result {
+            Poll::Ready(Some(Ok(frame))) => {
+                assert!(frame.is_trailers(), "expected trailers frame");
+            }
+            other => panic!("expected Ready(Ok(trailers)), got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn is_end_stream_false_when_pending_data() {
+        let body = boxed_body(Bytes::from("hello"));
+        let bw = BandwidthLimiter::new(1);
+        let mut wrapped = Box::pin(BandwidthBody::<TokioRuntime>::new(body, bw));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        assert!(matches!(result, Poll::Pending));
+        assert!(!wrapped.is_end_stream());
+    }
+
+    #[test]
+    fn error_from_inner_propagates() {
+        struct ErrorBody;
+
+        impl Body for ErrorBody {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                Poll::Ready(Some(Err(Error::Other("test error".into()))))
+            }
+        }
+
+        let body: RequestBoxBody = ErrorBody.boxed_unsync();
+        let bw = BandwidthLimiter::new(1024);
+        let mut wrapped = Box::pin(BandwidthBody::<TokioRuntime>::new(body, bw));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        assert!(matches!(result, Poll::Ready(Some(Err(_)))));
+    }
+
+    #[test]
+    fn inner_pending_propagates() {
+        struct PendingBody;
+
+        impl Body for PendingBody {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                Poll::Pending
+            }
+            fn is_end_stream(&self) -> bool {
+                false
+            }
+        }
+
+        let body: RequestBoxBody = PendingBody.boxed_unsync();
+        let bw = BandwidthLimiter::new(1024);
+        let mut wrapped = Box::pin(BandwidthBody::<TokioRuntime>::new(body, bw));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        assert!(matches!(result, Poll::Pending));
+    }
+
+    #[test]
+    fn is_end_stream_true_when_inner_done_no_pending() {
+        let body = boxed_body(Bytes::from("x"));
+        let bw = BandwidthLimiter::new(1024);
+        let mut wrapped = Box::pin(BandwidthBody::<TokioRuntime>::new(body, bw));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        // Consume the one frame
+        let _ = wrapped.as_mut().poll_frame(&mut cx);
+        // Now should be at end of stream
+        assert!(wrapped.is_end_stream());
+    }
+
+    #[tokio::test]
+    async fn pending_data_eventually_released_after_sleep() {
+        // Use a very small bandwidth to trigger the pending path, then wait
+        // for tokens to refill via real-time sleep so data is released.
+        let body = boxed_body(Bytes::from("hello"));
+        let bw = BandwidthLimiter::new(100); // 100 bytes/sec: requires ~50ms wait for 5 bytes
+        // Drain all tokens first
+        bw.try_consume(100);
+        let mut wrapped = Box::pin(BandwidthBody::<TokioRuntime>::new(body, bw));
+
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        // First poll: triggers pending because no tokens available
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        assert!(matches!(result, Poll::Pending));
+
+        // Wait for tokens to refill
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        // Now polling should yield the data
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        match result {
+            Poll::Ready(Some(Ok(frame))) => {
+                assert_eq!(frame.into_data().unwrap(), Bytes::from("hello"));
+            }
+            other => panic!("expected Ready(Ok(data)), got: {other:?}"),
+        }
+    }
 }

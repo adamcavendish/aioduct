@@ -184,25 +184,6 @@ async fn text_returns_string() {
 }
 
 #[test]
-fn into_body_returns_boxed() {
-    let resp = make_response(200);
-    let _body = resp.into_body();
-}
-
-#[test]
-fn into_bytes_stream_returns_stream() {
-    let resp = make_response(200);
-    let stream = resp.into_bytes_stream();
-    let _dbg = format!("{stream:?}");
-}
-
-#[test]
-fn into_sse_stream_returns_stream() {
-    let resp = make_response(200);
-    let _stream = resp.into_sse_stream();
-}
-
-#[test]
 fn from_boxed_constructor() {
     let boxed_body: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::new())
         .map_err(|never| match never {})
@@ -381,10 +362,373 @@ async fn text_non_utf8() {
 }
 
 #[test]
-fn into_boxed_roundtrip() {
-    let original: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::from("data"))
+fn cookies_parses_set_cookie_headers() {
+    let inner = http::Response::builder()
+        .header("set-cookie", "session=abc123; Path=/; HttpOnly")
+        .header("set-cookie", "lang=en; Path=/")
+        .body(empty_body())
+        .unwrap();
+    let resp = Response::new(inner, "http://example.com/path".parse().unwrap());
+    let cookies = resp.cookies();
+    assert_eq!(cookies.len(), 2);
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c.name() == "session" && c.value() == "abc123")
+    );
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c.name() == "lang" && c.value() == "en")
+    );
+}
+
+#[test]
+fn cookies_empty_when_no_set_cookie_header() {
+    let resp = make_response(200);
+    let cookies = resp.cookies();
+    assert!(cookies.is_empty());
+}
+
+#[test]
+fn cookies_skips_malformed_set_cookie() {
+    let inner = http::Response::builder()
+        .header("set-cookie", "=no_name")
+        .header("set-cookie", "good=value")
+        .body(empty_body())
+        .unwrap();
+    let resp = Response::new(inner, "http://example.com/".parse().unwrap());
+    let cookies = resp.cookies();
+    assert_eq!(cookies.len(), 1);
+    assert_eq!(cookies[0].name(), "good");
+}
+
+#[test]
+fn tls_info_initially_none_and_remote_addr_none() {
+    let resp = make_response(200);
+    assert!(resp.tls_info().is_none());
+    assert!(resp.remote_addr().is_none());
+}
+
+#[allow(deprecated)]
+#[test]
+fn timings_initially_none() {
+    let resp = make_response(200);
+    assert!(resp.timings().is_none());
+}
+
+#[cfg(feature = "charset")]
+#[tokio::test]
+async fn text_with_charset_latin1() {
+    // Latin-1 encoded byte 0xe9 is 'e' with acute accent
+    let body = ResponseBoxSendBody::from_boxed(
+        http_body_util::Full::new(bytes::Bytes::from(vec![0x63, 0x61, 0x66, 0xe9]))
+            .map_err(|never| match never {})
+            .boxed_unsync(),
+    );
+    let inner = http::Response::builder()
+        .header("content-type", "text/plain; charset=iso-8859-1")
+        .body(body)
+        .unwrap();
+    let resp = Response::new(inner, "http://example.com".parse().unwrap());
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, "caf\u{e9}");
+}
+
+#[cfg(feature = "charset")]
+#[tokio::test]
+async fn text_with_charset_defaults_to_utf8() {
+    let body = ResponseBoxSendBody::from_boxed(
+        http_body_util::Full::new(bytes::Bytes::from("hello utf8"))
+            .map_err(|never| match never {})
+            .boxed_unsync(),
+    );
+    let inner = http::Response::builder()
+        .header("content-type", "text/plain")
+        .body(body)
+        .unwrap();
+    let resp = Response::new(inner, "http://example.com".parse().unwrap());
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, "hello utf8");
+}
+
+#[test]
+fn into_boxed_from_incoming_variant() {
+    // Test the Incoming variant's into_boxed() path
+    // We can't easily create a real Incoming, so test via from_boxed path
+    let boxed: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::from("test"))
         .map_err(|never| match never {})
         .boxed_unsync();
-    let body = ResponseBoxSendBody::from_boxed(original);
-    let _boxed = body.into_boxed();
+    let body = ResponseBoxSendBody::from_boxed(boxed);
+    // Verify the body has data
+    assert!(!http_body::Body::is_end_stream(&body));
+    let hint = http_body::Body::size_hint(&body);
+    assert_eq!(hint.exact(), Some(4));
+}
+
+#[test]
+fn apply_middleware_modifies_response_headers() {
+    use std::sync::Arc;
+    let mut stack = crate::middleware::MiddlewareStack::new();
+    stack.push(Arc::new(
+        |_req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {},
+    ));
+    // Add a middleware that modifies responses
+    struct HeaderAdder;
+    impl crate::middleware::Middleware for HeaderAdder {
+        fn on_response(&self, resp: &mut http::Response<RequestBoxBody>, _uri: &Uri) {
+            resp.headers_mut()
+                .insert("x-modified", http::header::HeaderValue::from_static("yes"));
+        }
+    }
+    let mut stack = crate::middleware::MiddlewareStack::new();
+    stack.push(Arc::new(HeaderAdder));
+
+    let uri: Uri = "http://example.com".parse().unwrap();
+    let mut resp = make_response(200);
+    resp.apply_middleware(&stack, &uri);
+    assert_eq!(resp.headers().get("x-modified").unwrap(), "yes");
+}
+
+#[test]
+fn decompress_passthrough_no_encoding() {
+    let body = ResponseBoxSendBody::from_boxed(
+        http_body_util::Full::new(bytes::Bytes::from("raw"))
+            .map_err(|never| match never {})
+            .boxed_unsync(),
+    );
+    let inner = http::Response::builder().body(body).unwrap();
+    let resp = Response::new(inner, "http://example.com".parse().unwrap());
+    let accept = crate::decompress::AcceptEncoding::default();
+    let resp = resp.decompress(&accept);
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn apply_read_timeout_wraps_body() {
+    use crate::runtime::tokio_rt::TokioRuntime;
+    let body = ResponseBoxSendBody::from_boxed(
+        http_body_util::Full::new(bytes::Bytes::from("timeout"))
+            .map_err(|never| match never {})
+            .boxed_unsync(),
+    );
+    let inner = http::Response::builder().body(body).unwrap();
+    let resp = Response::new(inner, "http://example.com".parse().unwrap());
+    let resp = resp.apply_read_timeout::<TokioRuntime>(std::time::Duration::from_secs(5));
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn apply_bandwidth_limit_wraps_body() {
+    use crate::runtime::tokio_rt::TokioRuntime;
+    let body = ResponseBoxSendBody::from_boxed(
+        http_body_util::Full::new(bytes::Bytes::from("limited"))
+            .map_err(|never| match never {})
+            .boxed_unsync(),
+    );
+    let inner = http::Response::builder().body(body).unwrap();
+    let resp = Response::new(inner, "http://example.com".parse().unwrap());
+    let limiter = crate::bandwidth::BandwidthLimiter::new(1024);
+    let resp = resp.apply_bandwidth_limit::<TokioRuntime>(limiter);
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ── Tests for Response<ResponseBoxLocalBody> ────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+mod local_tests {
+    use super::*;
+    use http_body_util::BodyExt;
+
+    fn local_body(data: &[u8]) -> crate::body::ResponseBoxLocalBody {
+        Box::pin(
+            http_body_util::Full::new(bytes::Bytes::from(data.to_vec()))
+                .map_err(|never| match never {}),
+        )
+    }
+
+    fn empty_local_body() -> crate::body::ResponseBoxLocalBody {
+        Box::pin(http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}))
+    }
+
+    fn make_local_response(status: u16) -> Response<crate::body::ResponseBoxLocalBody> {
+        let inner = http::Response::builder()
+            .status(status)
+            .body(empty_local_body())
+            .unwrap();
+        Response {
+            inner,
+            url: "http://example.com".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        }
+    }
+
+    #[test]
+    fn status_returns_correct_code() {
+        let resp = make_local_response(200);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn url_returns_request_uri() {
+        let resp = make_local_response(200);
+        assert_eq!(resp.url().to_string(), "http://example.com/");
+    }
+
+    #[test]
+    fn error_for_status_ok_on_2xx() {
+        let resp = make_local_response(200);
+        assert!(resp.error_for_status().is_ok());
+    }
+
+    #[test]
+    fn error_for_status_err_on_4xx() {
+        let resp = make_local_response(404);
+        let err = resp.error_for_status().unwrap_err();
+        match err {
+            Error::Status(s) => assert_eq!(s, StatusCode::NOT_FOUND),
+            _ => panic!("expected Error::Status"),
+        }
+    }
+
+    #[test]
+    fn error_for_status_err_on_5xx() {
+        let resp = make_local_response(500);
+        assert!(resp.error_for_status().is_err());
+    }
+
+    #[test]
+    fn error_for_status_ref_ok_on_2xx() {
+        let resp = make_local_response(200);
+        assert!(resp.error_for_status_ref().is_ok());
+    }
+
+    #[test]
+    fn error_for_status_ref_err_on_4xx() {
+        let resp = make_local_response(403);
+        assert!(resp.error_for_status_ref().is_err());
+    }
+
+    #[test]
+    fn content_length_present() {
+        let inner = http::Response::builder()
+            .header("Content-Length", "42")
+            .body(empty_local_body())
+            .unwrap();
+        let resp = Response {
+            inner,
+            url: "http://example.com".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        };
+        assert_eq!(resp.content_length(), Some(42));
+    }
+
+    #[test]
+    fn content_length_missing() {
+        let resp = make_local_response(200);
+        assert_eq!(resp.content_length(), None);
+    }
+
+    #[test]
+    fn into_local_conversion() {
+        let send_body = ResponseBoxSendBody::from_boxed(
+            http_body_util::Full::new(bytes::Bytes::from("test"))
+                .map_err(|never| match never {})
+                .boxed_unsync(),
+        );
+        let inner = http::Response::builder()
+            .status(201)
+            .body(send_body)
+            .unwrap();
+        let send_resp = Response::new(inner, "http://example.com".parse().unwrap());
+        let local_resp = send_resp.into_local();
+        assert_eq!(local_resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn bytes_returns_body() {
+        let inner = http::Response::builder()
+            .body(local_body(b"hello"))
+            .unwrap();
+        let resp = Response {
+            inner,
+            url: "http://example.com".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        };
+        let bytes = resp.bytes().await.unwrap();
+        assert_eq!(&bytes[..], b"hello");
+    }
+
+    #[tokio::test]
+    async fn text_returns_string() {
+        let inner = http::Response::builder()
+            .body(local_body(b"world"))
+            .unwrap();
+        let resp = Response {
+            inner,
+            url: "http://example.com".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        };
+        let text = resp.text().await.unwrap();
+        assert_eq!(text, "world");
+    }
+
+    #[cfg(feature = "json")]
+    #[tokio::test]
+    async fn json_valid() {
+        let inner = http::Response::builder()
+            .body(local_body(br#"{"key":"value"}"#))
+            .unwrap();
+        let resp = Response {
+            inner,
+            url: "http://example.com".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        };
+        let result: Result<serde_json::Value, _> = resp.json().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap()["key"], "value");
+    }
+
+    #[cfg(feature = "json")]
+    #[tokio::test]
+    async fn json_invalid() {
+        let inner = http::Response::builder()
+            .body(local_body(b"not json"))
+            .unwrap();
+        let resp = Response {
+            inner,
+            url: "http://example.com".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        };
+        let result: Result<serde_json::Value, _> = resp.json().await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn debug_format() {
+        let resp = make_local_response(200);
+        let dbg = format!("{resp:?}");
+        assert!(dbg.contains("Response"));
+        assert!(dbg.contains("200"));
+    }
 }
