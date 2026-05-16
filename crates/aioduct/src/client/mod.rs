@@ -165,7 +165,7 @@ pub struct HttpEngineSend<R, C> {
     pub(crate) core: HttpEngineCore<RequestBoxBody>,
     pub(crate) connector: C,
     #[cfg(feature = "tower")]
-    pub(crate) tower_connector: Option<crate::connector::TowerConnectorSlot>,
+    pub(crate) tower_connector: Option<crate::connector::TowerConnectorSendSlot>,
     pub(crate) _phantom: PhantomData<R>,
 }
 
@@ -193,6 +193,8 @@ impl<R, C> std::fmt::Debug for HttpEngineSend<R, C> {
 pub struct HttpEngineLocal<R, C> {
     pub(crate) core: HttpEngineCore<RequestBoxLocalBody>,
     pub(crate) connector: C,
+    #[cfg(feature = "tower")]
+    pub(crate) tower_connector_local: Option<crate::connector::TowerConnectorLocalSlot>,
     pub(crate) _phantom: PhantomData<R>,
 }
 
@@ -201,6 +203,8 @@ impl<R, C: Clone> Clone for HttpEngineLocal<R, C> {
         Self {
             core: self.core.clone(),
             connector: self.connector.clone(),
+            #[cfg(feature = "tower")]
+            tower_connector_local: self.tower_connector_local.clone(),
             _phantom: PhantomData,
         }
     }

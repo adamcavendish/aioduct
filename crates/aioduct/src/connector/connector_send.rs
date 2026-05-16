@@ -1,64 +1,52 @@
 use std::future::Future;
 use std::io;
-use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use http::Uri;
-use tower_layer::Layer;
 use tower_service::Service;
 
 use crate::runtime::ConnectorSend;
 
+use super::ConnectInfo;
+
 /// Type-erased tower connector slot that can be stored without trait bounds on the struct.
 ///
-/// Wraps a `LayeredConnector<C>` but erases the `C` type parameter so the parent
+/// Wraps a `LayeredConnectorSend<C>` but erases the `C` type parameter so the parent
 /// struct doesn't need `C: ConnectorSend` in its definition.
 #[derive(Clone)]
-pub(crate) struct TowerConnectorSlot {
+pub(crate) struct TowerConnectorSendSlot {
     inner: Arc<dyn std::any::Any + Send + Sync>,
 }
 
-impl TowerConnectorSlot {
-    pub(crate) fn new<C: ConnectorSend>(connector: LayeredConnector<C>) -> Self {
+impl TowerConnectorSendSlot {
+    pub(crate) fn new<C: ConnectorSend>(connector: LayeredConnectorSend<C>) -> Self {
         Self {
             inner: Arc::new(connector),
         }
     }
 
-    pub(crate) fn get<C: ConnectorSend>(&self) -> &LayeredConnector<C> {
-        // SAFETY: this is only called with the same C that was used in `new()`,
-        // enforced by the type-level generic on HttpEngine<R, C>.
+    pub(crate) fn get<C: ConnectorSend>(&self) -> &LayeredConnectorSend<C> {
         #[allow(clippy::expect_used)]
         self.inner
-            .downcast_ref::<LayeredConnector<C>>()
-            .expect("TowerConnectorSlot type mismatch")
+            .downcast_ref::<LayeredConnectorSend<C>>()
+            .expect("TowerConnectorSendSlot type mismatch")
     }
 }
 
-/// A connector request containing the target address info.
-#[derive(Debug, Clone)]
-pub struct ConnectInfo {
-    /// The target URI being connected to.
-    pub uri: Uri,
-    /// The resolved socket address.
-    pub addr: SocketAddr,
-}
-
 /// Default connector that delegates to a [`ConnectorSend`] instance's `connect` method.
-pub struct ConnectorService<C: ConnectorSend> {
+pub struct ConnectorServiceSend<C: ConnectorSend> {
     connector: C,
 }
 
-impl<C: ConnectorSend> ConnectorService<C> {
+impl<C: ConnectorSend> ConnectorServiceSend<C> {
     /// Create a new connector service wrapping the given connector.
     pub fn new(connector: C) -> Self {
         Self { connector }
     }
 }
 
-impl<C: ConnectorSend + Default> Default for ConnectorService<C> {
+impl<C: ConnectorSend + Default> Default for ConnectorServiceSend<C> {
     fn default() -> Self {
         Self {
             connector: C::default(),
@@ -66,7 +54,7 @@ impl<C: ConnectorSend + Default> Default for ConnectorService<C> {
     }
 }
 
-impl<C: ConnectorSend> Clone for ConnectorService<C> {
+impl<C: ConnectorSend> Clone for ConnectorServiceSend<C> {
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
@@ -74,7 +62,7 @@ impl<C: ConnectorSend> Clone for ConnectorService<C> {
     }
 }
 
-impl<C: ConnectorSend> Service<ConnectInfo> for ConnectorService<C> {
+impl<C: ConnectorSend> Service<ConnectInfo> for ConnectorServiceSend<C> {
     type Response = C::Stream;
     type Error = io::Error;
     type Future = Pin<Box<dyn Future<Output = io::Result<C::Stream>> + Send>>;
@@ -89,18 +77,18 @@ impl<C: ConnectorSend> Service<ConnectInfo> for ConnectorService<C> {
     }
 }
 
-pub(crate) trait BoxedConnectorTrait<Stream>: Send + Sync {
+pub(crate) trait BoxedConnectorSendTrait<Stream>: Send + Sync {
     fn connect(
         &self,
         info: ConnectInfo,
     ) -> Pin<Box<dyn Future<Output = io::Result<Stream>> + Send>>;
 }
 
-struct ServiceConnector<S> {
+struct ServiceConnectorSend<S> {
     inner: std::sync::Mutex<S>,
 }
 
-impl<Stream, S> BoxedConnectorTrait<Stream> for ServiceConnector<S>
+impl<Stream, S> BoxedConnectorSendTrait<Stream> for ServiceConnectorSend<S>
 where
     Stream: 'static,
     S: Service<ConnectInfo, Response = Stream, Error = io::Error> + Send + Sync + Clone + 'static,
@@ -123,11 +111,11 @@ where
 }
 
 /// A connector wrapped with tower layers.
-pub(crate) struct LayeredConnector<C: ConnectorSend> {
-    inner: Arc<dyn BoxedConnectorTrait<C::Stream>>,
+pub(crate) struct LayeredConnectorSend<C: ConnectorSend> {
+    inner: Arc<dyn BoxedConnectorSendTrait<C::Stream>>,
 }
 
-impl<C: ConnectorSend> Clone for LayeredConnector<C> {
+impl<C: ConnectorSend> Clone for LayeredConnectorSend<C> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -135,7 +123,7 @@ impl<C: ConnectorSend> Clone for LayeredConnector<C> {
     }
 }
 
-impl<C: ConnectorSend> LayeredConnector<C> {
+impl<C: ConnectorSend> LayeredConnectorSend<C> {
     pub fn new<S>(service: S) -> Self
     where
         S: Service<ConnectInfo, Response = C::Stream, Error = io::Error>
@@ -146,7 +134,7 @@ impl<C: ConnectorSend> LayeredConnector<C> {
         S::Future: Send + 'static,
     {
         Self {
-            inner: Arc::new(ServiceConnector {
+            inner: Arc::new(ServiceConnectorSend {
                 inner: std::sync::Mutex::new(service),
             }),
         }
@@ -161,10 +149,10 @@ impl<C: ConnectorSend> LayeredConnector<C> {
 }
 
 /// Apply a tower layer to a connector service, producing a layered connector.
-pub(crate) fn apply_layer<C, L>(connector: C, layer: L) -> LayeredConnector<C>
+pub(crate) fn apply_layer_send<C, L>(connector: C, layer: L) -> LayeredConnectorSend<C>
 where
     C: ConnectorSend,
-    L: Layer<ConnectorService<C>>,
+    L: tower_layer::Layer<ConnectorServiceSend<C>>,
     L::Service: Service<ConnectInfo, Response = C::Stream, Error = io::Error>
         + Send
         + Sync
@@ -172,15 +160,16 @@ where
         + 'static,
     <L::Service as Service<ConnectInfo>>::Future: Send + 'static,
 {
-    let base = ConnectorService::new(connector);
+    let base = ConnectorServiceSend::new(connector);
     let layered = layer.layer(base);
-    LayeredConnector::new(layered)
+    LayeredConnectorSend::new(layered)
 }
 
 #[cfg(all(test, feature = "tower", feature = "tokio"))]
 mod tests {
     use super::*;
     use crate::runtime::tokio_rt::TcpConnector;
+    use std::net::SocketAddr;
 
     #[test]
     fn connect_info_debug_and_clone() {
@@ -196,7 +185,7 @@ mod tests {
 
     #[test]
     fn connector_service_poll_ready() {
-        let mut conn = ConnectorService::new(TcpConnector);
+        let mut conn = ConnectorServiceSend::new(TcpConnector);
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
         let result = Service::poll_ready(&mut conn, &mut cx);
@@ -205,7 +194,7 @@ mod tests {
 
     #[test]
     fn connector_service_default() {
-        let conn = ConnectorService::<TcpConnector>::default();
+        let conn = ConnectorServiceSend::<TcpConnector>::default();
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
         let mut conn = conn;
@@ -215,9 +204,8 @@ mod tests {
 
     #[tokio::test]
     async fn layered_connector_connect_failure() {
-        // Try connecting to a port that's not listening
         let layer = tower_layer::Identity::new();
-        let connector: LayeredConnector<TcpConnector> = apply_layer(TcpConnector, layer);
+        let connector: LayeredConnectorSend<TcpConnector> = apply_layer_send(TcpConnector, layer);
         let info = ConnectInfo {
             uri: "http://127.0.0.1:1".parse().unwrap(),
             addr: "127.0.0.1:1".parse().unwrap(),

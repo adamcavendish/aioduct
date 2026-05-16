@@ -1297,6 +1297,8 @@ version = "0.1.10"
 dependencies = [
  "aioduct",
  "compio-runtime",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]
