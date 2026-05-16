@@ -209,7 +209,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
 
             let _ = resp.bytes().await;
 
-            current_uri = next_uri;
+            current_uri = self.core.maybe_upgrade_hsts(next_uri);
             current_method = next_method;
             current_body = next_body;
         }
