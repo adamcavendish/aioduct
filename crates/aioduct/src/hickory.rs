@@ -159,4 +159,77 @@ mod tests {
 
         assert_eq!(err.kind(), io::ErrorKind::AddrNotAvailable);
     }
+
+    #[tokio::test]
+    async fn hickory_resolver_new_succeeds() {
+        let resolver = HickoryResolver::new();
+        assert!(resolver.is_ok());
+    }
+
+    #[tokio::test]
+    async fn hickory_resolver_from_config_succeeds() {
+        let resolver =
+            HickoryResolver::from_config(ResolverConfig::default(), ResolverOpts::default());
+        assert!(resolver.is_ok());
+    }
+
+    #[tokio::test]
+    async fn hickory_resolve_localhost() {
+        let resolver = HickoryResolver::new().unwrap();
+        let addr = resolver.resolve("localhost", 80).await;
+        assert!(addr.is_ok(), "resolve localhost failed: {addr:?}");
+        assert_eq!(addr.unwrap().port(), 80);
+    }
+
+    #[tokio::test]
+    async fn hickory_resolve_all_localhost() {
+        let resolver = HickoryResolver::new().unwrap();
+        let addrs = resolver.resolve_all("localhost", 8080).await;
+        assert!(addrs.is_ok(), "resolve_all localhost failed: {addrs:?}");
+        let addrs = addrs.unwrap();
+        assert!(!addrs.is_empty());
+        for addr in &addrs {
+            assert_eq!(addr.port(), 8080);
+        }
+    }
+
+    #[test]
+    fn hickory_resolver_clone() {
+        let resolver = HickoryResolver::new().unwrap();
+        let _cloned = resolver.clone();
+    }
+
+    #[tokio::test]
+    async fn hickory_resolve_nonexistent_host_errors() {
+        let resolver = HickoryResolver::new().unwrap();
+        let result = resolver
+            .resolve("this.host.definitely.does.not.exist.invalid", 80)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn hickory_resolve_all_nonexistent_host_errors() {
+        let resolver = HickoryResolver::new().unwrap();
+        let result = resolver
+            .resolve_all("this.host.definitely.does.not.exist.invalid", 80)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn hickory_resolve_preserves_port() {
+        let resolver = HickoryResolver::new().unwrap();
+        let addr = resolver.resolve("localhost", 12345).await.unwrap();
+        assert_eq!(addr.port(), 12345);
+    }
+
+    #[tokio::test]
+    async fn hickory_from_config_resolves() {
+        let resolver =
+            HickoryResolver::from_config(ResolverConfig::default(), ResolverOpts::default())
+                .unwrap();
+        let addr = resolver.resolve("localhost", 80).await;
+        assert!(addr.is_ok());
+    }
 }

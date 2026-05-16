@@ -44,11 +44,6 @@ fn key(host: &str) -> PoolKey {
 }
 
 #[test]
-fn pool_creates_with_given_parameters() {
-    let _pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
-}
-
-#[test]
 fn checkout_returns_none_on_empty_pool() {
     let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
     assert!(pool.checkout(&key("example.com:80")).is_none());

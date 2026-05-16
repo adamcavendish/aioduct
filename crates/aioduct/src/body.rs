@@ -374,18 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn into_hyper_body_buffered() {
-        let body = buffered(b"hello");
-        let _hyper = body.into_hyper_body();
-    }
-
-    #[test]
-    fn into_hyper_body_streaming() {
-        let body = streaming();
-        let _hyper = body.into_hyper_body();
-    }
-
-    #[test]
     fn body_stream_debug() {
         let hyper_body: RequestBoxBody = http_body_util::Empty::new()
             .map_err(|never| match never {})
@@ -422,6 +410,257 @@ mod tests {
             .boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
         assert!(stream.next().await.is_none());
+        assert!(stream.next().await.is_none());
+    }
+
+    #[test]
+    fn into_local_body_buffered() {
+        let body = buffered(b"local_test");
+        let local = body.into_local_body();
+        // Verify it's a valid body by checking size_hint
+        use http_body::Body;
+        let hint = local.size_hint();
+        assert_eq!(hint.exact(), Some(10));
+    }
+
+    #[test]
+    fn into_local_body_streaming() {
+        let body = streaming();
+        let local = body.into_local_body();
+        // Streaming empty body has size 0
+        use http_body::Body;
+        let hint = local.size_hint();
+        assert_eq!(hint.exact(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn body_stream_error_propagates_and_marks_done() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct ErrorAfterFirst {
+            sent: bool,
+        }
+
+        impl http_body::Body for ErrorAfterFirst {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                if !self.sent {
+                    self.sent = true;
+                    Poll::Ready(Some(Err(Error::Other("deliberate error".into()))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+
+        let hyper_body: RequestBoxBody = ErrorAfterFirst { sent: false }.boxed_unsync();
+        let mut stream = BodyStream::new(hyper_body);
+
+        // First call should return the error
+        let result = stream.next().await;
+        assert!(result.is_some());
+        assert!(result.unwrap().is_err());
+
+        // After error, stream is done
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn body_stream_skips_non_data_frames() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct TrailerThenData {
+            state: u8,
+        }
+
+        impl http_body::Body for TrailerThenData {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                match self.state {
+                    0 => {
+                        self.state = 1;
+                        // Emit a trailers frame (non-data)
+                        let mut trailers = http::HeaderMap::new();
+                        trailers.insert("x-test", "val".parse().unwrap());
+                        Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
+                    }
+                    1 => {
+                        self.state = 2;
+                        Poll::Ready(Some(Ok(http_body::Frame::data(Bytes::from(
+                            "after_trailer",
+                        )))))
+                    }
+                    _ => Poll::Ready(None),
+                }
+            }
+        }
+
+        let hyper_body: RequestBoxBody = TrailerThenData { state: 0 }.boxed_unsync();
+        let mut stream = BodyStream::new(hyper_body);
+
+        // The trailers frame should be skipped, only data returned
+        let chunk = stream.next().await.unwrap().unwrap();
+        assert_eq!(&chunk[..], b"after_trailer");
+
+        // Then done
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn body_stream_with_observer_fires_transfer_events() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default, Clone)]
+        struct TestObs {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl observer::RequestObserver for TestObs {
+            fn on_event(&self, event: &observer::RequestEvent) {
+                let name = match &event.phase {
+                    RequestPhase::BytesTransferred {
+                        chunk_bytes,
+                        cumulative_bytes,
+                        ..
+                    } => {
+                        format!("BytesTransferred(chunk={chunk_bytes},cum={cumulative_bytes})")
+                    }
+                    RequestPhase::TransferComplete { total_bytes, .. } => {
+                        format!("TransferComplete(total={total_bytes})")
+                    }
+                    RequestPhase::TransferAborted {
+                        bytes_transferred, ..
+                    } => {
+                        format!("TransferAborted(bytes={bytes_transferred})")
+                    }
+                    other => format!("{other:?}"),
+                };
+                self.events.lock().unwrap().push(name);
+            }
+
+            fn on_connection_event(&self, _event: &observer::ConnectionEvent) {}
+        }
+
+        let obs = TestObs::default();
+        let ctx = BodyObserverCtx {
+            observer: Arc::new(obs.clone()),
+            method: http::Method::GET,
+            uri: "http://example.com/test".parse().unwrap(),
+            response_started: Instant::now(),
+        };
+
+        let hyper_body: RequestBoxBody = http_body_util::Full::new(Bytes::from("hello world"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let mut stream = BodyStream::with_observer(hyper_body, Some(ctx));
+
+        // Read all data
+        let chunk = stream.next().await.unwrap().unwrap();
+        assert_eq!(&chunk[..], b"hello world");
+
+        // Should get None (triggers TransferComplete)
+        assert!(stream.next().await.is_none());
+
+        let events = obs.events.lock().unwrap();
+        assert!(
+            events.iter().any(|e| e.contains("BytesTransferred")),
+            "should fire BytesTransferred, got: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains("TransferComplete(total=11)")),
+            "should fire TransferComplete with 11 bytes, got: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn body_stream_with_observer_fires_transfer_aborted_on_error() {
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use std::task::{Context, Poll};
+
+        #[derive(Default, Clone)]
+        struct TestObs {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl observer::RequestObserver for TestObs {
+            fn on_event(&self, event: &observer::RequestEvent) {
+                let name = match &event.phase {
+                    RequestPhase::TransferAborted {
+                        bytes_transferred,
+                        error,
+                        ..
+                    } => {
+                        format!("TransferAborted(bytes={bytes_transferred},err={error})")
+                    }
+                    RequestPhase::BytesTransferred { .. } => "BytesTransferred".into(),
+                    other => format!("{other:?}"),
+                };
+                self.events.lock().unwrap().push(name);
+            }
+
+            fn on_connection_event(&self, _event: &observer::ConnectionEvent) {}
+        }
+
+        struct ErrorBody;
+        impl http_body::Body for ErrorBody {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                Poll::Ready(Some(Err(Error::Other("test error".into()))))
+            }
+        }
+
+        let obs = TestObs::default();
+        let ctx = BodyObserverCtx {
+            observer: Arc::new(obs.clone()),
+            method: http::Method::GET,
+            uri: "http://example.com/err".parse().unwrap(),
+            response_started: Instant::now(),
+        };
+
+        let hyper_body: RequestBoxBody = ErrorBody.boxed_unsync();
+        let mut stream = BodyStream::with_observer(hyper_body, Some(ctx));
+
+        // Should get error
+        let result = stream.next().await;
+        assert!(result.is_some());
+        assert!(result.unwrap().is_err());
+
+        // Stream is done
+        assert!(stream.next().await.is_none());
+
+        let events = obs.events.lock().unwrap();
+        assert!(
+            events.iter().any(|e| e.contains("TransferAborted")),
+            "should fire TransferAborted on error, got: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn body_stream_without_observer_still_works() {
+        let hyper_body: RequestBoxBody = http_body_util::Full::new(Bytes::from("no observer"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let mut stream = BodyStream::with_observer(hyper_body, None);
+
+        let chunk = stream.next().await.unwrap().unwrap();
+        assert_eq!(&chunk[..], b"no observer");
         assert!(stream.next().await.is_none());
     }
 }

@@ -382,14 +382,6 @@ mod tests {
     use http::header::ACCEPT_ENCODING;
 
     #[test]
-    fn accept_encoding_default_is_not_empty() {
-        let ae = AcceptEncoding::default();
-        // At least when compiled with any codec feature, default is not empty
-        let _ = ae.is_empty();
-        let _ = ae.header_value();
-    }
-
-    #[test]
     fn accept_encoding_none_is_empty() {
         let ae = AcceptEncoding::none();
         assert!(ae.is_empty());
@@ -419,28 +411,6 @@ mod tests {
         let mut headers = HeaderMap::new();
         set_accept_encoding(&mut headers, &AcceptEncoding::none());
         assert!(!headers.contains_key(ACCEPT_ENCODING));
-    }
-
-    #[test]
-    fn maybe_decompress_passthrough_when_empty() {
-        use http_body_util::BodyExt;
-        let mut headers = HeaderMap::new();
-        let body: RequestBoxBody = http_body_util::Empty::new()
-            .map_err(|never| match never {})
-            .boxed_unsync();
-        let ae = AcceptEncoding::none();
-        let _result = maybe_decompress(&mut headers, body, &ae);
-    }
-
-    #[test]
-    fn maybe_decompress_passthrough_no_encoding_header() {
-        use http_body_util::BodyExt;
-        let mut headers = HeaderMap::new();
-        let body: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::from("hello"))
-            .map_err(|never| match never {})
-            .boxed_unsync();
-        let ae = AcceptEncoding::default();
-        let _result = maybe_decompress(&mut headers, body, &ae);
     }
 
     #[cfg(feature = "gzip")]
@@ -635,5 +605,269 @@ mod tests {
         assert!(headers.contains_key(CONTENT_ENCODING));
         let collected = result_body.collect().await.unwrap().to_bytes();
         assert_eq!(&collected[..], b"raw");
+    }
+
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_gzip_disabled_passthrough() {
+        use bytes::Bytes;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        let raw = b"not actually gzip";
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(&raw[..]))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let ae = AcceptEncoding {
+            gzip: false,
+            ..AcceptEncoding::default()
+        };
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        assert!(headers.contains_key(CONTENT_ENCODING));
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], raw);
+    }
+
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_gzip_finish_with_no_remaining() {
+        // Test the path where decoder.finish() returns an empty Vec (line 309)
+        // This happens when all decompressed output was already flushed during
+        // intermediate write_chunk + take_output calls.
+        use bytes::Bytes;
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+        use std::io::Write;
+
+        // Create a large enough payload that gzip will flush during streaming
+        let data = "A".repeat(65536);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(data.as_bytes()).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(collected.len(), 65536);
+        assert!(collected.iter().all(|&b| b == b'A'));
+    }
+
+    #[cfg(all(feature = "deflate", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_corrupt_deflate_returns_error() {
+        use bytes::Bytes;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "deflate".parse().unwrap());
+
+        let body: RequestBoxBody =
+            http_body_util::Full::new(Bytes::from(vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
+                .map_err(|never| match never {})
+                .boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        let result = result_body.collect().await;
+        assert!(
+            result.is_err(),
+            "corrupt deflate data should produce an error"
+        );
+    }
+
+    #[cfg(all(feature = "brotli", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_corrupt_brotli_returns_error() {
+        use bytes::Bytes;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "br".parse().unwrap());
+
+        let body: RequestBoxBody =
+            http_body_util::Full::new(Bytes::from(vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
+                .map_err(|never| match never {})
+                .boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        let result = result_body.collect().await;
+        assert!(
+            result.is_err(),
+            "corrupt brotli data should produce an error"
+        );
+    }
+
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_body_with_trailers_frame() {
+        // Test the path where a frame is NOT data (e.g., trailers frame)
+        // This should hit line 290-291 (cx.waker().wake_by_ref() + Pending)
+        use bytes::Bytes;
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+        use std::io::Write;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        // A custom body that yields a data frame, then a trailers frame, then ends
+        struct TrailersBody {
+            state: u8,
+            data: Bytes,
+        }
+
+        impl http_body::Body for TrailersBody {
+            type Data = Bytes;
+            type Error = crate::error::Error;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+                match self.state {
+                    0 => {
+                        self.state = 1;
+                        let data = self.data.clone();
+                        Poll::Ready(Some(Ok(hyper::body::Frame::data(data))))
+                    }
+                    1 => {
+                        self.state = 2;
+                        // Emit a trailers frame
+                        let mut trailers = http::HeaderMap::new();
+                        trailers.insert("x-checksum", "abc123".parse().unwrap());
+                        Poll::Ready(Some(Ok(hyper::body::Frame::trailers(trailers))))
+                    }
+                    _ => Poll::Ready(None),
+                }
+            }
+        }
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(b"with trailers").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        let body: RequestBoxBody = TrailersBody {
+            state: 0,
+            data: Bytes::from(compressed),
+        }
+        .boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], b"with trailers");
+    }
+
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_upstream_body_error() {
+        // Test the path where the upstream body returns an error (lines 294-296)
+        use bytes::Bytes;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct ErrorBody {
+            errored: bool,
+        }
+
+        impl http_body::Body for ErrorBody {
+            type Data = Bytes;
+            type Error = crate::error::Error;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+                if !self.errored {
+                    self.errored = true;
+                    Poll::Ready(Some(Err(crate::error::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "simulated upstream error",
+                    )))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        let body: RequestBoxBody = ErrorBody { errored: false }.boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        let result = result_body.collect().await;
+        assert!(result.is_err(), "upstream body error should propagate");
+    }
+
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_multi_encoding_with_identity() {
+        use bytes::Bytes;
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(b"multi-encoding").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "identity, gzip".parse().unwrap());
+
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], b"multi-encoding");
+    }
+
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_corrupt_gzip_returns_error() {
+        use bytes::Bytes;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        let body: RequestBoxBody =
+            http_body_util::Full::new(Bytes::from(vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
+                .map_err(|never| match never {})
+                .boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        let result = result_body.collect().await;
+        assert!(result.is_err(), "corrupt gzip data should produce an error");
     }
 }

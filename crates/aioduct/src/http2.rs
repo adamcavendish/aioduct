@@ -195,4 +195,11 @@ mod tests {
         let cloned = config.clone();
         assert_eq!(cloned.adaptive_window, Some(false));
     }
+
+    #[test]
+    fn default_equals_new() {
+        let d = Http2Config::default();
+        let n = Http2Config::new();
+        assert_eq!(format!("{d:?}"), format!("{n:?}"));
+    }
 }

@@ -920,4 +920,244 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn rfc850_date_format_expired() {
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Sunday, 06-Nov-94 08:49:37 GMT",
+            "example.com",
+        );
+        assert!(cookie.is_some());
+        assert!(cookie.unwrap().expired, "1994 date should be expired");
+    }
+
+    #[test]
+    fn rfc850_date_format_future_two_digit_year() {
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Monday, 01-Jan-69 00:00:00 GMT",
+            "example.com",
+        );
+        let c = cookie.unwrap();
+        assert!(
+            !c.expired,
+            "two-digit year < 70 should be interpreted as 2069"
+        );
+    }
+
+    #[test]
+    fn asctime_date_format_expired() {
+        let cookie = parse_set_cookie("sid=abc; Expires=Sun Nov  6 08:49:37 1994", "example.com");
+        assert!(cookie.is_some());
+        assert!(
+            cookie.unwrap().expired,
+            "1994 asctime date should be expired"
+        );
+    }
+
+    #[test]
+    fn asctime_date_format_future() {
+        let cookie = parse_set_cookie("sid=abc; Expires=Thu Jan  1 00:00:00 2099", "example.com");
+        let c = cookie.unwrap();
+        assert!(!c.expired, "2099 asctime date should not be expired");
+    }
+
+    #[test]
+    fn apply_to_request_merges_with_existing_cookie_header() {
+        let jar = CookieJar::new();
+        jar.store_from_response("example.com", &headers_with_cookies(&["k=v"]));
+
+        let mut req_headers = HeaderMap::new();
+        req_headers.insert(COOKIE, "existing=cookie".parse().unwrap());
+        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        let cookie = req_headers.get(COOKIE).unwrap().to_str().unwrap();
+        assert!(
+            cookie.contains("existing=cookie"),
+            "should preserve existing cookie"
+        );
+        assert!(cookie.contains("k=v"), "should add jar cookie");
+    }
+
+    #[test]
+    fn compute_unix_time_pre_1970_returns_epoch() {
+        let result = compute_unix_time(1969, 12, 31, 23, 59, 59);
+        assert_eq!(result, Some(SystemTime::UNIX_EPOCH));
+    }
+
+    #[test]
+    fn compute_unix_time_epoch_exactly() {
+        let result = compute_unix_time(1970, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(result, SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn compute_unix_time_invalid_month_13_returns_none() {
+        // month=13 means m=12 which is >= 12, should return None (line 377)
+        let result = compute_unix_time(2025, 13, 1, 0, 0, 0);
+        assert_eq!(result, None, "month 13 should return None");
+    }
+
+    #[test]
+    fn compute_unix_time_invalid_month_99_returns_none() {
+        // month=99 means m=98 which is >= 12, should return None
+        let result = compute_unix_time(2025, 99, 1, 0, 0, 0);
+        assert_eq!(result, None, "month 99 should return None");
+    }
+
+    /// BUG(#67): compute_unix_time panics on month=0 due to unchecked subtraction.
+    /// month=0 causes `month - 1` to underflow. Should return None instead.
+    #[test]
+    fn compute_unix_time_month_zero_returns_none() {
+        assert_eq!(compute_unix_time(2025, 0, 1, 0, 0, 0), None);
+    }
+
+    #[test]
+    fn parse_rfc850_missing_date_parts() {
+        // "Sunday, 06-Nov 08:49:37 GMT" has only 2 parts in the date
+        // date_parts.len() != 3 should return None (line 304)
+        assert!(parse_rfc850("Sunday, 06-Nov 08:49:37 GMT").is_none());
+    }
+
+    #[test]
+    fn parse_rfc850_two_digit_year_below_70() {
+        // Two-digit year < 70 gets 2000 added (line 310: year += 2000)
+        let result = parse_rfc850("Monday, 15-Jan-25 10:30:00 GMT");
+        assert!(result.is_some(), "rfc850 with 2-digit year 25 should parse");
+        // Year 25 -> 2025, which is in the past relative to 2026
+        // 2025-01-15 should parse to a valid time
+        let t = result.unwrap();
+        assert!(t > SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn parse_rfc850_two_digit_year_exactly_69() {
+        // Year 69 < 70, so gets 2000 added -> 2069 (future)
+        let result = parse_rfc850("Wednesday, 01-Mar-69 00:00:00 GMT");
+        assert!(result.is_some());
+        let t = result.unwrap();
+        // 2069 is well in the future
+        assert!(t > SystemTime::now());
+    }
+
+    #[test]
+    fn parse_rfc850_two_digit_year_70_gets_1900() {
+        // Year 70 >= 70 and < 100, so gets 1900 added -> 1970
+        let result = parse_rfc850("Thursday, 01-Jan-70 00:00:01 GMT");
+        assert!(result.is_some());
+        let t = result.unwrap();
+        // 1970-01-01 00:00:01 is UNIX_EPOCH + 1 second
+        assert_eq!(t, SystemTime::UNIX_EPOCH + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn parse_asctime_valid_format() {
+        // Standard asctime format: "Wdy Mon DD HH:MM:SS YYYY"
+        let result = parse_asctime("Thu Jan  1 00:00:00 2099");
+        assert!(result.is_some());
+        let t = result.unwrap();
+        assert!(t > SystemTime::now(), "2099 should be in the future");
+    }
+
+    #[test]
+    fn parse_asctime_past_date() {
+        let result = parse_asctime("Wed Jan  1 00:00:00 2020");
+        assert!(result.is_some());
+        let t = result.unwrap();
+        assert!(t < SystemTime::now(), "2020 should be in the past");
+    }
+
+    #[test]
+    fn expires_rfc850_two_digit_year_below_70_not_expired() {
+        // This exercises the full path through parse_set_cookie -> parse_http_date -> parse_rfc850
+        // with a two-digit year < 70 (interpreted as 2000+year)
+        let cookie = parse_set_cookie(
+            "sid=abc; Expires=Wednesday, 01-Mar-69 00:00:00 GMT",
+            "example.com",
+        );
+        let c = cookie.unwrap();
+        assert!(
+            !c.expired,
+            "year 69 should be interpreted as 2069 (not expired)"
+        );
+    }
+
+    #[test]
+    fn domain_matches_subdomain_not_at_dot_boundary() {
+        // "fooexample.com" should NOT match "example.com"
+        // because the character before "example.com" is not a dot
+        assert!(!domain_matches("fooexample.com", "example.com"));
+    }
+
+    #[test]
+    fn host_only_cookie_exact_match_applies() {
+        // A cookie without Domain attribute (host_only=true) should match exact domain
+        let jar = CookieJar::new();
+        jar.store_from_response("exact.example.com", &headers_with_cookies(&["h=1"]));
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("exact.example.com", false, "/", &mut req_headers);
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "h=1");
+    }
+
+    #[test]
+    fn domain_cookie_does_not_apply_to_unrelated() {
+        // A cookie with Domain=example.com should NOT match totally-different.com
+        let jar = CookieJar::new();
+        jar.store_from_response(
+            "example.com",
+            &headers_with_cookies(&["k=v; Domain=example.com"]),
+        );
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("totally-different.com", false, "/", &mut req_headers);
+        assert!(req_headers.get(COOKIE).is_none());
+    }
+
+    #[test]
+    fn cookies_accessor_returns_cloned_cookies() {
+        let jar = CookieJar::new();
+        jar.store_from_response(
+            "example.com",
+            &headers_with_cookies(&["name=value; Secure; HttpOnly; Path=/api"]),
+        );
+        let cookies = jar.cookies();
+        assert_eq!(cookies.len(), 1);
+        let c = &cookies[0];
+        assert_eq!(c.name(), "name");
+        assert_eq!(c.value(), "value");
+        assert!(c.secure());
+        assert!(c.http_only());
+        assert_eq!(c.path(), Some("/api"));
+    }
+
+    #[test]
+    fn clear_on_empty_jar_is_noop() {
+        let jar = CookieJar::new();
+        jar.clear();
+        assert!(jar.cookies().is_empty());
+    }
+
+    #[test]
+    fn parse_rfc850_invalid_format() {
+        assert!(parse_rfc850("not a date").is_none());
+        assert!(parse_rfc850("Sunday, 06-Nov-94 08:49:37 EST").is_none());
+        assert!(parse_rfc850("Sunday, 06-Nov 08:49:37 GMT").is_none());
+    }
+
+    #[test]
+    fn parse_asctime_invalid_format() {
+        assert!(parse_asctime("not a date").is_none());
+        assert!(parse_asctime("Sun Nov").is_none());
+    }
+
+    #[test]
+    fn path_matches_trailing_slash() {
+        assert!(path_matches("/api/v1", "/api/"));
+        assert!(!path_matches("/api-v2", "/api/"));
+    }
+
+    #[test]
+    fn path_matches_exact_with_subpath() {
+        assert!(path_matches("/foo/bar", "/foo"));
+        assert!(!path_matches("/foobar", "/foo"));
+    }
 }

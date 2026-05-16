@@ -262,3 +262,164 @@ where
         Ok(resp.into_local())
     }
 }
+
+#[cfg(all(test, feature = "compio"))]
+mod tests {
+    use super::*;
+    use crate::client::HttpEngineLocal;
+    use crate::runtime::compio_rt::{CompioRuntime, TcpConnector};
+
+    fn test_client() -> HttpEngineLocal<CompioRuntime, TcpConnector> {
+        HttpEngineLocal::new_local(TcpConnector)
+    }
+
+    fn dummy_request(path: &str) -> http::Request<http_body_util::Empty<Bytes>> {
+        http::Request::builder()
+            .uri(path)
+            .body(http_body_util::Empty::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn strip_prefix_sets_field() {
+        let client = test_client();
+        let req = dummy_request("/api/users");
+        let builder = ForwardBuilderLocal::new(&client, req).strip_prefix("/api");
+        assert_eq!(builder.strip_prefix.as_deref(), Some("/api"));
+    }
+
+    #[test]
+    fn preserve_host_sets_flag() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilderLocal::new(&client, req).preserve_host();
+        assert!(builder.preserve_host);
+    }
+
+    #[test]
+    fn timeout_sets_duration() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilderLocal::new(&client, req).timeout(Duration::from_secs(5));
+        assert_eq!(builder.timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn header_adds_to_extra_headers() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilderLocal::new(&client, req)
+            .header(http::header::ACCEPT, HeaderValue::from_static("text/html"));
+        assert_eq!(builder.extra_headers.get("accept").unwrap(), "text/html");
+    }
+
+    #[test]
+    fn forward_header_adds_to_list() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder =
+            ForwardBuilderLocal::new(&client, req).forward_header(http::header::AUTHORIZATION);
+        assert_eq!(builder.forward_headers.len(), 1);
+        assert_eq!(builder.forward_headers[0], http::header::AUTHORIZATION);
+    }
+
+    #[test]
+    fn remove_header_adds_to_list() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilderLocal::new(&client, req).remove_header(http::header::COOKIE);
+        assert_eq!(builder.remove_headers.len(), 1);
+        assert_eq!(builder.remove_headers[0], http::header::COOKIE);
+    }
+
+    #[test]
+    fn upstream_sets_uri() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilderLocal::new(&client, req).upstream("http://backend:8080");
+        assert_eq!(
+            builder.upstream.unwrap().to_string(),
+            "http://backend:8080/"
+        );
+    }
+
+    #[test]
+    fn upgrade_pushes_connection_and_upgrade_headers() {
+        let client = test_client();
+        let req = dummy_request("/ws");
+        let builder = ForwardBuilderLocal::new(&client, req).upgrade();
+        assert_eq!(builder.forward_headers.len(), 2);
+        assert_eq!(builder.forward_headers[0], http::header::CONNECTION);
+        assert_eq!(builder.forward_headers[1], http::header::UPGRADE);
+    }
+
+    #[test]
+    fn on_request_hook_is_set() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilderLocal::new(&client, req).on_request(|_parts| {});
+        assert!(builder.on_request.is_some());
+    }
+
+    #[test]
+    fn on_response_hook_is_set() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilderLocal::new(&client, req).on_response(|_resp| {});
+        assert!(builder.on_response.is_some());
+    }
+
+    #[test]
+    fn chained_builder() {
+        let client = test_client();
+        let req = dummy_request("/api/users?page=1");
+        let builder = ForwardBuilderLocal::new(&client, req)
+            .upstream("http://backend:8080")
+            .strip_prefix("/api")
+            .preserve_host()
+            .timeout(Duration::from_secs(30))
+            .header(
+                http::header::ACCEPT,
+                HeaderValue::from_static("application/json"),
+            )
+            .forward_header(http::header::AUTHORIZATION)
+            .remove_header(http::header::COOKIE);
+
+        assert!(builder.upstream.is_some());
+        assert_eq!(builder.strip_prefix.as_deref(), Some("/api"));
+        assert!(builder.preserve_host);
+        assert_eq!(builder.timeout, Some(Duration::from_secs(30)));
+        assert_eq!(builder.extra_headers.len(), 1);
+        assert_eq!(builder.forward_headers.len(), 1);
+        assert_eq!(builder.remove_headers.len(), 1);
+    }
+
+    #[test]
+    fn send_without_upstream_returns_error() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let result = ForwardBuilderLocal::new(&client, req).send().await;
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                crate::error::Error::InvalidUrl(msg) => assert!(msg.contains("no upstream")),
+                other => panic!("expected InvalidUrl, got: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn send_with_upstream_no_authority_returns_error() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            // An upstream with just a path and no authority triggers an error
+            let result = ForwardBuilderLocal::new(&client, req)
+                .upstream("/just-a-path")
+                .send()
+                .await;
+            // upstream() silently drops invalid URIs, so this falls through as "no upstream"
+            assert!(result.is_err());
+        });
+    }
+}

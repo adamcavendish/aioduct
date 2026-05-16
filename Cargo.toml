@@ -58,6 +58,7 @@ serde_urlencoded = "0.7"
 smol = "2"
 socket2 = { version = "0.6", features = ["all"] }
 thiserror = "2"
+time = "0.3"
 tokio = "1"
 tokio-rustls = "0.26"
 tower-layer = "0.3"

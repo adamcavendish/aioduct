@@ -194,4 +194,82 @@ mod tests {
         store.store_from_response("example.com", &hsts_headers("max-age=3600"));
         assert!(store2.should_upgrade("example.com"));
     }
+
+    #[test]
+    fn debug_format() {
+        let store = HstsStore::new();
+        let dbg = format!("{:?}", store);
+        assert!(dbg.contains("HstsStore"));
+    }
+
+    #[test]
+    fn debug_format_after_insert() {
+        let store = HstsStore::new();
+        store.store_from_response("example.com", &hsts_headers("max-age=3600"));
+        // Debug should still work and show "HstsStore" even with entries
+        let dbg = format!("{:?}", store);
+        assert!(dbg.contains("HstsStore"));
+        // Verify the store still functions after formatting
+        assert!(store.should_upgrade("example.com"));
+    }
+
+    #[test]
+    fn poisoned_lock_store_from_response_does_not_panic() {
+        let store = HstsStore::new();
+
+        // Poison the mutex by panicking in a thread while holding the lock
+        let inner_clone = store.inner.clone();
+        let result = std::thread::spawn(move || {
+            let _guard = inner_clone.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        })
+        .join();
+        assert!(result.is_err(), "thread should have panicked");
+
+        // Now the mutex is poisoned. store_from_response should gracefully return
+        // without panicking.
+        store.store_from_response("example.com", &hsts_headers("max-age=3600"));
+        // The entry should NOT have been stored since the lock is poisoned
+        // (should_upgrade will also hit the poisoned lock and return false)
+    }
+
+    #[test]
+    fn poisoned_lock_should_upgrade_returns_false() {
+        let store = HstsStore::new();
+
+        // Poison the mutex
+        let inner_clone = store.inner.clone();
+        let result = std::thread::spawn(move || {
+            let _guard = inner_clone.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        })
+        .join();
+        assert!(result.is_err());
+
+        // should_upgrade should return false when lock is poisoned
+        assert!(!store.should_upgrade("example.com"));
+    }
+
+    #[test]
+    fn poisoned_lock_clear_does_not_panic() {
+        let store = HstsStore::new();
+
+        // Poison the mutex
+        let inner_clone = store.inner.clone();
+        let result = std::thread::spawn(move || {
+            let _guard = inner_clone.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        })
+        .join();
+        assert!(result.is_err());
+
+        // clear should not panic, just return
+        store.clear();
+    }
+
+    #[test]
+    fn default_creates_empty_store() {
+        let store = HstsStore::default();
+        assert!(!store.should_upgrade("example.com"));
+    }
 }

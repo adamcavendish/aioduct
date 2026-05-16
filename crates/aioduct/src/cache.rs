@@ -1911,4 +1911,484 @@ mod tests {
             _ => panic!("cloned cache should see entries from original"),
         }
     }
+
+    #[test]
+    fn test_staleness_with_expired_expires_header() {
+        // Test the staleness path when expires is in the past (lines 59-67)
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/past-expires".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        // Expires in the past (year 2020) + etag for validators
+        headers.insert(EXPIRES, "Thu, 01 Jan 2020 00:00:00 GMT".parse().unwrap());
+        headers.insert(ETAG, "\"expired-v1\"".parse().unwrap());
+
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("old data"),
+            &HeaderMap::new(),
+        );
+
+        // Should be stale because expires is in the past
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
+            CacheLookup::Stale { cached, .. } => {
+                assert_eq!(cached.body, Bytes::from("old data"));
+            }
+            CacheLookup::Fresh(_) => panic!("past expires should not be fresh"),
+            CacheLookup::Miss => panic!("should find the entry (has validators)"),
+        }
+    }
+
+    #[test]
+    fn test_staleness_with_max_age_zero() {
+        // max-age=0 means immediately stale (covers lines 54-56)
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/immediate-stale".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=0".parse().unwrap());
+        headers.insert(ETAG, "\"v1\"".parse().unwrap());
+
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("stale immediately"),
+            &HeaderMap::new(),
+        );
+
+        // Give it a tiny bit of time to become "stale"
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
+            CacheLookup::Stale { cached, .. } => {
+                assert_eq!(cached.body, Bytes::from("stale immediately"));
+            }
+            CacheLookup::Fresh(_) => panic!("max-age=0 should be stale immediately"),
+            CacheLookup::Miss => panic!("should find the entry (has etag)"),
+        }
+    }
+
+    #[test]
+    fn test_staleness_with_future_expires_is_fresh() {
+        // When expires is in the future, the entry is fresh (line 42 returns true)
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/future-expires".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(EXPIRES, "Thu, 01 Jan 2099 00:00:00 GMT".parse().unwrap());
+
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("future data"),
+            &HeaderMap::new(),
+        );
+
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
+            CacheLookup::Fresh(entry) => {
+                assert_eq!(entry.body, Bytes::from("future data"));
+            }
+            _ => panic!("future expires should be fresh"),
+        }
+    }
+
+    #[test]
+    fn test_staleness_via_expires_with_swr_serves_fresh() {
+        // expires in the past + stale-while-revalidate: staleness() goes
+        // through the expires path (lines 59-64) and serves via swr
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/exp-swr-staleness".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        // Only expires (no max-age) so staleness() uses the expires path
+        headers.insert(EXPIRES, "Thu, 01 Jan 2020 00:00:00 GMT".parse().unwrap());
+        headers.insert(
+            CACHE_CONTROL,
+            "stale-while-revalidate=999999999".parse().unwrap(),
+        );
+
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("swr via expires"),
+            &HeaderMap::new(),
+        );
+
+        // staleness() returns Some(since_epoch - expires_since) via the expires path
+        // and since staleness < swr, it should serve as Fresh
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
+            CacheLookup::Fresh(entry) => {
+                assert_eq!(entry.body, Bytes::from("swr via expires"));
+            }
+            _ => panic!("swr with past expires should still serve as fresh"),
+        }
+    }
+
+    #[test]
+    fn test_vary_matching_same_headers_hit() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/vary".parse().unwrap();
+        let mut resp_headers = HeaderMap::new();
+        resp_headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        resp_headers.insert(http::header::VARY, "Accept-Encoding".parse().unwrap());
+
+        let mut req_headers = HeaderMap::new();
+        req_headers.insert(http::header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &resp_headers,
+            &Bytes::from("gzip-data"),
+            &req_headers,
+        );
+
+        match cache.lookup(&Method::GET, &uri, &req_headers) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.body, Bytes::from("gzip-data"));
+            }
+            _ => panic!("same Vary headers should cache-hit"),
+        }
+    }
+
+    #[test]
+    fn test_vary_matching_different_headers_miss() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/vary-miss".parse().unwrap();
+        let mut resp_headers = HeaderMap::new();
+        resp_headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        resp_headers.insert(http::header::VARY, "Accept-Encoding".parse().unwrap());
+
+        let mut stored_req = HeaderMap::new();
+        stored_req.insert(http::header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &resp_headers,
+            &Bytes::from("gzip-data"),
+            &stored_req,
+        );
+
+        let mut different_req = HeaderMap::new();
+        different_req.insert(http::header::ACCEPT_ENCODING, "br".parse().unwrap());
+        match cache.lookup(&Method::GET, &uri, &different_req) {
+            CacheLookup::Miss => {}
+            _ => panic!("different Vary header value should be a cache miss"),
+        }
+    }
+
+    #[test]
+    fn test_vary_star_always_misses() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/vary-star".parse().unwrap();
+        let mut resp_headers = HeaderMap::new();
+        resp_headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        resp_headers.insert(http::header::VARY, "*".parse().unwrap());
+
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &resp_headers,
+            &Bytes::from("star"),
+            &HeaderMap::new(),
+        );
+
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
+            CacheLookup::Miss => {}
+            _ => panic!("Vary: * should always miss"),
+        }
+    }
+
+    #[test]
+    fn test_cacheable_status_codes() {
+        let cacheable = [200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501];
+        for code in cacheable {
+            assert!(
+                is_cacheable_status(StatusCode::from_u16(code).unwrap()),
+                "status {code} should be cacheable"
+            );
+        }
+        let not_cacheable = [201, 202, 302, 303, 307, 400, 401, 403, 500, 502, 503];
+        for code in not_cacheable {
+            assert!(
+                !is_cacheable_status(StatusCode::from_u16(code).unwrap()),
+                "status {code} should not be cacheable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cache_last_modified_validator() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/lm".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "max-age=0".parse().unwrap());
+        headers.insert(
+            LAST_MODIFIED,
+            "Sun, 06 Nov 1994 08:49:37 GMT".parse().unwrap(),
+        );
+
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &headers,
+            &Bytes::from("modified"),
+            &HeaderMap::new(),
+        );
+
+        match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
+            CacheLookup::Stale { validators, .. } => {
+                assert_eq!(
+                    validators.last_modified.as_deref(),
+                    Some("Sun, 06 Nov 1994 08:49:37 GMT")
+                );
+                assert!(validators.etag.is_none());
+            }
+            _ => panic!("expected stale with last_modified validator"),
+        }
+    }
+
+    #[test]
+    fn test_parse_cache_control_non_ascii_returns_defaults() {
+        // When Cache-Control header value is non-ASCII, to_str() fails and
+        // parse_cache_control returns default directives (line 509)
+        let mut headers = HeaderMap::new();
+        // Insert raw bytes that are not valid UTF-8
+        headers.insert(
+            CACHE_CONTROL,
+            http::HeaderValue::from_bytes(b"max-age=3600, \xff\xfe").unwrap(),
+        );
+        let directives = parse_cache_control(&headers);
+        // All fields should be at their defaults since parsing bailed
+        assert!(directives.max_age.is_none());
+        assert!(!directives.no_store);
+        assert!(!directives.no_cache);
+        assert!(!directives.private);
+        assert!(!directives.must_revalidate);
+        assert!(!directives.immutable);
+        assert!(directives.stale_while_revalidate.is_none());
+        assert!(directives.stale_if_error.is_none());
+    }
+
+    #[test]
+    fn test_vary_matches_with_vary_but_no_stored_headers_returns_true() {
+        // When entry has `vary` set but `request_vary_headers` is None,
+        // vary_matches should return true (line 629)
+        let entry = CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("data"),
+            stored_at: Instant::now(),
+            max_age: Some(Duration::from_secs(3600)),
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+            vary: Some(vec!["accept-encoding".to_string()]),
+            request_vary_headers: None, // <-- this is the key: vary is Some but stored headers is None
+        };
+        let request_headers = HeaderMap::new();
+        assert!(vary_matches(&entry, &request_headers));
+    }
+
+    #[test]
+    fn test_staleness_returns_none_when_max_age_not_exceeded() {
+        // When age < max_age, staleness() returns None (covers line 57)
+        let entry = CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("fresh"),
+            stored_at: Instant::now(), // just created, age ~0
+            max_age: Some(Duration::from_secs(3600)),
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
+        };
+        // staleness should be None since entry is fresh
+        assert!(entry.staleness().is_none());
+    }
+
+    #[test]
+    fn test_staleness_returns_none_when_expires_in_future() {
+        // When expires is in the future, staleness() returns None (covers lines 66-68)
+        let entry = CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("fresh-expires"),
+            stored_at: Instant::now(),
+            max_age: None, // no max-age, so staleness checks expires
+            expires_at: Some(SystemTime::now() + Duration::from_secs(3600)),
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
+        };
+        // staleness should be None since expires is in the future
+        assert!(entry.staleness().is_none());
+    }
+
+    #[test]
+    fn test_staleness_returns_none_when_no_max_age_no_expires() {
+        // When there is neither max_age nor expires_at, staleness() returns None
+        // (covers the final None at line 68)
+        let entry = CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("no-info"),
+            stored_at: Instant::now(),
+            max_age: None,
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
+        };
+        assert!(entry.staleness().is_none());
+    }
+
+    #[test]
+    fn test_staleness_returns_some_when_max_age_exceeded() {
+        // When age > max_age, staleness() returns Some(age - max_age)
+        let entry = CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("stale"),
+            stored_at: Instant::now() - Duration::from_secs(120), // 120s old
+            max_age: Some(Duration::from_secs(60)),               // max-age is 60s
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
+        };
+        let staleness = entry.staleness();
+        assert!(staleness.is_some());
+        // Should be ~60s of staleness
+        let staleness = staleness.unwrap();
+        assert!(staleness >= Duration::from_secs(59));
+    }
+
+    #[test]
+    fn test_poisoned_lock_get_returns_none() {
+        // Poison the mutex by panicking inside a lock scope
+        let store = std::sync::Arc::new(InMemoryCacheStore::new(256));
+        let store_clone = store.clone();
+        let _ = std::thread::spawn(move || {
+            let _lock = store_clone.inner.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        })
+        .join();
+
+        // Now the mutex is poisoned
+        let uri: Uri = "http://example.com/poisoned".parse().unwrap();
+        // get should return None on poisoned lock
+        assert!(store.get(&Method::GET, &uri).is_none());
+    }
+
+    #[test]
+    fn test_poisoned_lock_put_is_noop() {
+        let store = std::sync::Arc::new(InMemoryCacheStore::new(256));
+        let store_clone = store.clone();
+        let _ = std::thread::spawn(move || {
+            let _lock = store_clone.inner.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        })
+        .join();
+
+        let uri: Uri = "http://example.com/poisoned-put".parse().unwrap();
+        let entry = CacheEntry {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from("data"),
+            stored_at: Instant::now(),
+            max_age: Some(Duration::from_secs(60)),
+            expires_at: None,
+            etag: None,
+            last_modified: None,
+            must_revalidate: false,
+            immutable: false,
+            stale_while_revalidate: None,
+            stale_if_error: None,
+            vary: None,
+            request_vary_headers: None,
+        };
+        // put should silently return on poisoned lock
+        store.put(&Method::GET, &uri, entry);
+        // len should return 0 on poisoned lock
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn test_poisoned_lock_remove_is_noop() {
+        let store = std::sync::Arc::new(InMemoryCacheStore::new(256));
+        let store_clone = store.clone();
+        let _ = std::thread::spawn(move || {
+            let _lock = store_clone.inner.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        })
+        .join();
+
+        let uri: Uri = "http://example.com/poisoned-rm".parse().unwrap();
+        // remove should silently return on poisoned lock
+        store.remove(&Method::GET, &uri);
+    }
+
+    #[test]
+    fn test_poisoned_lock_clear_is_noop() {
+        let store = std::sync::Arc::new(InMemoryCacheStore::new(256));
+        let store_clone = store.clone();
+        let _ = std::thread::spawn(move || {
+            let _lock = store_clone.inner.lock().unwrap();
+            panic!("intentional panic to poison mutex");
+        })
+        .join();
+
+        // clear should silently return on poisoned lock
+        store.clear();
+        // is_empty via len should return 0 (default on poisoned lock)
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn test_cache_no_header_returns_default_directives() {
+        // When there is no Cache-Control header at all, parse_cache_control
+        // returns default directives (covers line 506-507)
+        let headers = HeaderMap::new();
+        let directives = parse_cache_control(&headers);
+        assert!(directives.max_age.is_none());
+        assert!(!directives.no_store);
+        assert!(!directives.no_cache);
+        assert!(!directives.private);
+        assert!(!directives.must_revalidate);
+        assert!(!directives.immutable);
+    }
 }

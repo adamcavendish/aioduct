@@ -196,4 +196,67 @@ mod tests {
         assert_eq!(links[0].uri(), "/page/2");
         assert_eq!(links[0].rel(), Some("next"));
     }
+
+    #[test]
+    fn link_without_rel() {
+        let headers = link_headers(&["<https://example.com/style.css>; type=\"text/css\""]);
+        let links = parse_link_headers(&headers);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].rel(), None);
+        assert_eq!(links[0].media_type(), Some("text/css"));
+    }
+
+    #[test]
+    fn link_with_unknown_params() {
+        let headers = link_headers(&[
+            "<https://example.com/feed>; rel=\"alternate\"; hreflang=\"en\"; custom=\"value\"",
+        ]);
+        let links = parse_link_headers(&headers);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].rel(), Some("alternate"));
+        assert_eq!(links[0].title(), None);
+    }
+
+    #[test]
+    fn link_uri_with_comma_inside_brackets() {
+        let headers = link_headers(&[
+            "<https://example.com/a,b>; rel=\"first\", <https://example.com/c>; rel=\"second\"",
+        ]);
+        let links = parse_link_headers(&headers);
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].uri(), "https://example.com/a,b");
+        assert_eq!(links[1].uri(), "https://example.com/c");
+    }
+
+    #[test]
+    fn empty_uri_skipped() {
+        let headers = link_headers(&["<>; rel=\"empty\""]);
+        let links = parse_link_headers(&headers);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn link_clone_and_eq() {
+        let headers = link_headers(&["<https://example.com>; rel=\"self\""]);
+        let links = parse_link_headers(&headers);
+        let cloned = links[0].clone();
+        assert_eq!(links[0], cloned);
+    }
+
+    #[test]
+    fn link_debug() {
+        let headers = link_headers(&["<https://example.com>; rel=\"self\""]);
+        let links = parse_link_headers(&headers);
+        let dbg = format!("{:?}", links[0]);
+        assert!(dbg.contains("Link"));
+        assert!(dbg.contains("https://example.com"));
+    }
+
+    #[test]
+    fn whitespace_only_entry() {
+        let headers = link_headers(&["  , <https://example.com>; rel=\"valid\""]);
+        let links = parse_link_headers(&headers);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].uri(), "https://example.com");
+    }
 }

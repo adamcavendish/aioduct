@@ -605,4 +605,190 @@ mod tests {
             assert!(result.is_ok());
         });
     }
+
+    #[test]
+    fn connector_connect_bound_works() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let connector = TcpConnector;
+            let local: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+            let stream = crate::runtime::Connector::connect_bound(&connector, addr, local).await;
+            assert!(stream.is_ok());
+        });
+    }
+
+    #[test]
+    fn connector_from_std_tcp_works() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let std_stream = std::net::TcpStream::connect(addr).unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let connector = TcpConnector;
+            let result = crate::runtime::Connector::from_std_tcp(&connector, std_stream);
+            assert!(result.is_ok());
+        });
+    }
+
+    // ── Connector connect_bound IPv6 path ─────────────────────────────
+
+    #[test]
+    fn connector_connect_bound_ipv6() {
+        let listener = match std::net::TcpListener::bind("[::1]:0") {
+            Ok(l) => l,
+            Err(_) => return, // Skip if IPv6 not available
+        };
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let connector = TcpConnector;
+            let local: std::net::IpAddr = "::1".parse().unwrap();
+            let stream = crate::runtime::Connector::connect_bound(&connector, addr, local).await;
+            assert!(stream.is_ok());
+        });
+    }
+
+    // ── DefaultResolver resolve_all error ─────────────────────────────
+
+    #[test]
+    fn default_resolver_resolve_all_invalid_host_errors() {
+        use crate::runtime::Resolve;
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let resolver = DefaultResolver;
+            let result = resolver
+                .resolve_all("this.host.does.not.exist.invalid", 80)
+                .await;
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn default_resolver_resolve_single() {
+        use crate::runtime::Resolve;
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let resolver = DefaultResolver;
+            let addr = resolver.resolve("localhost", 80).await.unwrap();
+            assert_eq!(addr.port(), 80);
+        });
+    }
+
+    #[test]
+    fn block_on_works() {
+        use crate::runtime::RuntimeCompletion;
+        let result = CompioRuntime::block_on(async { 42 }).unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn compio_io_inner_accessor() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let io = CompioIo::new(
+            async_io::Async::<std::net::TcpStream>::try_from(
+                std::net::TcpStream::connect(addr).unwrap(),
+            )
+            .unwrap(),
+        );
+        let _inner = io.inner();
+    }
+
+    #[test]
+    fn set_keepalive_interval_none() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let stream = CompioRuntime::connect(addr).await.unwrap();
+            let result =
+                CompioRuntime::set_tcp_keepalive(&stream, Duration::from_secs(60), None, None);
+            assert!(result.is_ok());
+        });
+    }
+
+    // ── CompioIo tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn compio_io_new_and_inner() {
+        let val = 42u32;
+        let io = CompioIo::new(val);
+        assert_eq!(*io.inner(), 42u32);
+    }
+
+    // ── DefaultResolver resolve_all ────────────────────────────────────
+
+    #[test]
+    fn default_resolver_resolve_all_multiple() {
+        use crate::runtime::Resolve;
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let resolver = DefaultResolver;
+            let addrs = resolver.resolve_all("localhost", 80).await.unwrap();
+            assert!(!addrs.is_empty());
+            for addr in &addrs {
+                assert_eq!(addr.port(), 80);
+            }
+        });
+    }
+
+    #[test]
+    fn default_resolver_invalid_host_errors() {
+        use crate::runtime::Resolve;
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let resolver = DefaultResolver;
+            let result = resolver
+                .resolve("this.host.does.not.exist.invalid", 80)
+                .await;
+            assert!(result.is_err());
+        });
+    }
+
+    // ── CompioSleep new() constructor ──────────────────────────────────
+
+    #[test]
+    fn compio_sleep_new_completes() {
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let timer = async_io::Timer::after(Duration::from_millis(5));
+            let sleep = CompioSleep::new(timer);
+            let start = std::time::Instant::now();
+            sleep.await;
+            assert!(start.elapsed() >= Duration::from_millis(5));
+        });
+    }
+
+    // ── RuntimeLocal ───────────────────────────────────────────────────
+
+    #[test]
+    fn runtime_completion_block_on_nested() {
+        use crate::runtime::RuntimeCompletion;
+        // block_on should work for simple computations
+        let result = CompioRuntime::block_on(async { "hello".len() }).unwrap();
+        assert_eq!(result, 5);
+    }
+
+    // ── CompioTcpStream I/O delegation ─────────────────────────────────
+
+    #[test]
+    fn compio_tcp_stream_read_write() {
+        use std::future::poll_fn;
+        use std::io::Read as _;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let mut stream = CompioRuntime::connect(addr).await.unwrap();
+
+            let data = b"compio tcp test";
+            let n = poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, data))
+                .await
+                .unwrap();
+            assert!(n > 0);
+
+            poll_fn(|cx| Pin::new(&mut stream).poll_flush(cx))
+                .await
+                .unwrap();
+        });
+
+        let (mut conn, _) = listener.accept().unwrap();
+        let mut buf = vec![0u8; 15];
+        conn.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"compio tcp test");
+    }
 }

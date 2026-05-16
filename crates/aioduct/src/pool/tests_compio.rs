@@ -64,11 +64,6 @@ async fn wait_for_ready(pool: &ConnectionPool<RequestBoxLocalBody>, k: &PoolKey)
 }
 
 #[test]
-fn pool_creates_with_given_parameters() {
-    let _pool = ConnectionPool::<RequestBoxLocalBody>::new_no_reaper(8, Duration::from_secs(30));
-}
-
-#[test]
 fn checkout_returns_none_on_empty_pool() {
     let pool = ConnectionPool::<RequestBoxLocalBody>::new_no_reaper(8, Duration::from_secs(30));
     assert!(pool.checkout(&key("example.com:80")).is_none());
