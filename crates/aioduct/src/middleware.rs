@@ -90,6 +90,7 @@ impl MiddlewareStack {
         *proxy.uri_mut() = request.uri().clone();
         *proxy.version_mut() = request.version();
         *proxy.headers_mut() = request.headers().clone();
+        *proxy.extensions_mut() = request.extensions().clone();
         for layer in &self.layers {
             layer.on_request(&mut proxy, uri);
         }
@@ -97,6 +98,7 @@ impl MiddlewareStack {
         *request.uri_mut() = proxy.uri().clone();
         *request.version_mut() = proxy.version();
         *request.headers_mut() = proxy.headers().clone();
+        *request.extensions_mut() = proxy.extensions().clone();
     }
 
     pub fn apply_response(&self, response: &mut http::Response<RequestBoxBody>, uri: &Uri) {
@@ -431,6 +433,32 @@ mod tests {
         assert_eq!(
             req.headers().get("authorization").unwrap(),
             "Bearer token123"
+        );
+    }
+
+    #[test]
+    fn apply_request_local_copies_extensions() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+                req.extensions_mut().insert(42u32);
+            },
+        ));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(empty_body())
+            .unwrap();
+        req.extensions_mut().insert("original".to_string());
+        stack.apply_request_local(&mut req, &uri);
+        assert_eq!(
+            req.extensions().get::<String>().map(|s| s.as_str()),
+            Some("original"),
+            "original extensions should be preserved"
+        );
+        assert_eq!(
+            req.extensions().get::<u32>().copied(),
+            Some(42),
+            "middleware-added extensions should be propagated back"
         );
     }
 }

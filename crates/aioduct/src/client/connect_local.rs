@@ -33,6 +33,10 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 .await
                 .map_err(Error::Io)?
         };
+        #[cfg(target_os = "linux")]
+        if let Some(ref iface) = self.core.interface {
+            tcp_stream.bind_device(iface).map_err(Error::Io)?;
+        }
         if let Some(time) = self.core.tcp_keepalive {
             tcp_stream
                 .set_keepalive(

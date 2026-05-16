@@ -210,6 +210,13 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             let _ = resp.bytes().await;
 
             current_uri = self.core.maybe_upgrade_hsts(next_uri);
+
+            if self.core.https_only && current_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+                return Err(Error::HttpsOnly(
+                    current_uri.scheme_str().unwrap_or("none").to_owned(),
+                ));
+            }
+
             current_method = next_method;
             current_body = next_body;
         }

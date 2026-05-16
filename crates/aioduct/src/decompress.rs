@@ -266,29 +266,29 @@ mod imp {
 
             match Pin::new(&mut self.body).poll_frame(cx) {
                 Poll::Ready(Some(Ok(frame))) => {
-                    if let Ok(data) = frame.into_data() {
-                        if self.decoder.is_some() {
-                            self.has_data = true;
-                            // SAFETY: we just checked is_some() above and nothing
-                            // removes the decoder between the check and this line.
-                            #[allow(clippy::unwrap_used)]
-                            let decoder = self.decoder.as_mut().unwrap();
-                            if let Err(e) = decoder.write_chunk(&data) {
-                                self.finished = true;
-                                return Poll::Ready(Some(Err(e)));
+                    match frame.into_data() {
+                        Ok(data) => {
+                            if self.decoder.is_some() {
+                                self.has_data = true;
+                                // SAFETY: we just checked is_some() above and nothing
+                                // removes the decoder between the check and this line.
+                                #[allow(clippy::unwrap_used)]
+                                let decoder = self.decoder.as_mut().unwrap();
+                                if let Err(e) = decoder.write_chunk(&data) {
+                                    self.finished = true;
+                                    return Poll::Ready(Some(Err(e)));
+                                }
+                                let output = decoder.take_output();
+                                if output.is_empty() {
+                                    cx.waker().wake_by_ref();
+                                    return Poll::Pending;
+                                }
+                                Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(output)))))
+                            } else {
+                                Poll::Ready(Some(Ok(hyper::body::Frame::data(data))))
                             }
-                            let output = decoder.take_output();
-                            if output.is_empty() {
-                                cx.waker().wake_by_ref();
-                                return Poll::Pending;
-                            }
-                            Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(output)))))
-                        } else {
-                            Poll::Ready(Some(Ok(hyper::body::Frame::data(data))))
                         }
-                    } else {
-                        cx.waker().wake_by_ref();
-                        Poll::Pending
+                        Err(frame) => Poll::Ready(Some(Ok(frame))),
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -317,53 +317,76 @@ mod imp {
         }
     }
 
+    fn make_decoder(
+        encoding: &str,
+        accept: &AcceptEncoding,
+    ) -> Option<Result<StreamDecoder, Error>> {
+        match encoding.as_bytes() {
+            #[cfg(feature = "gzip")]
+            b"gzip" if accept.gzip => Some(Ok(StreamDecoder::new_gzip())),
+            #[cfg(feature = "deflate")]
+            b"deflate" if accept.deflate => Some(Ok(StreamDecoder::new_deflate())),
+            #[cfg(feature = "brotli")]
+            b"br" if accept.brotli => Some(Ok(StreamDecoder::new_brotli())),
+            #[cfg(feature = "zstd")]
+            b"zstd" if accept.zstd => Some(StreamDecoder::new_zstd()),
+            _ => None,
+        }
+    }
+
     pub(super) fn decompress_impl(
         headers: &mut HeaderMap,
         body: RequestBoxBody,
         accept: &AcceptEncoding,
     ) -> RequestBoxBody {
-        let encoding_raw = match headers.get(CONTENT_ENCODING) {
-            Some(v) => v.as_bytes(),
+        let encoding_str = match headers.get(CONTENT_ENCODING) {
+            Some(v) => String::from_utf8_lossy(v.as_bytes()).into_owned(),
             None => return body,
         };
 
-        let encoding_str = std::str::from_utf8(encoding_raw).unwrap_or("");
-        let encoding = encoding_str
+        let encodings: Vec<&str> = encoding_str
             .split(',')
             .map(str::trim)
-            .rfind(|e| !e.eq_ignore_ascii_case("identity"))
-            .unwrap_or("")
-            .as_bytes();
+            .filter(|e| !e.eq_ignore_ascii_case("identity") && !e.is_empty())
+            .collect();
 
-        let decoder = match encoding {
-            #[cfg(feature = "gzip")]
-            b"gzip" if accept.gzip => Some(StreamDecoder::new_gzip()),
-            #[cfg(feature = "deflate")]
-            b"deflate" if accept.deflate => Some(StreamDecoder::new_deflate()),
-            #[cfg(feature = "brotli")]
-            b"br" if accept.brotli => Some(StreamDecoder::new_brotli()),
-            #[cfg(feature = "zstd")]
-            b"zstd" if accept.zstd => match StreamDecoder::new_zstd() {
-                Ok(d) => Some(d),
-                Err(_) => return body,
-            },
-            _ => None,
-        };
-
-        match decoder {
-            Some(decoder) => {
-                headers.remove(CONTENT_ENCODING);
-                headers.remove(CONTENT_LENGTH);
-                let decompress = DecompressBody {
-                    body,
-                    decoder: Some(decoder),
-                    finished: false,
-                    has_data: false,
-                };
-                decompress.boxed_unsync()
-            }
-            None => body,
+        if encodings.is_empty() {
+            return body;
         }
+
+        let mut current_body = body;
+        let mut decoded_count = 0;
+
+        for encoding in encodings.iter().rev() {
+            match make_decoder(encoding, accept) {
+                Some(Ok(decoder)) => {
+                    decoded_count += 1;
+                    let decompress = DecompressBody {
+                        body: current_body,
+                        decoder: Some(decoder),
+                        finished: false,
+                        has_data: false,
+                    };
+                    current_body = decompress.boxed_unsync();
+                }
+                Some(Err(_)) => return current_body,
+                None => break,
+            }
+        }
+
+        if decoded_count > 0 {
+            headers.remove(CONTENT_LENGTH);
+            if decoded_count >= encodings.len() {
+                headers.remove(CONTENT_ENCODING);
+            } else {
+                let remaining = &encodings[..encodings.len() - decoded_count];
+                if let Ok(val) = remaining.join(", ").parse() {
+                    headers.insert(CONTENT_ENCODING, val);
+                }
+            }
+        }
+
+        current_body
     }
 }
 
@@ -869,5 +892,79 @@ mod tests {
 
         let result = result_body.collect().await;
         assert!(result.is_err(), "corrupt gzip data should produce an error");
+    }
+
+    #[cfg(all(feature = "gzip", feature = "deflate", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_double_layer_deflate_then_gzip() {
+        use bytes::Bytes;
+        use flate2::Compression;
+        use flate2::write::{GzEncoder, ZlibEncoder};
+        use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+        use http_body_util::BodyExt;
+        use std::io::Write;
+
+        let original = b"double-compressed payload";
+
+        // First compress with deflate, then gzip the result
+        let mut deflate_enc = ZlibEncoder::new(Vec::new(), Compression::fast());
+        deflate_enc.write_all(original).unwrap();
+        let deflated = deflate_enc.finish().unwrap();
+
+        let mut gzip_enc = GzEncoder::new(Vec::new(), Compression::fast());
+        gzip_enc.write_all(&deflated).unwrap();
+        let compressed = gzip_enc.finish().unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "deflate, gzip".parse().unwrap());
+        headers.insert(
+            CONTENT_LENGTH,
+            compressed.len().to_string().parse().unwrap(),
+        );
+
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        assert!(!headers.contains_key(CONTENT_ENCODING));
+        assert!(!headers.contains_key(CONTENT_LENGTH));
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], original);
+    }
+
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn maybe_decompress_partial_decode_preserves_remaining_header() {
+        use bytes::Bytes;
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use http::header::CONTENT_ENCODING;
+        use http_body_util::BodyExt;
+        use std::io::Write;
+
+        // Simulate: Content-Encoding: custom-enc, gzip
+        // gzip is decoded but custom-enc is unknown — only gzip removed from header
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(b"partial test").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "custom-enc, gzip".parse().unwrap());
+
+        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        // custom-enc should remain in the header
+        let remaining = headers.get(CONTENT_ENCODING).unwrap().to_str().unwrap();
+        assert_eq!(remaining, "custom-enc");
+
+        let collected = result_body.collect().await.unwrap().to_bytes();
+        assert_eq!(&collected[..], b"partial test");
     }
 }

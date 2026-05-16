@@ -92,6 +92,18 @@ pub(crate) fn is_retryable_error(err: &Error) -> bool {
     )
 }
 
+pub(crate) fn is_idempotent(method: &http::Method) -> bool {
+    matches!(
+        *method,
+        http::Method::GET
+            | http::Method::HEAD
+            | http::Method::PUT
+            | http::Method::DELETE
+            | http::Method::OPTIONS
+            | http::Method::TRACE
+    )
+}
+
 pub(crate) fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(http::header::RETRY_AFTER)?;
     let s = value.to_str().ok()?;
@@ -137,12 +149,12 @@ fn parse_http_date(s: &str) -> Option<std::time::SystemTime> {
     let sec: u64 = time_parts[2].parse().ok()?;
 
     let days_before_month = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let m = (month - 1) as usize;
+    let m = month.checked_sub(1)? as usize;
     if m >= 12 {
         return None;
     }
 
-    let mut days = (year - 1970) * 365;
+    let mut days = year.checked_sub(1970)? * 365;
     if year > 1970 {
         days += (year - 1) / 4 - 1969 / 4;
         days -= (year - 1) / 100 - 1969 / 100;
@@ -154,7 +166,7 @@ fn parse_http_date(s: &str) -> Option<std::time::SystemTime> {
     {
         days += 1;
     }
-    days += day - 1;
+    days += day.checked_sub(1)?;
 
     let unix_secs = days * 86400 + hour * 3600 + min * 60 + sec;
     Some(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(unix_secs))
@@ -440,5 +452,21 @@ mod tests {
         headers.insert(http::header::RETRY_AFTER, formatted.parse().unwrap());
         // May or may not parse depending on exact date math, just ensure no panic
         let _ = parse_retry_after(&headers);
+    }
+
+    #[test]
+    fn idempotent_methods() {
+        assert!(is_idempotent(&http::Method::GET));
+        assert!(is_idempotent(&http::Method::HEAD));
+        assert!(is_idempotent(&http::Method::PUT));
+        assert!(is_idempotent(&http::Method::DELETE));
+        assert!(is_idempotent(&http::Method::OPTIONS));
+        assert!(is_idempotent(&http::Method::TRACE));
+    }
+
+    #[test]
+    fn non_idempotent_methods() {
+        assert!(!is_idempotent(&http::Method::POST));
+        assert!(!is_idempotent(&http::Method::PATCH));
     }
 }
