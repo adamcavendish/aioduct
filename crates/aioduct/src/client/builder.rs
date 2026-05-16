@@ -63,7 +63,9 @@ pub struct HttpEngineBuilder<R, C> {
     pub(super) sensitive_headers: HashSet<HeaderName>,
     pub(super) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
     #[cfg(feature = "tower")]
-    pub(super) tower_connector: Option<crate::connector::TowerConnectorSlot>,
+    pub(super) tower_connector: Option<crate::connector::TowerConnectorSendSlot>,
+    #[cfg(feature = "tower")]
+    pub(super) tower_connector_local: Option<crate::connector::TowerConnectorLocalSlot>,
     #[cfg(feature = "rustls")]
     pub(super) tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(feature = "rustls")]
@@ -136,6 +138,8 @@ impl<R, C> HttpEngineBuilder<R, C> {
             observer: None,
             #[cfg(feature = "tower")]
             tower_connector: None,
+            #[cfg(feature = "tower")]
+            tower_connector_local: None,
             #[cfg(feature = "rustls")]
             tls: None,
             #[cfg(feature = "rustls")]
