@@ -523,7 +523,7 @@ async fn proxy_connection_with_fast_open() {
 //    Exercises connect.rs:66-78 (SOCKS4 proxy path).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn socks4_proxy_connection() {
     let (target_addr, _counter) = aioduct_test_server::h1::h1_server().await;
 
@@ -766,7 +766,7 @@ async fn https_request_populates_timings() {
 //     Exercises connect.rs:40-51 through SOCKS5 path.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn socks5_proxy_with_keepalive_and_fast_open() {
     let (target_addr, _counter) = aioduct_test_server::h1::h1_server().await;
 

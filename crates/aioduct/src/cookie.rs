@@ -372,7 +372,7 @@ fn compute_unix_time(
     }
 
     let days_before_month = [0u64, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let m = (month - 1) as usize;
+    let m = month.checked_sub(1)? as usize;
     if m >= 12 {
         return None;
     }
