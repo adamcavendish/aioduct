@@ -190,7 +190,7 @@ impl ProxySettings {
             return custom.proxy_for(uri);
         }
         if let Some(host) = uri.host()
-            && self.no_proxy.matches(host)
+            && self.no_proxy.matches(host, uri.port_u16())
         {
             return None;
         }
@@ -232,22 +232,34 @@ impl NoProxy {
         Self::new(&val)
     }
 
-    /// Returns `true` if the given host matches any bypass rule.
-    pub fn matches(&self, host: &str) -> bool {
+    /// Returns `true` if the given host (and optional port) matches any bypass rule.
+    ///
+    /// Rules may include a port suffix (e.g., `example.com:8080`).
+    /// A rule with a port only matches when the request port matches.
+    /// A rule without a port matches regardless of the request port.
+    pub fn matches(&self, host: &str, port: Option<u16>) -> bool {
         let host = host.to_lowercase();
         for rule in &self.rules {
             if rule == "*" {
                 return true;
             }
-            if rule == &host {
+            let (rule_host, rule_port) = match rule.rfind(':') {
+                Some(pos) => match rule[pos + 1..].parse::<u16>() {
+                    Ok(p) => (&rule[..pos], Some(p)),
+                    Err(_) => (rule.as_str(), None),
+                },
+                None => (rule.as_str(), None),
+            };
+            if rule_port.is_some() && rule_port != port {
+                continue;
+            }
+            if rule_host == host {
                 return true;
             }
-            // .example.com matches foo.example.com
-            if rule.starts_with('.') && host.ends_with(rule.as_str()) {
+            if rule_host.starts_with('.') && host.ends_with(rule_host) {
                 return true;
             }
-            // example.com also matches foo.example.com
-            if !rule.starts_with('.') && host.ends_with(&format!(".{rule}")) {
+            if !rule_host.starts_with('.') && host.ends_with(&format!(".{rule_host}")) {
                 return true;
             }
         }
@@ -293,59 +305,59 @@ mod tests {
     #[test]
     fn no_proxy_wildcard_matches_everything() {
         let np = NoProxy::new("*");
-        assert!(np.matches("anything.example.com"));
-        assert!(np.matches("127.0.0.1"));
+        assert!(np.matches("anything.example.com", None));
+        assert!(np.matches("127.0.0.1", None));
     }
 
     #[test]
     fn no_proxy_exact_match() {
         let np = NoProxy::new("example.com");
-        assert!(np.matches("example.com"));
-        assert!(!np.matches("other.com"));
+        assert!(np.matches("example.com", None));
+        assert!(!np.matches("other.com", None));
     }
 
     #[test]
     fn no_proxy_suffix_with_leading_dot() {
         let np = NoProxy::new(".example.com");
-        assert!(np.matches("sub.example.com"));
-        assert!(np.matches("deep.sub.example.com"));
-        assert!(!np.matches("example.com"));
+        assert!(np.matches("sub.example.com", None));
+        assert!(np.matches("deep.sub.example.com", None));
+        assert!(!np.matches("example.com", None));
     }
 
     #[test]
     fn no_proxy_suffix_without_leading_dot() {
         let np = NoProxy::new("example.com");
-        assert!(np.matches("sub.example.com"));
-        assert!(np.matches("example.com"));
+        assert!(np.matches("sub.example.com", None));
+        assert!(np.matches("example.com", None));
     }
 
     #[test]
     fn no_proxy_case_insensitive() {
         let np = NoProxy::new("Example.COM");
-        assert!(np.matches("EXAMPLE.com"));
-        assert!(np.matches("example.com"));
+        assert!(np.matches("EXAMPLE.com", None));
+        assert!(np.matches("example.com", None));
     }
 
     #[test]
     fn no_proxy_multiple_rules() {
         let np = NoProxy::new("a.com, b.com, .c.com");
-        assert!(np.matches("a.com"));
-        assert!(np.matches("b.com"));
-        assert!(np.matches("sub.c.com"));
-        assert!(!np.matches("d.com"));
+        assert!(np.matches("a.com", None));
+        assert!(np.matches("b.com", None));
+        assert!(np.matches("sub.c.com", None));
+        assert!(!np.matches("d.com", None));
     }
 
     #[test]
     fn no_proxy_ip_address() {
         let np = NoProxy::new("127.0.0.1");
-        assert!(np.matches("127.0.0.1"));
-        assert!(!np.matches("127.0.0.2"));
+        assert!(np.matches("127.0.0.1", None));
+        assert!(!np.matches("127.0.0.2", None));
     }
 
     #[test]
     fn no_proxy_empty_matches_nothing() {
         let np = NoProxy::new("");
-        assert!(!np.matches("anything"));
+        assert!(!np.matches("anything", None));
     }
 
     #[test]
@@ -429,7 +441,7 @@ mod tests {
             .no_proxy(NoProxy::new("localhost"));
         assert!(settings.http_proxy.is_some());
         assert!(settings.https_proxy.is_some());
-        assert!(settings.no_proxy.matches("localhost"));
+        assert!(settings.no_proxy.matches("localhost", None));
     }
 
     #[test]
@@ -612,5 +624,40 @@ mod tests {
                 .is_some()
         );
         assert!(f.proxy_for(&"http://other.com/".parse().unwrap()).is_none());
+    }
+
+    #[test]
+    fn no_proxy_port_specific_rule_matches() {
+        let np = NoProxy::new("example.com:8080");
+        assert!(np.matches("example.com", Some(8080)));
+        assert!(!np.matches("example.com", Some(9090)));
+        assert!(!np.matches("example.com", None));
+    }
+
+    #[test]
+    fn no_proxy_port_rule_with_subdomain() {
+        let np = NoProxy::new(".example.com:8080");
+        assert!(np.matches("sub.example.com", Some(8080)));
+        assert!(!np.matches("sub.example.com", Some(443)));
+        assert!(!np.matches("sub.example.com", None));
+    }
+
+    #[test]
+    fn no_proxy_rule_without_port_matches_any_port() {
+        let np = NoProxy::new("example.com");
+        assert!(np.matches("example.com", Some(8080)));
+        assert!(np.matches("example.com", Some(443)));
+        assert!(np.matches("example.com", None));
+    }
+
+    #[test]
+    fn proxy_for_respects_port_bypass() {
+        let settings = ProxySettings::all(ProxyConfig::http("http://p:80").unwrap())
+            .no_proxy(NoProxy::new("localhost:8080"));
+        let uri: Uri = "http://localhost:8080/path".parse().unwrap();
+        assert!(settings.proxy_for(&uri).is_none());
+
+        let uri: Uri = "http://localhost:9090/path".parse().unwrap();
+        assert!(settings.proxy_for(&uri).is_some());
     }
 }

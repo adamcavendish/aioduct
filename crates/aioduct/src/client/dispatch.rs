@@ -281,10 +281,16 @@ impl<R: Runtime> Client<R> {
                 };
 
                 pooled.remote_addr = Some(addr);
+                let transfer_start = Instant::now();
                 let mut resp =
                     Self::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
+                let transfer = transfer_start.elapsed();
                 resp.set_remote_addr(pooled.remote_addr);
                 resp.set_tls_info(pooled.tls_info.clone());
+                resp.set_timings(Some(
+                    TimingCollector::default()
+                        .into_timings(Some(transfer), request_start.elapsed()),
+                ));
                 if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                     self.checkin_when_ready(pool_key, pooled);
                 }

@@ -60,9 +60,14 @@ impl DigestAuth {
             md5_hex(&format!("{ha1}:{nonce}:{ha2}"))
         };
 
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
         let mut value = format!(
             "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\"",
-            self.username, realm, nonce, path, response
+            esc(&self.username),
+            esc(realm),
+            esc(nonce),
+            esc(path),
+            response
         );
 
         if qop.is_some_and(|q| q.contains("auth")) {
@@ -70,7 +75,7 @@ impl DigestAuth {
         }
 
         if let Some(opaque) = opaque {
-            value.push_str(&format!(", opaque=\"{opaque}\""));
+            value.push_str(&format!(", opaque=\"{}\"", esc(opaque)));
         }
 
         if algorithm != "MD5" {
@@ -464,5 +469,33 @@ mod tests {
         let hash = md5_hex(&input);
         assert_eq!(hash.len(), 32);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn authorize_escapes_username_with_quotes() {
+        let auth = DigestAuth::new("user\"name".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc""#),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v = value.to_str().unwrap().to_string();
+        assert!(v.contains(r#"username="user\"name""#));
+    }
+
+    #[test]
+    fn authorize_escapes_backslash_in_username() {
+        let auth = DigestAuth::new("user\\name".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc""#),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v = value.to_str().unwrap().to_string();
+        assert!(v.contains(r#"username="user\\name""#));
     }
 }

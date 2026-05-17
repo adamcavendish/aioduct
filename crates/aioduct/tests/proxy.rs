@@ -107,22 +107,22 @@ async fn test_no_proxy_domain_suffix_matching() {
     let no_proxy = aioduct::NoProxy::new(".example.com, localhost");
 
     // Direct matches
-    assert!(!no_proxy.matches("example.com")); // no leading dot, exact doesn't match
-    assert!(no_proxy.matches("foo.example.com"));
-    assert!(no_proxy.matches("bar.baz.example.com"));
-    assert!(no_proxy.matches("localhost"));
+    assert!(!no_proxy.matches("example.com", None)); // no leading dot, exact doesn't match
+    assert!(no_proxy.matches("foo.example.com", None));
+    assert!(no_proxy.matches("bar.baz.example.com", None));
+    assert!(no_proxy.matches("localhost", None));
 
     // Non-matches
-    assert!(!no_proxy.matches("notexample.com"));
-    assert!(!no_proxy.matches("other.com"));
+    assert!(!no_proxy.matches("notexample.com", None));
+    assert!(!no_proxy.matches("other.com", None));
 }
 #[tokio::test]
 async fn test_no_proxy_bare_domain_matches_subdomains() {
     let no_proxy = aioduct::NoProxy::new("example.com");
 
-    assert!(no_proxy.matches("example.com"));
-    assert!(no_proxy.matches("foo.example.com"));
-    assert!(!no_proxy.matches("notexample.com"));
+    assert!(no_proxy.matches("example.com", None));
+    assert!(no_proxy.matches("foo.example.com", None));
+    assert!(!no_proxy.matches("notexample.com", None));
 }
 #[tokio::test]
 async fn test_socks5_proxy() {
