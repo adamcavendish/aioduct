@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use aioduct::runtime::tokio_rt::TokioIo;
 use bytes::Bytes;
@@ -25,7 +26,7 @@ fn cors_headers(resp: &mut Response<Full<Bytes>>) {
     );
     h.insert(
         "access-control-expose-headers",
-        HeaderValue::from_static("x-custom, x-echo-method"),
+        HeaderValue::from_static("*"),
     );
 }
 
@@ -78,6 +79,40 @@ async fn handler(req: Request<hyper::body::Incoming>) -> Result<Response<Full<By
                 .map(|c| c.to_bytes())
                 .unwrap_or_default();
             Response::new(Full::new(body))
+        }
+
+        "/echo-url" => {
+            let uri = req.uri().to_string();
+            Response::new(Full::new(Bytes::from(uri)))
+        }
+
+        p if p.starts_with("/delay/") => {
+            let ms: u64 = p["/delay/".len()..].parse().unwrap_or(0);
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            Response::new(Full::new(Bytes::from("delayed")))
+        }
+
+        p if p.starts_with("/bytes/") => {
+            let n: usize = p["/bytes/".len()..].parse().unwrap_or(0);
+            let body = vec![0xABu8; n];
+            Response::new(Full::new(Bytes::from(body)))
+        }
+
+        "/response-headers" => {
+            let mut r = Response::new(Full::new(Bytes::from("ok")));
+            if let Some(query) = req.uri().query() {
+                for pair in query.split('&') {
+                    if let Some((k, v)) = pair.split_once('=')
+                        && let (Ok(name), Ok(val)) = (
+                            k.parse::<http::header::HeaderName>(),
+                            HeaderValue::from_str(v),
+                        )
+                    {
+                        r.headers_mut().insert(name, val);
+                    }
+                }
+            }
+            r
         }
 
         _ => {

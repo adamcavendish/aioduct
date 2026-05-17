@@ -167,3 +167,182 @@ async fn json_round_trip() {
     assert_eq!(result["key"], "value");
     assert_eq!(result["num"], 42);
 }
+
+#[wasm_bindgen_test]
+async fn head_method() {
+    let client = WasmClient::new();
+    let resp = client
+        .head(&format!("{BASE}/hello"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(
+        resp.bytes().is_empty(),
+        "HEAD response should have empty body"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn custom_method_options() {
+    let client = WasmClient::new();
+    let resp = client
+        .request(http::Method::OPTIONS, &format!("{BASE}/echo-method"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[wasm_bindgen_test]
+async fn builder_default_headers() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::HeaderName::from_static("x-default"),
+        http::header::HeaderValue::from_static("from-builder"),
+    );
+    let client = WasmClient::builder().default_headers(headers).build();
+    let resp = client
+        .get(&format!("{BASE}/echo-headers"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().unwrap();
+    assert!(
+        body.contains("x-default: from-builder"),
+        "default header from builder should be sent, body: {body}"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn builder_timeout_aborts() {
+    let client = WasmClient::builder()
+        .timeout(std::time::Duration::from_millis(100))
+        .build();
+    let result = client
+        .get(&format!("{BASE}/delay/5000"))
+        .unwrap()
+        .send()
+        .await;
+    assert!(result.is_err(), "request should time out");
+}
+
+#[wasm_bindgen_test]
+async fn per_request_timeout_aborts() {
+    let client = WasmClient::new();
+    let result = client
+        .get(&format!("{BASE}/delay/5000"))
+        .unwrap()
+        .timeout(std::time::Duration::from_millis(100))
+        .send()
+        .await;
+    assert!(result.is_err(), "request should time out");
+}
+
+#[wasm_bindgen_test]
+async fn response_bytes() {
+    let client = WasmClient::new();
+    let resp = client
+        .get(&format!("{BASE}/bytes/64"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.bytes();
+    assert_eq!(body.len(), 64);
+    assert!(body.iter().all(|&b| b == 0xAB));
+}
+
+#[wasm_bindgen_test]
+async fn response_headers_accessible() {
+    let client = WasmClient::new();
+    let resp = client
+        .get(&format!("{BASE}/response-headers?x-foo=bar"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.headers().get("x-foo").map(|v| v.to_str().unwrap()),
+        Some("bar"),
+        "custom response header should be accessible"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn response_url_matches_request() {
+    let client = WasmClient::new();
+    let url = format!("{BASE}/echo-url");
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.url().to_string(), format!("{BASE}/echo-url"));
+}
+
+#[wasm_bindgen_test]
+async fn error_for_status_2xx_ok() {
+    let client = WasmClient::new();
+    let resp = client
+        .get(&format!("{BASE}/status/200"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.error_for_status().is_ok());
+}
+
+#[wasm_bindgen_test]
+async fn error_for_status_3xx_ok() {
+    let client = WasmClient::new();
+    let resp = client
+        .get(&format!("{BASE}/status/301"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.error_for_status().is_ok());
+}
+
+#[wasm_bindgen_test]
+async fn invalid_url_returns_error() {
+    let client = WasmClient::new();
+    assert!(client.get("not a valid url").is_err());
+}
+
+#[wasm_bindgen_test]
+async fn multiple_headers_on_request() {
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::HeaderName::from_static("x-one"),
+        http::header::HeaderValue::from_static("1"),
+    );
+    headers.insert(
+        http::header::HeaderName::from_static("x-two"),
+        http::header::HeaderValue::from_static("2"),
+    );
+    let client = WasmClient::new();
+    let resp = client
+        .get(&format!("{BASE}/echo-headers"))
+        .unwrap()
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().unwrap();
+    assert!(body.contains("x-one: 1"), "body: {body}");
+    assert!(body.contains("x-two: 2"), "body: {body}");
+}
+
+#[wasm_bindgen_test]
+async fn post_empty_body() {
+    let client = WasmClient::new();
+    let resp = client
+        .post(&format!("{BASE}/echo-body"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(resp.text().unwrap().is_empty());
+}
