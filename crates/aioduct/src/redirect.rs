@@ -12,8 +12,8 @@ pub enum RedirectPolicy {
     None,
     /// Follow up to N redirects.
     Limited(usize),
-    /// Use a custom redirect decision function.
-    Custom(Arc<RedirectFn>),
+    /// Use a custom redirect decision function with an optional max.
+    Custom(usize, Arc<RedirectFn>),
 }
 
 /// Decision returned by a redirect policy.
@@ -31,7 +31,7 @@ impl fmt::Debug for RedirectPolicy {
         match self {
             Self::None => write!(f, "RedirectPolicy::None"),
             Self::Limited(n) => write!(f, "RedirectPolicy::Limited({n})"),
-            Self::Custom(_) => write!(f, "RedirectPolicy::Custom(...)"),
+            Self::Custom(max, _) => write!(f, "RedirectPolicy::Custom(max={max})"),
         }
     }
 }
@@ -54,18 +54,30 @@ impl RedirectPolicy {
     }
 
     /// Create a policy using a custom decision function.
+    ///
+    /// The custom function is invoked for each redirect. The maximum number of
+    /// redirects defaults to 10 (same as `Limited`). Use
+    /// [`custom_with_max`](Self::custom_with_max) to override.
     pub fn custom<F>(f: F) -> Self
     where
         F: Fn(&Uri, &Uri, StatusCode, &Method) -> RedirectAction + Send + Sync + 'static,
     {
-        Self::Custom(Arc::new(f))
+        Self::Custom(10, Arc::new(f))
+    }
+
+    /// Create a custom policy with an explicit redirect limit.
+    pub fn custom_with_max<F>(max: usize, f: F) -> Self
+    where
+        F: Fn(&Uri, &Uri, StatusCode, &Method) -> RedirectAction + Send + Sync + 'static,
+    {
+        Self::Custom(max, Arc::new(f))
     }
 
     pub(crate) fn max_redirects(&self) -> usize {
         match self {
             Self::None => 0,
             Self::Limited(n) => *n,
-            Self::Custom(_) => 100,
+            Self::Custom(max, _) => *max,
         }
     }
 
@@ -79,7 +91,7 @@ impl RedirectPolicy {
         match self {
             Self::None => RedirectAction::Stop,
             Self::Limited(_) => RedirectAction::Follow,
-            Self::Custom(f) => f(current, next, status, method),
+            Self::Custom(_, f) => f(current, next, status, method),
         }
     }
 }
@@ -107,9 +119,15 @@ mod tests {
     }
 
     #[test]
-    fn custom_max_redirects_is_max() {
+    fn custom_max_redirects_is_default_10() {
         let policy = RedirectPolicy::custom(|_, _, _, _| RedirectAction::Follow);
-        assert_eq!(policy.max_redirects(), 100);
+        assert_eq!(policy.max_redirects(), 10);
+    }
+
+    #[test]
+    fn custom_with_max_redirects() {
+        let policy = RedirectPolicy::custom_with_max(50, |_, _, _, _| RedirectAction::Follow);
+        assert_eq!(policy.max_redirects(), 50);
     }
 
     #[test]
@@ -161,6 +179,6 @@ mod tests {
             "RedirectPolicy::Limited(3)"
         );
         let custom = RedirectPolicy::custom(|_, _, _, _| RedirectAction::Follow);
-        assert_eq!(format!("{custom:?}"), "RedirectPolicy::Custom(...)");
+        assert_eq!(format!("{custom:?}"), "RedirectPolicy::Custom(max=10)");
     }
 }

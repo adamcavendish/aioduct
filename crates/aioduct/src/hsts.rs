@@ -48,14 +48,23 @@ impl HstsStore {
             if max_age.is_zero() {
                 store.remove(host);
             } else {
-                if store.len() > 64 {
-                    store.retain(|_, e| Instant::now() < e.expires_at);
+                let now = Instant::now();
+                if store.len() >= 1024 {
+                    store.retain(|_, e| now < e.expires_at);
+                }
+                if store.len() >= 1024
+                    && let Some(oldest_key) = store
+                        .iter()
+                        .min_by_key(|(_, e)| e.expires_at)
+                        .map(|(k, _)| k.clone())
+                {
+                    store.remove(&oldest_key);
                 }
                 store.insert(
                     host.to_owned(),
                     HstsEntry {
                         include_subdomains,
-                        expires_at: Instant::now() + max_age,
+                        expires_at: now + max_age,
                     },
                 );
             }
