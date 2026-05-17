@@ -27,6 +27,7 @@ pub struct Cookie {
     http_only: bool,
     same_site: Option<SameSite>,
     expired: bool,
+    expires_at: Option<SystemTime>,
     host_only: bool,
 }
 
@@ -143,6 +144,11 @@ impl CookieJar {
                 if !path_matches(request_path, &c.path) {
                     continue;
                 }
+                if let Some(exp) = c.expires_at
+                    && exp <= SystemTime::now()
+                {
+                    continue;
+                }
                 matching_cookies.push(c);
             }
         }
@@ -208,6 +214,7 @@ pub(crate) fn parse_set_cookie(
     let mut http_only = false;
     let mut same_site = None;
     let mut expired = false;
+    let mut expires_at = None;
 
     for attr in parts {
         let attr = attr.trim();
@@ -232,17 +239,23 @@ pub(crate) fn parse_set_cookie(
                 "none" => Some(SameSite::None),
                 _ => None,
             };
-        } else if let Some(val) = lower.strip_prefix("max-age=")
-            && let Ok(seconds) = val.trim().parse::<i64>()
-            && seconds <= 0
-        {
-            expired = true;
-        } else if lower.starts_with("expires=") {
+        } else if let Some(val) = lower.strip_prefix("max-age=") {
+            if let Ok(seconds) = val.trim().parse::<i64>() {
+                if seconds <= 0 {
+                    expired = true;
+                    expires_at = None;
+                } else {
+                    expires_at = Some(SystemTime::now() + Duration::from_secs(seconds as u64));
+                }
+            }
+        } else if lower.starts_with("expires=") && expires_at.is_none() && !expired {
             let val = &attr[8..];
-            if let Some(expires_time) = parse_http_date(val.trim())
-                && expires_time < SystemTime::now()
-            {
-                expired = true;
+            if let Some(expires_time) = parse_http_date(val.trim()) {
+                if expires_time < SystemTime::now() {
+                    expired = true;
+                } else {
+                    expires_at = Some(expires_time);
+                }
             }
         }
     }
@@ -273,6 +286,7 @@ pub(crate) fn parse_set_cookie(
         http_only,
         same_site,
         expired,
+        expires_at,
         host_only,
     })
 }

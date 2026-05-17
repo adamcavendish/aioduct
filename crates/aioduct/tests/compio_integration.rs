@@ -3853,3 +3853,85 @@ fn test_compio_socks4_proxy_with_tcp_options() {
         );
     });
 }
+
+// #84: H2 connection multiplexing should work in local (compio) path
+#[test]
+fn test_compio_h2_multiplexing_reuses_connection() {
+    use hyper::server::conn::http2 as server_http2;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[derive(Clone)]
+    struct TokioExec;
+    impl<F> hyper::rt::Executor<F> for TokioExec
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        fn execute(&self, fut: F) {
+            tokio::spawn(fut);
+        }
+    }
+
+    let request_count = Arc::new(AtomicU32::new(0));
+    let count_clone = request_count.clone();
+
+    let addr = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let count = count_clone;
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                tx.send(addr).unwrap();
+
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+                    let count = count.clone();
+                    tokio::spawn(async move {
+                        let _ = server_http2::Builder::new(TokioExec)
+                            .serve_connection(
+                                io,
+                                service_fn(move |_req| {
+                                    let count = count.clone();
+                                    async move {
+                                        count.fetch_add(1, Ordering::SeqCst);
+                                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                            "h2 mux",
+                                        ))))
+                                    }
+                                }),
+                            )
+                            .await;
+                    });
+                }
+            });
+        });
+        rx.recv().unwrap()
+    };
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+            .http2_prior_knowledge()
+            .build_local();
+
+        for i in 0..5 {
+            let resp = client
+                .get_local(&format!("http://{addr}/req{i}"))
+                .unwrap()
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), http::StatusCode::OK);
+            assert_eq!(resp.text().await.unwrap(), "h2 mux");
+        }
+
+        assert_eq!(
+            request_count.load(Ordering::SeqCst),
+            5,
+            "all 5 H2 requests via compio should succeed with connection reuse"
+        );
+    });
+}
