@@ -75,7 +75,7 @@ pub struct SendError {
 
 impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} for url ({})", self.error, self.url)
+        write!(f, "{} for url ({})", self.error, redact_url(&self.url))
     }
 }
 
@@ -199,6 +199,28 @@ impl Error {
             ),
             _ => false,
         }
+    }
+}
+
+fn redact_url(uri: &Uri) -> String {
+    if let Some(authority) = uri.authority() {
+        if authority.as_str().contains('@') {
+            let host_port = authority.host().to_owned()
+                + &authority
+                    .port()
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_default();
+            format!(
+                "{}://[redacted]@{}{}",
+                uri.scheme_str().unwrap_or("http"),
+                host_port,
+                uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+            )
+        } else {
+            uri.to_string()
+        }
+    } else {
+        uri.to_string()
     }
 }
 

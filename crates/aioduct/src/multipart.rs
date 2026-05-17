@@ -153,37 +153,46 @@ impl Multipart {
         for part in &self.parts {
             buf.put_slice(format!("--{}\r\n", self.boundary).as_bytes());
 
+            let escaped_name = escape_quote(&part.name);
             match (&part.filename, &part.content_type) {
                 (Some(filename), Some(ct)) => {
+                    let escaped_filename = escape_quote(filename);
                     buf.put_slice(
                         format!(
                             "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
-                            part.name, filename
+                            escaped_name, escaped_filename
                         )
                         .as_bytes(),
                     );
                     buf.put_slice(format!("Content-Type: {ct}\r\n").as_bytes());
                 }
                 (Some(filename), None) => {
+                    let escaped_filename = escape_quote(filename);
                     buf.put_slice(
                         format!(
                             "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
-                            part.name, filename
+                            escaped_name, escaped_filename
                         )
                         .as_bytes(),
                     );
                 }
                 (None, Some(ct)) => {
                     buf.put_slice(
-                        format!("Content-Disposition: form-data; name=\"{}\"\r\n", part.name)
-                            .as_bytes(),
+                        format!(
+                            "Content-Disposition: form-data; name=\"{}\"\r\n",
+                            escaped_name
+                        )
+                        .as_bytes(),
                     );
                     buf.put_slice(format!("Content-Type: {ct}\r\n").as_bytes());
                 }
                 (None, None) => {
                     buf.put_slice(
-                        format!("Content-Disposition: form-data; name=\"{}\"\r\n", part.name)
-                            .as_bytes(),
+                        format!(
+                            "Content-Disposition: form-data; name=\"{}\"\r\n",
+                            escaped_name
+                        )
+                        .as_bytes(),
                     );
                 }
             }
@@ -249,22 +258,25 @@ impl futures_core::Stream for AsyncStream {
                         let mut header_buf = BytesMut::new();
                         header_buf.put_slice(format!("--{}\r\n", this.boundary).as_bytes());
 
+                        let escaped_name = escape_quote(&part.name);
                         match (&part.filename, &part.content_type) {
                             (Some(filename), Some(ct)) => {
+                                let escaped_filename = escape_quote(filename);
                                 header_buf.put_slice(
                                     format!(
                                         "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
-                                        part.name, filename
+                                        escaped_name, escaped_filename
                                     )
                                     .as_bytes(),
                                 );
                                 header_buf.put_slice(format!("Content-Type: {ct}\r\n").as_bytes());
                             }
                             (Some(filename), None) => {
+                                let escaped_filename = escape_quote(filename);
                                 header_buf.put_slice(
                                     format!(
                                         "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
-                                        part.name, filename
+                                        escaped_name, escaped_filename
                                     )
                                     .as_bytes(),
                                 );
@@ -273,7 +285,7 @@ impl futures_core::Stream for AsyncStream {
                                 header_buf.put_slice(
                                     format!(
                                         "Content-Disposition: form-data; name=\"{}\"\r\n",
-                                        part.name
+                                        escaped_name
                                     )
                                     .as_bytes(),
                                 );
@@ -283,7 +295,7 @@ impl futures_core::Stream for AsyncStream {
                                 header_buf.put_slice(
                                     format!(
                                         "Content-Disposition: form-data; name=\"{}\"\r\n",
-                                        part.name
+                                        escaped_name
                                     )
                                     .as_bytes(),
                                 );
@@ -352,13 +364,16 @@ impl futures_core::Stream for AsyncStream {
     }
 }
 
+fn escape_quote(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn generate_boundary() -> String {
-    use std::time::SystemTime;
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("----aioduct{nanos:x}")
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let r1 = RandomState::new().build_hasher().finish();
+    let r2 = RandomState::new().build_hasher().finish();
+    format!("----aioduct{r1:016x}{r2:016x}")
 }
 
 #[cfg(test)]
