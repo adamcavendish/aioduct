@@ -1,4 +1,4 @@
-use http::header::HeaderMap;
+use http::header::{HeaderMap, HeaderName};
 
 const HOP_BY_HOP: &[&str] = &[
     "connection",
@@ -12,8 +12,25 @@ const HOP_BY_HOP: &[&str] = &[
 ];
 
 pub(crate) fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    let mut dynamic_names: Vec<HeaderName> = Vec::new();
+    if let Some(conn) = headers.get("connection")
+        && let Ok(s) = conn.to_str()
+    {
+        for token in s.split(',') {
+            let token = token.trim();
+            if !token.is_empty()
+                && let Ok(name) = HeaderName::from_bytes(token.as_bytes())
+            {
+                dynamic_names.push(name);
+            }
+        }
+    }
+
     for name in HOP_BY_HOP {
         headers.remove(*name);
+    }
+    for name in &dynamic_names {
+        headers.remove(name);
     }
 }
 
@@ -61,5 +78,41 @@ mod tests {
         let mut headers = HeaderMap::new();
         strip_hop_by_hop(&mut headers);
         assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn strips_dynamic_connection_listed_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "connection",
+            HeaderValue::from_static("X-Custom-Debug, close"),
+        );
+        headers.insert("x-custom-debug", HeaderValue::from_static("sensitive"));
+        headers.insert("content-type", HeaderValue::from_static("text/plain"));
+
+        strip_hop_by_hop(&mut headers);
+
+        assert!(!headers.contains_key("connection"));
+        assert!(!headers.contains_key("x-custom-debug"));
+        assert!(headers.contains_key("content-type"));
+    }
+
+    #[test]
+    fn strips_multiple_dynamic_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "connection",
+            HeaderValue::from_static("X-Foo, X-Bar, close"),
+        );
+        headers.insert("x-foo", HeaderValue::from_static("foo-val"));
+        headers.insert("x-bar", HeaderValue::from_static("bar-val"));
+        headers.insert("x-keep", HeaderValue::from_static("keep-val"));
+
+        strip_hop_by_hop(&mut headers);
+
+        assert!(!headers.contains_key("connection"));
+        assert!(!headers.contains_key("x-foo"));
+        assert!(!headers.contains_key("x-bar"));
+        assert!(headers.contains_key("x-keep"));
     }
 }
