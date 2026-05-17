@@ -151,7 +151,7 @@ publish:
 # ---------- CI (run everything) ----------
 
 # Run the full CI pipeline locally
-ci: fmt-check clippy-all doc-check book msrv test-all coverage-lcov
+ci: fmt-check clippy-all doc-check book msrv test-all test-wasm test-wasi-p2 coverage-lcov
 
 # ---------- Site ----------
 
