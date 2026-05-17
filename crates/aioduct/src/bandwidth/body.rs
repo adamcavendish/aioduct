@@ -10,13 +10,13 @@ use crate::error::Error;
 use super::BandwidthLimiter;
 
 pin_project! {
-    /// Body wrapper that enforces bandwidth limits on response data.
+    /// Body wrapper that enforces bandwidth limits on data frames.
     ///
-    /// Wraps `ResponseBoxLocalBody` and is boxed via `Box::pin()` so `S::Sleep`
-    /// need not be `Send`. Used by the Local path (compio).
-    pub(crate) struct BandwidthResponseBody<S: crate::runtime::RuntimeCompletion> {
+    /// Generic over the inner body type `B` — works with both `RequestBodySend`
+    /// (Send path) and `ResponseBodyLocal` (Local path).
+    pub(crate) struct BandwidthBody<B, S: crate::runtime::RuntimeCompletion> {
         #[pin]
-        inner: crate::body::ResponseBoxLocalBody,
+        inner: B,
         limiter: BandwidthLimiter,
         pending: Option<Bytes>,
         #[pin]
@@ -24,8 +24,8 @@ pin_project! {
     }
 }
 
-impl<S: crate::runtime::RuntimeCompletion> BandwidthResponseBody<S> {
-    pub(crate) fn new(inner: crate::body::ResponseBoxLocalBody, limiter: BandwidthLimiter) -> Self {
+impl<B, S: crate::runtime::RuntimeCompletion> BandwidthBody<B, S> {
+    pub(crate) fn new(inner: B, limiter: BandwidthLimiter) -> Self {
         Self {
             inner,
             limiter,
@@ -35,7 +35,11 @@ impl<S: crate::runtime::RuntimeCompletion> BandwidthResponseBody<S> {
     }
 }
 
-impl<S: crate::runtime::RuntimeCompletion> Body for BandwidthResponseBody<S> {
+impl<B, S> Body for BandwidthBody<B, S>
+where
+    B: Body<Data = Bytes, Error = Error>,
+    S: crate::runtime::RuntimeCompletion,
+{
     type Data = Bytes;
     type Error = Error;
 
@@ -105,21 +109,20 @@ impl<S: crate::runtime::RuntimeCompletion> Body for BandwidthResponseBody<S> {
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
+    use crate::body::RequestBodySend;
     use crate::runtime::tokio_rt::TokioRuntime;
     use http_body::Body;
+    use http_body_util::BodyExt;
+    use std::pin::Pin;
     use std::task::Context;
 
-    /// A simple one-chunk body that always yields exactly one data frame,
-    /// even when the chunk is empty. This mirrors `OneChunkBody` in the Send
-    /// variant tests but works inside `Pin<Box<dyn Body ...>>`.
-    struct OneChunkLocalBody {
+    struct OneChunkBody {
         data: Option<Bytes>,
     }
 
-    impl Body for OneChunkLocalBody {
+    impl Body for OneChunkBody {
         type Data = Bytes;
         type Error = Error;
-
         fn poll_frame(
             mut self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
@@ -130,25 +133,45 @@ mod tests {
                 Poll::Ready(None)
             }
         }
-
         fn is_end_stream(&self) -> bool {
             self.data.is_none()
         }
-
         fn size_hint(&self) -> http_body::SizeHint {
             http_body::SizeHint::with_exact(self.data.as_ref().map(|d| d.len() as u64).unwrap_or(0))
         }
     }
 
-    fn local_body(chunk: Bytes) -> crate::body::ResponseBoxLocalBody {
-        Box::pin(OneChunkLocalBody { data: Some(chunk) })
+    fn boxed_body(chunk: Bytes) -> RequestBodySend {
+        OneChunkBody { data: Some(chunk) }.boxed_unsync()
+    }
+
+    fn local_body(chunk: Bytes) -> crate::body::ResponseBodyLocal {
+        Box::pin(OneChunkBody { data: Some(chunk) })
     }
 
     #[test]
-    fn body_passes_through_with_sufficient_tokens() {
+    fn send_body_passes_through_with_sufficient_tokens() {
+        let body = boxed_body(Bytes::from("hello"));
+        let bw = BandwidthLimiter::new(1024);
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        match result {
+            Poll::Ready(Some(Ok(frame))) => {
+                assert_eq!(frame.into_data().unwrap(), Bytes::from("hello"));
+            }
+            other => panic!("expected Ready(Ok(data)), got: {other:?}"),
+        }
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        assert!(matches!(result, Poll::Ready(None)));
+    }
+
+    #[test]
+    fn local_body_passes_through_with_sufficient_tokens() {
         let body = local_body(Bytes::from("hello"));
         let bw = BandwidthLimiter::new(1024);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
 
         let result = wrapped.as_mut().poll_frame(&mut cx);
@@ -164,9 +187,9 @@ mod tests {
 
     #[tokio::test]
     async fn body_buffers_when_tokens_insufficient() {
-        let body = local_body(Bytes::from("hello"));
+        let body = boxed_body(Bytes::from("hello"));
         let bw = BandwidthLimiter::new(1);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
 
         let result = wrapped.as_mut().poll_frame(&mut cx);
@@ -179,9 +202,9 @@ mod tests {
 
     #[test]
     fn body_passes_zero_length_frame() {
-        let body = local_body(Bytes::new());
+        let body = boxed_body(Bytes::new());
         let bw = BandwidthLimiter::new(0);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
         let result = wrapped.as_mut().poll_frame(&mut cx);
         assert!(matches!(result, Poll::Ready(Some(Ok(_)))));
@@ -189,17 +212,17 @@ mod tests {
 
     #[test]
     fn size_hint_delegates_to_inner() {
-        let body = local_body(Bytes::from("hello"));
+        let body = boxed_body(Bytes::from("hello"));
         let bw = BandwidthLimiter::new(100);
-        let wrapped = BandwidthResponseBody::<TokioRuntime>::new(body, bw);
+        let wrapped = BandwidthBody::<_, TokioRuntime>::new(body, bw);
         assert_eq!(wrapped.size_hint().exact(), Some(5));
     }
 
     #[test]
     fn smoke_end_to_end_throttle() {
-        let body = local_body(Bytes::from("ab"));
+        let body = boxed_body(Bytes::from("ab"));
         let bw = BandwidthLimiter::new(10_000);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
 
         let result = wrapped.as_mut().poll_frame(&mut cx);
@@ -211,13 +234,11 @@ mod tests {
 
     #[test]
     fn non_data_frame_passes_through() {
-        use http_body::Body;
-
-        struct TrailerLocalBody {
+        struct TrailerBody {
             sent_data: bool,
         }
 
-        impl Body for TrailerLocalBody {
+        impl Body for TrailerBody {
             type Data = Bytes;
             type Error = Error;
             fn poll_frame(
@@ -235,10 +256,9 @@ mod tests {
             }
         }
 
-        let body: crate::body::ResponseBoxLocalBody =
-            Box::pin(TrailerLocalBody { sent_data: false });
+        let body: RequestBodySend = TrailerBody { sent_data: false }.boxed_unsync();
         let bw = BandwidthLimiter::new(1024);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
 
         let result = wrapped.as_mut().poll_frame(&mut cx);
@@ -252,9 +272,9 @@ mod tests {
 
     #[tokio::test]
     async fn is_end_stream_false_when_pending_data() {
-        let body = local_body(Bytes::from("hello"));
+        let body = boxed_body(Bytes::from("hello"));
         let bw = BandwidthLimiter::new(1);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
 
         let result = wrapped.as_mut().poll_frame(&mut cx);
@@ -277,9 +297,9 @@ mod tests {
             }
         }
 
-        let body: crate::body::ResponseBoxLocalBody = Box::pin(ErrorBody);
+        let body: RequestBodySend = ErrorBody.boxed_unsync();
         let bw = BandwidthLimiter::new(1024);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
 
         let result = wrapped.as_mut().poll_frame(&mut cx);
@@ -304,9 +324,9 @@ mod tests {
             }
         }
 
-        let body: crate::body::ResponseBoxLocalBody = Box::pin(PendingBody);
+        let body: RequestBodySend = PendingBody.boxed_unsync();
         let bw = BandwidthLimiter::new(1024);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
 
         let result = wrapped.as_mut().poll_frame(&mut cx);
@@ -315,44 +335,75 @@ mod tests {
 
     #[test]
     fn is_end_stream_true_when_inner_done_no_pending() {
-        let body = local_body(Bytes::from("x"));
+        let body = boxed_body(Bytes::from("x"));
         let bw = BandwidthLimiter::new(1024);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
 
-        // Consume the one frame
         let _ = wrapped.as_mut().poll_frame(&mut cx);
-        // Now should be at end of stream
         assert!(wrapped.is_end_stream());
     }
 
     #[tokio::test]
     async fn pending_data_eventually_released_after_sleep() {
-        // Use very small bandwidth to trigger the pending path, then wait
-        // for tokens to refill via real-time sleep so data is released.
-        let body = local_body(Bytes::from("hello"));
-        let bw = BandwidthLimiter::new(100); // 100 bytes/sec: requires ~50ms wait for 5 bytes
-        // Drain all tokens first
+        let body = boxed_body(Bytes::from("hello"));
+        let bw = BandwidthLimiter::new(100);
         bw.try_consume(100);
-        let mut wrapped = Box::pin(BandwidthResponseBody::<TokioRuntime>::new(body, bw));
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
 
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        // First poll: triggers pending because no tokens available
         let result = wrapped.as_mut().poll_frame(&mut cx);
         assert!(matches!(result, Poll::Pending));
 
-        // Wait for tokens to refill
         tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
-        // Now polling should yield the data
         let result = wrapped.as_mut().poll_frame(&mut cx);
         match result {
             Poll::Ready(Some(Ok(frame))) => {
                 assert_eq!(frame.into_data().unwrap(), Bytes::from("hello"));
             }
             other => panic!("expected Ready(Ok(data)), got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_body_buffers_when_tokens_insufficient() {
+        let body = local_body(Bytes::from("throttled"));
+        let bw = BandwidthLimiter::new(1);
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        assert!(
+            matches!(result, Poll::Pending),
+            "expected Pending for local body, got: {result:?}"
+        );
+        assert!(!wrapped.is_end_stream());
+    }
+
+    #[tokio::test]
+    async fn local_body_pending_data_released_after_sleep() {
+        let body = local_body(Bytes::from("delayed"));
+        let bw = BandwidthLimiter::new(100);
+        bw.try_consume(100);
+        let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
+
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        assert!(matches!(result, Poll::Pending));
+
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        let result = wrapped.as_mut().poll_frame(&mut cx);
+        match result {
+            Poll::Ready(Some(Ok(frame))) => {
+                assert_eq!(frame.into_data().unwrap(), Bytes::from("delayed"));
+            }
+            other => panic!("expected Ready(Ok(data)) for local body, got: {other:?}"),
         }
     }
 }

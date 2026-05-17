@@ -4,7 +4,7 @@ use http::{Method, StatusCode, Uri};
 
 use http_body_util::BodyExt;
 
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::error::Error;
 
 /// Middleware that can inspect or modify requests and responses.
@@ -16,12 +16,12 @@ use crate::error::Error;
 /// Note: all hooks are synchronous. Async operations (e.g., token refresh) are not supported.
 pub trait Middleware: Send + Sync + 'static {
     /// Called before the request is sent. May modify the request in place.
-    fn on_request(&self, request: &mut http::Request<RequestBoxBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<RequestBodySend>, uri: &Uri) {
         let _ = (request, uri);
     }
 
     /// Called after the response is received. May modify the response in place.
-    fn on_response(&self, response: &mut http::Response<RequestBoxBody>, uri: &Uri) {
+    fn on_response(&self, response: &mut http::Response<RequestBodySend>, uri: &Uri) {
         let _ = (response, uri);
     }
 
@@ -43,9 +43,9 @@ pub trait Middleware: Send + Sync + 'static {
 
 impl<F> Middleware for F
 where
-    F: Fn(&mut http::Request<RequestBoxBody>, &Uri) + Send + Sync + 'static,
+    F: Fn(&mut http::Request<RequestBodySend>, &Uri) + Send + Sync + 'static,
 {
-    fn on_request(&self, request: &mut http::Request<RequestBoxBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<RequestBodySend>, uri: &Uri) {
         (self)(request, uri);
     }
 }
@@ -75,14 +75,14 @@ impl MiddlewareStack {
         self.layers.is_empty()
     }
 
-    pub fn apply_request(&self, request: &mut http::Request<RequestBoxBody>, uri: &Uri) {
+    pub fn apply_request(&self, request: &mut http::Request<RequestBodySend>, uri: &Uri) {
         for layer in &self.layers {
             layer.on_request(request, uri);
         }
     }
 
     pub fn apply_request_local<B>(&self, request: &mut http::Request<B>, uri: &Uri) {
-        let dummy_body: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::new())
+        let dummy_body: RequestBodySend = http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut proxy = http::Request::new(dummy_body);
@@ -101,7 +101,7 @@ impl MiddlewareStack {
         *request.extensions_mut() = proxy.extensions().clone();
     }
 
-    pub fn apply_response(&self, response: &mut http::Response<RequestBoxBody>, uri: &Uri) {
+    pub fn apply_response(&self, response: &mut http::Response<RequestBodySend>, uri: &Uri) {
         for layer in self.layers.iter().rev() {
             layer.on_response(response, uri);
         }
@@ -132,7 +132,7 @@ mod tests {
     use http_body_util::BodyExt;
     use std::sync::Mutex;
 
-    fn empty_body() -> RequestBoxBody {
+    fn empty_body() -> RequestBodySend {
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed_unsync()
@@ -148,10 +148,10 @@ mod tests {
     }
 
     impl Middleware for RecordingMiddleware {
-        fn on_request(&self, _req: &mut http::Request<RequestBoxBody>, _uri: &Uri) {
+        fn on_request(&self, _req: &mut http::Request<RequestBodySend>, _uri: &Uri) {
             self.log.lock().unwrap().push((self.id, "request"));
         }
-        fn on_response(&self, _resp: &mut http::Response<RequestBoxBody>, _uri: &Uri) {
+        fn on_response(&self, _resp: &mut http::Response<RequestBodySend>, _uri: &Uri) {
             self.log.lock().unwrap().push((self.id, "response"));
         }
         fn on_error(&self, _err: &Error, _uri: &Uri, _method: &Method) {
@@ -262,7 +262,7 @@ mod tests {
     fn closure_as_middleware() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 req.headers_mut()
                     .insert("x-test", http::header::HeaderValue::from_static("added"));
             },
@@ -287,7 +287,7 @@ mod tests {
     fn apply_request_local_copies_headers_from_middleware() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 req.headers_mut().insert(
                     "x-injected",
                     http::header::HeaderValue::from_static("hello"),
@@ -295,7 +295,7 @@ mod tests {
             },
         ));
         let uri = test_uri();
-        // Use a non-RequestBoxBody body (e.g., String) to test the generic path
+        // Use a non-RequestBodySend body (e.g., String) to test the generic path
         let mut req = http::Request::get("http://example.com/path")
             .body(empty_body())
             .unwrap();
@@ -307,7 +307,7 @@ mod tests {
     fn apply_request_local_copies_method_change() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 *req.method_mut() = Method::POST;
             },
         ));
@@ -324,7 +324,7 @@ mod tests {
     fn apply_request_local_copies_uri_change() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 *req.uri_mut() = "http://redirected.example.com/new".parse().unwrap();
             },
         ));
@@ -340,7 +340,7 @@ mod tests {
     fn apply_request_local_copies_version_change() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 *req.version_mut() = http::Version::HTTP_2;
             },
         ));
@@ -356,13 +356,13 @@ mod tests {
     fn apply_request_local_with_multiple_middleware() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 req.headers_mut()
                     .insert("x-first", http::header::HeaderValue::from_static("1"));
             },
         ));
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 req.headers_mut()
                     .insert("x-second", http::header::HeaderValue::from_static("2"));
             },
@@ -380,7 +380,7 @@ mod tests {
     fn apply_request_local_preserves_existing_headers() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 req.headers_mut()
                     .insert("x-new", http::header::HeaderValue::from_static("added"));
             },
@@ -418,7 +418,7 @@ mod tests {
     fn closure_middleware_on_request_modifies_headers() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 req.headers_mut().insert(
                     "authorization",
                     http::header::HeaderValue::from_static("Bearer token123"),
@@ -440,7 +440,7 @@ mod tests {
     fn apply_request_local_copies_extensions() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
-            |req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
                 req.extensions_mut().insert(42u32);
             },
         ));

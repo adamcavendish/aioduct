@@ -459,7 +459,7 @@ async fn middleware_modifies_request() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-custom"),
                     http::header::HeaderValue::from_static("injected"),

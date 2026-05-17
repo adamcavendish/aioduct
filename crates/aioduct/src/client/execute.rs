@@ -16,6 +16,28 @@ pub(crate) enum CacheLookupOutcome {
     Miss,
 }
 
+pub(super) enum PostExecuteAction {
+    Done,
+    Redirect {
+        uri: Uri,
+        method: Method,
+        body: Option<RequestBody>,
+    },
+}
+
+impl std::fmt::Debug for PostExecuteAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Done => write!(f, "Done"),
+            Self::Redirect { uri, method, .. } => f
+                .debug_struct("Redirect")
+                .field("uri", uri)
+                .field("method", method)
+                .finish(),
+        }
+    }
+}
+
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
 impl<B> HttpEngineCore<B> {
@@ -81,6 +103,81 @@ impl<B> HttpEngineCore<B> {
         } else {
             (CacheLookupOutcome::Miss, None)
         }
+    }
+
+    pub(super) fn prepare_request_headers(&self, uri: &Uri, headers: &mut HeaderMap) {
+        if let Some(jar) = &self.cookie_jar
+            && let Some(authority) = uri.authority()
+        {
+            let is_secure = uri.scheme() == Some(&http::uri::Scheme::HTTPS);
+            let path = uri.path();
+            jar.apply_to_request(authority.host(), is_secure, path, headers);
+        }
+
+        if !headers.contains_key(HOST)
+            && let Some(authority) = uri.authority()
+            && let Ok(host_value) = authority.as_str().parse()
+        {
+            headers.insert(HOST, host_value);
+        }
+    }
+
+    pub(super) fn post_execute(
+        &self,
+        resp: &Response,
+        current_method: &Method,
+        current_uri: &Uri,
+        headers: &mut HeaderMap,
+        body_for_replay: Option<RequestBody>,
+    ) -> Result<PostExecuteAction, Error> {
+        if let Some(ref cache) = self.cache {
+            cache.invalidate(current_method, current_uri);
+        }
+
+        if let Some(jar) = &self.cookie_jar
+            && let Some(authority) = current_uri.authority()
+        {
+            jar.store_from_response(authority.host(), resp.headers());
+        }
+
+        if let Some(ref hsts) = self.hsts
+            && current_uri.scheme() == Some(&http::uri::Scheme::HTTPS)
+            && let Some(authority) = current_uri.authority()
+        {
+            hsts.store_from_response(authority.host(), resp.headers());
+        }
+
+        if !resp.status().is_redirection()
+            || resp.status() == StatusCode::NOT_MODIFIED
+            || matches!(self.redirect_policy, crate::redirect::RedirectPolicy::None)
+        {
+            return Ok(PostExecuteAction::Done);
+        }
+
+        let redirect = self.process_redirect(
+            resp,
+            current_uri,
+            current_method.clone(),
+            body_for_replay,
+            headers,
+        )?;
+        let Some((next_uri, next_method, next_body)) = redirect else {
+            return Ok(PostExecuteAction::Done);
+        };
+
+        let next_uri = self.maybe_upgrade_hsts(next_uri);
+
+        if self.https_only && next_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+            return Err(Error::HttpsOnly(
+                next_uri.scheme_str().unwrap_or("none").to_owned(),
+            ));
+        }
+
+        Ok(PostExecuteAction::Redirect {
+            uri: next_uri,
+            method: next_method,
+            body: next_body,
+        })
     }
 
     pub(super) fn process_redirect(

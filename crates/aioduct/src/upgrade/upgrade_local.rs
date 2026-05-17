@@ -11,7 +11,7 @@ impl<T: hyper::rt::Read + hyper::rt::Write + Unpin + 'static> LocalIo for T {}
 /// A bidirectional IO stream from an HTTP upgrade on the Local (!Send) path.
 ///
 /// Equivalent to [`super::Upgraded`] but for the Local/compio runtime. Obtained by
-/// calling `upgrade()` on a `Response<ResponseBoxLocalBody>`.
+/// calling `upgrade()` on a `Response<ResponseBodyLocal>`.
 pub struct UpgradedLocal {
     io: Box<dyn LocalIo>,
     read_buf: bytes::Bytes,
@@ -128,7 +128,7 @@ impl UpgradeHandleLocal {
 }
 
 pub(crate) async fn on_upgrade_local_manual(
-    response: &mut http::Response<crate::body::ResponseBoxLocalBody>,
+    response: &mut http::Response<crate::body::ResponseBodyLocal>,
 ) -> Result<UpgradedLocal, Error> {
     let handle = response
         .extensions_mut()

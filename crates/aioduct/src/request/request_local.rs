@@ -5,7 +5,7 @@ use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Uri, Version};
 
-use crate::body::{RequestBody, RequestBoxBody};
+use crate::body::{RequestBody, RequestBodySend};
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
 use crate::response::Response;
@@ -147,7 +147,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
     }
 
     /// Set a streaming request body.
-    pub fn body_stream(mut self, body: RequestBoxBody) -> Self {
+    pub fn body_stream(mut self, body: RequestBodySend) -> Self {
         self.body = Some(RequestBody::Streaming(body));
         self
     }
@@ -287,7 +287,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
     }
 
     /// Send the request and return the response.
-    pub async fn send(self) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
+    pub async fn send(self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         let effective_timeout = self.timeout.or(self.client.core.timeout);
 
         let execute_fut =
@@ -607,7 +607,7 @@ mod tests {
         use http_body_util::BodyExt;
         let client = test_client();
         let rb = client.post_local("http://example.com").unwrap();
-        let stream_body: crate::body::RequestBoxBody = http_body_util::Empty::new()
+        let stream_body: crate::body::RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let rb = rb.body_stream(stream_body);

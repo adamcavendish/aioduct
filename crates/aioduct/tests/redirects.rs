@@ -1106,7 +1106,7 @@ async fn redirect_307_streaming_body_should_not_silently_lose_body() {
         .timeout(Duration::from_secs(5))
         .build();
 
-    let stream_body: aioduct::body::RequestBoxBody =
+    let stream_body: aioduct::body::RequestBodySend =
         http_body_util::Full::new(Bytes::from("streaming-payload"))
             .map_err(|never| match never {})
             .boxed_unsync();
@@ -1160,7 +1160,7 @@ async fn redirect_308_streaming_body_should_not_silently_lose_body() {
         .timeout(Duration::from_secs(5))
         .build();
 
-    let stream_body: aioduct::body::RequestBoxBody =
+    let stream_body: aioduct::body::RequestBodySend =
         http_body_util::Full::new(Bytes::from("streaming-308-data"))
             .map_err(|never| match never {})
             .boxed_unsync();
