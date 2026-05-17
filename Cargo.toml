@@ -74,5 +74,8 @@ web-sys = "0.3"
 webpki-roots = "1"
 zstd = { version = "0.13", default-features = false }
 
+[profile.dev]
+debug = false
+
 [profile.bench]
 lto = "thin"
