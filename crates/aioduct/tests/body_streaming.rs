@@ -655,7 +655,38 @@ async fn test_chunk_download_range_request_fails() {
     assert!(result.is_err());
 }
 
-// ── Bug-Finding Tests ─────────────────────────────────────────────────
+// #166: server returns 200 OK to Range request (ignoring Range header) — must reject
+#[tokio::test]
+async fn test_chunk_download_rejects_200_to_range_request() {
+    let data = "abcdefghijklmnop";
+    let (addr, _counter) = h1_server_with(move |req| async move {
+        if req.method() == http::Method::HEAD {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("accept-ranges", "bytes")
+                    .header("content-length", data.len().to_string())
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            // Return 200 with full body, ignoring the Range header
+            Ok(Response::new(Full::new(Bytes::from(data))))
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let result = client
+        .chunk_download(&format!("http://{addr}/file"))
+        .chunks(2)
+        .download()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "chunk download should reject 200 OK to Range request (would cause corrupted data)"
+    );
+}
 
 // Upload echo: small body (curl test_07_01).
 #[tokio::test]
