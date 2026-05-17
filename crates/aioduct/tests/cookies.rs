@@ -969,3 +969,72 @@ async fn response_cookies_filters_mismatched_domain() {
     assert!(cookies.iter().any(|c| c.name() == "also_good"));
     assert!(!cookies.iter().any(|c| c.name() == "cross"));
 }
+
+// #100: positive Max-Age=N should expire the cookie after N seconds
+#[tokio::test]
+async fn cookie_positive_max_age_expires_after_duration() {
+    let request_count = Arc::new(AtomicU32::new(0));
+    let request_count_clone = request_count.clone();
+    let (addr, _counter) = h1_server_with(move |req| {
+        let count = request_count_clone.clone();
+        async move {
+            let n = count.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("set-cookie", "key=val; Max-Age=1")
+                        .body(Full::new(Bytes::from("set")))
+                        .unwrap(),
+                )
+            } else {
+                let cookie = req
+                    .headers()
+                    .get("cookie")
+                    .map(|v| v.to_str().unwrap().to_owned());
+                let body = format!("cookie={}", cookie.unwrap_or_else(|| "none".into()));
+                Ok(Response::new(Full::new(Bytes::from(body))))
+            }
+        }
+    })
+    .await;
+
+    let jar = aioduct::CookieJar::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cookie_jar(jar)
+        .build();
+
+    client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    // Immediately the cookie should be sent
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("key=val"),
+        "cookie should be sent before expiry, got: {body}"
+    );
+
+    // Wait for Max-Age to expire
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "cookie=none",
+        "cookie with Max-Age=1 should expire after 1 second"
+    );
+}

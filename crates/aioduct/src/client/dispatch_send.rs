@@ -14,6 +14,7 @@ use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 #[allow(deprecated)]
 use crate::timing::TimingCollector;
 
+use super::dispatch::H2ConnectGuard;
 use super::{HttpEngineCore, HttpEngineSend};
 
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
@@ -592,6 +593,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let _ = self.core.pool.mark_connecting_h2(&pool_key);
         }
 
+        let mut h2_guard = H2ConnectGuard {
+            pool: &self.core.pool,
+            key: &pool_key,
+            active: may_h2,
+        };
+
         let proxy = self
             .core
             .proxy
@@ -679,7 +686,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 #[cfg(feature = "tracing")]
                 tracing::trace!(addrs = ?addrs, "tcp.connect.start");
 
-                let (tcp_stream, addr) = if addrs.len() > 1 && local_address.is_none() {
+                let (tcp_stream, addr) = if addrs.len() > 1 {
                     #[cfg(feature = "tower")]
                     let _ = original_uri;
                     crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
@@ -751,7 +758,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         }
                         None => {
                             self.core.h2c_probe_cache.record_h1_only(authority.clone());
-                            let stream2 = if addrs.len() > 1 && local_address.is_none() {
+                            let stream2 = if addrs.len() > 1 {
                                 crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
                                     &self.connector,
                                     &addrs,
@@ -849,6 +856,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
             conn
         };
+
+        // Connection succeeded — deactivate the H2 guard so it won't unmark on
+        // drop. The explicit unmark calls below handle the success path.
+        h2_guard.active = false;
+        drop(h2_guard);
 
         // Adjust pool key if adaptive probe fell back to h1
         if matches!(protocol, ProtocolHint::AdaptiveH2c)

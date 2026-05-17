@@ -587,3 +587,97 @@ async fn h2_connection_reuse() {
 
     assert_eq!(request_count.load(Ordering::SeqCst), 5);
 }
+
+// #108: H2ConnectGuard should clean up connecting_h2 state when connection fails,
+// allowing subsequent requests to succeed instead of deadlocking
+#[tokio::test]
+async fn h2_connect_guard_cleans_up_on_failure() {
+    let (addr, _counter) = h2_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .http2_prior_knowledge()
+        .timeout(Duration::from_secs(2))
+        .build();
+
+    // First: try connecting to a port that refuses connections.
+    // This should fail but the H2ConnectGuard must clean up the pool's connecting_h2 state.
+    let bad_result = client.get("http://127.0.0.1:1/").unwrap().send().await;
+    assert!(bad_result.is_err(), "connection to port 1 should fail");
+
+    // Second: connect to the real server — should NOT be blocked by stale connecting_h2 state
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "ok");
+}
+
+// #122: Happy Eyeballs should work even when local_address is set
+#[tokio::test]
+async fn happy_eyeballs_works_with_local_address() {
+    let (addr, _counter) = h1_server_with(move |_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("he-local-ok"))))
+    })
+    .await;
+
+    let good_addr = addr;
+    let bad_addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+
+    struct MultiResolver {
+        addrs: Vec<std::net::SocketAddr>,
+    }
+
+    impl aioduct::Resolve for MultiResolver {
+        fn resolve(
+            &self,
+            _host: &str,
+            _port: u16,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::io::Result<std::net::SocketAddr>> + Send>,
+        > {
+            let addr = self.addrs[0];
+            Box::pin(async move { Ok(addr) })
+        }
+
+        fn resolve_all(
+            &self,
+            _host: &str,
+            _port: u16,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = std::io::Result<Vec<std::net::SocketAddr>>> + Send,
+            >,
+        > {
+            let addrs = self.addrs.clone();
+            Box::pin(async move { Ok(addrs) })
+        }
+    }
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+        .resolver(MultiResolver {
+            addrs: vec![bad_addr, good_addr],
+        })
+        .timeout(Duration::from_secs(5))
+        .build();
+
+    let resp = client
+        .get(&format!("http://multi.example.com:{}/", good_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(
+        resp.text().await.unwrap(),
+        "he-local-ok",
+        "Happy Eyeballs should try bad_addr then succeed on good_addr even with local_address set"
+    );
+}
