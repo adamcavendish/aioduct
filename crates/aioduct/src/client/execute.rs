@@ -47,9 +47,15 @@ impl<B> HttpEngineCore<B> {
             && let Some(authority) = uri.authority()
             && hsts.should_upgrade(authority.host())
         {
+            let host = authority.host();
+            let port = authority.port_u16();
+            let authority_str = match port {
+                Some(80) | None => host.to_owned(),
+                Some(p) => format!("{host}:{p}"),
+            };
             let upgraded = format!(
                 "https://{}{}",
-                authority,
+                authority_str,
                 uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
             );
             if let Ok(new_uri) = upgraded.parse() {
@@ -272,5 +278,9 @@ fn effective_port(uri: &Uri) -> u16 {
 }
 
 fn same_origin(a: &Uri, b: &Uri) -> bool {
-    a.scheme() == b.scheme() && a.host() == b.host() && effective_port(a) == effective_port(b)
+    a.scheme() == b.scheme()
+        && a.host()
+            .map(|h| h.eq_ignore_ascii_case(b.host().unwrap_or("")))
+            == Some(true)
+        && effective_port(a) == effective_port(b)
 }

@@ -59,10 +59,10 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
     /// Add a header from string values.
     pub fn header_str(mut self, name: &str, value: &str) -> Result<Self, Error> {
         let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|e| Error::InvalidUrl(format!("invalid header name: {e}")))?;
+            .map_err(|e| Error::InvalidHeader(format!("invalid header name: {e}")))?;
         let value: HeaderValue = value
             .parse()
-            .map_err(|e| Error::InvalidUrl(format!("invalid header value: {e}")))?;
+            .map_err(|e| Error::InvalidHeader(format!("invalid header value: {e}")))?;
         self.headers.insert(name, value);
         Ok(self)
     }
@@ -174,7 +174,8 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
             .add(b'>')
             .add(b'&')
             .add(b'=')
-            .add(b'+');
+            .add(b'+')
+            .add(b'%');
 
         let mut encoded = String::new();
         for (i, (key, value)) in params.iter().enumerate() {

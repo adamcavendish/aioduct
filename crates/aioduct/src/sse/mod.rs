@@ -93,7 +93,7 @@ impl SseDecoder {
 
             if self.max_payload_size > 0 && block_end > self.max_payload_size {
                 buf.advance(consume);
-                self.corrupted = false;
+                self.corrupted = true;
                 return Some(Err(Error::Other(
                     "SSE payload too large".to_string().into(),
                 )));
@@ -527,12 +527,14 @@ mod tests {
 
     #[test]
     fn payload_too_large() {
-        let mut buf = BytesMut::from(&b"data: 0123456789abcdef\n\ndata: ok\n\n"[..]);
+        let mut buf =
+            BytesMut::from(&b"data: 0123456789abcdef\n\ndata: skipped\n\ndata: ok\n\n"[..]);
         let mut decoder = SseDecoder::with_max_payload_size(10);
 
         let e1 = decoder.decode(&mut buf);
         assert!(e1.unwrap().is_err());
 
+        // Next block is skipped (corrupted recovery)
         let e2 = decoder.decode(&mut buf).unwrap().unwrap();
         assert_eq!(e2, msg("message", "ok"));
     }
@@ -736,30 +738,21 @@ mod tests {
 
     #[test]
     fn corrupted_state_skips_next_block() {
-        // Test that if somehow corrupted is true, the next event block is skipped.
-        // We can trigger this by having TWO consecutive too-large payloads.
-        // After the first too-large error is returned, the decoder should handle
-        // the next block correctly.
-        //
-        // NOTE: In the current implementation, `corrupted` is set to `false` (not true)
-        // when a too-large payload is detected. This means the `if self.corrupted`
-        // branch (lines 89-92) is unreachable dead code. The test below verifies
-        // that after a too-large event, normal decoding resumes correctly.
+        // After a too-large payload error, the corrupted flag is set. The next
+        // event block is skipped (since the decoder state may be inconsistent
+        // after partial reads of the oversized event). Normal decoding resumes
+        // after the skipped block.
         let mut buf =
             BytesMut::from(&b"data: AAAAAAAAAAAAAAA\n\ndata: BBBBBBBBBBBBBBB\n\ndata: ok\n\n"[..]);
         let mut decoder = SseDecoder::with_max_payload_size(10);
 
-        // First too-large event returns error
+        // First too-large event returns error, sets corrupted=true
         let e1 = decoder.decode(&mut buf).unwrap();
         assert!(e1.is_err());
 
-        // Second too-large event also returns error (corrupted is NOT set)
-        let e2 = decoder.decode(&mut buf).unwrap();
-        assert!(e2.is_err());
-
-        // Third event is within size and succeeds
-        let e3 = decoder.decode(&mut buf).unwrap().unwrap();
-        assert_eq!(e3, msg("message", "ok"));
+        // Second block is skipped due to corrupted flag, third event succeeds
+        let e2 = decoder.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(e2, msg("message", "ok"));
     }
 
     #[test]
