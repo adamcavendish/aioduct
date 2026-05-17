@@ -55,7 +55,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 self.core
                     .cache_lookup(&current_method, &current_uri, &mut current_headers);
             let mut cache_entry = match cache_state {
-                CacheLookupOutcome::Fresh(resp) => return Ok(*resp),
+                CacheLookupOutcome::Fresh(resp) => {
+                    let mut resp = *resp;
+                    if !self.core.middleware.is_empty() {
+                        resp.apply_middleware(&self.core.middleware, &current_uri);
+                    }
+                    self.core
+                        .attach_observer(&mut resp, &current_method, &current_uri);
+                    return Ok(resp);
+                }
                 CacheLookupOutcome::Stale(entry) => Some(entry),
                 CacheLookupOutcome::Miss => None,
             };
@@ -144,13 +152,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 )
                 .await?;
 
-            if resp.status() == StatusCode::NOT_MODIFIED
-                && let Some(cached) = cache_entry
-            {
-                let http_resp = cached.into_http_response();
-                return Ok(Response::from_boxed(http_resp, current_uri));
-            }
-
             match self.core.post_execute(
                 &resp,
                 &current_method,
@@ -159,6 +160,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 body_for_replay,
             )? {
                 PostExecuteAction::Done => {
+                    if resp.status() == StatusCode::NOT_MODIFIED
+                        && let Some(cached) = cache_entry
+                    {
+                        let http_resp = cached.into_http_response();
+                        return Ok(Response::from_boxed(http_resp, current_uri));
+                    }
                     return self
                         .finalize_response(resp, &current_method, current_uri, &current_headers)
                         .await;

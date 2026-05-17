@@ -274,14 +274,14 @@ impl<'a> WasmRequestBuilder<'a> {
         let request = web_sys::Request::new_with_str_and_init(&url, &opts)
             .map_err(|e| Error::Other(format!("Request::new failed: {e:?}").into()))?;
 
-        let window: web_sys::Window = js_sys::global()
-            .dyn_into()
-            .map_err(|_| Error::Other("not in a browser window context".into()))?;
-
-        let resp_promise = window.fetch_with_request(&request);
-
-        let timeout_handle =
-            if let (Some(duration), Some(controller)) = (timeout, abort_controller.clone()) {
+        let global = js_sys::global();
+        let (resp_promise, timeout_handle) = if let Ok(window) =
+            global.clone().dyn_into::<web_sys::Window>()
+        {
+            let resp_promise = window.fetch_with_request(&request);
+            let timeout_handle = if let (Some(duration), Some(controller)) =
+                (timeout, abort_controller.clone())
+            {
                 let ms = duration.as_millis().min(i32::MAX as u128) as i32;
                 Some(
                     window
@@ -297,6 +297,33 @@ impl<'a> WasmRequestBuilder<'a> {
             } else {
                 None
             };
+            (resp_promise, timeout_handle)
+        } else if let Ok(worker) = global.clone().dyn_into::<web_sys::WorkerGlobalScope>() {
+            let resp_promise = worker.fetch_with_request(&request);
+            let timeout_handle = if let (Some(duration), Some(controller)) =
+                (timeout, abort_controller.clone())
+            {
+                let ms = duration.as_millis().min(i32::MAX as u128) as i32;
+                Some(
+                    worker
+                        .set_timeout_with_callback_and_timeout_and_arguments_0(
+                            &wasm_bindgen::closure::Closure::once_into_js(move || {
+                                controller.abort();
+                            })
+                            .unchecked_into(),
+                            ms,
+                        )
+                        .map_err(|e| Error::Other(format!("setTimeout failed: {e:?}").into()))?,
+                )
+            } else {
+                None
+            };
+            (resp_promise, timeout_handle)
+        } else {
+            return Err(Error::Other(
+                "unsupported JS global scope (expected Window or WorkerGlobalScope)".into(),
+            ));
+        };
 
         let resp_value = JsFuture::from(resp_promise).await.map_err(|e| {
             let msg = js_sys::JSON::stringify(&e)
@@ -310,7 +337,11 @@ impl<'a> WasmRequestBuilder<'a> {
         })?;
 
         if let Some(handle) = timeout_handle {
-            window.clear_timeout_with_handle(handle);
+            if let Ok(window) = global.clone().dyn_into::<web_sys::Window>() {
+                window.clear_timeout_with_handle(handle);
+            } else if let Ok(worker) = global.dyn_into::<web_sys::WorkerGlobalScope>() {
+                worker.clear_timeout_with_handle(handle);
+            }
         }
 
         let resp: web_sys::Response = resp_value
