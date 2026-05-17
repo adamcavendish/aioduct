@@ -33,6 +33,8 @@ pub(crate) struct PooledConnection<B> {
     pub(crate) bytes_received: u64,
     /// True when this is a cloned handle for H2/H3 multiplexing.
     pub(crate) is_multiplex_clone: bool,
+    /// Upgrade handle for Local path (!Send) HTTP/1.1 upgrades.
+    pub(crate) upgrade_handle_local: Option<crate::upgrade::UpgradeHandleLocal>,
 }
 
 impl<B> PooledConnection<B> {
@@ -49,6 +51,7 @@ impl<B> PooledConnection<B> {
             bytes_sent: 0,
             bytes_received: 0,
             is_multiplex_clone: false,
+            upgrade_handle_local: None,
         }
     }
 
@@ -65,6 +68,7 @@ impl<B> PooledConnection<B> {
             bytes_sent: 0,
             bytes_received: 0,
             is_multiplex_clone: false,
+            upgrade_handle_local: None,
         }
     }
 
@@ -84,6 +88,7 @@ impl<B> PooledConnection<B> {
             bytes_sent: 0,
             bytes_received: 0,
             is_multiplex_clone: false,
+            upgrade_handle_local: None,
         }
     }
 
@@ -135,6 +140,7 @@ impl<B: 'static> PooledConnection<B> {
             bytes_sent: 0,
             bytes_received: 0,
             is_multiplex_clone: true,
+            upgrade_handle_local: None,
         })
     }
 }

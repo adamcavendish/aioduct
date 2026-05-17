@@ -1,3 +1,5 @@
+use std::task::Poll;
+
 use crate::error::Error;
 
 /// A bidirectional IO stream from an HTTP upgrade (e.g., WebSocket).
@@ -31,7 +33,7 @@ impl hyper::rt::Read for Upgraded {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
@@ -41,21 +43,21 @@ impl hyper::rt::Write for Upgraded {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
+    ) -> Poll<std::io::Result<usize>> {
         std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.inner).poll_flush(cx)
     }
 
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
@@ -72,7 +74,7 @@ impl tokio::io::AsyncRead for Upgraded {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         let n = unsafe {
             let mut hbuf = hyper::rt::ReadBuf::uninit(buf.unfilled_mut());
             match hyper::rt::Read::poll_read(
@@ -80,13 +82,13 @@ impl tokio::io::AsyncRead for Upgraded {
                 cx,
                 hbuf.unfilled(),
             ) {
-                std::task::Poll::Ready(Ok(())) => hbuf.filled().len(),
-                std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
-                std::task::Poll::Pending => return std::task::Poll::Pending,
+                Poll::Ready(Ok(())) => hbuf.filled().len(),
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
             }
         };
         buf.advance(n);
-        std::task::Poll::Ready(Ok(()))
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -96,35 +98,27 @@ impl tokio::io::AsyncWrite for Upgraded {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
+    ) -> Poll<std::io::Result<usize>> {
         hyper::rt::Write::poll_write(std::pin::Pin::new(&mut self.inner), cx, buf)
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         hyper::rt::Write::poll_flush(std::pin::Pin::new(&mut self.inner), cx)
     }
 
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
+    ) -> Poll<std::io::Result<()>> {
         hyper::rt::Write::poll_shutdown(std::pin::Pin::new(&mut self.inner), cx)
     }
 }
 
 pub(crate) async fn on_upgrade(
     response: &mut http::Response<crate::response::ResponseBoxSendBody>,
-) -> Result<Upgraded, Error> {
-    let on_upgrade = hyper::upgrade::on(response);
-    let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;
-    Ok(Upgraded::new(upgraded))
-}
-
-pub(crate) async fn on_upgrade_local(
-    response: &mut http::Response<crate::body::ResponseBoxLocalBody>,
 ) -> Result<Upgraded, Error> {
     let on_upgrade = hyper::upgrade::on(response);
     let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;
@@ -263,15 +257,11 @@ mod tests {
 
     #[tokio::test]
     async fn tokio_async_read_returns_data_correctly() {
-        // Exercises the tokio::io::AsyncRead impl success path (lines 83-89)
-        // specifically the buf.advance(n) path with actual data
         let (mut upgraded, mut server) = upgraded_from_handshake().await;
 
-        // Server sends data
         server.write_all(b"test-data").await.unwrap();
         server.flush().await.unwrap();
 
-        // Read using tokio AsyncRead (not read_exact, to see the raw poll behavior)
         let mut buf = vec![0u8; 64];
         let n = upgraded.read(&mut buf).await.unwrap();
         assert!(n > 0, "should read some bytes");
@@ -280,13 +270,10 @@ mod tests {
 
     #[tokio::test]
     async fn tokio_async_read_eof_after_server_close() {
-        // Exercises the path where hyper::rt::Read returns Ok(()) with 0 bytes filled
         let (mut upgraded, server) = upgraded_from_handshake().await;
 
-        // Drop server to close the write side
         drop(server);
 
-        // Read should return 0 (EOF)
         let mut buf = vec![0u8; 64];
         let n = upgraded.read(&mut buf).await.unwrap();
         assert_eq!(n, 0, "should get EOF after server closes");

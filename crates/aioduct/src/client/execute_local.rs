@@ -675,6 +675,9 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         ));
         self.core
             .attach_observer(&mut resp, &req_method, original_uri);
+        if let Some(handle) = pooled.upgrade_handle_local.take() {
+            resp.extensions_mut().insert(handle);
+        }
         if !self.core.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
         {
             self.core.checkin_connection(pool_key, pooled);

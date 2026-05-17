@@ -185,10 +185,25 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
         let (sender, conn) = hyper::client::conn::http1::handshake(stream).await?;
+
+        let handle = crate::upgrade::UpgradeHandleLocal::new();
+        let handle_clone = handle.clone();
+
         R::spawn_local(async move {
-            let _ = conn.await;
+            match conn.without_shutdown().await {
+                Ok(parts) => {
+                    let upgraded = crate::upgrade::UpgradedLocal::new(parts.io, parts.read_buf);
+                    handle_clone.fulfill(upgraded);
+                }
+                Err(_) => {
+                    handle_clone.fail();
+                }
+            }
         });
-        Ok(PooledConnection::new_h1(sender))
+
+        let mut pooled = PooledConnection::new_h1(sender);
+        pooled.upgrade_handle_local = Some(handle);
+        Ok(pooled)
     }
 
     pub(super) async fn connect_h2_prior_knowledge_local<S>(
