@@ -234,6 +234,8 @@ pub use traits::{OwnedRequestBuilderLocal, OwnedRequestBuilderSend};
 pub type OwnedRequestBuilder<R, C> = OwnedRequestBuilderSend<R, C>;
 #[cfg(not(target_arch = "wasm32"))]
 pub use upgrade::Upgraded;
+#[cfg(not(target_arch = "wasm32"))]
+pub use upgrade::UpgradedLocal;
 
 /// Convenience alias for [`HttpEngineSend`] using the Tokio runtime.
 #[cfg(feature = "tokio")]

@@ -88,8 +88,8 @@ impl Response<crate::body::ResponseBoxLocalBody> {
     }
 
     /// Perform an HTTP upgrade (e.g., WebSocket) on this response.
-    pub async fn upgrade(mut self) -> Result<crate::upgrade::Upgraded, Error> {
-        crate::upgrade::on_upgrade_local(&mut self.inner).await
+    pub async fn upgrade(mut self) -> Result<crate::upgrade::UpgradedLocal, Error> {
+        crate::upgrade::on_upgrade_local_manual(&mut self.inner).await
     }
 }
 
