@@ -26,8 +26,13 @@ struct BandwidthInner {
 
 impl BandwidthLimiter {
     /// Create a bandwidth limiter that allows `bytes_per_sec` bytes per second.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bytes_per_sec` is 0.
     pub fn new(bytes_per_sec: u64) -> Self {
-        let now_ns = now_nanos();
+        assert!(bytes_per_sec > 0, "bytes_per_sec must be greater than 0");
+        let now_ns = crate::clock::monotonic_nanos();
         Self {
             inner: Arc::new(BandwidthInner {
                 bytes_per_sec,
@@ -68,7 +73,7 @@ impl BandwidthLimiter {
 
     fn refill(&self) {
         let inner = &self.inner;
-        let now = now_nanos();
+        let now = crate::clock::monotonic_nanos();
         let last = inner.last_refill_ns.load(Ordering::Relaxed);
         let elapsed_ns = now.saturating_sub(last);
         if elapsed_ns == 0 {
@@ -111,14 +116,6 @@ impl std::fmt::Debug for BandwidthLimiter {
             .field("available", &self.inner.tokens.load(Ordering::Relaxed))
             .finish()
     }
-}
-
-fn now_nanos() -> u64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_nanos() as u64
 }
 
 #[cfg(test)]
@@ -198,10 +195,8 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "bytes_per_sec must be greater than 0")]
     fn zero_bytes_per_sec() {
-        let bw = BandwidthLimiter::new(0);
-        assert_eq!(bw.try_consume(10), 0);
-        let wait = bw.wait_duration(10);
-        assert!(wait > Duration::ZERO);
+        BandwidthLimiter::new(0);
     }
 }
