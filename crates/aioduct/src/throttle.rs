@@ -25,7 +25,7 @@ impl RateLimiter {
     /// per second, refilling one token every 100ms.
     pub fn new(max_tokens: u64, per: Duration) -> Self {
         let refill_interval = if max_tokens > 0 {
-            per / max_tokens as u32
+            Duration::from_nanos((per.as_nanos() / max_tokens as u128) as u64)
         } else {
             per
         };
@@ -178,5 +178,12 @@ mod tests {
         assert!(dbg.contains("RateLimiter"));
         assert!(dbg.contains("max_tokens"));
         assert!(dbg.contains("5"));
+    }
+
+    #[test]
+    fn large_max_tokens_no_truncation() {
+        let large = u32::MAX as u64 + 1;
+        let limiter = RateLimiter::new(large, Duration::from_secs(1));
+        assert!(limiter.try_acquire());
     }
 }

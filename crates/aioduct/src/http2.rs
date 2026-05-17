@@ -42,19 +42,34 @@ impl Http2Config {
     }
 
     /// Set the initial stream-level flow control window size (bytes).
+    ///
+    /// # Panics
+    /// Panics if `size` is 0.
     pub fn initial_stream_window_size(mut self, size: u32) -> Self {
+        assert!(size > 0, "initial_stream_window_size must be > 0");
         self.initial_stream_window_size = Some(size);
         self
     }
 
     /// Set the initial connection-level flow control window size (bytes).
+    ///
+    /// # Panics
+    /// Panics if `size` is 0.
     pub fn initial_connection_window_size(mut self, size: u32) -> Self {
+        assert!(size > 0, "initial_connection_window_size must be > 0");
         self.initial_connection_window_size = Some(size);
         self
     }
 
     /// Set the max HTTP/2 frame size (bytes). Must be between 16,384 and 16,777,215.
+    ///
+    /// # Panics
+    /// Panics if `size` is outside the range 16,384..=16,777,215 (RFC 9113 Section 4.2).
     pub fn max_frame_size(mut self, size: u32) -> Self {
+        assert!(
+            (16_384..=16_777_215).contains(&size),
+            "max_frame_size must be between 16,384 and 16,777,215, got {size}"
+        );
         self.max_frame_size = Some(size);
         self
     }
@@ -201,5 +216,29 @@ mod tests {
         let d = Http2Config::default();
         let n = Http2Config::new();
         assert_eq!(format!("{d:?}"), format!("{n:?}"));
+    }
+
+    #[test]
+    #[should_panic(expected = "max_frame_size must be between")]
+    fn max_frame_size_too_small() {
+        Http2Config::new().max_frame_size(16_383);
+    }
+
+    #[test]
+    #[should_panic(expected = "max_frame_size must be between")]
+    fn max_frame_size_too_large() {
+        Http2Config::new().max_frame_size(16_777_216);
+    }
+
+    #[test]
+    #[should_panic(expected = "initial_stream_window_size must be > 0")]
+    fn stream_window_size_zero() {
+        Http2Config::new().initial_stream_window_size(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "initial_connection_window_size must be > 0")]
+    fn connection_window_size_zero() {
+        Http2Config::new().initial_connection_window_size(0);
     }
 }

@@ -144,7 +144,7 @@ impl Multipart {
 
     /// Return the full `Content-Type` header value including boundary.
     pub fn content_type(&self) -> String {
-        format!("multipart/form-data; boundary={}", self.boundary)
+        format!("multipart/form-data; boundary=\"{}\"", self.boundary)
     }
 
     pub(crate) fn into_bytes(self) -> Bytes {
@@ -381,7 +381,8 @@ mod tests {
     use super::*;
 
     fn extract_boundary(ct: &str) -> &str {
-        ct.split("boundary=").nth(1).unwrap()
+        let raw = ct.split("boundary=").nth(1).unwrap();
+        raw.trim_matches('"')
     }
 
     #[test]
@@ -572,6 +573,7 @@ mod streaming_tests {
             .split("boundary=")
             .nth(1)
             .unwrap()
+            .trim_matches('"')
             .to_owned();
         let body = collect_streaming(mp).await;
 
@@ -644,6 +646,7 @@ mod streaming_tests {
             .split("boundary=")
             .nth(1)
             .unwrap()
+            .trim_matches('"')
             .to_owned();
         let body = collect_streaming(mp).await;
 
@@ -685,6 +688,7 @@ mod streaming_tests {
             .split("boundary=")
             .nth(1)
             .unwrap()
+            .trim_matches('"')
             .to_owned();
         let body = collect_streaming(mp).await;
 
@@ -701,6 +705,7 @@ mod streaming_tests {
             .split("boundary=")
             .nth(1)
             .unwrap()
+            .trim_matches('"')
             .to_owned();
         let body = collect_streaming(mp).await;
 
