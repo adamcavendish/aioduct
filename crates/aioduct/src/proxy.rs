@@ -275,7 +275,19 @@ fn env_proxy(upper: &str, lower: &str) -> Option<ProxyConfig> {
         ProxyConfig::socks5(&val).ok()
     } else if val.starts_with("socks4://") || val.starts_with("socks4a://") {
         ProxyConfig::socks4(&val).ok()
+    } else if val.starts_with("https://") {
+        let uri: Uri = val.parse().ok()?;
+        Some(ProxyConfig {
+            uri,
+            scheme: ProxyScheme::Http,
+            auth: None,
+        })
     } else {
+        let val = if !val.contains("://") {
+            format!("http://{val}")
+        } else {
+            val
+        };
         ProxyConfig::http(&val).ok()
     }
 }
@@ -561,6 +573,28 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap().scheme, ProxyScheme::Http);
         unsafe { std::env::remove_var("TEST_HTTP_PROXY_UPPER") };
+    }
+
+    #[test]
+    fn env_proxy_https_scheme() {
+        unsafe { std::env::set_var("TEST_HTTPS_PROXY_VAL", "https://secure-proxy:443") };
+        let result = env_proxy("TEST_HTTPS_PROXY_VAL", "test_https_proxy_val_lower");
+        assert!(result.is_some());
+        let cfg = result.unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Http);
+        assert!(cfg.uri.to_string().contains("secure-proxy"));
+        unsafe { std::env::remove_var("TEST_HTTPS_PROXY_VAL") };
+    }
+
+    #[test]
+    fn env_proxy_bare_hostname() {
+        unsafe { std::env::set_var("TEST_BARE_HOST_PROXY", "proxy-host:3128") };
+        let result = env_proxy("TEST_BARE_HOST_PROXY", "test_bare_host_proxy_lower");
+        assert!(result.is_some());
+        let cfg = result.unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Http);
+        assert!(cfg.uri.to_string().contains("proxy-host:3128"));
+        unsafe { std::env::remove_var("TEST_BARE_HOST_PROXY") };
     }
 
     #[test]
