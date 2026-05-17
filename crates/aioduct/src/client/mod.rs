@@ -31,9 +31,9 @@ use http::{StatusCode, Uri};
 use http_body_util::BodyExt;
 use std::collections::HashSet;
 
-use crate::body::RequestBoxBody;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::body::RequestBoxLocalBody;
+use crate::body::RequestBodyLocal;
+use crate::body::RequestBodySend;
 use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
 use crate::error::Error;
@@ -54,8 +54,8 @@ const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 /// other settings shared between [`HttpEngineSend`] and [`HttpEngineLocal`].
 ///
 /// Generic over `B`, the body type stored in the connection pool:
-/// - Send path uses `B = RequestBoxBody` (inner body is `Send`)
-/// - Local path uses `B = RequestBoxLocalBody` (inner body may be `!Send`)
+/// - Send path uses `B = RequestBodySend` (inner body is `Send`)
+/// - Local path uses `B = RequestBodyLocal` (inner body may be `!Send`)
 pub struct HttpEngineCore<B> {
     pub(crate) pool: ConnectionPool<B>,
     pub(crate) redirect_policy: RedirectPolicy,
@@ -162,7 +162,7 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
 ///
 /// Wraps [`HttpEngineCore`] with a `Send`-capable connector and optional tower layer.
 pub struct HttpEngineSend<R, C> {
-    pub(crate) core: HttpEngineCore<RequestBoxBody>,
+    pub(crate) core: HttpEngineCore<RequestBodySend>,
     pub(crate) connector: C,
     #[cfg(feature = "tower")]
     pub(crate) tower_connector: Option<crate::connector::TowerConnectorSendSlot>,
@@ -191,7 +191,7 @@ impl<R, C> std::fmt::Debug for HttpEngineSend<R, C> {
 ///
 /// Wraps [`HttpEngineCore`] with a `!Send`-capable connector.
 pub struct HttpEngineLocal<R, C> {
-    pub(crate) core: HttpEngineCore<RequestBoxLocalBody>,
+    pub(crate) core: HttpEngineCore<RequestBodyLocal>,
     pub(crate) connector: C,
     #[cfg(feature = "tower")]
     pub(crate) tower_connector_local: Option<crate::connector::TowerConnectorLocalSlot>,
@@ -239,7 +239,7 @@ fn boxed_response_from_bytes(
     status: StatusCode,
     headers: &HeaderMap,
     body: Bytes,
-) -> http::Response<RequestBoxBody> {
+) -> http::Response<RequestBodySend> {
     let mut builder = http::Response::builder().status(status);
     for (name, value) in headers {
         builder = builder.header(name, value);

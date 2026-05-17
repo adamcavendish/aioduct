@@ -314,7 +314,7 @@ async fn no_retry_streaming_body() {
     let _ = resp.text().await.unwrap();
 
     // Streaming body: non-cloneable, consumed on first attempt.
-    let stream_body: aioduct::body::RequestBoxBody =
+    let stream_body: aioduct::body::RequestBodySend =
         http_body_util::Full::new(Bytes::from("streaming payload"))
             .map_err(|never| match never {})
             .boxed_unsync();

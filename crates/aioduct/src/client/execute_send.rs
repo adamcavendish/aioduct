@@ -1,16 +1,15 @@
 use bytes::Bytes;
-use http::header::{AUTHORIZATION, HOST, HeaderMap};
+use http::header::{AUTHORIZATION, HeaderMap};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
 use super::HttpEngineSend;
-use crate::body::{RequestBody, RequestBoxBody};
+use crate::body::{RequestBody, RequestBodySend};
 use crate::error::Error;
-use crate::redirect::RedirectPolicy;
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
-use super::execute::CacheLookupOutcome;
+use super::execute::{CacheLookupOutcome, PostExecuteAction};
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub(crate) async fn execute(
@@ -35,13 +34,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         self.core.apply_default_headers(&mut current_headers);
 
         for _ in 0..=self.core.redirect_policy.max_redirects() {
-            if let Some(jar) = &self.core.cookie_jar
-                && let Some(authority) = current_uri.authority()
-            {
-                let is_secure = current_uri.scheme() == Some(&http::uri::Scheme::HTTPS);
-                let path = current_uri.path();
-                jar.apply_to_request(authority.host(), is_secure, path, &mut current_headers);
-            }
+            self.core
+                .prepare_request_headers(&current_uri, &mut current_headers);
 
             let (req_body, body_for_replay) = match current_body.take() {
                 Some(RequestBody::Buffered(b)) => {
@@ -50,19 +44,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 }
                 Some(rb @ RequestBody::Streaming(_)) => (rb.into_hyper_body(), None),
                 None => {
-                    let empty: RequestBoxBody = http_body_util::Full::new(Bytes::new())
+                    let empty: RequestBodySend = http_body_util::Full::new(Bytes::new())
                         .map_err(|never| match never {})
                         .boxed_unsync();
                     (empty, None)
                 }
             };
-
-            if !current_headers.contains_key(HOST)
-                && let Some(authority) = current_uri.authority()
-                && let Ok(host_value) = authority.as_str().parse()
-            {
-                current_headers.insert(HOST, host_value);
-            }
 
             let (cache_state, stale_if_error) =
                 self.core
@@ -164,57 +151,25 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 return Ok(Response::from_boxed(http_resp, current_uri));
             }
 
-            if let Some(ref cache) = self.core.cache {
-                cache.invalidate(&current_method, &current_uri);
-            }
-
-            if let Some(jar) = &self.core.cookie_jar
-                && let Some(authority) = current_uri.authority()
-            {
-                jar.store_from_response(authority.host(), resp.headers());
-            }
-
-            if let Some(ref hsts) = self.core.hsts
-                && current_uri.scheme() == Some(&http::uri::Scheme::HTTPS)
-                && let Some(authority) = current_uri.authority()
-            {
-                hsts.store_from_response(authority.host(), resp.headers());
-            }
-
-            if !resp.status().is_redirection()
-                || resp.status() == StatusCode::NOT_MODIFIED
-                || matches!(self.core.redirect_policy, RedirectPolicy::None)
-            {
-                return self
-                    .finalize_response(resp, &current_method, current_uri, &current_headers)
-                    .await;
-            }
-
-            let redirect = self.core.process_redirect(
+            match self.core.post_execute(
                 &resp,
+                &current_method,
                 &current_uri,
-                current_method.clone(),
-                body_for_replay,
                 &mut current_headers,
-            )?;
-            let Some((next_uri, next_method, next_body)) = redirect else {
-                return self
-                    .finalize_response(resp, &current_method, current_uri, &current_headers)
-                    .await;
-            };
-
-            let _ = resp.bytes().await;
-
-            current_uri = self.core.maybe_upgrade_hsts(next_uri);
-
-            if self.core.https_only && current_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
-                return Err(Error::HttpsOnly(
-                    current_uri.scheme_str().unwrap_or("none").to_owned(),
-                ));
+                body_for_replay,
+            )? {
+                PostExecuteAction::Done => {
+                    return self
+                        .finalize_response(resp, &current_method, current_uri, &current_headers)
+                        .await;
+                }
+                PostExecuteAction::Redirect { uri, method, body } => {
+                    let _ = resp.bytes().await;
+                    current_uri = uri;
+                    current_method = method;
+                    current_body = body;
+                }
             }
-
-            current_method = next_method;
-            current_body = next_body;
         }
 
         Err(Error::TooManyRedirects(
@@ -246,7 +201,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
         let replay_for_stale = body_for_replay.clone();
 
-        let retry_body: RequestBoxBody = match body_for_replay {
+        let retry_body: RequestBodySend = match body_for_replay {
             Some(b) => http_body_util::Full::new(b)
                 .map_err(|never| match never {})
                 .boxed_unsync(),

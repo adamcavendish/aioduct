@@ -8,7 +8,7 @@ use super::shared::*;
 
 const BODY_SIZE: usize = 64 * 1024;
 
-fn drain_body(body: &mut std::pin::Pin<Box<aioduct::body::RequestBoxBody>>, cx: &mut Context<'_>) {
+fn drain_body(body: &mut std::pin::Pin<Box<aioduct::body::RequestBodySend>>, cx: &mut Context<'_>) {
     loop {
         match body.as_mut().poll_frame(cx) {
             std::task::Poll::Ready(Some(Ok(_))) => continue,

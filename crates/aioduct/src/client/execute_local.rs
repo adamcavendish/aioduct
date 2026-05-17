@@ -1,11 +1,11 @@
 use bytes::Bytes;
-use http::header::{AUTHORIZATION, HOST, HeaderMap};
+use http::header::{AUTHORIZATION, HeaderMap};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 
 use super::{HttpEngineCore, HttpEngineLocal};
 use crate::body::RequestBody;
-use crate::body::RequestBoxLocalBody;
+use crate::body::RequestBodyLocal;
 use crate::clock::Instant;
 use crate::error::Error;
 use crate::observer::{self, RequestPhase};
@@ -15,7 +15,7 @@ use crate::runtime::{Connector, RuntimeLocal, SocketConfig};
 #[allow(deprecated)]
 use crate::timing::TimingCollector;
 
-use super::execute::CacheLookupOutcome;
+use super::execute::{CacheLookupOutcome, PostExecuteAction};
 
 // ── Local path (RuntimeLocal + Connector) ────────────────────────────────────
 
@@ -27,7 +27,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         headers: http::HeaderMap,
         body: Option<RequestBody>,
         version: Option<http::Version>,
-    ) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
+    ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
                 original_uri.scheme_str().unwrap_or("none").to_owned(),
@@ -42,13 +42,8 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         self.core.apply_default_headers(&mut current_headers);
 
         for _ in 0..=self.core.redirect_policy.max_redirects() {
-            if let Some(jar) = &self.core.cookie_jar
-                && let Some(authority) = current_uri.authority()
-            {
-                let is_secure = current_uri.scheme() == Some(&http::uri::Scheme::HTTPS);
-                let path = current_uri.path();
-                jar.apply_to_request(authority.host(), is_secure, path, &mut current_headers);
-            }
+            self.core
+                .prepare_request_headers(&current_uri, &mut current_headers);
 
             let (req_body, body_for_replay) = match current_body.take() {
                 Some(RequestBody::Buffered(b)) => {
@@ -57,19 +52,12 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 }
                 Some(rb @ RequestBody::Streaming(_)) => (rb.into_local_body(), None),
                 None => {
-                    let empty: RequestBoxLocalBody = Box::pin(
+                    let empty: RequestBodyLocal = Box::pin(
                         http_body_util::Full::new(Bytes::new()).map_err(|never| match never {}),
                     );
                     (empty, None)
                 }
             };
-
-            if !current_headers.contains_key(HOST)
-                && let Some(authority) = current_uri.authority()
-                && let Ok(host_value) = authority.as_str().parse()
-            {
-                current_headers.insert(HOST, host_value);
-            }
 
             let (cache_state, stale_if_error) =
                 self.core
@@ -165,60 +153,30 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 return Ok(Response::from_boxed(http_resp, current_uri).into_local());
             }
 
-            if let Some(ref cache) = self.core.cache {
-                cache.invalidate(&current_method, &current_uri);
-            }
-
-            if let Some(jar) = &self.core.cookie_jar
-                && let Some(authority) = current_uri.authority()
-            {
-                jar.store_from_response(authority.host(), resp.headers());
-            }
-
-            if let Some(ref hsts) = self.core.hsts
-                && current_uri.scheme() == Some(&http::uri::Scheme::HTTPS)
-                && let Some(authority) = current_uri.authority()
-            {
-                hsts.store_from_response(authority.host(), resp.headers());
-            }
-
-            if !resp.status().is_redirection()
-                || resp.status() == StatusCode::NOT_MODIFIED
-                || matches!(
-                    self.core.redirect_policy,
-                    crate::redirect::RedirectPolicy::None
-                )
-            {
-                return self
-                    .finalize_response_local(resp, &current_method, current_uri, &current_headers)
-                    .await;
-            }
-
-            let redirect = self.core.process_redirect(
+            match self.core.post_execute(
                 &resp,
+                &current_method,
                 &current_uri,
-                current_method.clone(),
-                body_for_replay,
                 &mut current_headers,
-            )?;
-            let Some((next_uri, next_method, next_body)) = redirect else {
-                return self
-                    .finalize_response_local(resp, &current_method, current_uri, &current_headers)
-                    .await;
-            };
-
-            let _ = resp.bytes().await;
-
-            current_uri = self.core.maybe_upgrade_hsts(next_uri);
-
-            if self.core.https_only && current_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
-                return Err(Error::HttpsOnly(
-                    current_uri.scheme_str().unwrap_or("none").to_owned(),
-                ));
+                body_for_replay,
+            )? {
+                PostExecuteAction::Done => {
+                    return self
+                        .finalize_response_local(
+                            resp,
+                            &current_method,
+                            current_uri,
+                            &current_headers,
+                        )
+                        .await;
+                }
+                PostExecuteAction::Redirect { uri, method, body } => {
+                    let _ = resp.bytes().await;
+                    current_uri = uri;
+                    current_method = method;
+                    current_body = body;
+                }
             }
-
-            current_method = next_method;
-            current_body = next_body;
         }
 
         Err(Error::TooManyRedirects(
@@ -250,7 +208,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
 
         let replay_for_stale = body_for_replay.clone();
 
-        let retry_body: RequestBoxLocalBody = match body_for_replay {
+        let retry_body: RequestBodyLocal = match body_for_replay {
             Some(b) => Box::pin(http_body_util::Full::new(b).map_err(|never| match never {})),
             None => {
                 Box::pin(http_body_util::Full::new(Bytes::new()).map_err(|never| match never {}))
@@ -284,7 +242,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         method: &Method,
         uri: Uri,
         request_headers: &HeaderMap,
-    ) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
+    ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         let mut resp = resp;
         if !self.core.middleware.is_empty() {
             resp.apply_middleware(&self.core.middleware, &uri);
@@ -325,7 +283,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
     #[allow(deprecated)]
     pub(crate) async fn execute_single_local(
         &self,
-        mut request: http::Request<RequestBoxLocalBody>,
+        mut request: http::Request<RequestBodyLocal>,
         original_uri: &Uri,
         replay_body: Option<Bytes>,
     ) -> Result<Response, Error> {
@@ -426,7 +384,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 }
                 Err(e)
                     if saved_parts.is_some()
-                        && HttpEngineCore::<RequestBoxLocalBody>::is_stale_connection_error(&e) =>
+                        && HttpEngineCore::<RequestBodyLocal>::is_stale_connection_error(&e) =>
                 {
                     self.core.fire_connection_metrics(&conn, true);
                     // saved_parts is guaranteed Some by the match arm guard.
@@ -437,7 +395,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                         .as_ref()
                         .cloned()
                         .unwrap_or_else(bytes::Bytes::new);
-                    let body: RequestBoxLocalBody = Box::pin(
+                    let body: RequestBodyLocal = Box::pin(
                         http_body_util::Full::new(retry_body_bytes).map_err(|never| match never {}),
                     );
                     let mut retry_req = http::Request::new(body);
@@ -545,10 +503,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                     self.connect_plaintext_local(tcp_stream).await?
                 };
                 conn.remote_addr = Some(addr);
-                Ok::<(PooledConnection<RequestBoxLocalBody>, Instant), Error>((
-                    conn,
-                    Instant::now(),
-                ))
+                Ok::<(PooledConnection<RequestBodyLocal>, Instant), Error>((conn, Instant::now()))
             };
 
             let (conn, connect_done) = match self.core.connect_timeout {

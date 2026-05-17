@@ -17,9 +17,9 @@ use crate::response::BodyObserverCtx;
 
 /// Boxed request body (always `Send`).
 ///
-/// Used as the body type for `http::Request<RequestBoxBody>` throughout the
+/// Used as the body type for `http::Request<RequestBodySend>` throughout the
 /// dispatch pipeline. Based on `UnsyncBoxBody` from `http-body-util`.
-pub type RequestBoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Error>;
+pub type RequestBodySend = http_body_util::combinators::UnsyncBoxBody<Bytes, Error>;
 
 /// Boxed `!Send` request body for completion-based runtimes (compio).
 ///
@@ -27,25 +27,15 @@ pub type RequestBoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Erro
 /// (e.g. compio futures). The body is created, polled, and dropped on the
 /// same thread — no cross-thread migration occurs.
 #[cfg(not(target_arch = "wasm32"))]
-pub type RequestBoxLocalBody = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + 'static>>;
-
-/// Boxed `Send` response body for poll-based runtimes (tokio, smol).
-///
-/// This is the default body type for [`Response`](crate::response::Response).
-/// It can hold either a raw hyper `Incoming` body or a type-erased boxed body
-/// after transformations (decompression, read timeout, bandwidth limiting).
-#[cfg(not(target_arch = "wasm32"))]
-pub type ResponseBoxSendBody =
-    Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + Send + 'static>>;
+pub type RequestBodyLocal = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + 'static>>;
 
 /// Boxed `!Send` response body for completion-based runtimes (compio).
 ///
-/// Used as the body type for [`Response<ResponseBoxLocalBody>`](crate::response::Response)
+/// Used as the body type for [`Response<ResponseBodyLocal>`](crate::response::Response)
 /// in the Local path. Can wrap body transformations that contain `!Send` futures
 /// (e.g., read timeout with a `!Send` sleep).
 #[cfg(not(target_arch = "wasm32"))]
-pub type ResponseBoxLocalBody =
-    Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + 'static>>;
+pub type ResponseBodyLocal = Pin<Box<dyn http_body::Body<Data = Bytes, Error = Error> + 'static>>;
 
 // ── Request body enum ────────────────────────────────────────────────────────
 
@@ -55,7 +45,7 @@ pub enum RequestBody {
     Buffered(Bytes),
     /// Streaming body from a boxed hyper body.
     #[cfg(not(target_arch = "wasm32"))]
-    Streaming(RequestBoxBody),
+    Streaming(RequestBodySend),
 }
 
 impl std::fmt::Debug for RequestBody {
@@ -69,7 +59,7 @@ impl std::fmt::Debug for RequestBody {
 }
 
 impl RequestBody {
-    pub(crate) fn into_hyper_body(self) -> RequestBoxBody {
+    pub(crate) fn into_hyper_body(self) -> RequestBodySend {
         match self {
             RequestBody::Buffered(b) => http_body_util::Full::new(b)
                 .map_err(|never| match never {})
@@ -81,7 +71,7 @@ impl RequestBody {
 
     /// Convert to a `!Send` local body for completion-based runtimes.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn into_local_body(self) -> RequestBoxLocalBody {
+    pub(crate) fn into_local_body(self) -> RequestBodyLocal {
         match self {
             RequestBody::Buffered(b) => {
                 Box::pin(http_body_util::Full::new(b).map_err(|never| match never {}))
@@ -131,15 +121,15 @@ impl From<&'static [u8]> for RequestBody {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl From<RequestBoxBody> for RequestBody {
-    fn from(body: RequestBoxBody) -> Self {
+impl From<RequestBodySend> for RequestBody {
+    fn from(body: RequestBodySend) -> Self {
         RequestBody::Streaming(body)
     }
 }
 
 /// Async iterator over response body data frames.
 pub struct BodyStream {
-    body: RequestBoxBody,
+    body: RequestBodySend,
     done: bool,
     #[cfg(not(target_arch = "wasm32"))]
     observer_ctx: Option<BodyObserverCtx>,
@@ -157,7 +147,7 @@ impl std::fmt::Debug for BodyStream {
 
 impl BodyStream {
     #[cfg(test)]
-    pub(crate) fn new(body: RequestBoxBody) -> Self {
+    pub(crate) fn new(body: RequestBodySend) -> Self {
         Self {
             body,
             done: false,
@@ -171,7 +161,7 @@ impl BodyStream {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn with_observer(body: RequestBoxBody, ctx: Option<BodyObserverCtx>) -> Self {
+    pub(crate) fn with_observer(body: RequestBodySend, ctx: Option<BodyObserverCtx>) -> Self {
         let transfer_start = ctx
             .as_ref()
             .map(|c| c.response_started)
@@ -282,7 +272,7 @@ mod tests {
     }
 
     fn streaming() -> RequestBody {
-        let body: RequestBoxBody = http_body_util::Empty::new()
+        let body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         RequestBody::Streaming(body)
@@ -352,7 +342,7 @@ mod tests {
 
     #[test]
     fn from_hyper_body_is_streaming() {
-        let hyper_body: RequestBoxBody = http_body_util::Empty::new()
+        let hyper_body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let body: RequestBody = hyper_body.into();
@@ -375,7 +365,7 @@ mod tests {
 
     #[test]
     fn body_stream_debug() {
-        let hyper_body: RequestBoxBody = http_body_util::Empty::new()
+        let hyper_body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let stream = BodyStream::new(hyper_body);
@@ -385,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn body_stream_empty_returns_none() {
-        let hyper_body: RequestBoxBody = http_body_util::Empty::new()
+        let hyper_body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
@@ -394,7 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn body_stream_with_data() {
-        let hyper_body: RequestBoxBody = http_body_util::Full::new(Bytes::from("hello"))
+        let hyper_body: RequestBodySend = http_body_util::Full::new(Bytes::from("hello"))
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
@@ -405,7 +395,7 @@ mod tests {
 
     #[tokio::test]
     async fn body_stream_done_stays_none() {
-        let hyper_body: RequestBoxBody = http_body_util::Empty::new()
+        let hyper_body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
@@ -458,7 +448,7 @@ mod tests {
             }
         }
 
-        let hyper_body: RequestBoxBody = ErrorAfterFirst { sent: false }.boxed_unsync();
+        let hyper_body: RequestBodySend = ErrorAfterFirst { sent: false }.boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
 
         // First call should return the error
@@ -505,7 +495,7 @@ mod tests {
             }
         }
 
-        let hyper_body: RequestBoxBody = TrailerThenData { state: 0 }.boxed_unsync();
+        let hyper_body: RequestBodySend = TrailerThenData { state: 0 }.boxed_unsync();
         let mut stream = BodyStream::new(hyper_body);
 
         // The trailers frame should be skipped, only data returned
@@ -559,7 +549,7 @@ mod tests {
             response_started: Instant::now(),
         };
 
-        let hyper_body: RequestBoxBody = http_body_util::Full::new(Bytes::from("hello world"))
+        let hyper_body: RequestBodySend = http_body_util::Full::new(Bytes::from("hello world"))
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut stream = BodyStream::with_observer(hyper_body, Some(ctx));
@@ -634,7 +624,7 @@ mod tests {
             response_started: Instant::now(),
         };
 
-        let hyper_body: RequestBoxBody = ErrorBody.boxed_unsync();
+        let hyper_body: RequestBodySend = ErrorBody.boxed_unsync();
         let mut stream = BodyStream::with_observer(hyper_body, Some(ctx));
 
         // Should get error
@@ -654,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn body_stream_without_observer_still_works() {
-        let hyper_body: RequestBoxBody = http_body_util::Full::new(Bytes::from("no observer"))
+        let hyper_body: RequestBodySend = http_body_util::Full::new(Bytes::from("no observer"))
             .map_err(|never| match never {})
             .boxed_unsync();
         let mut stream = BodyStream::with_observer(hyper_body, None);

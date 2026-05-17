@@ -759,7 +759,7 @@ mod builder_tests {
         if let Err(hyper_err) = result {
             let err = crate::error::Error::Hyper(hyper_err);
             assert!(
-                HttpEngineCore::<crate::body::RequestBoxBody>::is_stale_connection_error_pub(&err),
+                HttpEngineCore::<crate::body::RequestBodySend>::is_stale_connection_error_pub(&err),
                 "canceled/closed hyper error should be stale"
             );
         }
@@ -1023,7 +1023,7 @@ mod builder_tests {
         crate::response::Response::from_boxed(http_resp, "http://origin.com/".parse().unwrap())
     }
 
-    fn make_test_core() -> HttpEngineCore<crate::body::RequestBoxBody> {
+    fn make_test_core() -> HttpEngineCore<crate::body::RequestBodySend> {
         let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
         client.core
     }
@@ -1346,6 +1346,321 @@ mod builder_tests {
         assert!(
             called.load(Ordering::SeqCst),
             "middleware on_redirect should be called"
+        );
+    }
+
+    // ── prepare_request_headers tests ───────────────────────────────────
+
+    #[test]
+    fn prepare_request_headers_applies_cookies() {
+        let jar = crate::cookie::CookieJar::new();
+        let mut cookie_headers = http::HeaderMap::new();
+        cookie_headers.insert(
+            http::header::SET_COOKIE,
+            "session=abc123; Path=/".parse().unwrap(),
+        );
+        jar.store_from_response("example.com", &cookie_headers);
+
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .cookie_jar(jar)
+            .build()
+            .core;
+
+        let uri: Uri = "http://example.com/page".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        core.prepare_request_headers(&uri, &mut headers);
+
+        let cookie_header = headers.get(http::header::COOKIE).unwrap().to_str().unwrap();
+        assert!(
+            cookie_header.contains("session=abc123"),
+            "expected cookie in header, got: {cookie_header}"
+        );
+    }
+
+    #[test]
+    fn prepare_request_headers_sets_host_when_missing() {
+        let core = make_test_core();
+        let uri: Uri = "http://example.com:8080/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        core.prepare_request_headers(&uri, &mut headers);
+
+        assert_eq!(headers.get(http::header::HOST).unwrap(), "example.com:8080");
+    }
+
+    #[test]
+    fn prepare_request_headers_does_not_overwrite_existing_host() {
+        let core = make_test_core();
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::HOST, "custom-host.com".parse().unwrap());
+
+        core.prepare_request_headers(&uri, &mut headers);
+
+        assert_eq!(headers.get(http::header::HOST).unwrap(), "custom-host.com");
+    }
+
+    #[test]
+    fn prepare_request_headers_no_cookie_jar_is_noop() {
+        let core = make_test_core();
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::HOST, "already-set".parse().unwrap());
+
+        core.prepare_request_headers(&uri, &mut headers);
+
+        assert!(headers.get(http::header::COOKIE).is_none());
+        assert_eq!(headers.get(http::header::HOST).unwrap(), "already-set");
+    }
+
+    // ── post_execute tests ──────────────────────────────────────────────
+
+    #[test]
+    fn post_execute_done_on_non_redirect() {
+        use http_body_util::BodyExt;
+        let core = make_test_core();
+        let http_resp = http::Response::builder()
+            .status(StatusCode::OK)
+            .body(
+                http_body_util::Full::new(bytes::Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed_unsync(),
+            )
+            .unwrap();
+        let resp = crate::response::Response::from_boxed(
+            http_resp,
+            "http://example.com/".parse().unwrap(),
+        );
+        let uri: Uri = "http://example.com/page".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        let action = core
+            .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+            .unwrap();
+        assert!(matches!(action, super::execute::PostExecuteAction::Done));
+    }
+
+    #[test]
+    fn post_execute_done_on_not_modified() {
+        use http_body_util::BodyExt;
+        let http_resp = http::Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .body(
+                http_body_util::Full::new(bytes::Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed_unsync(),
+            )
+            .unwrap();
+        let resp = crate::response::Response::from_boxed(
+            http_resp,
+            "http://example.com/".parse().unwrap(),
+        );
+        let core = make_test_core();
+        let uri: Uri = "http://example.com/page".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        let action = core
+            .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+            .unwrap();
+        assert!(matches!(action, super::execute::PostExecuteAction::Done));
+    }
+
+    #[test]
+    fn post_execute_redirect_on_302() {
+        let core = make_test_core();
+        let resp = make_redirect_response(StatusCode::FOUND, "http://example.com/new");
+        let uri: Uri = "http://example.com/old".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        let action = core
+            .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+            .unwrap();
+        match action {
+            super::execute::PostExecuteAction::Redirect { uri, method, body } => {
+                assert_eq!(uri.path(), "/new");
+                assert_eq!(method, Method::GET);
+                assert!(body.is_none());
+            }
+            super::execute::PostExecuteAction::Done => {
+                panic!("expected Redirect action");
+            }
+        }
+    }
+
+    #[test]
+    fn post_execute_stores_cookies_and_learns_hsts() {
+        let jar = crate::cookie::CookieJar::new();
+        let store = crate::hsts::HstsStore::new();
+
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .cookie_jar(jar.clone())
+            .hsts(store.clone())
+            .build()
+            .core;
+
+        use http_body_util::BodyExt;
+        let http_resp = http::Response::builder()
+            .status(StatusCode::OK)
+            .header(http::header::SET_COOKIE, "token=xyz; Path=/")
+            .header("strict-transport-security", "max-age=31536000")
+            .body(
+                http_body_util::Full::new(bytes::Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed_unsync(),
+            )
+            .unwrap();
+        let resp = crate::response::Response::from_boxed(
+            http_resp,
+            "https://secure.example.com/api".parse().unwrap(),
+        );
+
+        let uri: Uri = "https://secure.example.com/api".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        let action = core
+            .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+            .unwrap();
+        assert!(matches!(action, super::execute::PostExecuteAction::Done));
+
+        assert!(
+            store.should_upgrade("secure.example.com"),
+            "HSTS should be learned from response"
+        );
+
+        let mut cookie_headers = HeaderMap::new();
+        jar.apply_to_request("secure.example.com", true, "/", &mut cookie_headers);
+        let cookie_val = cookie_headers
+            .get(http::header::COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            cookie_val.contains("token=xyz"),
+            "cookie should be stored from response, got: {cookie_val}"
+        );
+    }
+
+    #[test]
+    fn post_execute_invalidates_cache_on_non_safe_method() {
+        let cache = crate::cache::HttpCache::new();
+
+        let status = StatusCode::OK;
+        let mut resp_headers = http::HeaderMap::new();
+        resp_headers.insert(http::header::CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &"http://example.com/data".parse().unwrap(),
+            status,
+            &resp_headers,
+            &bytes::Bytes::from("cached"),
+            &HeaderMap::new(),
+        );
+
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .cache(cache.clone())
+            .build()
+            .core;
+
+        use http_body_util::BodyExt;
+        let http_resp = http::Response::builder()
+            .status(StatusCode::OK)
+            .body(
+                http_body_util::Full::new(bytes::Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed_unsync(),
+            )
+            .unwrap();
+        let resp = crate::response::Response::from_boxed(
+            http_resp,
+            "http://example.com/data".parse().unwrap(),
+        );
+        let uri: Uri = "http://example.com/data".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        let _ = core
+            .post_execute(&resp, &Method::POST, &uri, &mut headers, None)
+            .unwrap();
+
+        let lookup_headers = HeaderMap::new();
+        let result = cache.lookup(&Method::GET, &uri, &lookup_headers);
+        assert!(
+            matches!(result, crate::cache::CacheLookup::Miss),
+            "cache should be invalidated after POST"
+        );
+    }
+
+    #[test]
+    fn post_execute_redirect_applies_hsts_upgrade() {
+        let store = crate::hsts::HstsStore::new();
+        let mut sts_headers = http::HeaderMap::new();
+        sts_headers.insert(
+            http::header::HeaderName::from_static("strict-transport-security"),
+            "max-age=31536000".parse().unwrap(),
+        );
+        store.store_from_response("target.example.com", &sts_headers);
+
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .hsts(store)
+            .build()
+            .core;
+
+        let resp =
+            make_redirect_response(StatusCode::FOUND, "http://target.example.com/redirected");
+        let uri: Uri = "http://origin.example.com/start".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        let action = core
+            .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+            .unwrap();
+        match action {
+            super::execute::PostExecuteAction::Redirect { uri, .. } => {
+                assert_eq!(
+                    uri.scheme_str(),
+                    Some("https"),
+                    "redirect target should be HSTS-upgraded to https"
+                );
+                assert_eq!(uri.host(), Some("target.example.com"));
+            }
+            _ => panic!("expected Redirect action"),
+        }
+    }
+
+    #[test]
+    fn post_execute_redirect_https_only_rejects_http_target() {
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .https_only(true)
+            .build()
+            .core;
+
+        let resp = make_redirect_response(StatusCode::FOUND, "http://insecure.com/page");
+        let uri: Uri = "https://origin.com/start".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        let result = core.post_execute(&resp, &Method::GET, &uri, &mut headers, None);
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::HttpsOnly(_)),
+            "expected HttpsOnly error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn post_execute_done_when_redirect_policy_none() {
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .redirect_policy(crate::redirect::RedirectPolicy::None)
+            .build()
+            .core;
+
+        let resp = make_redirect_response(StatusCode::FOUND, "http://origin.com/new");
+        let uri: Uri = "http://origin.com/old".parse().unwrap();
+        let mut headers = HeaderMap::new();
+
+        let action = core
+            .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+            .unwrap();
+        assert!(
+            matches!(action, super::execute::PostExecuteAction::Done),
+            "should return Done when redirect policy is None"
         );
     }
 }

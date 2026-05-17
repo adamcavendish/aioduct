@@ -4,7 +4,7 @@ use bytes::{Buf, Bytes};
 use http::{Request, Uri};
 use http_body_util::BodyExt;
 
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::pool::PooledConnection;
 use crate::response::Response;
@@ -18,7 +18,7 @@ use crate::happy_eyeballs::{HAPPY_EYEBALLS_DELAY, interleave_addrs};
 
 pub(crate) async fn connect_h3<R: RuntimePoll>(
     quinn_conn: quinn::Connection,
-) -> Result<PooledConnection<RequestBoxBody>, Error> {
+) -> Result<PooledConnection<RequestBodySend>, Error> {
     let h3_conn = h3_quinn::Connection::new(quinn_conn);
     let (mut driver, send_request) = h3::client::new(h3_conn)
         .await
@@ -36,7 +36,7 @@ pub(crate) async fn connect_h3_addrs<R: RuntimePoll>(
     addrs: &[SocketAddr],
     server_name: &str,
     local_address: Option<IpAddr>,
-) -> Result<(PooledConnection<RequestBoxBody>, SocketAddr), Error> {
+) -> Result<(PooledConnection<RequestBodySend>, SocketAddr), Error> {
     let addrs = h3_candidate_addrs(endpoint, addrs, local_address)?;
 
     let (quinn_conn, addr) = race_quic_connect::<R>(endpoint, &addrs, server_name).await?;
@@ -49,7 +49,7 @@ pub(crate) async fn connect_h3_addrs_0rtt<R: RuntimePoll>(
     addrs: &[SocketAddr],
     server_name: &str,
     local_address: Option<IpAddr>,
-) -> Result<(PooledConnection<RequestBoxBody>, SocketAddr, bool), Error> {
+) -> Result<(PooledConnection<RequestBodySend>, SocketAddr, bool), Error> {
     let addrs = h3_candidate_addrs(endpoint, addrs, local_address)?;
 
     let (quinn_conn, addr, used_0rtt) =
@@ -310,7 +310,7 @@ impl std::future::Future for SelectQuicConnect0rtt {
 
 pub(crate) async fn send_on_h3(
     send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
-    request: Request<RequestBoxBody>,
+    request: Request<RequestBodySend>,
     url: Uri,
 ) -> Result<Response, Error> {
     let (parts, body) = request.into_parts();
@@ -363,7 +363,7 @@ pub(crate) async fn send_on_h3(
         }
     });
 
-    let hyper_body: RequestBoxBody = http_body_util::StreamBody::new(body_stream).boxed_unsync();
+    let hyper_body: RequestBodySend = http_body_util::StreamBody::new(body_stream).boxed_unsync();
     let http_resp = http::Response::from_parts(resp_parts, hyper_body);
 
     Ok(Response::from_boxed(http_resp, url))

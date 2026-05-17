@@ -378,7 +378,7 @@ async fn test_streaming_body_upload() {
     ];
 
     let stream = futures_util::stream::iter(chunks);
-    let stream_body: aioduct::body::RequestBoxBody =
+    let stream_body: aioduct::body::RequestBodySend =
         http_body_util::StreamBody::new(stream).boxed_unsync();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);

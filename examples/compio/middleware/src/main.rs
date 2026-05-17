@@ -9,7 +9,7 @@ struct LoggingMiddleware;
 impl Middleware for LoggingMiddleware {
     fn on_request(
         &self,
-        request: &mut http::Request<aioduct::body::RequestBoxBody>,
+        request: &mut http::Request<aioduct::body::RequestBodySend>,
         uri: &http::Uri,
     ) {
         println!("[MW] → {} {}", request.method(), uri);
@@ -17,7 +17,7 @@ impl Middleware for LoggingMiddleware {
 
     fn on_response(
         &self,
-        response: &mut http::Response<aioduct::body::RequestBoxBody>,
+        response: &mut http::Response<aioduct::body::RequestBodySend>,
         uri: &http::Uri,
     ) {
         println!("[MW] ← {} {}", response.status(), uri);
@@ -50,7 +50,7 @@ struct MetricsMiddleware {
 impl Middleware for MetricsMiddleware {
     fn on_request(
         &self,
-        _request: &mut http::Request<aioduct::body::RequestBoxBody>,
+        _request: &mut http::Request<aioduct::body::RequestBodySend>,
         _uri: &http::Uri,
     ) {
         let count = self.request_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -88,7 +88,7 @@ fn main() -> Result<(), aioduct::Error> {
         // Closure as middleware (request-only)
         let client = CompioClient::builder_local(TcpConnector)
             .middleware(
-                |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
+                |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                     req.headers_mut().insert(
                         "x-injected",
                         http::HeaderValue::from_static("by-middleware"),

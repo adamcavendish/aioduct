@@ -1,10 +1,10 @@
 use super::*;
-use crate::body::RequestBoxLocalBody;
+use crate::body::RequestBodyLocal;
 use crate::runtime::CompioRuntime;
 use crate::runtime::compio_rt::CompioIo;
 use crate::runtime::{RuntimeCompletion, RuntimeLocal};
 
-async fn make_h1_conn() -> PooledConnection<RequestBoxLocalBody> {
+async fn make_h1_conn() -> PooledConnection<RequestBodyLocal> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -50,7 +50,7 @@ fn key(host: &str) -> PoolKey {
 
 /// Wait for async-io's background reactor to drive the connection driver,
 /// yielding multiple times so the cross-reactor wakeup has time to land.
-async fn wait_for_ready(pool: &ConnectionPool<RequestBoxLocalBody>, k: &PoolKey) -> bool {
+async fn wait_for_ready(pool: &ConnectionPool<RequestBodyLocal>, k: &PoolKey) -> bool {
     for _ in 0..10 {
         CompioRuntime::sleep(Duration::from_millis(5)).await;
         let inner = pool.inner.lock().unwrap();
@@ -65,14 +65,14 @@ async fn wait_for_ready(pool: &ConnectionPool<RequestBoxLocalBody>, k: &PoolKey)
 
 #[test]
 fn checkout_returns_none_on_empty_pool() {
-    let pool = ConnectionPool::<RequestBoxLocalBody>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodyLocal>::new_no_reaper(8, Duration::from_secs(30));
     assert!(pool.checkout(&key("example.com:80")).is_none());
 }
 
 #[test]
 fn checkin_then_checkout_returns_connection() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let pool = ConnectionPool::<RequestBoxLocalBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodyLocal>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
 
         let conn = make_h1_conn().await;
@@ -94,7 +94,7 @@ fn checkin_then_checkout_returns_connection() {
 #[test]
 fn checkout_with_different_key_returns_none() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let pool = ConnectionPool::<RequestBoxLocalBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodyLocal>::new_no_reaper(8, Duration::from_secs(30));
 
         let conn = make_h1_conn().await;
         pool.checkin(key("a.example.com:80"), conn);
@@ -114,7 +114,7 @@ fn checkout_with_different_key_returns_none() {
 #[test]
 fn checkin_checkout_is_lifo() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let pool = ConnectionPool::<RequestBoxLocalBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodyLocal>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
 
         let conn1 = make_h1_conn().await;
@@ -148,7 +148,7 @@ fn pool_respects_max_idle_per_host() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let max_idle = 2;
         let pool =
-            ConnectionPool::<RequestBoxLocalBody>::new_no_reaper(max_idle, Duration::from_secs(30));
+            ConnectionPool::<RequestBodyLocal>::new_no_reaper(max_idle, Duration::from_secs(30));
         let k = key("example.com:80");
 
         for _ in 0..3 {
@@ -173,8 +173,7 @@ fn pool_respects_max_idle_per_host() {
 #[test]
 fn checkout_expired_connection_returns_none() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let pool =
-            ConnectionPool::<RequestBoxLocalBody>::new_no_reaper(8, Duration::from_millis(50));
+        let pool = ConnectionPool::<RequestBodyLocal>::new_no_reaper(8, Duration::from_millis(50));
         let k = key("example.com:80");
 
         let conn = make_h1_conn().await;

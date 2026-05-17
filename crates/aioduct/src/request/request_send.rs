@@ -7,7 +7,7 @@ use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, StatusCode, Uri, Version};
 
 use crate::body::RequestBody;
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::client::HttpEngineSend;
 use crate::error::{Error, SendError};
 use crate::response::Response;
@@ -170,7 +170,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     }
 
     /// Set a streaming request body.
-    pub fn body_stream(mut self, body: RequestBoxBody) -> Self {
+    pub fn body_stream(mut self, body: RequestBodySend) -> Self {
         self.body = Some(RequestBody::Streaming(body));
         self
     }
@@ -729,7 +729,7 @@ mod tests {
         use http_body_util::BodyExt;
         let client = test_client();
         let rb = client.post("http://example.com").unwrap();
-        let stream_body: crate::body::RequestBoxBody = http_body_util::Empty::new()
+        let stream_body: crate::body::RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let rb = rb.body_stream(stream_body);
