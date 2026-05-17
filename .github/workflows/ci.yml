@@ -42,6 +42,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: all-features
       - uses: taiki-e/install-action@just
       - run: just clippy-all
 
@@ -86,16 +88,25 @@ jobs:
       - run: exit 0
 
   test:
-    name: Test (all features)
+    name: Test (${{ matrix.crypto }})
     runs-on: ubuntu-latest
     needs: [basics]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crypto: ring
+            features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
+          - crypto: aws-lc-rs
+            features: "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: all-features
       - uses: taiki-e/install-action@nextest
-      - uses: taiki-e/install-action@just
-      - run: just test-all
+      - run: cargo nextest run -p aioduct --features ${{ matrix.features }}
 
   coverage:
     name: Coverage
@@ -108,14 +119,13 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: coverage
+          shared-key: coverage
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
-      - uses: taiki-e/install-action@just
-      - run: just coverage-lcov
+      - run: cargo llvm-cov nextest -p aioduct --features "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2" --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v6
         with:
-          files: coverage/lcov.info
+          files: lcov.info
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
