@@ -275,7 +275,7 @@ impl<'a> WasmRequestBuilder<'a> {
 
         let timeout_handle =
             if let (Some(duration), Some(controller)) = (timeout, abort_controller.clone()) {
-                let ms = duration.as_millis() as i32;
+                let ms = duration.as_millis().min(i32::MAX as u128) as i32;
                 Some(
                     window
                         .set_timeout_with_callback_and_timeout_and_arguments_0(
