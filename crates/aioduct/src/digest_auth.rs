@@ -49,8 +49,16 @@ impl DigestAuth {
             let Ok(mut counts) = self.nonce_counts.lock() else {
                 return None;
             };
-            if counts.len() > 64 {
-                counts.clear();
+            while counts.len() > 64 {
+                if let Some(evict) = counts
+                    .iter()
+                    .min_by_key(|(_, v)| **v)
+                    .map(|(k, _)| k.clone())
+                {
+                    counts.remove(&evict);
+                } else {
+                    break;
+                }
             }
             let entry = counts.entry(nonce.to_string()).or_insert(0);
             *entry += 1;
@@ -77,9 +85,14 @@ impl DigestAuth {
             hash_fn(&format!("{ha1}:{nonce}:{ha2}"))
         };
 
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
         let mut value = format!(
             "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\"",
-            self.username, realm, nonce, path, response
+            esc(&self.username),
+            esc(realm),
+            esc(nonce),
+            esc(path),
+            response
         );
 
         if qop.is_some_and(|q| has_qop_auth(q)) {
@@ -87,7 +100,7 @@ impl DigestAuth {
         }
 
         if let Some(opaque) = opaque {
-            value.push_str(&format!(", opaque=\"{opaque}\""));
+            value.push_str(&format!(", opaque=\"{}\"", esc(opaque)));
         }
 
         if algorithm != "MD5" {
@@ -647,10 +660,70 @@ mod tests {
     }
 
     #[test]
+    fn nonce_eviction_preserves_active_nonces() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+
+        // Use a "hot" nonce many times to give it a high count
+        let mut hot = HeaderMap::new();
+        hot.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="r", nonce="hot", qop="auth""#),
+        );
+        for _ in 0..5 {
+            auth.authorize(&Method::GET, &uri, &hot);
+        }
+
+        // Fill up 65 more nonces to trigger eviction
+        for i in 0..65 {
+            let nonce_val = format!(r#"Digest realm="r", nonce="n{i}", qop="auth""#);
+            let mut h = HeaderMap::new();
+            h.insert(WWW_AUTHENTICATE, HeaderValue::from_str(&nonce_val).unwrap());
+            auth.authorize(&Method::GET, &uri, &h);
+        }
+
+        // The "hot" nonce should still have its count preserved (not reset to 1)
+        let v = auth.authorize(&Method::GET, &uri, &hot).unwrap();
+        let s = v.to_str().unwrap().to_string();
+        assert!(
+            s.contains("nc=00000006"),
+            "hot nonce count should be 6, got: {s}"
+        );
+    }
+
+    #[test]
     fn md5_long_input() {
         let input = "a".repeat(100);
         let hash = md5_hex(&input);
         assert_eq!(hash.len(), 32);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn authorize_escapes_username_with_quotes() {
+        let auth = DigestAuth::new("user\"name".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc""#),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v = value.to_str().unwrap().to_string();
+        assert!(v.contains(r#"username="user\"name""#));
+    }
+
+    #[test]
+    fn authorize_escapes_backslash_in_username() {
+        let auth = DigestAuth::new("user\\name".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="abc""#),
+        );
+        let value = auth.authorize(&Method::GET, &uri, &headers).unwrap();
+        let v = value.to_str().unwrap().to_string();
+        assert!(v.contains(r#"username="user\\name""#));
     }
 }

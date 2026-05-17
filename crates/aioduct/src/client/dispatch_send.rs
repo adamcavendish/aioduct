@@ -487,6 +487,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 );
                 resp.set_remote_addr(pooled.remote_addr);
                 resp.set_tls_info(pooled.tls_info.clone());
+                resp.set_timings(Some(
+                    TimingCollector {
+                        dns: Some(dns_start.elapsed()),
+                        tcp_connect: Some(tcp_start.elapsed()),
+                        ..TimingCollector::default()
+                    }
+                    .into_timings(Some(transfer), request_start.elapsed()),
+                ));
                 self.core
                     .attach_observer(&mut resp, &req_method, original_uri);
                 if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
