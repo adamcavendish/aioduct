@@ -54,6 +54,7 @@ compio-net = { workspace = true, optional = true }
 compio-runtime = { workspace = true, features = ["time"], optional = true }
 encoding_rs = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
+futures-channel.workspace = true
 futures-core.workspace = true
 futures-io = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
