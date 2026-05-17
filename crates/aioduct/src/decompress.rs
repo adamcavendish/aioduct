@@ -321,17 +321,25 @@ mod imp {
         encoding: &str,
         accept: &AcceptEncoding,
     ) -> Option<Result<StreamDecoder, Error>> {
-        match encoding.as_bytes() {
-            #[cfg(feature = "gzip")]
-            b"gzip" if accept.gzip => Some(Ok(StreamDecoder::new_gzip())),
-            #[cfg(feature = "deflate")]
-            b"deflate" if accept.deflate => Some(Ok(StreamDecoder::new_deflate())),
-            #[cfg(feature = "brotli")]
-            b"br" if accept.brotli => Some(Ok(StreamDecoder::new_brotli())),
-            #[cfg(feature = "zstd")]
-            b"zstd" if accept.zstd => Some(StreamDecoder::new_zstd()),
-            _ => None,
+        #[cfg(feature = "gzip")]
+        if (encoding.eq_ignore_ascii_case("gzip") || encoding.eq_ignore_ascii_case("x-gzip"))
+            && accept.gzip
+        {
+            return Some(Ok(StreamDecoder::new_gzip()));
         }
+        #[cfg(feature = "deflate")]
+        if encoding.eq_ignore_ascii_case("deflate") && accept.deflate {
+            return Some(Ok(StreamDecoder::new_deflate()));
+        }
+        #[cfg(feature = "brotli")]
+        if encoding.eq_ignore_ascii_case("br") && accept.brotli {
+            return Some(Ok(StreamDecoder::new_brotli()));
+        }
+        #[cfg(feature = "zstd")]
+        if encoding.eq_ignore_ascii_case("zstd") && accept.zstd {
+            return Some(StreamDecoder::new_zstd());
+        }
+        None
     }
 
     pub(super) fn decompress_impl(

@@ -106,7 +106,7 @@ fn parse_hsts(value: &HeaderValue) -> Option<(Duration, bool)> {
     for part in s.split(';') {
         let part = part.trim().to_lowercase();
         if let Some(age_str) = part.strip_prefix("max-age=") {
-            if let Ok(secs) = age_str.trim().parse::<u64>() {
+            if let Ok(secs) = age_str.trim().trim_matches('"').parse::<u64>() {
                 max_age = Some(Duration::from_secs(secs));
             }
         } else if part == "includesubdomains" {
@@ -277,5 +277,13 @@ mod tests {
     fn default_creates_empty_store() {
         let store = HstsStore::default();
         assert!(!store.should_upgrade("example.com"));
+    }
+
+    #[test]
+    fn quoted_max_age_parsed() {
+        let store = HstsStore::new();
+        let headers = hsts_headers("max-age=\"31536000\"");
+        store.store_from_response("example.com", &headers);
+        assert!(store.should_upgrade("example.com"));
     }
 }
