@@ -108,7 +108,8 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
             .add(b'>')
             .add(b'&')
             .add(b'=')
-            .add(b'+');
+            .add(b'+')
+            .add(b'%');
 
         let mut uri_str = self.uri.to_string();
         let sep = if self.uri.query().is_some() { '&' } else { '?' };
@@ -186,6 +187,7 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
             let v = utf8_percent_encode(value, FORM_ENCODE);
             let _ = write!(encoded, "{k}={v}");
         }
+        let encoded = encoded.replace("%20", "+");
         self.headers.insert(
             http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/x-www-form-urlencoded"),

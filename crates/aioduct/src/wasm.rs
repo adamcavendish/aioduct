@@ -118,10 +118,17 @@ impl WasmClientBuilder {
 
     /// Build the WASM client.
     pub fn build(self) -> WasmClient {
-        let mut client = WasmClient::new();
-        client.default_headers.extend(self.default_headers);
-        client.timeout = self.timeout;
-        client
+        let mut default_headers = self.default_headers;
+        if !default_headers.contains_key(http::header::USER_AGENT) {
+            let ua = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
+            if let Ok(val) = HeaderValue::from_str(ua) {
+                default_headers.insert(http::header::USER_AGENT, val);
+            }
+        }
+        WasmClient {
+            default_headers,
+            timeout: self.timeout,
+        }
     }
 }
 
