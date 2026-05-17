@@ -55,8 +55,15 @@ impl RetryConfig {
         self
     }
 
-    /// Set the backoff multiplier.
+    /// Set the backoff multiplier. Must be finite and non-negative.
+    ///
+    /// # Panics
+    /// Panics if `m` is NaN, infinite, or negative.
     pub fn backoff_multiplier(mut self, m: f64) -> Self {
+        assert!(
+            m.is_finite() && m >= 0.0,
+            "backoff_multiplier must be finite and non-negative, got {m}"
+        );
         self.backoff_multiplier = m;
         self
     }
@@ -76,7 +83,9 @@ impl RetryConfig {
     pub(crate) fn delay_for_attempt(&self, attempt: u32) -> Duration {
         let millis =
             self.initial_backoff.as_millis() as f64 * self.backoff_multiplier.powi(attempt as i32);
-        let delay = Duration::from_millis(millis as u64);
+        let max_millis = self.max_backoff.as_millis() as f64;
+        let clamped = millis.min(max_millis).max(0.0);
+        let delay = Duration::from_millis(clamped as u64);
         delay.min(self.max_backoff)
     }
 }
@@ -468,5 +477,29 @@ mod tests {
     fn non_idempotent_methods() {
         assert!(!is_idempotent(&http::Method::POST));
         assert!(!is_idempotent(&http::Method::PATCH));
+    }
+
+    #[test]
+    #[should_panic(expected = "backoff_multiplier must be finite and non-negative")]
+    fn backoff_multiplier_rejects_nan() {
+        RetryConfig::default().backoff_multiplier(f64::NAN);
+    }
+
+    #[test]
+    #[should_panic(expected = "backoff_multiplier must be finite and non-negative")]
+    fn backoff_multiplier_rejects_infinity() {
+        RetryConfig::default().backoff_multiplier(f64::INFINITY);
+    }
+
+    #[test]
+    #[should_panic(expected = "backoff_multiplier must be finite and non-negative")]
+    fn backoff_multiplier_rejects_negative() {
+        RetryConfig::default().backoff_multiplier(-1.0);
+    }
+
+    #[test]
+    fn backoff_multiplier_accepts_zero() {
+        let cfg = RetryConfig::default().backoff_multiplier(0.0);
+        assert_eq!(cfg.delay_for_attempt(1), Duration::ZERO);
     }
 }

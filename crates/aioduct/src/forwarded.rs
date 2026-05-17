@@ -64,7 +64,7 @@ impl ForwardedElement {
 fn format_ip(ip: IpAddr) -> String {
     match ip {
         IpAddr::V4(v4) => v4.to_string(),
-        IpAddr::V6(v6) => format!("\"[{v6}]\""),
+        IpAddr::V6(v6) => format!("[{v6}]"),
     }
 }
 
@@ -83,10 +83,18 @@ fn write_param(
     }
     *first = false;
     write!(f, "{key}=")?;
-    if value.starts_with('"') || !needs_quoting(value) {
+    if !needs_quoting(value) {
         f.write_str(value)
     } else {
-        write!(f, "\"{value}\"")
+        f.write_str("\"")?;
+        for ch in value.chars() {
+            match ch {
+                '"' => f.write_str("\\\"")?,
+                '\\' => f.write_str("\\\\")?,
+                c => write!(f, "{c}")?,
+            }
+        }
+        f.write_str("\"")
     }
 }
 
@@ -246,5 +254,17 @@ mod tests {
         assert_eq!(parsed[0].forwarded_for.as_deref(), Some("192.0.2.60"));
         assert_eq!(parsed[0].host.as_deref(), Some("example.com"));
         assert_eq!(parsed[0].proto.as_deref(), Some("https"));
+    }
+
+    #[test]
+    fn quotes_escaped_in_value() {
+        let elem = ForwardedElement::new().host("exam\"ple.com");
+        assert_eq!(elem.to_header_value(), r#"host="exam\"ple.com""#);
+    }
+
+    #[test]
+    fn backslash_escaped_in_value() {
+        let elem = ForwardedElement::new().host(r"ex\ample.com");
+        assert_eq!(elem.to_header_value(), r#"host="ex\\ample.com""#);
     }
 }
