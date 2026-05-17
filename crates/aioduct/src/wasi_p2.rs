@@ -185,10 +185,9 @@ impl<'a> WasiRequestBuilder<'a> {
     pub fn json(mut self, value: &impl serde::Serialize) -> Result<Self, Error> {
         let data =
             serde_json::to_vec(value).map_err(|e| Error::Other(format!("json: {e}").into()))?;
-        self.headers.insert(
-            http::header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
+        self.headers
+            .entry(http::header::CONTENT_TYPE)
+            .or_insert_with(|| HeaderValue::from_static("application/json"));
         self.body = Some(Bytes::from(data));
         Ok(self)
     }
@@ -216,7 +215,9 @@ impl<'a> WasiRequestBuilder<'a> {
 
         let fields = Fields::new();
         for (name, value) in &self.client.default_headers {
-            if let Ok(v) = value.to_str() {
+            if !self.headers.contains_key(name)
+                && let Ok(v) = value.to_str()
+            {
                 let _ = fields.append(name.as_str(), v.as_bytes());
             }
         }
