@@ -264,9 +264,24 @@ impl<B> HttpEngineCore<B> {
         if self.referer
             && !(current_uri.scheme() == Some(&http::uri::Scheme::HTTPS)
                 && next_uri.scheme() != Some(&http::uri::Scheme::HTTPS))
-            && let Ok(val) = HeaderValue::from_str(&current_uri.to_string())
         {
-            headers.insert(REFERER, val);
+            let referer_value = if same_origin {
+                format!(
+                    "{}://{}{}",
+                    current_uri.scheme_str().unwrap_or("http"),
+                    current_uri.authority().map(|a| a.as_str()).unwrap_or(""),
+                    current_uri.path()
+                )
+            } else {
+                format!(
+                    "{}://{}",
+                    current_uri.scheme_str().unwrap_or("http"),
+                    current_uri.authority().map(|a| a.as_str()).unwrap_or("")
+                )
+            };
+            if let Ok(val) = HeaderValue::from_str(&referer_value) {
+                headers.insert(REFERER, val);
+            }
         }
 
         Ok(Some((next_uri, next_method, next_body)))
