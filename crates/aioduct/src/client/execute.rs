@@ -220,10 +220,14 @@ impl<B> HttpEngineCore<B> {
 
         let (next_method, next_body) = match status {
             StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND | StatusCode::SEE_OTHER => {
-                headers.remove(CONTENT_TYPE);
-                headers.remove(CONTENT_LENGTH);
-                headers.remove(CONTENT_ENCODING);
-                (Method::GET, None)
+                if current_method == Method::GET || current_method == Method::HEAD {
+                    (current_method, None)
+                } else {
+                    headers.remove(CONTENT_TYPE);
+                    headers.remove(CONTENT_LENGTH);
+                    headers.remove(CONTENT_ENCODING);
+                    (Method::GET, None)
+                }
             }
             StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
                 match body_for_replay {
@@ -258,6 +262,8 @@ impl<B> HttpEngineCore<B> {
         }
 
         if self.referer
+            && !(current_uri.scheme() == Some(&http::uri::Scheme::HTTPS)
+                && next_uri.scheme() != Some(&http::uri::Scheme::HTTPS))
             && let Ok(val) = HeaderValue::from_str(&current_uri.to_string())
         {
             headers.insert(REFERER, val);

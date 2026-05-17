@@ -29,10 +29,7 @@ impl RateLimiter {
         } else {
             per
         };
-        let now_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+        let now_ns = crate::clock::monotonic_nanos();
         Self {
             inner: Arc::new(RateLimiterInner {
                 max_tokens,
@@ -68,10 +65,7 @@ impl RateLimiter {
 
     fn refill(&self) {
         let inner = &self.inner;
-        let now_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
+        let now_ns = crate::clock::monotonic_nanos();
         let last = inner.last_refill_ns.load(Ordering::Relaxed);
         let elapsed_ns = now_ns.saturating_sub(last);
         let refill_ns = inner.refill_interval.as_nanos() as u64;

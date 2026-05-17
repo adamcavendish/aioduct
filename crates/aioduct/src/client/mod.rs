@@ -226,10 +226,9 @@ fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
 
     let base_url =
         url::Url::parse(&base.to_string()).map_err(|e| Error::InvalidUrl(e.to_string()))?;
-    let mut next = base_url
+    let next = base_url
         .join(location)
         .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))?;
-    next.set_fragment(None);
     next.as_str()
         .parse()
         .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))

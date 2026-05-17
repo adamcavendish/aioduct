@@ -29,6 +29,29 @@
 
 use std::time::Duration;
 
+/// Returns a monotonic nanosecond count suitable for token-bucket timing.
+///
+/// Uses coarsetime by default (~1ms resolution, ~1ns read cost) or
+/// `std::time::Instant` when `precise-timing` is enabled.
+#[inline]
+pub(crate) fn monotonic_nanos() -> u64 {
+    #[cfg(not(feature = "precise-timing"))]
+    {
+        use std::sync::OnceLock;
+        static EPOCH: OnceLock<coarsetime::Instant> = OnceLock::new();
+        let epoch = EPOCH.get_or_init(coarsetime::Instant::now);
+        let elapsed: Duration = epoch.elapsed().into();
+        elapsed.as_nanos() as u64
+    }
+    #[cfg(feature = "precise-timing")]
+    {
+        use std::sync::OnceLock;
+        static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+        let epoch = EPOCH.get_or_init(std::time::Instant::now);
+        epoch.elapsed().as_nanos() as u64
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Instant(Inner);
 
@@ -124,5 +147,13 @@ mod tests {
         let t = Instant::now();
         let debug = format!("{:?}", t);
         assert!(!debug.is_empty());
+    }
+
+    #[test]
+    fn monotonic_nanos_increases() {
+        let a = monotonic_nanos();
+        std::hint::black_box(0u64);
+        let b = monotonic_nanos();
+        assert!(b >= a);
     }
 }
