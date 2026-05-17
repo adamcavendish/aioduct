@@ -63,7 +63,15 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 self.core
                     .cache_lookup(&current_method, &current_uri, &mut current_headers);
             let mut cache_entry = match cache_state {
-                CacheLookupOutcome::Fresh(resp) => return Ok((*resp).into_local()),
+                CacheLookupOutcome::Fresh(resp) => {
+                    let mut resp = *resp;
+                    if !self.core.middleware.is_empty() {
+                        resp.apply_middleware(&self.core.middleware, &current_uri);
+                    }
+                    self.core
+                        .attach_observer(&mut resp, &current_method, &current_uri);
+                    return Ok(resp.into_local());
+                }
                 CacheLookupOutcome::Stale(entry) => Some(entry),
                 CacheLookupOutcome::Miss => None,
             };
@@ -146,13 +154,6 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 )
                 .await?;
 
-            if resp.status() == StatusCode::NOT_MODIFIED
-                && let Some(cached) = cache_entry
-            {
-                let http_resp = cached.into_http_response();
-                return Ok(Response::from_boxed(http_resp, current_uri).into_local());
-            }
-
             match self.core.post_execute(
                 &resp,
                 &current_method,
@@ -161,6 +162,12 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
                 body_for_replay,
             )? {
                 PostExecuteAction::Done => {
+                    if resp.status() == StatusCode::NOT_MODIFIED
+                        && let Some(cached) = cache_entry
+                    {
+                        let http_resp = cached.into_http_response();
+                        return Ok(Response::from_boxed(http_resp, current_uri).into_local());
+                    }
                     return self
                         .finalize_response_local(
                             resp,
@@ -312,6 +319,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
         let is_https = scheme == &http::uri::Scheme::HTTPS;
 
         let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
+        let may_h2 = is_https || self.core.http2_prior_knowledge;
 
         let can_stale_retry = !self.core.no_connection_reuse
             && (http_body::Body::is_end_stream(request.body()) || replay_body.is_some());
@@ -418,6 +426,84 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             },
         );
 
+        if may_h2 && !self.core.no_connection_reuse && self.core.pool.mark_connecting_h2(&pool_key)
+        {
+            let wait_budget = self
+                .core
+                .connect_timeout
+                .unwrap_or(std::time::Duration::from_secs(5));
+            let poll_interval = std::time::Duration::from_millis(5);
+            let max_polls =
+                (wait_budget.as_millis() / poll_interval.as_millis().max(1)).clamp(1, 200);
+            for _ in 0..max_polls {
+                R::sleep(poll_interval).await;
+                if let Some(mut conn) = self.core.pool.checkout(&pool_key) {
+                    self.core.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::PoolCheckoutComplete {
+                            outcome: observer::PoolOutcome::Hit,
+                            blocked_duration: pool_checkout_start.elapsed(),
+                        },
+                    );
+                    let req_method = request.method().clone();
+                    let transfer_start = Instant::now();
+                    self.core.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::RequestSent {
+                            duration: transfer_start.duration_since(pool_checkout_start),
+                        },
+                    );
+                    let mut resp = HttpEngineCore::send_on_connection(
+                        &mut conn,
+                        request,
+                        original_uri.clone(),
+                    )
+                    .await?;
+                    let transfer = transfer_start.elapsed();
+                    self.core.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::ResponseStarted {
+                            waiting_duration: transfer,
+                        },
+                    );
+                    let protocol = HttpEngineCore::connection_protocol(&conn);
+                    self.core.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::ResponseComplete {
+                            status: resp.status(),
+                            protocol,
+                            total_duration: request_start.elapsed(),
+                        },
+                    );
+                    resp.set_remote_addr(conn.remote_addr);
+                    resp.set_tls_info(conn.tls_info.clone());
+                    #[allow(deprecated)]
+                    resp.set_timings(Some(
+                        TimingCollector::default()
+                            .into_timings(Some(transfer), timing_start.elapsed()),
+                    ));
+                    self.core
+                        .attach_observer(&mut resp, &req_method, original_uri);
+                    if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                        self.core.checkin_connection(pool_key, conn);
+                    }
+                    return Ok(resp);
+                }
+            }
+            self.core.pool.unmark_connecting_h2(&pool_key);
+            let _ = self.core.pool.mark_connecting_h2(&pool_key);
+        }
+
+        let mut h2_guard = super::dispatch::H2ConnectGuard {
+            pool: &self.core.pool,
+            key: &pool_key,
+            active: may_h2,
+        };
+
         let proxy = self
             .core
             .proxy
@@ -449,7 +535,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             let tcp_start = Instant::now();
             let connect_fut = async {
                 let local_address = self.core.local_address;
-                let (tcp_stream, addr) = if addrs.len() > 1 && local_address.is_none() {
+                let (tcp_stream, addr) = if addrs.len() > 1 {
                     #[cfg(feature = "tower")]
                     let _ = original_uri;
                     crate::happy_eyeballs::connect_happy_eyeballs_local::<R, C>(
@@ -581,6 +667,24 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             }
             conn
         };
+
+        // H2 multiplexing: deactivate the guard and handle connection sharing
+        h2_guard.active = false;
+        drop(h2_guard);
+
+        let is_multiplex = pooled.is_h2_or_h3() && !self.core.no_connection_reuse;
+        if is_multiplex {
+            if let Some(existing) = self.core.pool.checkout(&pool_key) {
+                drop(pooled);
+                pooled = existing;
+            } else if let Some(cloned) = pooled.clone_for_multiplex() {
+                self.core.checkin_connection(pool_key.clone(), pooled);
+                pooled = cloned;
+            }
+            self.core.pool.unmark_connecting_h2(&pool_key);
+        } else if may_h2 {
+            self.core.pool.unmark_connecting_h2(&pool_key);
+        }
 
         if let Some(ref proxy) = proxy
             && !is_https

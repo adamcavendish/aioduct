@@ -672,3 +672,144 @@ async fn cache_should_respect_vary_header() {
          Got: {body2}"
     );
 }
+
+// #106: 304 revalidation should store cookies from the 304 response
+#[tokio::test]
+async fn cache_304_revalidation_stores_cookies() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let (addr, _counter) = h1_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("cache-control", "max-age=0, must-revalidate")
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::from("original")))
+                        .unwrap(),
+                )
+            } else if n == 1 {
+                let inm = req
+                    .headers()
+                    .get("if-none-match")
+                    .map(|v| v.to_str().unwrap().to_owned())
+                    .unwrap_or_default();
+                if inm.contains("\"v1\"") {
+                    Ok(Response::builder()
+                        .status(304)
+                        .header("etag", "\"v1\"")
+                        .header("set-cookie", "from304=yes; Path=/")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap())
+                } else {
+                    Ok(Response::new(Full::new(Bytes::from("unexpected"))))
+                }
+            } else {
+                let cookie = req
+                    .headers()
+                    .get("cookie")
+                    .map(|v| v.to_str().unwrap().to_owned());
+                let body = format!("cookie={}", cookie.unwrap_or_else(|| "none".into()));
+                Ok(Response::new(Full::new(Bytes::from(body))))
+            }
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let jar = aioduct::CookieJar::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .cookie_jar(jar)
+        .build();
+
+    let url = format!("http://{addr}/resource");
+
+    // Populate cache
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+
+    // Revalidation: server returns 304 with Set-Cookie
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+
+    // Third request: cookie from 304 should be sent
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("from304=yes"),
+        "cookie set during 304 revalidation should be stored and sent, got: {body}"
+    );
+}
+
+// #107: fresh cache hit should apply middleware
+#[tokio::test]
+async fn fresh_cache_hit_applies_middleware() {
+    use std::sync::atomic::AtomicBool;
+
+    let (addr, _counter) = h1_server_with(|_req| async {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("cache-control", "max-age=3600")
+                .body(Full::new(Bytes::from("cached")))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let middleware_called = Arc::new(AtomicBool::new(false));
+    let middleware_called_clone = middleware_called.clone();
+
+    struct CacheMiddleware {
+        called: Arc<AtomicBool>,
+    }
+
+    impl aioduct::Middleware for CacheMiddleware {
+        fn on_response(
+            &self,
+            response: &mut http::Response<aioduct::body::RequestBodySend>,
+            _uri: &http::Uri,
+        ) {
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            response.headers_mut().insert(
+                http::header::HeaderName::from_static("x-from-middleware"),
+                http::header::HeaderValue::from_static("applied"),
+            );
+        }
+    }
+
+    let cache = aioduct::HttpCache::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cache(cache)
+        .middleware(CacheMiddleware {
+            called: middleware_called_clone,
+        })
+        .build();
+
+    let url = format!("http://{addr}/resource");
+
+    // First request: populate cache
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cached");
+    middleware_called.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // Second request: fresh cache hit — middleware should still run
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert!(
+        middleware_called.load(std::sync::atomic::Ordering::SeqCst),
+        "middleware on_response should be called on fresh cache hits"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("x-from-middleware")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "applied",
+        "middleware header should be present on fresh cache hit response"
+    );
+    assert_eq!(resp.text().await.unwrap(), "cached");
+}

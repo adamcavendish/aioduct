@@ -9,6 +9,20 @@ use crate::observer::{self, RequestEvent, RequestPhase};
 use crate::pool::{HttpConnection, PooledConnection};
 use crate::response::{BodyObserverCtx, Response};
 
+pub(super) struct H2ConnectGuard<'a, B: 'static> {
+    pub(super) pool: &'a crate::pool::ConnectionPool<B>,
+    pub(super) key: &'a crate::pool::PoolKey,
+    pub(super) active: bool,
+}
+
+impl<B: 'static> Drop for H2ConnectGuard<'_, B> {
+    fn drop(&mut self) {
+        if self.active {
+            self.pool.unmark_connecting_h2(self.key);
+        }
+    }
+}
+
 use super::HttpEngineCore;
 
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
