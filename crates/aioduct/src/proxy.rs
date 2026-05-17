@@ -196,7 +196,7 @@ impl ProxySettings {
 
     pub(crate) fn proxy_for(&self, uri: &Uri) -> Option<ProxyConfig> {
         if let Some(host) = uri.host()
-            && self.no_proxy.matches(host)
+            && self.no_proxy.matches_with_port(host, uri.port_u16())
         {
             return None;
         }
@@ -241,22 +241,40 @@ impl NoProxy {
         Self::new(&val)
     }
 
-    /// Returns `true` if the given host matches any bypass rule.
+    /// Returns `true` if the given host (and optional port) matches any bypass rule.
     pub fn matches(&self, host: &str) -> bool {
+        self.matches_with_port(host, None)
+    }
+
+    /// Returns `true` if the given host:port matches any bypass rule.
+    pub(crate) fn matches_with_port(&self, host: &str, port: Option<u16>) -> bool {
         let host = host.to_lowercase();
         for rule in &self.rules {
             if rule == "*" {
                 return true;
             }
-            if rule == &host {
+
+            let (rule_host, rule_port) = if let Some((h, p)) = rule.rsplit_once(':') {
+                if let Ok(port_num) = p.parse::<u16>() {
+                    (h, Some(port_num))
+                } else {
+                    (rule.as_str(), None)
+                }
+            } else {
+                (rule.as_str(), None)
+            };
+
+            if rule_port.is_some() && rule_port != port {
+                continue;
+            }
+
+            if rule_host == host {
                 return true;
             }
-            // .example.com matches foo.example.com
-            if rule.starts_with('.') && host.ends_with(rule.as_str()) {
+            if rule_host.starts_with('.') && host.ends_with(rule_host) {
                 return true;
             }
-            // example.com also matches foo.example.com
-            if !rule.starts_with('.') && host.ends_with(&format!(".{rule}")) {
+            if !rule_host.starts_with('.') && host.ends_with(&format!(".{rule_host}")) {
                 return true;
             }
         }
@@ -367,6 +385,29 @@ mod tests {
     fn no_proxy_empty_matches_nothing() {
         let np = NoProxy::new("");
         assert!(!np.matches("anything"));
+    }
+
+    #[test]
+    fn no_proxy_with_port_matches_specific_port() {
+        let np = NoProxy::new("example.com:8080");
+        assert!(np.matches_with_port("example.com", Some(8080)));
+        assert!(!np.matches_with_port("example.com", Some(9090)));
+        assert!(!np.matches_with_port("example.com", None));
+    }
+
+    #[test]
+    fn no_proxy_without_port_matches_any_port() {
+        let np = NoProxy::new("example.com");
+        assert!(np.matches_with_port("example.com", Some(8080)));
+        assert!(np.matches_with_port("example.com", Some(443)));
+        assert!(np.matches_with_port("example.com", None));
+    }
+
+    #[test]
+    fn no_proxy_port_with_subdomain() {
+        let np = NoProxy::new(".example.com:8080");
+        assert!(np.matches_with_port("sub.example.com", Some(8080)));
+        assert!(!np.matches_with_port("sub.example.com", Some(9090)));
     }
 
     #[test]
