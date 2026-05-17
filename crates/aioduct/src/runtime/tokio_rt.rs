@@ -25,6 +25,11 @@ impl RuntimeCompletion for TokioRuntime {
     }
 
     fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(crate::error::Error::Other(
+                "blocking client cannot be used from within an async runtime".into(),
+            ));
+        }
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -597,6 +602,15 @@ mod tests {
         })
         .unwrap();
         assert!(result > 0);
+    }
+
+    #[tokio::test]
+    async fn block_on_inside_runtime_returns_error() {
+        use crate::runtime::RuntimeCompletion;
+        let result = TokioRuntime::block_on(async { 42 });
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("blocking client cannot be used from within an async runtime"));
     }
 
     // ── TokioIo read/write edge cases ──────────────────────────────────

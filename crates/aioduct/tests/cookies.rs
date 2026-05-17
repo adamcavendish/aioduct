@@ -414,7 +414,7 @@ async fn cookie_response_accessor() {
             Response::builder()
                 .header(
                     "set-cookie",
-                    "key=val; Domain=example.com; Path=/api; Secure; HttpOnly; SameSite=Strict",
+                    "key=val; Domain=127.0.0.1; Path=/api; Secure; HttpOnly; SameSite=Strict",
                 )
                 .header("set-cookie", "lax_cookie=lax; SameSite=Lax")
                 .header("set-cookie", "plain=text")
@@ -438,7 +438,7 @@ async fn cookie_response_accessor() {
     // Find each cookie by name
     let key_cookie = cookies.iter().find(|c| c.name() == "key").unwrap();
     assert_eq!(key_cookie.value(), "val");
-    assert_eq!(key_cookie.domain(), Some("example.com"));
+    assert_eq!(key_cookie.domain(), Some("127.0.0.1"));
     assert_eq!(key_cookie.path(), "/api");
     assert!(key_cookie.secure());
     assert!(key_cookie.http_only());
@@ -892,4 +892,80 @@ async fn cookie_expires_rfc850_format_should_be_parsed() {
          so the cookie is stored as non-expired. Found {} cookies.",
         cookies.len()
     );
+}
+
+#[tokio::test]
+async fn cookie_jar_rejects_cross_domain_cookie() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        if path == "/set" {
+            let resp = Response::builder()
+                .status(200)
+                .header("Set-Cookie", "legit=yes")
+                .header("Set-Cookie", "stolen=secret; Domain=evil.com")
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap();
+            Ok::<_, Infallible>(resp)
+        } else {
+            let cookie = req
+                .headers()
+                .get("cookie")
+                .map(|v| v.to_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+            Ok(Response::new(Full::new(Bytes::from(format!(
+                "cookie={cookie}"
+            )))))
+        }
+    })
+    .await;
+
+    let jar = aioduct::CookieJar::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .cookie_jar(jar)
+        .build();
+
+    client
+        .get(&format!("http://{addr}/set"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/check"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "cookie=legit=yes");
+}
+
+#[tokio::test]
+async fn response_cookies_filters_mismatched_domain() {
+    let (addr, _) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("set-cookie", "good=1")
+                .header("set-cookie", "cross=2; Domain=evil.com")
+                .header("set-cookie", "also_good=3; Domain=127.0.0.1")
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let cookies = resp.cookies();
+    assert_eq!(cookies.len(), 2);
+    assert!(cookies.iter().any(|c| c.name() == "good"));
+    assert!(cookies.iter().any(|c| c.name() == "also_good"));
+    assert!(!cookies.iter().any(|c| c.name() == "cross"));
 }
