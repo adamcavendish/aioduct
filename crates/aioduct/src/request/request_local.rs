@@ -239,7 +239,8 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
 
     /// Set upgrade headers for a WebSocket handshake.
     ///
-    /// This sets `Connection: Upgrade`, `Upgrade: websocket`, and forces HTTP/1.1.
+    /// This sets `Connection: Upgrade`, `Upgrade: websocket`,
+    /// `Sec-WebSocket-Version: 13`, a random `Sec-WebSocket-Key`, and forces HTTP/1.1.
     /// After calling `send()`, check for status 101 and call `response.upgrade()`.
     pub fn upgrade(mut self) -> Self {
         self.headers.insert(
@@ -248,6 +249,14 @@ impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
         );
         self.headers
             .insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
+        self.headers.insert(
+            http::header::SEC_WEBSOCKET_VERSION,
+            HeaderValue::from_static("13"),
+        );
+        let key = super::generate_websocket_key();
+        if let Ok(val) = HeaderValue::from_str(&key) {
+            self.headers.insert(http::header::SEC_WEBSOCKET_KEY, val);
+        }
         self.version = Some(Version::HTTP_11);
         self
     }
@@ -624,6 +633,8 @@ mod tests {
         let req = rb.build().unwrap();
         assert_eq!(req.headers().get("connection").unwrap(), "Upgrade");
         assert_eq!(req.headers().get("upgrade").unwrap(), "websocket");
+        assert_eq!(req.headers().get("sec-websocket-version").unwrap(), "13");
+        assert!(req.headers().get("sec-websocket-key").is_some());
         assert_eq!(req.version(), Version::HTTP_11);
     }
 
