@@ -329,7 +329,7 @@ impl<'a> WasmRequestBuilder<'a> {
                         key.parse::<http::header::HeaderName>(),
                         val.parse::<HeaderValue>(),
                     ) {
-                        resp_headers.insert(name, value);
+                        resp_headers.append(name, value);
                     }
                 }
             }

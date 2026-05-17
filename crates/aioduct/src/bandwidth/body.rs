@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn body_passes_zero_length_frame() {
         let body = boxed_body(Bytes::new());
-        let bw = BandwidthLimiter::new(0);
+        let bw = BandwidthLimiter::new(1);
         let mut wrapped = Box::pin(BandwidthBody::<_, TokioRuntime>::new(body, bw));
         let mut cx = Context::from_waker(std::task::Waker::noop());
         let result = wrapped.as_mut().poll_frame(&mut cx);

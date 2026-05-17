@@ -406,11 +406,16 @@ fn path_matches(request_path: &str, cookie_path: &str) -> bool {
 }
 
 fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {
-    if request_domain == cookie_domain {
+    if request_domain.eq_ignore_ascii_case(cookie_domain) {
         return true;
     }
-    request_domain.ends_with(cookie_domain)
-        && request_domain.as_bytes()[request_domain.len() - cookie_domain.len() - 1] == b'.'
+    let rd = request_domain.as_bytes();
+    let cd = cookie_domain.as_bytes();
+    if rd.len() <= cd.len() {
+        return false;
+    }
+    let suffix_start = rd.len() - cd.len();
+    rd[suffix_start - 1] == b'.' && rd[suffix_start..].eq_ignore_ascii_case(cd)
 }
 
 #[cfg(test)]

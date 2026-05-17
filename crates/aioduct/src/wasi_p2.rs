@@ -309,7 +309,7 @@ impl<'a> WasiRequestBuilder<'a> {
         };
 
         let status = StatusCode::from_u16(incoming_resp.status())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            .map_err(|e| Error::Other(format!("invalid status code: {e}").into()))?;
 
         let mut headers = HeaderMap::new();
         let resp_headers = incoming_resp.headers();
