@@ -110,6 +110,12 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
             })
             .await
             .map_err(Error::Io)?;
+            if n == 0 {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "proxy closed connection during CONNECT handshake",
+                )));
+            }
             written += n;
         }
 

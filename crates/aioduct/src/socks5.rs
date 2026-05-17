@@ -46,6 +46,12 @@ pub(crate) fn socks5_handshake(
             })?;
             let mut auth_msg = Vec::with_capacity(3 + auth.username.len() + auth.password.len());
             auth_msg.push(USERNAME_PASSWORD_VERSION);
+            if auth.username.len() > 255 || auth.password.len() > 255 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "SOCKS5: username and password must be at most 255 bytes",
+                ));
+            }
             auth_msg.push(auth.username.len() as u8);
             auth_msg.extend_from_slice(auth.username.as_bytes());
             auth_msg.push(auth.password.len() as u8);
