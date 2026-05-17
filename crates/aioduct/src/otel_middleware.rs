@@ -7,7 +7,7 @@ use opentelemetry::trace::{Status, TraceContextExt};
 use opentelemetry::{Context, KeyValue};
 use opentelemetry_http::HeaderInjector;
 
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::middleware::Middleware;
 
@@ -75,7 +75,7 @@ impl Default for OtelMiddleware {
 }
 
 impl Middleware for OtelMiddleware {
-    fn on_request(&self, request: &mut http::Request<RequestBoxBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<RequestBodySend>, uri: &Uri) {
         self.inject_context(request.headers_mut());
 
         Context::map_current(|cx| {
@@ -88,7 +88,7 @@ impl Middleware for OtelMiddleware {
         });
     }
 
-    fn on_response(&self, response: &mut http::Response<RequestBoxBody>, _uri: &Uri) {
+    fn on_response(&self, response: &mut http::Response<RequestBodySend>, _uri: &Uri) {
         Context::map_current(|cx| {
             let span = cx.span();
             span.set_attribute(KeyValue::new(
@@ -157,7 +157,7 @@ mod tests {
     use http_body_util::BodyExt;
     use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
 
-    fn empty_body() -> RequestBoxBody {
+    fn empty_body() -> RequestBodySend {
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed_unsync()

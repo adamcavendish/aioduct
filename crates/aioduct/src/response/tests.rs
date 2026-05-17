@@ -1,8 +1,8 @@
 use super::*;
 use http_body_util::BodyExt;
 
-fn empty_body() -> ResponseBoxSendBody {
-    ResponseBoxSendBody::from_boxed(
+fn empty_body() -> ResponseBodySend {
+    ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -159,7 +159,7 @@ fn links_parsed_from_header() {
 
 #[tokio::test]
 async fn bytes_returns_body() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("hello"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -172,7 +172,7 @@ async fn bytes_returns_body() {
 
 #[tokio::test]
 async fn text_returns_string() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("world"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -185,7 +185,7 @@ async fn text_returns_string() {
 
 #[test]
 fn from_boxed_constructor() {
-    let boxed_body: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::new())
+    let boxed_body: RequestBodySend = http_body_util::Full::new(bytes::Bytes::new())
         .map_err(|never| match never {})
         .boxed_unsync();
     let inner = http::Response::builder().body(boxed_body).unwrap();
@@ -207,7 +207,7 @@ fn error_for_status_ref_5xx() {
 
 #[test]
 fn is_end_stream_empty_boxed() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -217,7 +217,7 @@ fn is_end_stream_empty_boxed() {
 
 #[test]
 fn is_end_stream_non_empty_boxed() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("data"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -227,7 +227,7 @@ fn is_end_stream_non_empty_boxed() {
 
 #[test]
 fn size_hint_empty_boxed() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -238,7 +238,7 @@ fn size_hint_empty_boxed() {
 
 #[test]
 fn size_hint_full_boxed() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("hello"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -269,7 +269,7 @@ fn extensions_mut_can_insert() {
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn json_valid() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from(r#"{"key":"value"}"#))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -284,7 +284,7 @@ async fn json_valid() {
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn json_invalid() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("not json"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -298,7 +298,7 @@ async fn json_invalid() {
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn problem_details_matching_content_type() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from(
             r#"{"type":"about:blank","title":"Not Found","status":404}"#,
         ))
@@ -319,7 +319,7 @@ async fn problem_details_matching_content_type() {
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn problem_details_non_matching_content_type() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("{}"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -335,7 +335,7 @@ async fn problem_details_non_matching_content_type() {
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn problem_details_no_content_type() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("{}"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -347,7 +347,7 @@ async fn problem_details_no_content_type() {
 
 #[tokio::test]
 async fn text_non_utf8() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from(vec![0xff, 0xfe, 0x41]))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -421,7 +421,7 @@ fn timings_initially_none() {
 #[tokio::test]
 async fn text_with_charset_latin1() {
     // Latin-1 encoded byte 0xe9 is 'e' with acute accent
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from(vec![0x63, 0x61, 0x66, 0xe9]))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -438,7 +438,7 @@ async fn text_with_charset_latin1() {
 #[cfg(feature = "charset")]
 #[tokio::test]
 async fn text_with_charset_defaults_to_utf8() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("hello utf8"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -456,10 +456,10 @@ async fn text_with_charset_defaults_to_utf8() {
 fn into_boxed_from_incoming_variant() {
     // Test the Incoming variant's into_boxed() path
     // We can't easily create a real Incoming, so test via from_boxed path
-    let boxed: RequestBoxBody = http_body_util::Full::new(bytes::Bytes::from("test"))
+    let boxed: RequestBodySend = http_body_util::Full::new(bytes::Bytes::from("test"))
         .map_err(|never| match never {})
         .boxed_unsync();
-    let body = ResponseBoxSendBody::from_boxed(boxed);
+    let body = ResponseBodySend::from_boxed(boxed);
     // Verify the body has data
     assert!(!http_body::Body::is_end_stream(&body));
     let hint = http_body::Body::size_hint(&body);
@@ -471,12 +471,12 @@ fn apply_middleware_modifies_response_headers() {
     use std::sync::Arc;
     let mut stack = crate::middleware::MiddlewareStack::new();
     stack.push(Arc::new(
-        |_req: &mut http::Request<RequestBoxBody>, _uri: &Uri| {},
+        |_req: &mut http::Request<RequestBodySend>, _uri: &Uri| {},
     ));
     // Add a middleware that modifies responses
     struct HeaderAdder;
     impl crate::middleware::Middleware for HeaderAdder {
-        fn on_response(&self, resp: &mut http::Response<RequestBoxBody>, _uri: &Uri) {
+        fn on_response(&self, resp: &mut http::Response<RequestBodySend>, _uri: &Uri) {
             resp.headers_mut()
                 .insert("x-modified", http::header::HeaderValue::from_static("yes"));
         }
@@ -492,7 +492,7 @@ fn apply_middleware_modifies_response_headers() {
 
 #[test]
 fn decompress_passthrough_no_encoding() {
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("raw"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -508,7 +508,7 @@ fn decompress_passthrough_no_encoding() {
 #[test]
 fn apply_read_timeout_wraps_body() {
     use crate::runtime::tokio_rt::TokioRuntime;
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("timeout"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -523,7 +523,7 @@ fn apply_read_timeout_wraps_body() {
 #[test]
 fn apply_bandwidth_limit_wraps_body() {
     use crate::runtime::tokio_rt::TokioRuntime;
-    let body = ResponseBoxSendBody::from_boxed(
+    let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("limited"))
             .map_err(|never| match never {})
             .boxed_unsync(),
@@ -535,25 +535,25 @@ fn apply_bandwidth_limit_wraps_body() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// ── Tests for Response<ResponseBoxLocalBody> ────────────────────────────────
+// ── Tests for Response<ResponseBodyLocal> ────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
 mod local_tests {
     use super::*;
     use http_body_util::BodyExt;
 
-    fn local_body(data: &[u8]) -> crate::body::ResponseBoxLocalBody {
+    fn local_body(data: &[u8]) -> crate::body::ResponseBodyLocal {
         Box::pin(
             http_body_util::Full::new(bytes::Bytes::from(data.to_vec()))
                 .map_err(|never| match never {}),
         )
     }
 
-    fn empty_local_body() -> crate::body::ResponseBoxLocalBody {
+    fn empty_local_body() -> crate::body::ResponseBodyLocal {
         Box::pin(http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}))
     }
 
-    fn make_local_response(status: u16) -> Response<crate::body::ResponseBoxLocalBody> {
+    fn make_local_response(status: u16) -> Response<crate::body::ResponseBodyLocal> {
         let inner = http::Response::builder()
             .status(status)
             .body(empty_local_body())
@@ -639,7 +639,7 @@ mod local_tests {
 
     #[test]
     fn into_local_conversion() {
-        let send_body = ResponseBoxSendBody::from_boxed(
+        let send_body = ResponseBodySend::from_boxed(
             http_body_util::Full::new(bytes::Bytes::from("test"))
                 .map_err(|never| match never {})
                 .boxed_unsync(),
@@ -730,5 +730,107 @@ mod local_tests {
         let dbg = format!("{resp:?}");
         assert!(dbg.contains("Response"));
         assert!(dbg.contains("200"));
+    }
+
+    #[tokio::test]
+    async fn bytes_local_fires_transfer_complete_observer() {
+        use crate::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
+        use std::sync::{Arc, Mutex};
+
+        struct RecordingObserver {
+            events: Arc<Mutex<Vec<RequestPhase>>>,
+        }
+        impl RequestObserver for RecordingObserver {
+            fn on_event(&self, event: &RequestEvent) {
+                self.events.lock().unwrap().push(event.phase.clone());
+            }
+            fn on_connection_event(&self, _event: &ConnectionEvent) {}
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let inner = http::Response::builder()
+            .body(local_body(b"observed"))
+            .unwrap();
+        let mut resp = Response {
+            inner,
+            url: "http://example.com".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        };
+        resp.set_observer_ctx(super::BodyObserverCtx {
+            observer: Arc::new(RecordingObserver {
+                events: events.clone(),
+            }),
+            method: http::Method::GET,
+            uri: "http://example.com/".parse().unwrap(),
+            response_started: crate::clock::Instant::now(),
+        });
+
+        let bytes = resp.bytes().await.unwrap();
+        assert_eq!(&bytes[..], b"observed");
+
+        let captured = events.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert!(matches!(captured[0], RequestPhase::TransferComplete { .. }));
+    }
+
+    #[tokio::test]
+    async fn bytes_local_fires_transfer_aborted_on_error() {
+        use crate::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
+        use http_body::Body;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use std::task::{Context, Poll};
+
+        struct ErrorBody;
+        impl Body for ErrorBody {
+            type Data = bytes::Bytes;
+            type Error = Error;
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                Poll::Ready(Some(Err(Error::Other("local error".into()))))
+            }
+        }
+
+        struct RecordingObserver {
+            events: Arc<Mutex<Vec<RequestPhase>>>,
+        }
+        impl RequestObserver for RecordingObserver {
+            fn on_event(&self, event: &RequestEvent) {
+                self.events.lock().unwrap().push(event.phase.clone());
+            }
+            fn on_connection_event(&self, _event: &ConnectionEvent) {}
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let error_body: crate::body::ResponseBodyLocal = Box::pin(ErrorBody);
+        let inner = http::Response::builder().body(error_body).unwrap();
+        let mut resp = Response {
+            inner,
+            url: "http://example.com".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            timings: None,
+            observer_ctx: None,
+        };
+        resp.set_observer_ctx(super::BodyObserverCtx {
+            observer: Arc::new(RecordingObserver {
+                events: events.clone(),
+            }),
+            method: http::Method::POST,
+            uri: "http://example.com/upload".parse().unwrap(),
+            response_started: crate::clock::Instant::now(),
+        });
+
+        let result = resp.bytes().await;
+        assert!(result.is_err());
+
+        let captured = events.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert!(matches!(captured[0], RequestPhase::TransferAborted { .. }));
     }
 }

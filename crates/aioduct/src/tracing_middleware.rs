@@ -1,6 +1,6 @@
 use http::{Method, StatusCode, Uri};
 
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::middleware::Middleware;
 
@@ -28,7 +28,7 @@ impl Default for TracingMiddleware {
 }
 
 impl Middleware for TracingMiddleware {
-    fn on_request(&self, request: &mut http::Request<RequestBoxBody>, uri: &Uri) {
+    fn on_request(&self, request: &mut http::Request<RequestBodySend>, uri: &Uri) {
         tracing::debug!(
             method = %request.method(),
             host = uri.host().unwrap_or(""),
@@ -36,7 +36,7 @@ impl Middleware for TracingMiddleware {
         );
     }
 
-    fn on_response(&self, response: &mut http::Response<RequestBoxBody>, uri: &Uri) {
+    fn on_response(&self, response: &mut http::Response<RequestBodySend>, uri: &Uri) {
         tracing::debug!(
             status = response.status().as_u16(),
             host = uri.host().unwrap_or(""),
@@ -79,7 +79,7 @@ mod tests {
     use http_body_util::BodyExt;
     use std::sync::{Arc, Mutex};
 
-    fn empty_body() -> RequestBoxBody {
+    fn empty_body() -> RequestBodySend {
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed_unsync()

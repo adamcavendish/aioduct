@@ -5,7 +5,7 @@ use http::Uri;
 use http::header::HeaderMap;
 use http_body_util::BodyExt;
 
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::observer::{self, RequestPhase};
 use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
@@ -21,7 +21,7 @@ use super::{HttpEngineCore, HttpEngineSend};
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub(crate) async fn execute_single(
         &self,
-        request: http::Request<RequestBoxBody>,
+        request: http::Request<RequestBodySend>,
         original_uri: &Uri,
         replay_body: Option<Bytes>,
         stale_retry_headers: Option<&HeaderMap>,
@@ -39,7 +39,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     #[allow(deprecated)] // TimingCollector usage — will be removed when observer replaces it
     pub(crate) async fn execute_single_with_hint(
         &self,
-        mut request: http::Request<RequestBoxBody>,
+        mut request: http::Request<RequestBodySend>,
         original_uri: &Uri,
         protocol: ProtocolHint,
         replay_body: Option<Bytes>,
@@ -168,7 +168,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 }
                 Err(e)
                     if saved_parts.is_some()
-                        && HttpEngineCore::<RequestBoxBody>::is_stale_connection_error(&e) =>
+                        && HttpEngineCore::<RequestBodySend>::is_stale_connection_error(&e) =>
                 {
                     #[cfg(feature = "tracing")]
                     tracing::debug!(
@@ -202,7 +202,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .as_ref()
                         .cloned()
                         .unwrap_or_else(bytes::Bytes::new);
-                    let body: RequestBoxBody = http_body_util::Full::new(retry_body_bytes)
+                    let body: RequestBodySend = http_body_util::Full::new(retry_body_bytes)
                         .map_err(|never| match never {})
                         .boxed_unsync();
                     let mut retry_req = http::Request::new(body);
@@ -310,7 +310,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     }
                     Err(e)
                         if saved_parts.is_some()
-                            && HttpEngineCore::<RequestBoxBody>::is_stale_connection_error(&e) =>
+                            && HttpEngineCore::<RequestBodySend>::is_stale_connection_error(&e) =>
                     {
                         #[cfg(feature = "tracing")]
                         tracing::debug!(
@@ -345,7 +345,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             .as_ref()
                             .cloned()
                             .unwrap_or_else(bytes::Bytes::new);
-                        let body: RequestBoxBody = http_body_util::Full::new(retry_body_bytes)
+                        let body: RequestBodySend = http_body_util::Full::new(retry_body_bytes)
                             .map_err(|never| match never {})
                             .boxed_unsync();
                         let mut retry_req = http::Request::new(body);
@@ -622,7 +622,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         let io = crate::runtime::smol_rt::SmolIo::new(unix_stream);
                         return self.connect_plaintext_with_hint(io, force_h2c).await;
                     }
-                    Err::<PooledConnection<RequestBoxBody>, Error>(Error::Other(
+                    Err::<PooledConnection<RequestBodySend>, Error>(Error::Other(
                         "unix socket support requires tokio or smol feature".into(),
                     ))
                 };
@@ -763,7 +763,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .await?
                 };
                 conn.remote_addr = Some(addr);
-                Ok::<(PooledConnection<RequestBoxBody>, Instant), Error>((conn, Instant::now()))
+                Ok::<(PooledConnection<RequestBodySend>, Instant), Error>((conn, Instant::now()))
             };
 
             let (conn, connect_done) = match self.core.connect_timeout {

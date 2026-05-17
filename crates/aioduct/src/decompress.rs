@@ -2,7 +2,7 @@ use http::HeaderMap;
 #[cfg(test)]
 use http::header::ACCEPT_ENCODING;
 
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AcceptEncoding {
@@ -108,9 +108,9 @@ pub(crate) fn set_accept_encoding(headers: &mut HeaderMap, accept: &AcceptEncodi
 
 pub(crate) fn maybe_decompress(
     headers: &mut HeaderMap,
-    body: RequestBoxBody,
+    body: RequestBodySend,
     accept: &AcceptEncoding,
-) -> RequestBoxBody {
+) -> RequestBodySend {
     if accept.is_empty() {
         return body;
     }
@@ -155,7 +155,7 @@ mod imp {
     use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
     use http_body_util::BodyExt;
 
-    use crate::body::RequestBoxBody;
+    use crate::body::RequestBodySend;
     use crate::error::Error;
 
     use super::AcceptEncoding;
@@ -246,7 +246,7 @@ mod imp {
     }
 
     struct DecompressBody {
-        body: RequestBoxBody,
+        body: RequestBodySend,
         decoder: Option<StreamDecoder>,
         finished: bool,
         has_data: bool,
@@ -336,9 +336,9 @@ mod imp {
 
     pub(super) fn decompress_impl(
         headers: &mut HeaderMap,
-        body: RequestBoxBody,
+        body: RequestBodySend,
         accept: &AcceptEncoding,
-    ) -> RequestBoxBody {
+    ) -> RequestBodySend {
         let encoding_str = match headers.get(CONTENT_ENCODING) {
             Some(v) => String::from_utf8_lossy(v.as_bytes()).into_owned(),
             None => return body,
@@ -467,7 +467,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -515,7 +515,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -549,7 +549,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -578,7 +578,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -599,7 +599,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
 
-        let body: RequestBoxBody = http_body_util::Empty::new()
+        let body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -619,7 +619,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "identity".parse().unwrap());
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from("raw"))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from("raw"))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -641,7 +641,7 @@ mod tests {
         headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
 
         let raw = b"not actually gzip";
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(&raw[..]))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(&raw[..]))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding {
@@ -677,7 +677,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -698,7 +698,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "deflate".parse().unwrap());
 
-        let body: RequestBoxBody =
+        let body: RequestBodySend =
             http_body_util::Full::new(Bytes::from(vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
                 .map_err(|never| match never {})
                 .boxed_unsync();
@@ -722,7 +722,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "br".parse().unwrap());
 
-        let body: RequestBoxBody =
+        let body: RequestBodySend =
             http_body_util::Full::new(Bytes::from(vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
                 .map_err(|never| match never {})
                 .boxed_unsync();
@@ -789,7 +789,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
 
-        let body: RequestBoxBody = TrailersBody {
+        let body: RequestBodySend = TrailersBody {
             state: 0,
             data: Bytes::from(compressed),
         }
@@ -838,7 +838,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
 
-        let body: RequestBoxBody = ErrorBody { errored: false }.boxed_unsync();
+        let body: RequestBodySend = ErrorBody { errored: false }.boxed_unsync();
         let ae = AcceptEncoding::default();
         let result_body = maybe_decompress(&mut headers, body, &ae);
 
@@ -863,7 +863,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "identity, gzip".parse().unwrap());
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -883,7 +883,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
 
-        let body: RequestBoxBody =
+        let body: RequestBodySend =
             http_body_util::Full::new(Bytes::from(vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
                 .map_err(|never| match never {})
                 .boxed_unsync();
@@ -922,7 +922,7 @@ mod tests {
             compressed.len().to_string().parse().unwrap(),
         );
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();
@@ -954,7 +954,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_ENCODING, "custom-enc, gzip".parse().unwrap());
 
-        let body: RequestBoxBody = http_body_util::Full::new(Bytes::from(compressed))
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
             .map_err(|never| match never {})
             .boxed_unsync();
         let ae = AcceptEncoding::default();

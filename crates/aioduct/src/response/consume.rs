@@ -1,129 +1,10 @@
-use bytes::Bytes;
-#[cfg(feature = "json")]
-use http::header::CONTENT_TYPE;
-use http_body_util::BodyExt;
-
-use crate::body::RequestBoxBody;
-use crate::error::Error;
-use crate::observer::{self, RequestEvent, RequestPhase, TransferDirection};
+use crate::body::RequestBodySend;
 
 use super::Response;
 
 impl Response {
-    /// Consume the response body and return it as bytes.
-    pub async fn bytes(self) -> Result<Bytes, Error> {
-        let observer_ctx = self.observer_ctx;
-        let response_started = observer_ctx.as_ref().map(|c| c.response_started);
-        let body = self.inner.into_body();
-        match body.collect().await {
-            Ok(collected) => {
-                let bytes = collected.to_bytes();
-                if let Some(ctx) = &observer_ctx {
-                    let total_bytes = bytes.len() as u64;
-                    let transfer_duration = ctx.response_started.elapsed();
-                    let throughput = if transfer_duration.as_secs_f64() > 0.0 {
-                        (total_bytes as f64 / transfer_duration.as_secs_f64()) as f32
-                    } else {
-                        0.0
-                    };
-                    ctx.observer.on_event(&RequestEvent {
-                        method: ctx.method.clone(),
-                        uri: ctx.uri.clone(),
-                        phase: RequestPhase::TransferComplete {
-                            direction: TransferDirection::Download,
-                            total_bytes,
-                            transfer_duration,
-                            throughput_bytes_per_sec: throughput,
-                        },
-                        at: observer::Instant::now(),
-                    });
-                }
-                Ok(bytes)
-            }
-            Err(e) => {
-                if let Some(ctx) = &observer_ctx {
-                    ctx.observer.on_event(&RequestEvent {
-                        method: ctx.method.clone(),
-                        uri: ctx.uri.clone(),
-                        phase: RequestPhase::TransferAborted {
-                            direction: TransferDirection::Download,
-                            bytes_transferred: 0,
-                            elapsed: response_started.map(|t| t.elapsed()).unwrap_or_default(),
-                            error: e.to_string(),
-                        },
-                        at: observer::Instant::now(),
-                    });
-                }
-                Err(e)
-            }
-        }
-    }
-
-    /// Consume the response body and return it as a UTF-8 string.
-    pub async fn text(self) -> Result<String, Error> {
-        #[cfg(feature = "charset")]
-        {
-            self.text_with_charset("utf-8").await
-        }
-        #[cfg(not(feature = "charset"))]
-        {
-            let bytes = self.bytes().await?;
-            String::from_utf8(bytes.to_vec()).map_err(|e| Error::Other(Box::new(e)))
-        }
-    }
-
-    #[cfg(feature = "charset")]
-    /// Consume the response body and decode it using the charset from Content-Type,
-    /// falling back to the given default encoding.
-    pub async fn text_with_charset(self, default_encoding: &str) -> Result<String, Error> {
-        let content_type = self
-            .headers()
-            .get(http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<mime::Mime>().ok());
-        let encoding_name = content_type
-            .as_ref()
-            .and_then(|mime| mime.get_param("charset"))
-            .map(|charset| charset.as_str())
-            .unwrap_or(default_encoding);
-        let encoding = encoding_rs::Encoding::for_label(encoding_name.as_bytes())
-            .unwrap_or(encoding_rs::UTF_8);
-        let bytes = self.bytes().await?;
-        let (text, _, _) = encoding.decode(&bytes);
-        Ok(text.into_owned())
-    }
-
-    /// Consume the response body and deserialize it as JSON.
-    #[cfg(feature = "json")]
-    pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
-        let bytes = self.bytes().await?;
-        serde_json::from_slice(&bytes).map_err(|e| Error::Other(Box::new(e)))
-    }
-
-    /// Consume the response body and deserialize it as RFC 9457 Problem Details.
-    ///
-    /// Checks that the `Content-Type` is `application/problem+json` before
-    /// attempting to parse. Returns `None` if the content type does not match.
-    #[cfg(feature = "json")]
-    pub async fn problem_details(self) -> Option<Result<crate::problem::ProblemDetails, Error>> {
-        let is_problem = self
-            .inner
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|ct| {
-                let ct = ct.to_lowercase();
-                ct.starts_with("application/problem+json")
-            })
-            .unwrap_or(false);
-        if !is_problem {
-            return None;
-        }
-        Some(self.json().await)
-    }
-
     /// Consume the response and return the raw hyper body.
-    pub fn into_body(self) -> RequestBoxBody {
+    pub fn into_body(self) -> RequestBodySend {
         self.inner.into_body().into_boxed()
     }
 
@@ -141,16 +22,17 @@ impl Response {
     }
 
     /// Perform an HTTP upgrade (e.g., WebSocket) on this response.
-    pub async fn upgrade(mut self) -> Result<crate::upgrade::Upgraded, Error> {
+    pub async fn upgrade(mut self) -> Result<crate::upgrade::Upgraded, crate::error::Error> {
         crate::upgrade::on_upgrade(&mut self.inner).await
     }
 }
 
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
-    use super::*;
+    use crate::error::Error;
     use crate::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
-    use crate::response::{BodyObserverCtx, Response, ResponseBoxSendBody};
+    use crate::response::{BodyObserverCtx, Response, ResponseBodySend};
+    use http_body_util::BodyExt;
     use std::sync::{Arc, Mutex};
 
     struct RecordingObserver {
@@ -173,7 +55,7 @@ mod tests {
             .boxed_unsync();
         let inner = http::Response::builder()
             .status(200)
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let mut resp = Response::new(inner, "http://example.com/".parse().unwrap());
         resp.set_observer_ctx(BodyObserverCtx {
@@ -205,7 +87,7 @@ mod tests {
             .boxed_unsync();
         let inner = http::Response::builder()
             .status(200)
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let bytes = resp.bytes().await.unwrap();
@@ -233,10 +115,10 @@ mod tests {
         }
 
         let events = Arc::new(Mutex::new(Vec::new()));
-        let boxed: crate::body::RequestBoxBody = http_body_util::BodyExt::boxed_unsync(ErrorBody);
+        let boxed: crate::body::RequestBodySend = http_body_util::BodyExt::boxed_unsync(ErrorBody);
         let inner = http::Response::builder()
             .status(200)
-            .body(ResponseBoxSendBody::from_boxed(boxed))
+            .body(ResponseBodySend::from_boxed(boxed))
             .unwrap();
         let mut resp = Response::new(inner, "http://example.com/".parse().unwrap());
         resp.set_observer_ctx(BodyObserverCtx {
@@ -263,7 +145,7 @@ mod tests {
             .boxed_unsync();
         let inner = http::Response::builder()
             .status(200)
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let text = resp.text().await.unwrap();
@@ -278,7 +160,7 @@ mod tests {
             .boxed_unsync();
         let inner = http::Response::builder()
             .status(200)
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let val: serde_json::Value = resp.json().await.unwrap();
@@ -294,7 +176,7 @@ mod tests {
         let inner = http::Response::builder()
             .status(400)
             .header("content-type", "application/json")
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let result = resp.problem_details().await;
@@ -312,7 +194,7 @@ mod tests {
         let inner = http::Response::builder()
             .status(404)
             .header("content-type", "application/problem+json")
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let result = resp.problem_details().await;
@@ -324,14 +206,13 @@ mod tests {
     #[cfg(feature = "charset")]
     #[tokio::test]
     async fn text_with_charset_respects_content_type_charset() {
-        // Latin-1 encoded: "caf\xe9"
         let body = http_body_util::Full::new(bytes::Bytes::from(vec![0x63, 0x61, 0x66, 0xe9]))
             .map_err(|never| match never {})
             .boxed_unsync();
         let inner = http::Response::builder()
             .status(200)
             .header("content-type", "text/plain; charset=iso-8859-1")
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let text = resp.text_with_charset("utf-8").await.unwrap();
@@ -347,7 +228,7 @@ mod tests {
         let inner = http::Response::builder()
             .status(200)
             .header("content-type", "text/plain")
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let text = resp.text_with_charset("utf-8").await.unwrap();
@@ -362,7 +243,7 @@ mod tests {
             .boxed_unsync();
         let inner = http::Response::builder()
             .status(200)
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let text = resp.text_with_charset("utf-8").await.unwrap();
@@ -378,7 +259,7 @@ mod tests {
         let inner = http::Response::builder()
             .status(200)
             .header("content-type", "text/plain; charset=made-up-encoding")
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let text = resp.text_with_charset("utf-8").await.unwrap();
@@ -392,7 +273,7 @@ mod tests {
             .boxed_unsync();
         let inner = http::Response::builder()
             .status(200)
-            .body(ResponseBoxSendBody::from_boxed(body))
+            .body(ResponseBodySend::from_boxed(body))
             .unwrap();
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let mut stream = resp.into_bytes_stream();

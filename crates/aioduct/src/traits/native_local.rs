@@ -4,7 +4,7 @@ use http::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
 
 use super::{HttpClient, RequestBuilderExt, ResponseExt};
-use crate::body::ResponseBoxLocalBody;
+use crate::body::ResponseBodyLocal;
 use crate::client::HttpEngineLocal;
 use crate::error::{Error, SendError};
 use crate::response::Response;
@@ -31,7 +31,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpClient for HttpEngineLocal<R, C>
 }
 
 impl<R: RuntimeLocal, C: Connector + Clone> RequestBuilderExt for OwnedRequestBuilderLocal<R, C> {
-    type Response = Response<ResponseBoxLocalBody>;
+    type Response = Response<ResponseBodyLocal>;
 
     fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
         self.inner = self.inner.header(name, value);
@@ -58,13 +58,13 @@ impl<R: RuntimeLocal, C: Connector + Clone> RequestBuilderExt for OwnedRequestBu
         self
     }
 
-    async fn send(self) -> Result<Response<ResponseBoxLocalBody>, SendError> {
+    async fn send(self) -> Result<Response<ResponseBodyLocal>, SendError> {
         let url = self.inner.uri().clone();
         self.inner.send().await.map_err(|e| SendError::new(e, url))
     }
 }
 
-impl ResponseExt for Response<ResponseBoxLocalBody> {
+impl ResponseExt for Response<ResponseBodyLocal> {
     fn status(&self) -> http::StatusCode {
         self.status()
     }

@@ -68,18 +68,18 @@ mod compio_local_tests {
         assert!(engine.get("not a valid url\n").is_err());
     }
 
-    /// Helper to construct a `Response<ResponseBoxLocalBody>` for trait tests.
+    /// Helper to construct a `Response<ResponseBodyLocal>` for trait tests.
     fn make_local_response_with_headers(
         status: http::StatusCode,
         headers: http::header::HeaderMap,
         body_bytes: &[u8],
-    ) -> crate::response::Response<crate::body::ResponseBoxLocalBody> {
-        use crate::response::ResponseBoxSendBody;
+    ) -> crate::response::Response<crate::body::ResponseBodyLocal> {
+        use crate::response::ResponseBodySend;
 
         let body = http_body_util::Full::new(bytes::Bytes::from(body_bytes.to_vec()))
             .map_err(|never| match never {})
             .boxed_unsync();
-        let send_body = ResponseBoxSendBody::from_boxed(body);
+        let send_body = ResponseBodySend::from_boxed(body);
         let mut inner = http::Response::builder()
             .status(status)
             .body(send_body)

@@ -173,7 +173,7 @@ pub use redirect::{RedirectAction, RedirectPolicy};
 pub use retry::{RetryBudget, RetryConfig};
 #[cfg(not(target_arch = "wasm32"))]
 pub use sse::SseStreamLocal;
-pub use sse::{SseDecoder, SseEvent, SseMessage, SseStreamSend};
+pub use sse::{SseDecoder, SseEvent, SseMessage, SseStream, SseStreamSend};
 pub use throttle::RateLimiter;
 #[allow(deprecated)]
 pub use timing::RequestTimings;
@@ -303,13 +303,13 @@ pub mod __bench {
     use std::net::{IpAddr, SocketAddr};
     use std::time::Duration;
 
-    use crate::body::RequestBoxBody;
+    use crate::body::RequestBodySend;
     use crate::pool::{ConnectionPool, PoolKey, PooledConnection};
     use crate::runtime::TokioRuntime;
     use http::uri::{Authority, Scheme};
 
-    pub struct BenchPool(ConnectionPool<RequestBoxBody>);
-    pub struct BenchConn(Option<PooledConnection<RequestBoxBody>>);
+    pub struct BenchPool(ConnectionPool<RequestBodySend>);
+    pub struct BenchConn(Option<PooledConnection<RequestBodySend>>);
     pub struct BenchKey(PoolKey);
 
     pub fn new_pool(max_idle: usize, timeout: Duration) -> BenchPool {
@@ -391,24 +391,24 @@ pub mod __bench {
     }
 
     pub fn wrap_read_timeout_body(
-        body: crate::body::RequestBoxBody,
+        body: crate::body::RequestBodySend,
         duration: Duration,
-    ) -> crate::body::RequestBoxBody {
+    ) -> crate::body::RequestBodySend {
         use http_body_util::BodyExt;
-        crate::timeout::ReadTimeoutBody::<TokioRuntime>::new(body, duration)
+        crate::timeout::ReadTimeoutBody::<_, TokioRuntime>::new(body, duration)
             .map_err(|e| e)
             .boxed_unsync()
     }
 
     pub fn wrap_bandwidth_body(
-        body: crate::body::RequestBoxBody,
+        body: crate::body::RequestBodySend,
         limiter: crate::bandwidth::BandwidthLimiter,
-    ) -> crate::body::RequestBoxBody {
+    ) -> crate::body::RequestBodySend {
         use http_body_util::BodyExt;
-        crate::bandwidth::BandwidthBody::<TokioRuntime>::new(body, limiter).boxed_unsync()
+        crate::bandwidth::BandwidthBody::<_, TokioRuntime>::new(body, limiter).boxed_unsync()
     }
 
-    pub fn make_full_body(total_size: usize) -> crate::body::RequestBoxBody {
+    pub fn make_full_body(total_size: usize) -> crate::body::RequestBodySend {
         use http_body_util::BodyExt;
         http_body_util::Full::new(bytes::Bytes::from(vec![b'X'; total_size]))
             .map_err(|never| match never {})
