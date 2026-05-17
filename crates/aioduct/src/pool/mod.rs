@@ -138,6 +138,8 @@ impl<B: 'static> ConnectionPool<B> {
                 if entry.connection.is_h2_or_h3()
                     && let Some(cloned) = entry.connection.clone_for_multiplex()
                 {
+                    let mut entry = entry;
+                    entry.idle_since = now;
                     queue.push_back(entry);
                     return Some(cloned);
                 }
@@ -235,26 +237,26 @@ impl<B: 'static> ConnectionPool<B> {
             let mut i = queue.len();
             while i > 0 {
                 i -= 1;
-                let entry = &queue[i];
 
-                if now.duration_since(entry.idle_since) >= idle_timeout {
+                if now.duration_since(queue[i].idle_since) >= idle_timeout {
                     continue;
                 }
-                if !entry.connection.is_h2_or_h3() {
+                if !queue[i].connection.is_h2_or_h3() {
                     continue;
                 }
-                if !entry.connection.sans.iter().any(|s| s == target_host) {
+                if !queue[i].connection.sans.iter().any(|s| s == target_host) {
                     continue;
                 }
                 if let Some(ip) = resolved_ip
-                    && entry.connection.remote_addr.map(|a| a.ip()) != Some(ip)
+                    && queue[i].connection.remote_addr.map(|a| a.ip()) != Some(ip)
                 {
                     continue;
                 }
 
-                if entry.connection.is_ready()
-                    && let Some(cloned) = entry.connection.clone_for_multiplex()
+                if queue[i].connection.is_ready()
+                    && let Some(cloned) = queue[i].connection.clone_for_multiplex()
                 {
+                    queue[i].idle_since = now;
                     found_conn = Some(cloned);
                     break;
                 }

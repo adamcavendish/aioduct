@@ -439,7 +439,7 @@ async fn cookie_response_accessor() {
     let key_cookie = cookies.iter().find(|c| c.name() == "key").unwrap();
     assert_eq!(key_cookie.value(), "val");
     assert_eq!(key_cookie.domain(), Some("example.com"));
-    assert_eq!(key_cookie.path(), Some("/api"));
+    assert_eq!(key_cookie.path(), "/api");
     assert!(key_cookie.secure());
     assert!(key_cookie.http_only());
     assert_eq!(key_cookie.same_site(), Some(&SameSite::Strict));
@@ -453,7 +453,7 @@ async fn cookie_response_accessor() {
     let plain_cookie = cookies.iter().find(|c| c.name() == "plain").unwrap();
     assert_eq!(plain_cookie.value(), "text");
     assert_eq!(plain_cookie.domain(), Some("127.0.0.1"));
-    assert_eq!(plain_cookie.path(), None);
+    assert_eq!(plain_cookie.path(), "/");
     assert!(!plain_cookie.secure());
     assert!(!plain_cookie.http_only());
     assert_eq!(plain_cookie.same_site(), None);
@@ -775,7 +775,7 @@ async fn cookie_dedup_should_consider_path_not_just_name() {
         http::header::SET_COOKIE,
         "token=api_value; Path=/api".parse().unwrap(),
     );
-    jar.store_from_response("example.com", &headers);
+    jar.store_from_response("example.com", "/", &headers);
 
     // Store cookie with Path=/web (same name, different path)
     let mut headers = http::HeaderMap::new();
@@ -783,7 +783,7 @@ async fn cookie_dedup_should_consider_path_not_just_name() {
         http::header::SET_COOKIE,
         "token=web_value; Path=/web".parse().unwrap(),
     );
-    jar.store_from_response("example.com", &headers);
+    jar.store_from_response("example.com", "/", &headers);
 
     let cookies = jar.cookies();
     let token_cookies: Vec<_> = cookies.iter().filter(|c| c.name() == "token").collect();
@@ -813,7 +813,7 @@ async fn cookie_expires_year_before_1970_should_not_panic() {
             .unwrap(),
     );
     // Should not panic (debug) or treat as non-expired (release)
-    jar.store_from_response("example.com", &headers);
+    jar.store_from_response("example.com", "/", &headers);
 
     let mut req_headers = http::HeaderMap::new();
     jar.apply_to_request("example.com", false, "/", &mut req_headers);
@@ -837,7 +837,7 @@ async fn cookie_samesite_strict_should_not_be_sent_cross_site() {
         http::header::SET_COOKIE,
         "session=abc; SameSite=Strict".parse().unwrap(),
     );
-    jar.store_from_response("example.com", &headers);
+    jar.store_from_response("example.com", "/", &headers);
 
     // Verify the cookie was stored with SameSite attribute
     let cookies = jar.cookies();
@@ -878,7 +878,7 @@ async fn cookie_expires_rfc850_format_should_be_parsed() {
             .parse()
             .unwrap(),
     );
-    jar.store_from_response("example.com", &headers);
+    jar.store_from_response("example.com", "/", &headers);
 
     let cookies = jar.cookies();
 

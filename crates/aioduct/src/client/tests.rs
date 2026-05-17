@@ -1359,7 +1359,7 @@ mod builder_tests {
             http::header::SET_COOKIE,
             "session=abc123; Path=/".parse().unwrap(),
         );
-        jar.store_from_response("example.com", &cookie_headers);
+        jar.store_from_response("example.com", "/", &cookie_headers);
 
         let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .cookie_jar(jar)

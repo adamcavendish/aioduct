@@ -255,6 +255,7 @@ impl<B> Response<B> {
     /// Parse all `Set-Cookie` response headers and return the cookies.
     pub fn cookies(&self) -> Vec<crate::Cookie> {
         let domain = self.url.host().unwrap_or("");
+        let path = self.url.path();
         self.inner
             .headers()
             .get_all(SET_COOKIE)
@@ -262,7 +263,7 @@ impl<B> Response<B> {
             .filter_map(|val| {
                 val.to_str()
                     .ok()
-                    .and_then(|s| crate::cookie::parse_set_cookie(s, domain))
+                    .and_then(|s| crate::cookie::parse_set_cookie(s, domain, path))
             })
             .collect()
     }
