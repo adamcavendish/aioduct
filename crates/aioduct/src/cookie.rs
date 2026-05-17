@@ -218,7 +218,11 @@ pub(crate) fn parse_set_cookie(
         } else if lower == "httponly" {
             http_only = true;
         } else if let Some(val) = lower.strip_prefix("domain=") {
-            domain = Some(val.trim_start_matches('.').to_owned());
+            let d = val.trim_start_matches('.').to_owned();
+            if !domain_matches(request_domain, &d) {
+                return None;
+            }
+            domain = Some(d);
         } else if lower.starts_with("path=") {
             path = Some(attr[5..].to_owned());
         } else if let Some(val) = lower.strip_prefix("samesite=") {
@@ -524,7 +528,7 @@ mod tests {
 
     #[test]
     fn domain_attribute_with_leading_dot_stripped() {
-        let cookie = parse_set_cookie("a=b; Domain=.foo.com", "bar.com", "/");
+        let cookie = parse_set_cookie("a=b; Domain=.foo.com", "sub.foo.com", "/");
         let c = cookie.unwrap();
         assert_eq!(c.domain.as_deref(), Some("foo.com"));
     }
@@ -1237,5 +1241,30 @@ mod tests {
     fn cookie_with_explicit_path_preserved() {
         let cookie = parse_set_cookie("a=b; Path=/custom", "example.com", "/api/v1/users").unwrap();
         assert_eq!(cookie.path, "/custom");
+    }
+
+    #[test]
+    fn domain_mismatch_rejects_cookie() {
+        assert!(parse_set_cookie("a=b; Domain=evil.com", "example.com", "/").is_none());
+    }
+
+    #[test]
+    fn domain_match_parent_accepts_cookie() {
+        let cookie = parse_set_cookie("a=b; Domain=example.com", "sub.example.com", "/").unwrap();
+        assert_eq!(cookie.domain.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn domain_match_exact_accepts_cookie() {
+        let cookie = parse_set_cookie("a=b; Domain=example.com", "example.com", "/").unwrap();
+        assert_eq!(cookie.domain.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn domain_mismatch_not_stored_in_jar() {
+        let jar = CookieJar::new();
+        let headers = headers_with_cookies(&["a=b; Domain=evil.com"]);
+        jar.store_from_response("example.com", "/", &headers);
+        assert!(jar.cookies().is_empty());
     }
 }
