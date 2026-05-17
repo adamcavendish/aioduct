@@ -131,7 +131,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             .add(b'>')
             .add(b'&')
             .add(b'=')
-            .add(b'+');
+            .add(b'+')
+            .add(b'%');
 
         let mut uri_str = self.uri.to_string();
         let has_query = self.uri.query().is_some();
@@ -209,6 +210,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             let v = utf8_percent_encode(val, FORM_ENCODE);
             let _ = write!(encoded, "{k}={v}");
         }
+        let encoded = encoded.replace("%20", "+");
         self.headers.insert(
             http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/x-www-form-urlencoded"),
