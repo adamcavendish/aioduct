@@ -286,7 +286,7 @@ impl<'a> WasiRequestBuilder<'a> {
 
         let options = RequestOptions::new();
         if let Some(t) = self.timeout {
-            let nanos = t.as_nanos() as u64;
+            let nanos = u64::try_from(t.as_nanos()).unwrap_or(u64::MAX);
             let _ = options.set_connect_timeout(Some(nanos));
             let _ = options.set_first_byte_timeout(Some(nanos));
             let _ = options.set_between_bytes_timeout(Some(nanos));

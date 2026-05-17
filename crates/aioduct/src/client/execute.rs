@@ -50,7 +50,7 @@ impl<B> HttpEngineCore<B> {
             let host = authority.host();
             let port = authority.port_u16();
             let authority_str = match port {
-                Some(80) | None => host.to_owned(),
+                Some(80) | Some(443) | None => host.to_owned(),
                 Some(p) => format!("{host}:{p}"),
             };
             let upgraded = format!(
