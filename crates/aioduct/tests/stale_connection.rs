@@ -327,7 +327,7 @@ async fn stale_retry_skipped_for_streaming_body() {
     // POST with streaming body on the stale connection.
     // The server will RST when it sees the request bytes.
     // Streaming body → not retryable → error expected.
-    let stream_body: aioduct::body::RequestBoxBody =
+    let stream_body: aioduct::body::RequestBodySend =
         http_body_util::Full::new(Bytes::from("payload"))
             .map_err(|never| match never {})
             .boxed_unsync();

@@ -105,7 +105,7 @@ async fn middleware_injects_header() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-middleware"),
                     http::header::HeaderValue::from_static("dispatch-test"),
@@ -1751,7 +1751,7 @@ async fn redirect_308_streaming_body_errors() {
     let chunks: Vec<Result<hyper::body::Frame<Bytes>, aioduct::Error>> =
         vec![Ok(hyper::body::Frame::data(Bytes::from("stream")))];
     let stream = futures_util::stream::iter(chunks);
-    let streaming_body: aioduct::body::RequestBoxBody =
+    let streaming_body: aioduct::body::RequestBodySend =
         http_body_util::StreamBody::new(stream).boxed_unsync();
 
     let result = client
@@ -2195,7 +2195,7 @@ async fn middleware_applies_on_fresh_connection() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-fresh-middleware"),
                     http::header::HeaderValue::from_static("fresh-path"),
@@ -3719,7 +3719,7 @@ struct ResponseInjectMiddleware;
 impl aioduct::Middleware for ResponseInjectMiddleware {
     fn on_response(
         &self,
-        response: &mut http::Response<aioduct::body::RequestBoxBody>,
+        response: &mut http::Response<aioduct::body::RequestBodySend>,
         _uri: &http::Uri,
     ) {
         response.headers_mut().insert(
@@ -3854,9 +3854,9 @@ async fn streaming_body_prevents_stale_retry() {
         .timeout(Duration::from_secs(5))
         .build();
 
-    // Streaming body - cannot be replayed (uses RequestBoxBody directly)
+    // Streaming body - cannot be replayed (uses RequestBodySend directly)
     use http_body_util::BodyExt;
-    let stream_body: aioduct::body::RequestBoxBody =
+    let stream_body: aioduct::body::RequestBodySend =
         http_body_util::Full::new(Bytes::from("streaming data"))
             .map_err(|never| match never {})
             .boxed_unsync();

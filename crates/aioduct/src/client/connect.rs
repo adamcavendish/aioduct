@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::pool::PooledConnection;
 use crate::proxy::ProxyConfig;
@@ -15,7 +15,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
-    ) -> Result<PooledConnection<RequestBoxBody>, Error> {
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
         let proxy_addr = self
@@ -91,7 +91,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         mut tcp_stream: C::Stream,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
-    ) -> Result<PooledConnection<RequestBoxBody>, Error> {
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
         use hyper::rt::{Read, Write};
 
         let target = target_authority.as_str();
@@ -154,7 +154,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub(super) fn connect_plaintext<S>(
         &self,
         stream: S,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<RequestBoxBody>, Error>> + Send + '_>>
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<RequestBodySend>, Error>> + Send + '_>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -165,7 +165,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         &self,
         stream: S,
         force_h2c: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<RequestBoxBody>, Error>> + Send + '_>>
+    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<RequestBodySend>, Error>> + Send + '_>>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -179,7 +179,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub(super) async fn connect_h1<S>(
         &self,
         stream: S,
-    ) -> Result<PooledConnection<RequestBoxBody>, Error>
+    ) -> Result<PooledConnection<RequestBodySend>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -193,7 +193,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub(super) async fn connect_h2_prior_knowledge<S>(
         &self,
         stream: S,
-    ) -> Result<PooledConnection<RequestBoxBody>, Error>
+    ) -> Result<PooledConnection<RequestBodySend>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
@@ -215,7 +215,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         &self,
         tcp_stream: C::Stream,
         host: &str,
-    ) -> Result<PooledConnection<RequestBoxBody>, Error> {
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
         use crate::tls::TlsConnect;
         use std::time::Instant;
 
@@ -289,7 +289,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         &self,
         _tcp_stream: C::Stream,
         _host: &str,
-    ) -> Result<PooledConnection<RequestBoxBody>, Error> {
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
         Err(Error::Tls(
             "HTTPS requires the `rustls` TLS backend feature".into(),
         ))

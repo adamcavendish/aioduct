@@ -387,7 +387,7 @@ mod tests_compio;
 #[cfg(test)]
 mod tests_sync {
     use super::*;
-    use crate::body::RequestBoxBody;
+    use crate::body::RequestBodySend;
 
     fn key(host: &str) -> PoolKey {
         PoolKey::new(
@@ -400,7 +400,7 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn checkout_returns_none_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
 
         // Poison the mutex by panicking inside a lock
@@ -423,7 +423,7 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn checkin_returns_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
 
         // Poison the mutex
         let inner = Arc::clone(&pool.inner);
@@ -444,7 +444,7 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn mark_connecting_h2_returns_false_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
 
         // Poison the mutex
@@ -463,7 +463,7 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn unmark_connecting_h2_no_panic_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
 
         // Poison the mutex
@@ -482,7 +482,7 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn checkout_coalesced_returns_none_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
 
         // Poison the mutex
         let inner = Arc::clone(&pool.inner);

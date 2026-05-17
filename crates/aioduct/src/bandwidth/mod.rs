@@ -1,12 +1,8 @@
 #[cfg(not(target_arch = "wasm32"))]
-mod bandwidth_local;
-#[cfg(not(target_arch = "wasm32"))]
-mod bandwidth_send;
+mod body;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use bandwidth_local::BandwidthResponseBody;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use bandwidth_send::BandwidthBody;
+pub(crate) use body::BandwidthBody;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

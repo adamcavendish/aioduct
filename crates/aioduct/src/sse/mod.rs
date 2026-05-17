@@ -1,11 +1,10 @@
 //! Server-Sent Events (SSE) stream parser (WHATWG spec §9.2.5).
 
-mod sse_local;
-mod sse_send;
+mod stream;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use sse_local::SseStreamLocal;
-pub use sse_send::SseStreamSend;
+pub use stream::SseStreamLocal;
+pub use stream::{SseStream, SseStreamSend};
 
 use std::sync::Arc;
 

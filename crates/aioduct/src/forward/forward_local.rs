@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::body::RequestBoxLocalBody;
+use crate::body::RequestBodyLocal;
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
 use crate::response::Response;
@@ -122,7 +122,7 @@ where
     }
 
     /// Execute the forwarded request.
-    pub async fn send(mut self) -> Result<Response<crate::body::ResponseBoxLocalBody>, Error> {
+    pub async fn send(mut self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         let (mut parts, body) = self.request.into_parts();
 
         let is_h1_upgrade = parts
@@ -225,7 +225,7 @@ where
             .map_err(|e| Error::Other(Box::new(e)))?;
         parts.uri = request_uri;
 
-        let boxed_body: RequestBoxLocalBody = Box::pin(body.map_err(|e| {
+        let boxed_body: RequestBodyLocal = Box::pin(body.map_err(|e| {
             let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();
             Error::Other(boxed)
         }));

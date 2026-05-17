@@ -1392,7 +1392,7 @@ fn test_compio_middleware() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .middleware(
-                |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
+                |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                     req.headers_mut().insert(
                         "x-middleware",
                         http::header::HeaderValue::from_static("injected"),
@@ -3526,7 +3526,7 @@ fn test_compio_streaming_body_request() {
 
         // Create a streaming body (non-buffered) -- this exercises the
         // RequestBody::Streaming branch at execute_local.rs line 58
-        let stream_body: aioduct::body::RequestBoxBody =
+        let stream_body: aioduct::body::RequestBodySend =
             http_body_util::Full::new(Bytes::from("streaming-payload"))
                 .map_err(|never| match never {})
                 .boxed_unsync();
@@ -3571,7 +3571,7 @@ fn test_compio_streaming_body_not_replayable_on_redirect() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
 
-        let stream_body: aioduct::body::RequestBoxBody =
+        let stream_body: aioduct::body::RequestBodySend =
             http_body_util::Full::new(Bytes::from("stream-data"))
                 .map_err(|never| match never {})
                 .boxed_unsync();

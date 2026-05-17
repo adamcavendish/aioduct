@@ -1,10 +1,10 @@
 use super::*;
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::runtime::SmolRuntime;
 use crate::runtime::smol_rt::SmolIo;
 use crate::runtime::{RuntimeCompletion, RuntimePoll};
 
-async fn make_h1_conn() -> PooledConnection<RequestBoxBody> {
+async fn make_h1_conn() -> PooledConnection<RequestBodySend> {
     let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -45,14 +45,14 @@ fn key(host: &str) -> PoolKey {
 
 #[test]
 fn checkout_returns_none_on_empty_pool() {
-    let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
     assert!(pool.checkout(&key("example.com:80")).is_none());
 }
 
 #[test]
 fn checkin_then_checkout_returns_connection() {
     smol::block_on(async {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
 
         let conn = make_h1_conn().await;
@@ -71,7 +71,7 @@ fn checkin_then_checkout_returns_connection() {
 #[test]
 fn checkout_with_different_key_returns_none() {
     smol::block_on(async {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
 
         let conn = make_h1_conn().await;
         pool.checkin(key("a.example.com:80"), conn);
@@ -90,7 +90,7 @@ fn pool_respects_max_idle_per_host() {
     smol::block_on(async {
         let max_idle = 2;
         let pool =
-            ConnectionPool::<RequestBoxBody>::new_no_reaper(max_idle, Duration::from_secs(30));
+            ConnectionPool::<RequestBodySend>::new_no_reaper(max_idle, Duration::from_secs(30));
         let k = key("example.com:80");
 
         for _ in 0..3 {
@@ -112,7 +112,7 @@ fn pool_respects_max_idle_per_host() {
 #[test]
 fn checkin_checkout_is_lifo() {
     smol::block_on(async {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
         let k = key("example.com:80");
 
         let conn1 = make_h1_conn().await;
@@ -141,7 +141,7 @@ fn checkin_checkout_is_lifo() {
 #[test]
 fn checkout_expired_connection_returns_none() {
     smol::block_on(async {
-        let pool = ConnectionPool::<RequestBoxBody>::new_no_reaper(8, Duration::from_millis(50));
+        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_millis(50));
         let k = key("example.com:80");
 
         let conn = make_h1_conn().await;
@@ -159,7 +159,7 @@ fn checkout_expired_connection_returns_none() {
 #[test]
 fn reaper_removes_expired_connections() {
     smol::block_on(async {
-        let pool = ConnectionPool::<RequestBoxBody>::new(1, Duration::from_millis(50));
+        let pool = ConnectionPool::<RequestBodySend>::new(1, Duration::from_millis(50));
         pool.ensure_reaper::<SmolRuntime>();
         let k = key("example.com:80");
 

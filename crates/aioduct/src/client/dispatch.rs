@@ -3,7 +3,7 @@ use crate::clock::Instant;
 use http::Uri;
 
 #[cfg(all(feature = "http3", feature = "rustls"))]
-use crate::body::RequestBoxBody;
+use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::observer::{self, RequestEvent, RequestPhase};
 use crate::pool::{HttpConnection, PooledConnection};
@@ -155,12 +155,12 @@ impl<B: 'static> HttpEngineCore<B> {
         let result = match &mut conn.conn {
             HttpConnection::H1(sender) => {
                 let resp = sender.send_request(request).await?;
-                let resp = resp.map(crate::response::ResponseBoxSendBody::from_incoming);
+                let resp = resp.map(crate::response::ResponseBodySend::from_incoming);
                 Ok(Response::new(resp, url))
             }
             HttpConnection::H2(sender) => {
                 let resp = sender.send_request(request).await?;
-                let resp = resp.map(crate::response::ResponseBoxSendBody::from_incoming);
+                let resp = resp.map(crate::response::ResponseBodySend::from_incoming);
                 Ok(Response::new(resp, url))
             }
             #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -168,7 +168,7 @@ impl<B: 'static> HttpEngineCore<B> {
                 use http_body_util::BodyExt as _;
                 let (parts, body) = request.into_parts();
                 let collected = body.collect().await?;
-                let boxed: RequestBoxBody = http_body_util::Full::new(collected.to_bytes())
+                let boxed: RequestBodySend = http_body_util::Full::new(collected.to_bytes())
                     .map_err(|never| match never {})
                     .boxed_unsync();
                 let request = http::Request::from_parts(parts, boxed);
@@ -194,9 +194,9 @@ impl<B: 'static> HttpEngineCore<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::body::RequestBoxBody;
+    use crate::body::RequestBodySend;
 
-    type Core = HttpEngineCore<RequestBoxBody>;
+    type Core = HttpEngineCore<RequestBodySend>;
 
     #[test]
     fn is_stale_io_connection_reset() {

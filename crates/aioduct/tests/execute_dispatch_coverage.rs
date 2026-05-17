@@ -236,7 +236,7 @@ async fn digest_auth_retry_applies_middleware() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("user", "pass")
         .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBoxBody>, _uri: &http::Uri| {
+            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(
                     http::header::HeaderName::from_static("x-middleware-retry"),
                     http::header::HeaderValue::from_static("applied"),
@@ -803,7 +803,7 @@ async fn streaming_body_exercises_streaming_arm() {
         .build();
 
     // Create a streaming body (not buffered)
-    let stream_body: aioduct::body::RequestBoxBody =
+    let stream_body: aioduct::body::RequestBodySend =
         http_body_util::Full::new(Bytes::from("stream-payload"))
             .map_err(|never| match never {})
             .boxed_unsync();
