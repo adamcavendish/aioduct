@@ -78,12 +78,20 @@ pub(crate) fn parse_alt_svc(header_value: &str) -> Vec<AltSvcEntry> {
 
 fn split_entries(s: &str) -> Vec<&str> {
     let mut entries = Vec::new();
-    let mut depth = 0u32;
+    let mut in_quotes = false;
+    let mut prev_backslash = false;
     let mut start = 0;
     for (i, c) in s.char_indices() {
+        if prev_backslash {
+            prev_backslash = false;
+            continue;
+        }
         match c {
-            '"' => depth ^= 1,
-            ',' if depth == 0 => {
+            '\\' if in_quotes => {
+                prev_backslash = true;
+            }
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
                 entries.push(&s[start..i]);
                 start = i + 1;
             }
@@ -402,5 +410,25 @@ mod tests {
         assert_eq!(entry.protocol, cloned.protocol);
         let dbg = format!("{:?}", entry);
         assert!(dbg.contains("h3"));
+    }
+
+    #[test]
+    fn test_split_entries_escaped_quotes() {
+        let entries = split_entries(r#"h3="host:443", h2="other:80""#);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].trim(), r#"h3="host:443""#);
+        assert_eq!(entries[1].trim(), r#"h2="other:80""#);
+    }
+
+    #[test]
+    fn test_split_entries_comma_in_quotes() {
+        let entries = split_entries(r#"h3="host,with,commas:443"; ma=60"#);
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_split_entries_escaped_quote_in_value() {
+        let entries = split_entries(r#"h3="val\"ue:443", h2=":80""#);
+        assert_eq!(entries.len(), 2);
     }
 }
