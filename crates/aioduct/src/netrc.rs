@@ -199,7 +199,15 @@ impl Middleware for NetrcMiddleware {
             return;
         }
 
+        let is_secure = uri.scheme() == Some(&http::uri::Scheme::HTTPS);
         let host = uri.host().unwrap_or("");
+        let is_loopback =
+            host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]";
+
+        if !is_secure && !is_loopback {
+            return;
+        }
+
         if let Some((login, password)) = self.netrc.lookup(host) {
             let encoded = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
@@ -315,7 +323,7 @@ mod tests {
         let netrc = Netrc::parse("machine api.example.com login myuser password mypass\n");
         let mw = NetrcMiddleware::new(netrc);
 
-        let uri: Uri = "http://api.example.com/path".parse().unwrap();
+        let uri: Uri = "https://api.example.com/path".parse().unwrap();
         let body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
@@ -337,7 +345,7 @@ mod tests {
         let netrc = Netrc::parse("machine api.example.com login myuser password mypass\n");
         let mw = NetrcMiddleware::new(netrc);
 
-        let uri: Uri = "http://api.example.com/path".parse().unwrap();
+        let uri: Uri = "https://api.example.com/path".parse().unwrap();
         let body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
@@ -364,7 +372,7 @@ mod tests {
         let netrc = Netrc::parse("machine other.com login user password pass\n");
         let mw = NetrcMiddleware::new(netrc);
 
-        let uri: Uri = "http://api.example.com/path".parse().unwrap();
+        let uri: Uri = "https://api.example.com/path".parse().unwrap();
         let body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
@@ -436,7 +444,8 @@ mod tests {
             .boxed_unsync();
         let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
         mw.on_request(&mut req, &uri);
-        assert!(req.headers().contains_key("authorization"));
+        // No scheme means not secure, and empty host is not loopback
+        assert!(!req.headers().contains_key("authorization"));
     }
 
     #[test]
@@ -472,7 +481,7 @@ mod tests {
             writeln!(f, "machine mw.example.com login mwuser password mwpass").unwrap();
         }
         let mw = NetrcMiddleware::from_path(&path).unwrap();
-        let uri: http::Uri = "http://mw.example.com/test".parse().unwrap();
+        let uri: http::Uri = "https://mw.example.com/test".parse().unwrap();
         let body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
@@ -610,7 +619,7 @@ mod tests {
         let mw = NetrcMiddleware::from_default().unwrap();
         unsafe { std::env::remove_var("NETRC") };
 
-        let uri: http::Uri = "http://mwd.example.com/test".parse().unwrap();
+        let uri: http::Uri = "https://mwd.example.com/test".parse().unwrap();
         let body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
@@ -620,5 +629,50 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn middleware_rejects_plaintext_http() {
+        use http::Uri;
+        let netrc = Netrc::parse("machine api.example.com login myuser password mypass\n");
+        let mw = NetrcMiddleware::new(netrc);
+
+        let uri: Uri = "http://api.example.com/path".parse().unwrap();
+        let body: RequestBodySend = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
+        mw.on_request(&mut req, &uri);
+        assert!(!req.headers().contains_key("authorization"));
+    }
+
+    #[test]
+    fn middleware_allows_localhost_http() {
+        use http::Uri;
+        let netrc = Netrc::parse("machine localhost login localuser password localpass\n");
+        let mw = NetrcMiddleware::new(netrc);
+
+        let uri: Uri = "http://localhost:8080/path".parse().unwrap();
+        let body: RequestBodySend = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
+        mw.on_request(&mut req, &uri);
+        assert!(req.headers().contains_key("authorization"));
+    }
+
+    #[test]
+    fn middleware_allows_127_0_0_1_http() {
+        use http::Uri;
+        let netrc = Netrc::parse("machine 127.0.0.1 login localuser password localpass\n");
+        let mw = NetrcMiddleware::new(netrc);
+
+        let uri: Uri = "http://127.0.0.1:3000/path".parse().unwrap();
+        let body: RequestBodySend = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let mut req = http::Request::builder().uri(&uri).body(body).unwrap();
+        mw.on_request(&mut req, &uri);
+        assert!(req.headers().contains_key("authorization"));
     }
 }

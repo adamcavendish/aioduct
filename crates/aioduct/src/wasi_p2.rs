@@ -269,10 +269,10 @@ impl<'a> WasiRequestBuilder<'a> {
             .set_path_with_query(Some(&path_and_query))
             .map_err(|()| Error::Other("failed to set path".into()))?;
 
+        let outgoing_body = request
+            .body()
+            .map_err(|_| Error::Other("failed to get outgoing body".into()))?;
         if let Some(body_bytes) = &self.body {
-            let outgoing_body = request
-                .body()
-                .map_err(|_| Error::Other("failed to get outgoing body".into()))?;
             let stream = outgoing_body
                 .write()
                 .map_err(|_| Error::Other("failed to get body write stream".into()))?;
@@ -280,9 +280,9 @@ impl<'a> WasiRequestBuilder<'a> {
                 .blocking_write_and_flush(body_bytes)
                 .map_err(|e| Error::Io(std::io::Error::other(format!("{e:?}"))))?;
             drop(stream);
-            OutgoingBody::finish(outgoing_body, None)
-                .map_err(|_| Error::Other("failed to finish outgoing body".into()))?;
         }
+        OutgoingBody::finish(outgoing_body, None)
+            .map_err(|_| Error::Other("failed to finish outgoing body".into()))?;
 
         let options = RequestOptions::new();
         if let Some(t) = self.timeout {
