@@ -143,7 +143,7 @@ impl<B> HttpEngineCore<B> {
         if let Some(jar) = &self.cookie_jar
             && let Some(authority) = current_uri.authority()
         {
-            jar.store_from_response(authority.host(), resp.headers());
+            jar.store_from_response(authority.host(), current_uri.path(), resp.headers());
         }
 
         if let Some(ref hsts) = self.hsts

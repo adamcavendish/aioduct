@@ -84,7 +84,7 @@ impl Middleware for OtelMiddleware {
                 "http.request.method",
                 request.method().as_str().to_owned(),
             ));
-            span.set_attribute(KeyValue::new("url.full", uri.to_string()));
+            span.set_attribute(KeyValue::new("url.full", sanitize_uri(uri)));
         });
     }
 
@@ -120,7 +120,7 @@ impl Middleware for OtelMiddleware {
                 "http.redirect",
                 vec![
                     KeyValue::new("http.response.status_code", status.as_u16() as i64),
-                    KeyValue::new("http.redirect.target", to.to_string()),
+                    KeyValue::new("http.redirect.target", sanitize_uri(to)),
                 ],
             );
         });
@@ -137,6 +137,19 @@ impl Middleware for OtelMiddleware {
             );
         });
     }
+}
+
+fn sanitize_uri(uri: &Uri) -> String {
+    let mut s = String::new();
+    if let Some(scheme) = uri.scheme_str() {
+        s.push_str(scheme);
+        s.push_str("://");
+    }
+    if let Some(authority) = uri.authority() {
+        s.push_str(authority.as_str());
+    }
+    s.push_str(uri.path());
+    s
 }
 
 fn error_type(error: &Error) -> &'static str {
@@ -247,5 +260,19 @@ mod tests {
             "from-explicit",
         );
         assert!(request.headers().get("x-global-trace").is_none());
+    }
+
+    #[test]
+    fn sanitize_uri_strips_query() {
+        let uri: Uri = "https://api.example.com/v1/users?api_key=secret&token=abc"
+            .parse()
+            .unwrap();
+        assert_eq!(sanitize_uri(&uri), "https://api.example.com/v1/users");
+    }
+
+    #[test]
+    fn sanitize_uri_preserves_path() {
+        let uri: Uri = "http://example.com/api".parse().unwrap();
+        assert_eq!(sanitize_uri(&uri), "http://example.com/api");
     }
 }
