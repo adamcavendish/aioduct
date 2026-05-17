@@ -22,7 +22,7 @@ fn bench_apply_to_request(c: &mut Criterion) {
                         .unwrap(),
                     );
                 }
-                jar.store_from_response("example.com", &setup_headers);
+                jar.store_from_response("example.com", "/", &setup_headers);
 
                 b.iter(|| {
                     let mut headers = http::HeaderMap::new();
@@ -50,7 +50,7 @@ fn bench_store_from_response(c: &mut Criterion) {
             );
         }
         b.iter(|| {
-            jar.store_from_response("example.com", &headers);
+            jar.store_from_response("example.com", "/", &headers);
         });
     });
     group.finish();
