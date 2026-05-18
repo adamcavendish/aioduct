@@ -321,20 +321,25 @@ pub(crate) async fn send_on_h3(
         .await
         .map_err(|e| Error::Other(Box::new(e)))?;
 
-    let body_bytes = body
-        .collect()
-        .await
-        .map_err(|e| Error::Other(Box::new(e)))?
-        .to_bytes();
-
     let mut request_body_stopped = false;
-    if !body_bytes.is_empty()
-        && let Err(err) = stream.send_data(body_bytes).await
-    {
-        if is_h3_no_error_stop_sending(&err) {
-            request_body_stopped = true;
-        } else {
-            return Err(Error::Other(Box::new(err)));
+    let mut body = std::pin::pin!(body);
+    loop {
+        match body.as_mut().frame().await {
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data()
+                    && !data.is_empty()
+                    && let Err(err) = stream.send_data(data).await
+                {
+                    if is_h3_no_error_stop_sending(&err) {
+                        request_body_stopped = true;
+                        break;
+                    } else {
+                        return Err(Error::Other(Box::new(err)));
+                    }
+                }
+            }
+            Some(Err(e)) => return Err(e),
+            None => break,
         }
     }
 
@@ -352,16 +357,26 @@ pub(crate) async fn send_on_h3(
 
     let (resp_parts, _) = resp.into_parts();
 
-    let body_stream = futures_util::stream::unfold(stream, |mut s| async move {
-        match s.recv_data().await {
-            Ok(Some(buf)) => {
-                let bytes = Bytes::copy_from_slice(buf.chunk());
-                Some((Ok::<_, Error>(hyper::body::Frame::data(bytes)), s))
+    let body_stream =
+        futures_util::stream::unfold((stream, false), |(mut s, data_done)| async move {
+            if data_done {
+                return None;
             }
-            Ok(None) => None,
-            Err(e) => Some((Err(Error::Other(Box::new(e))), s)),
-        }
-    });
+            match s.recv_data().await {
+                Ok(Some(buf)) => {
+                    let bytes = Bytes::copy_from_slice(buf.chunk());
+                    Some((Ok::<_, Error>(hyper::body::Frame::data(bytes)), (s, false)))
+                }
+                Ok(None) => match s.recv_trailers().await {
+                    Ok(Some(trailers)) => {
+                        Some((Ok(hyper::body::Frame::trailers(trailers)), (s, true)))
+                    }
+                    Ok(None) => None,
+                    Err(e) => Some((Err(Error::Other(Box::new(e))), (s, true))),
+                },
+                Err(e) => Some((Err(Error::Other(Box::new(e))), (s, true))),
+            }
+        });
 
     let hyper_body: RequestBodySend = http_body_util::StreamBody::new(body_stream).boxed_unsync();
     let http_resp = http::Response::from_parts(resp_parts, hyper_body);
