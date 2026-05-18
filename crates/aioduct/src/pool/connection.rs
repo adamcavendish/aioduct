@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::clock::Instant;
@@ -117,6 +118,26 @@ impl<B> PooledConnection<B> {
             HttpConnection::H2(_) => true,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(_) => true,
+        }
+    }
+
+    /// Poll the H1 sender for readiness. Returns `Poll::Ready(true)` when
+    /// the connection is ready for a new request, or `Poll::Ready(false)` if
+    /// the connection has been closed/errored. For H2/H3 this always returns
+    /// `Poll::Ready(true)` immediately.
+    pub(crate) fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
+        match &mut self.conn {
+            HttpConnection::H1(s) => match s.poll_ready(cx) {
+                Poll::Ready(Ok(())) => Poll::Ready(true),
+                Poll::Ready(Err(_)) => Poll::Ready(false),
+                Poll::Pending => Poll::Pending,
+            },
+            HttpConnection::H2(s) => {
+                let _ = s;
+                Poll::Ready(true)
+            }
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => Poll::Ready(true),
         }
     }
 }

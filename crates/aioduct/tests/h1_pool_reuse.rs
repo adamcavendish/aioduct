@@ -15,8 +15,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::HttpEngineSend;
+use aioduct::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
 /// The key reproduction:
 ///
@@ -79,10 +79,11 @@ async fn h1_delayed_body_causes_connection_churn() {
         }
     });
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(10)
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let iterations = 10;
@@ -164,10 +165,11 @@ async fn h1_concurrent_waves_with_delayed_body() {
         }
     });
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(10)
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let concurrency = 4usize;
@@ -245,9 +247,10 @@ async fn h1_sequential_requests_reuse_connection() {
         }
     });
 
-    let client = Client::<TokioRuntime>::builder()
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..10 {
