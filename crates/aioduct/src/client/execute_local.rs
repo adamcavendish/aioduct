@@ -494,8 +494,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     return Ok(resp);
                 }
             }
-            self.core.pool.unmark_connecting_h2(&pool_key);
-            let _ = self.core.pool.mark_connecting_h2(&pool_key);
+            // Timed out waiting — connect ourselves.
+            // Just ensure the mark is set; don't unmark first (avoids TOCTOU race).
+            self.core.pool.mark_connecting_h2(&pool_key);
         }
 
         let mut h2_guard = super::dispatch::H2ConnectGuard {
