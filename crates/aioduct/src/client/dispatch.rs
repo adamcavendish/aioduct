@@ -93,6 +93,38 @@ impl<B: 'static> HttpEngineCore<B> {
         }));
     }
 
+    /// Like [`checkin_when_ready`](Self::checkin_when_ready) but for the Local
+    /// (`!Send`) path. The spawn closure accepts a non-Send future.
+    pub(super) fn checkin_when_ready_local<F>(
+        &self,
+        key: crate::pool::PoolKey,
+        mut conn: PooledConnection<B>,
+        spawn: F,
+    ) where
+        F: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>),
+        B: 'static,
+    {
+        Self::populate_sans(&mut conn);
+        if conn.is_multiplex_clone {
+            self.fire_connection_metrics(&conn, false);
+            return;
+        }
+        self.fire_connection_metrics(&conn, false);
+
+        if !conn.is_h1() || conn.is_ready() {
+            self.pool.checkin(key, conn);
+            return;
+        }
+
+        let pool = self.pool.clone();
+        spawn(Box::pin(async move {
+            let ready = std::future::poll_fn(|cx| conn.poll_ready(cx)).await;
+            if ready {
+                pool.checkin(key, conn);
+            }
+        }));
+    }
+
     pub(super) fn fire_connection_metrics(&self, conn: &PooledConnection<B>, closed: bool) {
         if let Some(ref obs) = self.observer
             && let Some(remote_addr) = conn.remote_addr
