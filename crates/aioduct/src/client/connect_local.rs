@@ -56,8 +56,20 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 .port_u16()
                 .unwrap_or(if is_https { 443 } else { 80 });
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
             crate::socks5::socks5_handshake(&mut std_stream, host, port, proxy.auth.as_ref())
                 .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
             let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
                 self.connect_tls_local(tcp_stream, host).await
@@ -70,8 +82,20 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 .port_u16()
                 .unwrap_or(if is_https { 443 } else { 80 });
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
             crate::socks4::socks4a_handshake(&mut std_stream, host, port, proxy.auth.as_ref())
                 .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
             let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
                 self.connect_tls_local(tcp_stream, host).await

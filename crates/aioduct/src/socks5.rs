@@ -638,4 +638,39 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn handshake_respects_read_timeout() {
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Server accepts but never responds — simulates a hung proxy.
+        let _server = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(10));
+        });
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+
+        let start = Instant::now();
+        let err = socks5_handshake(&mut client, "example.com", 80, None).unwrap_err();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "handshake should have timed out quickly, took {elapsed:?}"
+        );
+        assert!(
+            err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut,
+            "expected timeout error, got: {err:?}"
+        );
+    }
 }
