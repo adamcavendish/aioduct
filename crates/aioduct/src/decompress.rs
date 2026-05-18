@@ -264,55 +264,58 @@ mod imp {
                 return Poll::Ready(None);
             }
 
-            match Pin::new(&mut self.body).poll_frame(cx) {
-                Poll::Ready(Some(Ok(frame))) => {
-                    match frame.into_data() {
-                        Ok(data) => {
-                            if self.decoder.is_some() {
-                                self.has_data = true;
-                                // SAFETY: we just checked is_some() above and nothing
-                                // removes the decoder between the check and this line.
-                                #[allow(clippy::unwrap_used)]
-                                let decoder = self.decoder.as_mut().unwrap();
-                                if let Err(e) = decoder.write_chunk(&data) {
-                                    self.finished = true;
-                                    return Poll::Ready(Some(Err(e)));
+            loop {
+                match Pin::new(&mut self.body).poll_frame(cx) {
+                    Poll::Ready(Some(Ok(frame))) => {
+                        match frame.into_data() {
+                            Ok(data) => {
+                                if self.decoder.is_some() {
+                                    self.has_data = true;
+                                    // SAFETY: we just checked is_some() above and nothing
+                                    // removes the decoder between the check and this line.
+                                    #[allow(clippy::unwrap_used)]
+                                    let decoder = self.decoder.as_mut().unwrap();
+                                    if let Err(e) = decoder.write_chunk(&data) {
+                                        self.finished = true;
+                                        return Poll::Ready(Some(Err(e)));
+                                    }
+                                    let output = decoder.take_output();
+                                    if output.is_empty() {
+                                        continue;
+                                    }
+                                    return Poll::Ready(Some(Ok(hyper::body::Frame::data(
+                                        Bytes::from(output),
+                                    ))));
+                                } else {
+                                    return Poll::Ready(Some(Ok(hyper::body::Frame::data(data))));
                                 }
-                                let output = decoder.take_output();
-                                if output.is_empty() {
-                                    cx.waker().wake_by_ref();
-                                    return Poll::Pending;
-                                }
-                                Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(output)))))
-                            } else {
-                                Poll::Ready(Some(Ok(hyper::body::Frame::data(data))))
                             }
+                            Err(frame) => return Poll::Ready(Some(Ok(frame))),
                         }
-                        Err(frame) => Poll::Ready(Some(Ok(frame))),
                     }
-                }
-                Poll::Ready(Some(Err(e))) => {
-                    self.finished = true;
-                    Poll::Ready(Some(Err(e)))
-                }
-                Poll::Ready(None) => {
-                    self.finished = true;
-                    if let Some(decoder) = self.decoder.take() {
-                        if !self.has_data {
+                    Poll::Ready(Some(Err(e))) => {
+                        self.finished = true;
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                    Poll::Ready(None) => {
+                        self.finished = true;
+                        if let Some(decoder) = self.decoder.take() {
+                            if !self.has_data {
+                                return Poll::Ready(None);
+                            }
+                            return match decoder.finish() {
+                                Ok(remaining) if !remaining.is_empty() => Poll::Ready(Some(Ok(
+                                    hyper::body::Frame::data(Bytes::from(remaining)),
+                                ))),
+                                Ok(_) => Poll::Ready(None),
+                                Err(e) => Poll::Ready(Some(Err(e))),
+                            };
+                        } else {
                             return Poll::Ready(None);
                         }
-                        match decoder.finish() {
-                            Ok(remaining) if !remaining.is_empty() => Poll::Ready(Some(Ok(
-                                hyper::body::Frame::data(Bytes::from(remaining)),
-                            ))),
-                            Ok(_) => Poll::Ready(None),
-                            Err(e) => Poll::Ready(Some(Err(e))),
-                        }
-                    } else {
-                        Poll::Ready(None)
                     }
+                    Poll::Pending => return Poll::Pending,
                 }
-                Poll::Pending => Poll::Pending,
             }
         }
     }
@@ -974,5 +977,115 @@ mod tests {
 
         let collected = result_body.collect().await.unwrap().to_bytes();
         assert_eq!(&collected[..], b"partial test");
+    }
+
+    /// #135: Decompression should not return Poll::Pending + self-wake when
+    /// the decoder buffers data without producing output.
+    ///
+    /// When the inner body yields data that the decoder buffers without output,
+    /// poll_frame should loop internally to pull more data rather than returning
+    /// Pending and relying on a self-wake.
+    #[cfg(all(feature = "gzip", feature = "tokio"))]
+    #[tokio::test]
+    async fn no_spurious_pending_on_buffered_decode() {
+        use bytes::Bytes;
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+        use http_body::Body;
+        use http_body_util::BodyExt;
+        use std::io::Write;
+        use std::pin::Pin;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::Poll;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder
+            .write_all(b"hello world! this is test data for decompression")
+            .unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        // Split into 1-byte chunks — early chunks (gzip header) won't produce output.
+        let chunks: Vec<Bytes> = compressed.iter().map(|&b| Bytes::from(vec![b])).collect();
+        let chunk_count = chunks.len();
+        let chunks_iter = Arc::new(std::sync::Mutex::new(chunks.into_iter()));
+
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let wake_count2 = Arc::clone(&wake_count);
+
+        let body = futures_util::stream::poll_fn(
+            move |_cx| -> Poll<Option<Result<hyper::body::Frame<Bytes>, crate::error::Error>>> {
+                match chunks_iter.lock().unwrap().next() {
+                    Some(chunk) => Poll::Ready(Some(Ok(hyper::body::Frame::data(chunk)))),
+                    None => Poll::Ready(None),
+                }
+            },
+        );
+        let body: RequestBodySend = http_body_util::StreamBody::new(body)
+            .map_err(|e| e)
+            .boxed_unsync();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+        headers.insert(CONTENT_LENGTH, chunk_count.to_string().parse().unwrap());
+
+        let ae = AcceptEncoding::default();
+        let result_body = maybe_decompress(&mut headers, body, &ae);
+
+        // Use a custom waker to count spurious wakes.
+        let waker = {
+            use std::task::{RawWaker, RawWakerVTable, Waker};
+            let data = Arc::into_raw(Arc::clone(&wake_count2)) as *const ();
+            unsafe fn clone_fn(data: *const ()) -> RawWaker {
+                unsafe { Arc::increment_strong_count(data as *const AtomicUsize) };
+                RawWaker::new(data, &VTABLE)
+            }
+            unsafe fn wake_fn(data: *const ()) {
+                let arc = unsafe { Arc::from_raw(data as *const AtomicUsize) };
+                arc.fetch_add(1, Ordering::SeqCst);
+            }
+            unsafe fn wake_by_ref_fn(data: *const ()) {
+                unsafe { &*(data as *const AtomicUsize) }.fetch_add(1, Ordering::SeqCst);
+            }
+            unsafe fn drop_fn(data: *const ()) {
+                unsafe { Arc::decrement_strong_count(data as *const AtomicUsize) };
+            }
+            static VTABLE: RawWakerVTable =
+                RawWakerVTable::new(clone_fn, wake_fn, wake_by_ref_fn, drop_fn);
+            unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) }
+        };
+
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut body: Pin<Box<RequestBodySend>> = Box::pin(result_body);
+        let mut output = Vec::new();
+        let mut pending_count = 0usize;
+
+        loop {
+            match body.as_mut().poll_frame(&mut cx) {
+                Poll::Ready(Some(Ok(frame))) => {
+                    if let Ok(data) = frame.into_data() {
+                        output.extend_from_slice(&data[..]);
+                    }
+                }
+                Poll::Ready(Some(Err(e))) => panic!("unexpected error: {e}"),
+                Poll::Ready(None) => break,
+                Poll::Pending => {
+                    pending_count += 1;
+                    if pending_count > 1000 {
+                        panic!("too many Pending returns — likely busy-spin bug");
+                    }
+                }
+            }
+        }
+
+        assert_eq!(output, b"hello world! this is test data for decompression");
+        // With the fix: poll_frame should never return Pending because the inner
+        // body always has data ready. It should loop internally until output is
+        // produced or the inner body returns Pending/None.
+        assert_eq!(
+            pending_count, 0,
+            "poll_frame returned Pending {pending_count} times — should loop internally when inner body has data"
+        );
     }
 }
