@@ -80,9 +80,8 @@ pub trait SocketConfig {
 /// because `compio_net::TcpStream` is tied to the thread-local event loop.
 /// For poll-based runtimes (tokio, smol), implement [`ConnectorSend`] instead
 /// which guarantees `Send` futures.
-// TODO: rename to `ConnectorLocal` for symmetry with `ConnectorSend`.
 #[allow(async_fn_in_trait)]
-pub trait Connector: 'static {
+pub trait ConnectorLocal: 'static {
     /// The byte stream type passed to hyper for HTTP framing.
     type Stream: hyper::rt::Read + hyper::rt::Write + Unpin + SocketConfig + 'static;
 
@@ -124,9 +123,9 @@ pub trait Connector: 'static {
 
 /// `Send`-safe connector for poll-based runtimes (tokio, smol).
 ///
-/// Same interface as [`Connector`] but with `Send` futures. This is the trait
+/// Same interface as [`ConnectorLocal`] but with `Send` futures. This is the trait
 /// used by [`HttpEngineSend`](crate::HttpEngineSend) and the tower connector layer.
-/// Completion-based runtimes (compio) implement only [`Connector`].
+/// Completion-based runtimes (compio) implement only [`ConnectorLocal`].
 pub trait ConnectorSend: Clone + Send + Sync + 'static {
     /// The byte stream type passed to hyper for HTTP framing.
     type Stream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + SocketConfig + 'static;

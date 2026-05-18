@@ -9,17 +9,17 @@ use http::header::{ACCEPT_RANGES, CONTENT_LENGTH, RANGE};
 use super::ChunkDownloadResult;
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
-use crate::runtime::{Connector, RuntimeLocal};
+use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
 /// Parallel range-request downloader for `!Send` runtimes.
-pub struct ChunkDownloadLocal<R: RuntimeLocal, C: Connector + Clone> {
+pub struct ChunkDownloadLocal<R: RuntimeLocal, C: ConnectorLocal + Clone> {
     client: HttpEngineLocal<R, C>,
     url: String,
     chunks: usize,
     _runtime: PhantomData<(R, C)>,
 }
 
-impl<R: RuntimeLocal, C: Connector + Clone> std::fmt::Debug for ChunkDownloadLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for ChunkDownloadLocal<R, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChunkDownloadLocal")
             .field("url", &self.url)
@@ -27,7 +27,7 @@ impl<R: RuntimeLocal, C: Connector + Clone> std::fmt::Debug for ChunkDownloadLoc
     }
 }
 
-impl<R: RuntimeLocal, C: Connector + Clone> ChunkDownloadLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> ChunkDownloadLocal<R, C> {
     pub(crate) fn new(client: HttpEngineLocal<R, C>, url: String) -> Self {
         Self {
             client,

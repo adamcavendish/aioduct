@@ -8,7 +8,7 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::{Connector, RuntimeCompletion, RuntimePoll};
+use super::{ConnectorLocal, RuntimeCompletion, RuntimePoll};
 
 /// Smol async runtime implementation.
 pub struct SmolRuntime;
@@ -120,7 +120,7 @@ impl super::SocketConfig for SmolIo<smol::net::TcpStream> {
 #[derive(Clone, Copy, Default)]
 pub struct TcpConnector;
 
-impl Connector for TcpConnector {
+impl ConnectorLocal for TcpConnector {
     type Stream = SmolIo<smol::net::TcpStream>;
 
     async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
@@ -595,7 +595,8 @@ mod tests {
             let addr = listener.local_addr().unwrap();
             let connector = super::TcpConnector;
             let local: std::net::IpAddr = "127.0.0.1".parse().unwrap();
-            let stream = crate::runtime::Connector::connect_bound(&connector, addr, local).await;
+            let stream =
+                crate::runtime::ConnectorLocal::connect_bound(&connector, addr, local).await;
             assert!(stream.is_ok());
         });
     }
@@ -607,12 +608,12 @@ mod tests {
             let addr = listener.local_addr().unwrap();
             let std_stream = std::net::TcpStream::connect(addr).unwrap();
             let connector = super::TcpConnector;
-            let result = crate::runtime::Connector::from_std_tcp(&connector, std_stream);
+            let result = crate::runtime::ConnectorLocal::from_std_tcp(&connector, std_stream);
             assert!(result.is_ok());
         });
     }
 
-    // ── Connector connect_bound IPv6 path ─────────────────────────────
+    // ── ConnectorLocal connect_bound IPv6 path ─────────────────────────────
 
     #[test]
     fn connector_local_connect_bound_ipv6() {
@@ -624,7 +625,8 @@ mod tests {
             let addr = listener.local_addr().unwrap();
             let connector = super::TcpConnector;
             let local: std::net::IpAddr = "::1".parse().unwrap();
-            let stream = crate::runtime::Connector::connect_bound(&connector, addr, local).await;
+            let stream =
+                crate::runtime::ConnectorLocal::connect_bound(&connector, addr, local).await;
             assert!(stream.is_ok());
         });
     }

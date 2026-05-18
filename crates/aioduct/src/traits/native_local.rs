@@ -8,18 +8,18 @@ use crate::body::ResponseBodyLocal;
 use crate::client::HttpEngineLocal;
 use crate::error::{Error, SendError};
 use crate::response::Response;
-use crate::runtime::{Connector, RuntimeLocal};
+use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
 /// An owned request builder that does not borrow the [`HttpEngineLocal`].
 ///
 /// Returned by [`HttpClient::request()`] on [`HttpEngineLocal`]. Internally wraps
 /// a standard [`RequestBuilderLocal`](crate::request::RequestBuilderLocal) with an
 /// owned client reference.
-pub struct OwnedRequestBuilderLocal<R: RuntimeLocal, C: Connector + Clone> {
+pub struct OwnedRequestBuilderLocal<R: RuntimeLocal, C: ConnectorLocal + Clone> {
     inner: crate::request::RequestBuilderLocal<'static, R, C>,
 }
 
-impl<R: RuntimeLocal, C: Connector + Clone> HttpClient for HttpEngineLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpClient for HttpEngineLocal<R, C> {
     type RequestBuilder = OwnedRequestBuilderLocal<R, C>;
 
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {
@@ -30,7 +30,9 @@ impl<R: RuntimeLocal, C: Connector + Clone> HttpClient for HttpEngineLocal<R, C>
     }
 }
 
-impl<R: RuntimeLocal, C: Connector + Clone> RequestBuilderExt for OwnedRequestBuilderLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderExt
+    for OwnedRequestBuilderLocal<R, C>
+{
     type Response = Response<ResponseBodyLocal>;
 
     fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
