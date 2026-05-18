@@ -760,19 +760,58 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         }
                         None => {
                             self.core.h2c_probe_cache.record_h1_only(authority.clone());
-                            let stream2 = if addrs.len() > 1 {
-                                crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
+                            let (stream2, fallback_addr) = if addrs.len() > 1 {
+                                let (s, a) = crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
                                     &self.connector,
                                     &addrs,
                                     local_address,
                                 )
                                 .await
-                                .map_err(Error::Io)?
-                                .0
+                                .map_err(Error::Io)?;
+                                (s, a)
+                            } else if let Some(local_addr) = local_address {
+                                let s = self
+                                    .connector
+                                    .connect_bound(addrs[0], local_addr)
+                                    .await
+                                    .map_err(Error::Io)?;
+                                (s, addrs[0])
                             } else {
-                                self.connector.connect(addrs[0]).await.map_err(Error::Io)?
+                                #[cfg(feature = "tower")]
+                                let s = if let Some(ref tower_slot) = self.tower_connector {
+                                    let tower_conn = tower_slot.get::<C>();
+                                    let info = crate::connector::ConnectInfo {
+                                        uri: original_uri.clone(),
+                                        addr,
+                                    };
+                                    tower_conn.connect(info).await.map_err(Error::Io)?
+                                } else {
+                                    self.connector.connect(addrs[0]).await.map_err(Error::Io)?
+                                };
+                                #[cfg(not(feature = "tower"))]
+                                let s =
+                                    self.connector.connect(addrs[0]).await.map_err(Error::Io)?;
+                                (s, addrs[0])
                             };
-                            self.connect_h1(stream2).await?
+                            #[cfg(target_os = "linux")]
+                            if let Some(iface) = interface {
+                                stream2.bind_device(iface).map_err(Error::Io)?;
+                            }
+                            if let Some(time) = tcp_keepalive {
+                                stream2
+                                    .set_keepalive(
+                                        time,
+                                        tcp_keepalive_interval,
+                                        tcp_keepalive_retries,
+                                    )
+                                    .map_err(Error::Io)?;
+                            }
+                            if tcp_fast_open {
+                                let _ = stream2.set_fast_open();
+                            }
+                            let mut c = self.connect_h1(stream2).await?;
+                            c.remote_addr = Some(fallback_addr);
+                            c
                         }
                     }
                 } else {
