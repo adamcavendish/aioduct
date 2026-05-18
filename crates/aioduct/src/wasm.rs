@@ -318,7 +318,7 @@ impl<'a> WasmRequestBuilder<'a> {
             ));
         };
 
-        let resp_value = JsFuture::from(resp_promise).await.map_err(|e| {
+        let result = JsFuture::from(resp_promise).await.map_err(|e| {
             let msg = js_sys::JSON::stringify(&e)
                 .map(String::from)
                 .unwrap_or_else(|_| format!("{e:?}"));
@@ -327,15 +327,17 @@ impl<'a> WasmRequestBuilder<'a> {
             } else {
                 Error::Other(format!("fetch failed: {msg}").into())
             }
-        })?;
+        });
 
         if let Some(handle) = timeout_handle {
             if let Ok(window) = global.clone().dyn_into::<web_sys::Window>() {
                 window.clear_timeout_with_handle(handle);
-            } else if let Ok(worker) = global.dyn_into::<web_sys::WorkerGlobalScope>() {
+            } else if let Ok(worker) = global.clone().dyn_into::<web_sys::WorkerGlobalScope>() {
                 worker.clear_timeout_with_handle(handle);
             }
         }
+
+        let resp_value = result?;
 
         let resp: web_sys::Response = resp_value
             .dyn_into()
