@@ -33,6 +33,7 @@ dependencies = [
  "compio-runtime",
  "encoding_rs",
  "flate2",
+ "futures-channel",
  "futures-core",
  "futures-io",
  "futures-util",

@@ -3,9 +3,9 @@ use http::{Method, Uri};
 use super::HttpEngineLocal;
 use super::builder::HttpEngineBuilder;
 use crate::error::Error;
-use crate::runtime::{Connector, RuntimeLocal};
+use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
-impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     /// Create a new [`HttpEngineBuilder`] for a completion-based runtime.
     pub fn builder_local(connector: C) -> HttpEngineBuilder<R, C> {
         HttpEngineBuilder::new(connector)

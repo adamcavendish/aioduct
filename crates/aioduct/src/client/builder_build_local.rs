@@ -3,14 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::pool::ConnectionPool;
-use crate::runtime::{Connector, Resolve, RuntimeLocal};
+use crate::runtime::{ConnectorLocal, Resolve, RuntimeLocal};
 #[cfg(feature = "rustls")]
 use crate::tls::TlsVersion;
 
 use super::builder::HttpEngineBuilder;
 use super::{HttpEngineCore, HttpEngineLocal};
 
-impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineBuilder<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
     #[cfg(feature = "tower")]
     /// Wrap the TCP connector with a tower `Layer`.
     ///

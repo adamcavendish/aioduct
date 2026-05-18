@@ -3,7 +3,7 @@ mod legacy;
 mod traits;
 
 pub use traits::{
-    Connector, ConnectorSend, RuntimeCompletion, RuntimeLocal, RuntimePoll, SocketConfig,
+    ConnectorLocal, ConnectorSend, RuntimeCompletion, RuntimeLocal, RuntimePoll, SocketConfig,
 };
 
 #[allow(deprecated)]
@@ -278,7 +278,7 @@ mod tests {
 
     struct DummyLocalConnector;
 
-    impl Connector for DummyLocalConnector {
+    impl ConnectorLocal for DummyLocalConnector {
         type Stream = DummyStream;
 
         async fn connect(&self, _addr: SocketAddr) -> io::Result<Self::Stream> {
@@ -483,7 +483,7 @@ mod tests {
         });
     }
 
-    // ── Connector from_std_tcp default ──────────────────────────────────
+    // ── ConnectorLocal from_std_tcp default ──────────────────────────────────
 
     #[test]
     fn connector_default_from_std_tcp_returns_unsupported() {
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::Unsupported);
     }
 
-    // ── Connector::from_std_tcp on ConnectorSend (already tested above) ─
+    // ── ConnectorLocal::from_std_tcp on ConnectorSend (already tested above) ─
 
     // ── SocketConfig bind_device default (linux only) ────────────────────
 
@@ -954,7 +954,7 @@ mod tests {
     async fn dummy_local_connector_connect_returns_error() {
         let connector = DummyLocalConnector;
         let addr: SocketAddr = "127.0.0.1:1234".parse().unwrap();
-        let err = Connector::connect(&connector, addr).await.unwrap_err();
+        let err = ConnectorLocal::connect(&connector, addr).await.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Other);
         assert!(err.to_string().contains("dummy"));
     }
