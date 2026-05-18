@@ -133,9 +133,9 @@ impl<B> HttpEngineCore<B> {
         }
     }
 
-    pub(super) fn post_execute(
+    pub(super) fn post_execute<RB>(
         &self,
-        resp: &Response,
+        resp: &Response<RB>,
         current_method: &Method,
         current_uri: &Uri,
         headers: &mut HeaderMap,
@@ -191,9 +191,9 @@ impl<B> HttpEngineCore<B> {
         })
     }
 
-    pub(super) fn process_redirect(
+    pub(super) fn process_redirect<RB>(
         &self,
-        resp: &Response,
+        resp: &Response<RB>,
         current_uri: &Uri,
         current_method: Method,
         body_for_replay: Option<RequestBody>,
