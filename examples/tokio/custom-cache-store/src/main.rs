@@ -6,7 +6,7 @@ use aioduct::{CacheEntry, CacheStore, HttpCache, Method, TokioClient, Uri};
 
 /// A custom cache store that logs every operation and wraps a simple HashMap.
 struct LoggingCacheStore {
-    entries: Mutex<HashMap<(Method, Uri), CacheEntry>>,
+    entries: Mutex<HashMap<(Method, Uri), Vec<CacheEntry>>>,
 }
 
 impl LoggingCacheStore {
@@ -18,13 +18,13 @@ impl LoggingCacheStore {
 }
 
 impl CacheStore for LoggingCacheStore {
-    fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+    fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
         let entries = self.entries.lock().unwrap();
-        let result = entries.get(&(method.clone(), uri.clone())).cloned();
-        println!(
-            "[cache] GET {method} {uri} -> {}",
-            if result.is_some() { "HIT" } else { "MISS" }
-        );
+        let result = entries
+            .get(&(method.clone(), uri.clone()))
+            .cloned()
+            .unwrap_or_default();
+        println!("[cache] GET {method} {uri} -> {} variant(s)", result.len());
         result
     }
 
@@ -33,7 +33,9 @@ impl CacheStore for LoggingCacheStore {
         self.entries
             .lock()
             .unwrap()
-            .insert((method.clone(), uri.clone()), entry);
+            .entry((method.clone(), uri.clone()))
+            .or_default()
+            .push(entry);
     }
 
     fn remove(&self, method: &Method, uri: &Uri) {
@@ -50,7 +52,7 @@ impl CacheStore for LoggingCacheStore {
     }
 
     fn len(&self) -> usize {
-        self.entries.lock().unwrap().len()
+        self.entries.lock().unwrap().values().map(|v| v.len()).sum()
     }
 }
 
