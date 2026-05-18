@@ -1,8 +1,29 @@
+//! Happy Eyeballs v2 (RFC 8305) connection racing.
+//!
+//! When connecting to a host that resolves to multiple addresses (e.g. both IPv6
+//! and IPv4), this module races connections in parallel with staggered starts:
+//!
+//! 1. Addresses are interleaved by family: `[v6, v4, v6, v4, ...]` so neither
+//!    family starves the other.
+//! 2. The first connection attempt is spawned immediately.
+//! 3. Every 250 ms (the Connection Attempt Delay), the next address is tried
+//!    while all previous attempts **stay alive**.
+//! 4. The first attempt to connect wins; all others are dropped.
+//! 5. If all in-flight attempts fail before the timer fires, the next address
+//!    is tried immediately without waiting.
+//!
+//! Two parallel implementations are generated via `impl_race_connect!`:
+//! - **Send** (`race_connect`): for poll-based runtimes (tokio, smol) using `spawn_send`.
+//! - **Local** (`race_connect_local`): for completion-based runtimes (compio) using `spawn_local`.
+
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+
+use futures_channel::mpsc;
+use futures_core::Stream;
 
 use crate::runtime::{Connector, ConnectorSend, RuntimeLocal, RuntimePoll};
 
@@ -21,7 +42,7 @@ pub(crate) async fn connect_happy_eyeballs<R: RuntimePoll, C: ConnectorSend>(
     }
 
     if addrs.len() == 1 {
-        let stream = connect_one::<C>(connector, addrs[0], local_address).await?;
+        let stream = tcp_connect_send::<C>(connector, addrs[0], local_address).await?;
         return Ok((stream, addrs[0]));
     }
 
@@ -50,90 +71,7 @@ pub(crate) fn interleave_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
     result
 }
 
-async fn race_connect<R: RuntimePoll, C: ConnectorSend>(
-    connector: &C,
-    addrs: &[SocketAddr],
-    local_address: Option<std::net::IpAddr>,
-) -> io::Result<(C::Stream, SocketAddr)> {
-    let mut last_err = io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses");
-
-    for (i, &addr) in addrs.iter().enumerate() {
-        let is_last = i == addrs.len() - 1;
-
-        if is_last {
-            match connect_one::<C>(connector, addr, local_address).await {
-                Ok(stream) => return Ok((stream, addr)),
-                Err(e) => last_err = e,
-            }
-        } else {
-            match connect_with_deadline::<R, C>(connector, addr, local_address).await {
-                ConnectResult::Connected(stream) => return Ok((stream, addr)),
-                ConnectResult::Failed(e) => last_err = e,
-                ConnectResult::DeadlineReached => {}
-            }
-        }
-    }
-
-    Err(last_err)
-}
-
-enum ConnectResult<T> {
-    Connected(T),
-    Failed(io::Error),
-    DeadlineReached,
-}
-
-async fn connect_with_deadline<R: RuntimePoll, C: ConnectorSend>(
-    connector: &C,
-    addr: SocketAddr,
-    local_address: Option<std::net::IpAddr>,
-) -> ConnectResult<C::Stream> {
-    let connector_clone = connector.clone();
-    SelectConnect::<C> {
-        connect: Box::pin(
-            async move { connect_one::<C>(&connector_clone, addr, local_address).await },
-        ),
-        sleep: Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY)),
-        done: false,
-    }
-    .await
-}
-
-struct SelectConnect<C: ConnectorSend> {
-    connect: Pin<Box<dyn std::future::Future<Output = io::Result<C::Stream>> + Send>>,
-    sleep: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-    done: bool,
-}
-
-impl<C: ConnectorSend> std::future::Future for SelectConnect<C> {
-    type Output = ConnectResult<C::Stream>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: we never move fields out of `self`; only poll pinned sub-futures in place.
-        let this = unsafe { self.get_unchecked_mut() };
-
-        if this.done {
-            return Poll::Pending;
-        }
-
-        if let Poll::Ready(result) = this.connect.as_mut().poll(cx) {
-            this.done = true;
-            return Poll::Ready(match result {
-                Ok(stream) => ConnectResult::Connected(stream),
-                Err(e) => ConnectResult::Failed(e),
-            });
-        }
-
-        if let Poll::Ready(()) = this.sleep.as_mut().poll(cx) {
-            this.done = true;
-            return Poll::Ready(ConnectResult::DeadlineReached);
-        }
-
-        Poll::Pending
-    }
-}
-
-async fn connect_one<C: ConnectorSend>(
+async fn tcp_connect_send<C: ConnectorSend>(
     connector: &C,
     addr: SocketAddr,
     local_address: Option<std::net::IpAddr>,
@@ -145,7 +83,195 @@ async fn connect_one<C: ConnectorSend>(
     }
 }
 
-// ── Local (completion-based) variant ────────────────────────────────────────
+// ── Macro: generate both Send and Local variants ─────────────────────────────
+
+macro_rules! impl_race_connect {
+    (
+        race_fn: $race_fn:ident,
+        spawn_fn: $spawn_fn:ident,
+        connect_fn: $connect_fn:ident,
+        wait_result: $WaitResult:ident,
+        wait_future: $WaitFuture:ident,
+        connector_trait: $C:ident $(: $extra_bound:ident)*,
+        runtime_trait: $R:ident,
+        spawn_method: $spawn_method:ident,
+        future_extra_bound: $fut_bound:tt,
+    ) => {
+        async fn $race_fn<R: $R, C: $C $(+ $extra_bound)*>(
+            connector: &C,
+            addrs: &[SocketAddr],
+            local_address: Option<std::net::IpAddr>,
+        ) -> io::Result<(C::Stream, SocketAddr)> {
+            let mut last_err =
+                io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses");
+
+            let (tx, mut rx) =
+                mpsc::unbounded::<Result<(C::Stream, SocketAddr), io::Error>>();
+
+            let mut next_idx = 0;
+            let mut in_flight = 0usize;
+
+            $spawn_fn::<R, C>(connector, addrs[next_idx], local_address, &tx);
+            next_idx += 1;
+            in_flight += 1;
+
+            let mut delay: Pin<Box<dyn std::future::Future<Output = ()> + $fut_bound>> =
+                if next_idx < addrs.len() {
+                    Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY))
+                } else {
+                    Box::pin(std::future::pending())
+                };
+
+            loop {
+                match ($WaitResult::<C>::wait(&mut rx, &mut delay)).await {
+                    $WaitResult::Message(Ok((stream, addr))) => return Ok((stream, addr)),
+                    $WaitResult::Message(Err(e)) => {
+                        last_err = e;
+                        in_flight -= 1;
+                        if in_flight == 0 {
+                            if next_idx >= addrs.len() {
+                                return Err(last_err);
+                            }
+                            $spawn_fn::<R, C>(
+                                connector,
+                                addrs[next_idx],
+                                local_address,
+                                &tx,
+                            );
+                            next_idx += 1;
+                            in_flight += 1;
+                            delay = if next_idx < addrs.len() {
+                                Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY))
+                            } else {
+                                Box::pin(std::future::pending())
+                            };
+                        }
+                    }
+                    $WaitResult::Delay => {
+                        if next_idx < addrs.len() {
+                            $spawn_fn::<R, C>(
+                                connector,
+                                addrs[next_idx],
+                                local_address,
+                                &tx,
+                            );
+                            next_idx += 1;
+                            in_flight += 1;
+                            delay = if next_idx < addrs.len() {
+                                Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY))
+                            } else {
+                                Box::pin(std::future::pending())
+                            };
+                        }
+                    }
+                    $WaitResult::ChannelClosed => {
+                        return Err(last_err);
+                    }
+                }
+            }
+        }
+
+        fn $spawn_fn<R: $R, C: $C $(+ $extra_bound)*>(
+            connector: &C,
+            addr: SocketAddr,
+            local_address: Option<std::net::IpAddr>,
+            tx: &mpsc::UnboundedSender<Result<(C::Stream, SocketAddr), io::Error>>,
+        ) {
+            let connector = connector.clone();
+            let tx = tx.clone();
+            R::$spawn_method(async move {
+                let result = $connect_fn::<C>(&connector, addr, local_address).await;
+                let _ = tx.unbounded_send(result.map(|stream| (stream, addr)));
+            });
+        }
+
+        enum $WaitResult<C: $C $(+ $extra_bound)*> {
+            Message(Result<(C::Stream, SocketAddr), io::Error>),
+            Delay,
+            ChannelClosed,
+        }
+
+        impl<C: $C $(+ $extra_bound)*> $WaitResult<C> {
+            fn wait<'a>(
+                rx: &'a mut mpsc::UnboundedReceiver<
+                    Result<(C::Stream, SocketAddr), io::Error>,
+                >,
+                delay: &'a mut Pin<
+                    Box<dyn std::future::Future<Output = ()> + $fut_bound>,
+                >,
+            ) -> $WaitFuture<'a, C> {
+                $WaitFuture {
+                    rx,
+                    delay,
+                    _marker: std::marker::PhantomData,
+                }
+            }
+        }
+
+        struct $WaitFuture<'a, C: $C $(+ $extra_bound)*> {
+            rx: &'a mut mpsc::UnboundedReceiver<
+                Result<(C::Stream, SocketAddr), io::Error>,
+            >,
+            delay: &'a mut Pin<
+                Box<dyn std::future::Future<Output = ()> + $fut_bound>,
+            >,
+            _marker: std::marker::PhantomData<C>,
+        }
+
+        impl<C: $C $(+ $extra_bound)*> std::future::Future for $WaitFuture<'_, C> {
+            type Output = $WaitResult<C>;
+
+            fn poll(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Self::Output> {
+                // SAFETY: we only hold mutable references to sub-futures; we never move them.
+                let this = unsafe { self.get_unchecked_mut() };
+
+                if let Poll::Ready(msg) = Pin::new(&mut *this.rx).poll_next(cx) {
+                    return Poll::Ready(match msg {
+                        Some(result) => $WaitResult::Message(result),
+                        None => $WaitResult::ChannelClosed,
+                    });
+                }
+
+                if let Poll::Ready(()) = this.delay.as_mut().poll(cx) {
+                    return Poll::Ready($WaitResult::Delay);
+                }
+
+                Poll::Pending
+            }
+        }
+    };
+}
+
+// ── Send variant (tokio / smol) ──────────────────────────────────────────────
+
+impl_race_connect! {
+    race_fn: race_connect,
+    spawn_fn: spawn_attempt,
+    connect_fn: tcp_connect_send,
+    wait_result: WaitResult,
+    wait_future: WaitFuture,
+    connector_trait: ConnectorSend,
+    runtime_trait: RuntimePoll,
+    spawn_method: spawn_send,
+    future_extra_bound: Send,
+}
+
+// ── Local variant (compio) ───────────────────────────────────────────────────
+
+async fn tcp_connect_local<C: Connector>(
+    connector: &C,
+    addr: SocketAddr,
+    local_address: Option<std::net::IpAddr>,
+) -> io::Result<C::Stream> {
+    if let Some(local) = local_address {
+        connector.connect_bound(addr, local).await
+    } else {
+        connector.connect(addr).await
+    }
+}
 
 pub(crate) async fn connect_happy_eyeballs_local<R: RuntimeLocal, C: Connector + Clone>(
     connector: &C,
@@ -160,7 +286,7 @@ pub(crate) async fn connect_happy_eyeballs_local<R: RuntimeLocal, C: Connector +
     }
 
     if addrs.len() == 1 {
-        let stream = connect_one_local::<C>(connector, addrs[0], local_address).await?;
+        let stream = tcp_connect_local::<C>(connector, addrs[0], local_address).await?;
         return Ok((stream, addrs[0]));
     }
 
@@ -168,92 +294,16 @@ pub(crate) async fn connect_happy_eyeballs_local<R: RuntimeLocal, C: Connector +
     race_connect_local::<R, C>(connector, &interleaved, local_address).await
 }
 
-async fn race_connect_local<R: RuntimeLocal, C: Connector + Clone>(
-    connector: &C,
-    addrs: &[SocketAddr],
-    local_address: Option<std::net::IpAddr>,
-) -> io::Result<(C::Stream, SocketAddr)> {
-    let mut last_err = io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses");
-
-    for (i, &addr) in addrs.iter().enumerate() {
-        let is_last = i == addrs.len() - 1;
-
-        if is_last {
-            match connect_one_local::<C>(connector, addr, local_address).await {
-                Ok(stream) => return Ok((stream, addr)),
-                Err(e) => last_err = e,
-            }
-        } else {
-            match connect_with_deadline_local::<R, C>(connector, addr, local_address).await {
-                ConnectResult::Connected(stream) => return Ok((stream, addr)),
-                ConnectResult::Failed(e) => last_err = e,
-                ConnectResult::DeadlineReached => {}
-            }
-        }
-    }
-
-    Err(last_err)
-}
-
-async fn connect_with_deadline_local<R: RuntimeLocal, C: Connector + Clone>(
-    connector: &C,
-    addr: SocketAddr,
-    local_address: Option<std::net::IpAddr>,
-) -> ConnectResult<C::Stream> {
-    let connector_clone = connector.clone();
-    SelectConnectLocal::<C> {
-        connect: Box::pin(async move {
-            connect_one_local::<C>(&connector_clone, addr, local_address).await
-        }),
-        sleep: Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY)),
-        done: false,
-    }
-    .await
-}
-
-struct SelectConnectLocal<C: Connector> {
-    connect: Pin<Box<dyn std::future::Future<Output = io::Result<C::Stream>> + 'static>>,
-    sleep: Pin<Box<dyn std::future::Future<Output = ()> + 'static>>,
-    done: bool,
-}
-
-impl<C: Connector> std::future::Future for SelectConnectLocal<C> {
-    type Output = ConnectResult<C::Stream>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-
-        if this.done {
-            return Poll::Pending;
-        }
-
-        if let Poll::Ready(result) = this.connect.as_mut().poll(cx) {
-            this.done = true;
-            return Poll::Ready(match result {
-                Ok(stream) => ConnectResult::Connected(stream),
-                Err(e) => ConnectResult::Failed(e),
-            });
-        }
-
-        if let Poll::Ready(()) = this.sleep.as_mut().poll(cx) {
-            this.done = true;
-            return Poll::Ready(ConnectResult::DeadlineReached);
-        }
-
-        Poll::Pending
-    }
-}
-
-async fn connect_one_local<C: Connector>(
-    connector: &C,
-    addr: SocketAddr,
-    local_address: Option<std::net::IpAddr>,
-) -> io::Result<C::Stream> {
-    if let Some(local) = local_address {
-        connector.connect_bound(addr, local).await
-    } else {
-        connector.connect(addr).await
-    }
+impl_race_connect! {
+    race_fn: race_connect_local,
+    spawn_fn: spawn_attempt_local,
+    connect_fn: tcp_connect_local,
+    wait_result: WaitResultLocal,
+    wait_future: WaitFutureLocal,
+    connector_trait: Connector: Clone,
+    runtime_trait: RuntimeLocal,
+    spawn_method: spawn_local,
+    future_extra_bound: 'static,
 }
 
 #[cfg(test)]
