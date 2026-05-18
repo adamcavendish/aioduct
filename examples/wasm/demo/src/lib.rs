@@ -16,7 +16,10 @@ pub async fn fetch_url(url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let body = resp.text().map_err(|e| format!("Body read error: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
 
     Ok(format!("HTTP {status}\n\n{body}"))
 }
@@ -32,7 +35,10 @@ pub async fn fetch_json(url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!("HTTP {status}\n\n{pretty}"))
@@ -56,6 +62,7 @@ pub async fn post_json(url: &str, body: &str) -> Result<String, String> {
     let status = resp.status();
     let resp_json: serde_json::Value = resp
         .json()
+        .await
         .map_err(|e| format!("Response JSON error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&resp_json).unwrap_or_default();
 
@@ -80,6 +87,7 @@ pub async fn put_json(url: &str, body: &str) -> Result<String, String> {
     let status = resp.status();
     let resp_json: serde_json::Value = resp
         .json()
+        .await
         .map_err(|e| format!("Response JSON error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&resp_json).unwrap_or_default();
 
@@ -97,7 +105,10 @@ pub async fn delete_request(url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let body = resp.text().map_err(|e| format!("Body read error: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
 
     Ok(format!("HTTP {status}\n\n{body}"))
 }
@@ -120,6 +131,7 @@ pub async fn patch_json(url: &str, body: &str) -> Result<String, String> {
     let status = resp.status();
     let resp_json: serde_json::Value = resp
         .json()
+        .await
         .map_err(|e| format!("Response JSON error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&resp_json).unwrap_or_default();
 
@@ -152,7 +164,10 @@ pub async fn fetch_with_headers(url: &str) -> Result<String, String> {
         }
     }
     output.push_str("\nBody:\n");
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     output.push_str(&serde_json::to_string_pretty(&json).unwrap_or_default());
 
     Ok(output)
@@ -173,7 +188,10 @@ pub async fn fetch_with_timeout(url: &str, timeout_ms: u32) -> Result<String, St
         .map_err(|e| format!("Error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!("HTTP {status}\n\n{pretty}"))
@@ -191,7 +209,10 @@ pub async fn fetch_with_bearer_auth(url: &str, token: &str) -> Result<String, St
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!("HTTP {status}\n\n{pretty}"))
@@ -210,7 +231,10 @@ pub async fn fetch_error_handling(url: &str) -> Result<String, String> {
     let status = resp.status();
     match resp.error_for_status() {
         Ok(resp) => {
-            let body = resp.text().map_err(|e| format!("Body read error: {e}"))?;
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| format!("Body read error: {e}"))?;
             Ok(format!("HTTP {status} (Success)\n\n{body}"))
         }
         Err(e) => Ok(format!(
@@ -231,7 +255,10 @@ pub async fn fetch_redirect(url: &str) -> Result<String, String> {
 
     let status = resp.status();
     let final_url = resp.url().to_string();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!(
@@ -256,7 +283,10 @@ pub async fn fetch_response_headers(url: &str) -> Result<String, String> {
             output.push_str(&format!("  {name}: {v}\n"));
         }
     }
-    let body = resp.text().map_err(|e| format!("Body read error: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
     output.push_str(&format!("\n── Body ──\n{body}"));
 
     Ok(output)
@@ -285,7 +315,10 @@ pub async fn fetch_gzip(url: &str) -> Result<String, String> {
         .unwrap_or("(none)")
         .to_string();
     output.push_str(&format!("Content-Encoding: {content_encoding}\n"));
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     if let Some(gzipped) = json.get("gzipped") {
         output.push_str(&format!("Server confirms gzipped: {gzipped}\n"));
     }
@@ -308,7 +341,10 @@ pub async fn fetch_utf8(url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let body = resp.text().map_err(|e| format!("Body read error: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
 
     Ok(format!(
         "HTTP {status}\n\nUTF-8 content decoded correctly:\n{body}"
@@ -336,7 +372,10 @@ pub async fn fetch_html(url: &str) -> Result<String, String> {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
-    let body = resp.text().map_err(|e| format!("Body read error: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
 
     Ok(format!(
         "HTTP {status}\nContent-Type: {content_type}\n\n{body}"
@@ -358,7 +397,10 @@ pub async fn fetch_cookies(url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!(
@@ -384,7 +426,10 @@ pub async fn post_form_urlencoded(url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!("HTTP {status}\n\nForm data echoed back:\n{pretty}"))
@@ -408,7 +453,10 @@ pub async fn fetch_basic_auth(url: &str, user: &str, pass: &str) -> Result<Strin
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!("HTTP {status}\n\n{pretty}"))
@@ -436,7 +484,11 @@ pub async fn fetch_multiple_sequential(urls: &str) -> Result<String, String> {
 
         let elapsed = js_sys::Date::now() - start;
         let status = resp.status();
-        let body_len = resp.bytes().len();
+        let body_len = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("Body read error: {e}"))?
+            .len();
 
         output.push_str(&format!(
             "Request #{}: {} → HTTP {} ({} bytes, {:.0}ms)\n",
@@ -468,7 +520,10 @@ pub async fn fetch_large_response(url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let bytes = resp.bytes();
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
     let elapsed = js_sys::Date::now() - start;
     let len = bytes.len();
 
@@ -533,7 +588,10 @@ pub async fn fetch_content_negotiation(url: &str, accept: &str) -> Result<String
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
-    let body = resp.text().map_err(|e| format!("Body read error: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
 
     Ok(format!(
         "HTTP {status}\nRequested: Accept: {accept}\nReceived: Content-Type: {content_type}\n\n{body}"
@@ -573,7 +631,10 @@ pub async fn fetch_cache_headers(url: &str) -> Result<String, String> {
             output.push_str(&format!("  {h}: {val}\n"));
         }
     }
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     output.push_str(&format!(
         "\n── Body ──\n{}",
         serde_json::to_string_pretty(&json).unwrap_or_default()
@@ -600,7 +661,10 @@ pub async fn post_binary(url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let body = resp.text().map_err(|e| format!("Body read error: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
 
     Ok(format!(
         "HTTP {status}\n\nSent 256 bytes of binary data (0x00..0xFF)\nServer echoed:\n{body}"
@@ -624,7 +688,11 @@ pub async fn head_request(url: &str) -> Result<String, String> {
             output.push_str(&format!("  {name}: {v}\n"));
         }
     }
-    let body_len = resp.bytes().len();
+    let body_len = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?
+        .len();
     output.push_str(&format!(
         "\nBody length: {body_len} bytes (should be 0 for HEAD)"
     ));
@@ -651,7 +719,7 @@ pub async fn fetch_conditional(url: &str) -> Result<String, String> {
         .unwrap_or("")
         .to_string();
     let status1 = resp1.status();
-    let _ = resp1.bytes();
+    let _ = resp1.bytes().await;
 
     let mut output = format!("── Request 1: Initial fetch ──\nHTTP {status1}\nETag: {etag}\n\n");
 
@@ -702,7 +770,10 @@ pub async fn fetch_user_agent_echo(user_agent: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!(
@@ -722,7 +793,10 @@ pub async fn fetch_ip_info() -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let ip = json
         .get("origin")
         .and_then(|v| v.as_str())
@@ -748,7 +822,10 @@ pub async fn fetch_anything(method: &str, url: &str) -> Result<String, String> {
         .map_err(|e| format!("Fetch error: {e}"))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
     let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
 
     Ok(format!(

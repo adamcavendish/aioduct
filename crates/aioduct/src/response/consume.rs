@@ -9,8 +9,8 @@ impl Response {
     }
 
     /// Convert the response into an async byte stream.
-    pub fn into_bytes_stream(self) -> crate::body::BodyStream {
-        crate::body::BodyStream::with_observer(
+    pub fn into_bytes_stream(self) -> crate::body::BodyStreamSend {
+        crate::body::BodyStreamSend::with_observer(
             self.inner.into_body().into_boxed(),
             self.observer_ctx,
         )

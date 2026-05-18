@@ -18,7 +18,7 @@ async fn get_hello() {
         .await
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
-    assert_eq!(resp.text().unwrap(), "hello aioduct");
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
 
 #[wasm_bindgen_test]
@@ -32,7 +32,7 @@ async fn post_echo_body() {
         .await
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
-    assert_eq!(resp.text().unwrap(), "round trip payload");
+    assert_eq!(resp.text().await.unwrap(), "round trip payload");
 }
 
 #[wasm_bindgen_test]
@@ -45,7 +45,7 @@ async fn put_method() {
         .await
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
-    assert_eq!(resp.text().unwrap(), "PUT");
+    assert_eq!(resp.text().await.unwrap(), "PUT");
 }
 
 #[wasm_bindgen_test]
@@ -58,7 +58,7 @@ async fn patch_method() {
         .await
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
-    assert_eq!(resp.text().unwrap(), "PATCH");
+    assert_eq!(resp.text().await.unwrap(), "PATCH");
 }
 
 #[wasm_bindgen_test]
@@ -71,7 +71,7 @@ async fn delete_method() {
         .await
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
-    assert_eq!(resp.text().unwrap(), "DELETE");
+    assert_eq!(resp.text().await.unwrap(), "DELETE");
 }
 
 #[wasm_bindgen_test]
@@ -87,7 +87,7 @@ async fn custom_headers_sent() {
         .send()
         .await
         .unwrap();
-    let body = resp.text().unwrap();
+    let body = resp.text().await.unwrap();
     assert!(body.contains("x-custom: test-value"), "body: {body}");
 }
 
@@ -101,7 +101,7 @@ async fn bearer_auth_header() {
         .send()
         .await
         .unwrap();
-    let body = resp.text().unwrap();
+    let body = resp.text().await.unwrap();
     assert!(
         body.contains("authorization: Bearer secret-token"),
         "body: {body}"
@@ -146,7 +146,7 @@ async fn default_user_agent() {
         .send()
         .await
         .unwrap();
-    let body = resp.text().unwrap();
+    let body = resp.text().await.unwrap();
     assert!(body.contains("user-agent:"), "body: {body}");
 }
 
@@ -163,7 +163,7 @@ async fn json_round_trip() {
         .send()
         .await
         .unwrap();
-    let result: serde_json::Value = resp.json().unwrap();
+    let result: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(result["key"], "value");
     assert_eq!(result["num"], 42);
 }
@@ -179,7 +179,7 @@ async fn head_method() {
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert!(
-        resp.bytes().is_empty(),
+        resp.bytes().await.unwrap().is_empty(),
         "HEAD response should have empty body"
     );
 }
@@ -213,7 +213,7 @@ async fn builder_default_headers() {
         .send()
         .await
         .unwrap();
-    let body = resp.text().unwrap();
+    let body = resp.text().await.unwrap();
     assert!(
         body.contains("x-default: from-builder"),
         "default header from builder should be sent, body: {body}"
@@ -255,7 +255,7 @@ async fn response_bytes() {
         .send()
         .await
         .unwrap();
-    let body = resp.bytes();
+    let body = resp.bytes().await.unwrap();
     assert_eq!(body.len(), 64);
     assert!(body.iter().all(|&b| b == 0xAB));
 }
@@ -333,7 +333,7 @@ async fn multiple_headers_on_request() {
         .send()
         .await
         .unwrap();
-    let body = resp.text().unwrap();
+    let body = resp.text().await.unwrap();
     assert!(body.contains("x-one: 1"), "body: {body}");
     assert!(body.contains("x-two: 2"), "body: {body}");
 }
@@ -348,5 +348,5 @@ async fn post_empty_body() {
         .await
         .unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
-    assert!(resp.text().unwrap().is_empty());
+    assert!(resp.text().await.unwrap().is_empty());
 }
