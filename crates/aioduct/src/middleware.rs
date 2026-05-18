@@ -2,9 +2,12 @@ use std::sync::Arc;
 
 use http::{Method, StatusCode, Uri};
 
+#[cfg(not(target_arch = "wasm32"))]
 use http_body_util::BodyExt;
 
-use crate::body::{RequestBodyLocal, RequestBodySend};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::body::RequestBodyLocal;
+use crate::body::RequestBodySend;
 use crate::error::Error;
 
 /// Middleware that can inspect or modify requests and responses.
@@ -104,6 +107,7 @@ impl MiddlewareStack {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn apply_request_local(&self, request: &mut http::Request<RequestBodyLocal>, uri: &Uri) {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -170,6 +174,7 @@ mod tests {
             .boxed_unsync()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn local_body() -> RequestBodyLocal {
         Box::pin(http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}))
     }
@@ -319,6 +324,7 @@ mod tests {
         assert!(!cloned.is_empty());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn apply_request_local_copies_headers_from_middleware() {
         let mut stack = MiddlewareStack::new();
@@ -339,6 +345,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn apply_request_local_copies_method_change() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
@@ -356,6 +363,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn apply_request_local_copies_uri_change() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
@@ -372,6 +380,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn apply_request_local_copies_version_change() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
@@ -388,6 +397,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn apply_request_local_with_multiple_middleware() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
@@ -412,6 +422,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn apply_request_local_preserves_existing_headers() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
@@ -471,6 +482,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn apply_request_local_copies_extensions() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
@@ -497,6 +509,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn apply_request_local_propagates_body_modification() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
@@ -521,6 +534,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
     async fn apply_request_local_preserves_body_when_not_modified() {
         let mut stack = MiddlewareStack::new();
         stack.push(Arc::new(
