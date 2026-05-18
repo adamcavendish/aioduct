@@ -828,7 +828,7 @@ async fn cookie_expires_year_before_1970_should_not_panic() {
     jar.store_from_response("example.com", "/", &headers);
 
     let mut req_headers = http::HeaderMap::new();
-    jar.apply_to_request("example.com", false, "/", &mut req_headers);
+    jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
 
     assert!(
         req_headers.get("cookie").is_none(),
@@ -837,8 +837,7 @@ async fn cookie_expires_year_before_1970_should_not_panic() {
     );
 }
 
-// BUG: cookie.rs SameSite attribute is parsed and stored but never enforced.
-// Cookies with SameSite=Strict should not be sent on cross-site requests.
+// FIXED(#139): SameSite=Strict cookies must not be sent on cross-site requests.
 #[tokio::test]
 async fn cookie_samesite_strict_should_not_be_sent_cross_site() {
     let jar = aioduct::CookieJar::new();
@@ -860,18 +859,32 @@ async fn cookie_samesite_strict_should_not_be_sent_cross_site() {
         "SameSite=Strict should be parsed"
     );
 
-    // Apply to request — SameSite=Strict should ideally not be sent in cross-site contexts.
-    // The library sends it unconditionally since apply_to_request never checks same_site.
+    // Same-site request: cookie should be sent
     let mut req_headers = http::HeaderMap::new();
-    jar.apply_to_request("example.com", false, "/", &mut req_headers);
-
-    // This documents the feature gap: SameSite is parsed but never enforced.
-    // In a full implementation, there would be a parameter for cross-site context.
+    jar.apply_to_request(
+        "example.com",
+        false,
+        "/",
+        Some("example.com"),
+        &mut req_headers,
+    );
     assert!(
         req_headers.get("cookie").is_some(),
-        "FEATURE GAP: SameSite=Strict cookie is sent unconditionally. \
-         cookie.rs:111-159 apply_to_request() never reads the same_site field. \
-         A proper implementation would check the cross-site context."
+        "SameSite=Strict cookie should be sent on same-site request"
+    );
+
+    // Cross-site request: cookie must NOT be sent
+    let mut req_headers = http::HeaderMap::new();
+    jar.apply_to_request(
+        "example.com",
+        false,
+        "/",
+        Some("other.com"),
+        &mut req_headers,
+    );
+    assert!(
+        req_headers.get("cookie").is_none(),
+        "SameSite=Strict cookie must not be sent on cross-site request"
     );
 }
 

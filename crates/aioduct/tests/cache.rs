@@ -363,7 +363,7 @@ async fn test_custom_cache_store_with_client() {
     }
 
     impl aioduct::CacheStore for CountingStore {
-        fn get(&self, method: &http::Method, uri: &http::Uri) -> Option<aioduct::CacheEntry> {
+        fn get(&self, method: &http::Method, uri: &http::Uri) -> Vec<aioduct::CacheEntry> {
             self.get_count.fetch_add(1, Ordering::Relaxed);
             self.inner.get(method, uri)
         }
