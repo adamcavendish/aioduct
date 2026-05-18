@@ -95,8 +95,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 _ => None,
             };
 
+            let post_middleware_headers;
             let stale_headers = if !self.core.no_connection_reuse {
-                Some(&current_headers)
+                post_middleware_headers = request.headers().clone();
+                Some(&post_middleware_headers)
             } else {
                 None
             };
