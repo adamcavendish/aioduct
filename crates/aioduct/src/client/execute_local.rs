@@ -446,6 +446,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             blocked_duration: pool_checkout_start.elapsed(),
                         },
                     );
+                    let saved_parts = if can_stale_retry {
+                        Some((
+                            request.method().clone(),
+                            request.uri().clone(),
+                            request.headers().clone(),
+                            request.version(),
+                        ))
+                    } else {
+                        None
+                    };
                     let req_method = request.method().clone();
                     let transfer_start = Instant::now();
                     self.core.notify(
@@ -455,43 +465,74 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             duration: transfer_start.duration_since(pool_checkout_start),
                         },
                     );
-                    let mut resp = HttpEngineCore::send_on_connection(
+                    match HttpEngineCore::send_on_connection(
                         &mut conn,
                         request,
                         original_uri.clone(),
                     )
-                    .await?;
-                    let transfer = transfer_start.elapsed();
-                    self.core.notify(
-                        &req_method,
-                        original_uri,
-                        RequestPhase::ResponseStarted {
-                            waiting_duration: transfer,
-                        },
-                    );
-                    let protocol = HttpEngineCore::connection_protocol(&conn);
-                    self.core.notify(
-                        &req_method,
-                        original_uri,
-                        RequestPhase::ResponseComplete {
-                            status: resp.status(),
-                            protocol,
-                            total_duration: request_start.elapsed(),
-                        },
-                    );
-                    resp.set_remote_addr(conn.remote_addr);
-                    resp.set_tls_info(conn.tls_info.clone());
-                    #[allow(deprecated)]
-                    resp.set_timings(Some(
-                        TimingCollector::default()
-                            .into_timings(Some(transfer), timing_start.elapsed()),
-                    ));
-                    self.core
-                        .attach_observer(&mut resp, &req_method, original_uri);
-                    if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                        self.core.checkin_connection(pool_key, conn);
+                    .await
+                    {
+                        Ok(mut resp) => {
+                            let transfer = transfer_start.elapsed();
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::ResponseStarted {
+                                    waiting_duration: transfer,
+                                },
+                            );
+                            let protocol = HttpEngineCore::connection_protocol(&conn);
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::ResponseComplete {
+                                    status: resp.status(),
+                                    protocol,
+                                    total_duration: request_start.elapsed(),
+                                },
+                            );
+                            resp.set_remote_addr(conn.remote_addr);
+                            resp.set_tls_info(conn.tls_info.clone());
+                            #[allow(deprecated)]
+                            resp.set_timings(Some(
+                                TimingCollector::default()
+                                    .into_timings(Some(transfer), timing_start.elapsed()),
+                            ));
+                            self.core
+                                .attach_observer(&mut resp, &req_method, original_uri);
+                            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                                self.core.checkin_connection(pool_key, conn);
+                            }
+                            return Ok(resp);
+                        }
+                        Err(e)
+                            if saved_parts.is_some()
+                                && HttpEngineCore::<RequestBodyLocal>::is_stale_connection_error(
+                                    &e,
+                                ) =>
+                        {
+                            self.core.fire_connection_metrics(&conn, true);
+                            let Some((method, uri, headers, version)) = saved_parts else {
+                                return Err(e);
+                            };
+                            let retry_body_bytes = replay_body
+                                .as_ref()
+                                .cloned()
+                                .unwrap_or_else(bytes::Bytes::new);
+                            let body: RequestBodyLocal = Box::pin(
+                                http_body_util::Full::new(retry_body_bytes)
+                                    .map_err(|never| match never {}),
+                            );
+                            let mut retry_req = http::Request::new(body);
+                            *retry_req.method_mut() = method;
+                            *retry_req.uri_mut() = uri;
+                            *retry_req.headers_mut() = headers;
+                            *retry_req.version_mut() = version;
+                            request = retry_req;
+                            break;
+                        }
+                        Err(e) => return Err(e),
                     }
-                    return Ok(resp);
                 }
             }
             // Timed out waiting — connect ourselves.
