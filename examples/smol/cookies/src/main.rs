@@ -7,7 +7,8 @@ fn main() -> Result<(), aioduct::Error> {
 
         let client = SmolClient::builder(TcpConnector)
             .cookie_jar(jar.clone())
-            .build();
+            .build()
+            .unwrap();
 
         // First request — server sets cookies
         let resp = client

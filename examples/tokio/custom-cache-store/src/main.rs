@@ -58,7 +58,10 @@ impl CacheStore for LoggingCacheStore {
 async fn main() -> Result<(), aioduct::Error> {
     let store = LoggingCacheStore::new();
     let cache = HttpCache::with_store(store);
-    let client = TokioClient::builder(TcpConnector).cache(cache).build();
+    let client = TokioClient::builder(TcpConnector)
+        .cache(cache)
+        .build()
+        .unwrap();
 
     // First request — hits the server, stores in the custom cache
     let resp = client.get("https://httpbin.org/cache/60")?.send().await?;

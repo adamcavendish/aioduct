@@ -11,7 +11,7 @@ struct SearchParams {
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector).build();
+    let client = TokioClient::builder(TcpConnector).build().unwrap();
 
     // Simple query parameters via tuples
     let resp = client

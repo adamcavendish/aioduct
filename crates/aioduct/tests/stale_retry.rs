@@ -29,12 +29,14 @@ fn make_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
+        .unwrap()
 }
 
 fn make_client_no_timeout() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
+        .unwrap()
 }
 
 fn make_h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
@@ -43,6 +45,7 @@ fn make_h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
         .timeout(Duration::from_secs(5))
         .http2_prior_knowledge()
         .build()
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +133,8 @@ async fn fresh_connection_refused_not_stale() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
     let result = client.get(&url).unwrap().send().await;
@@ -173,7 +177,8 @@ async fn timeout_error_not_stale() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_millis(500))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
     let result = client.get(&url).unwrap().send().await;
@@ -340,7 +345,8 @@ async fn no_retry_when_no_connection_reuse() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_connection_reuse()
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 
@@ -535,7 +541,8 @@ async fn retry_does_not_infinite_loop() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 
@@ -839,7 +846,8 @@ async fn stale_retry_preserves_content_type_for_json() {
     >::builder(aioduct::runtime::tokio_rt::TcpConnector)
     .pool_idle_timeout(Duration::from_secs(60))
     .timeout(Duration::from_secs(5))
-    .build();
+    .build()
+    .unwrap();
 
     let resp = client
         .post(&format!("http://{echo_addr}/"))

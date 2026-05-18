@@ -19,7 +19,8 @@ fn main() -> Result<(), aioduct::Error> {
                     .initial_backoff(Duration::from_millis(100))
                     .max_backoff(Duration::from_secs(2)),
             )
-            .build();
+            .build()
+            .unwrap();
 
         // This will retry up to 3 times on failure
         let resp = client.get("https://httpbin.org/get")?.send().await?;

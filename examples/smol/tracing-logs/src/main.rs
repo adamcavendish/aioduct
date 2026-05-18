@@ -12,7 +12,8 @@ fn main() -> Result<(), aioduct::Error> {
 
         let client = SmolClient::builder(TcpConnector)
             .middleware(TracingMiddleware)
-            .build();
+            .build()
+            .unwrap();
 
         // Each request will emit tracing spans and events
         let resp = client.get("https://httpbin.org/get")?.send().await?;

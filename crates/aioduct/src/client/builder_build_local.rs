@@ -43,7 +43,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
     }
 
     /// Build the configured [`HttpEngineLocal`] for a completion-based runtime.
-    pub fn build_local(self) -> HttpEngineLocal<R, C> {
+    pub fn build_local(self) -> Result<HttpEngineLocal<R, C>, crate::error::Error> {
         let pool = if self.no_connection_reuse {
             ConnectionPool::new(0, Duration::from_secs(0))
         } else {
@@ -69,7 +69,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
             } else if needs_configured || has_extra_config || has_version_constraints {
                 let versions: Vec<&'static rustls::SupportedProtocolVersion> =
                     if has_version_constraints {
-                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)
+                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)?
                     } else {
                         vec![&rustls::version::TLS12, &rustls::version::TLS13]
                     };
@@ -135,7 +135,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
             connector
         };
 
-        HttpEngineLocal {
+        Ok(HttpEngineLocal {
             core: HttpEngineCore {
                 pool,
                 redirect_policy: self.redirect_policy,
@@ -202,6 +202,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
             #[cfg(feature = "tower")]
             tower_connector_local: self.tower_connector_local,
             _phantom: PhantomData,
-        }
+        })
     }
 }

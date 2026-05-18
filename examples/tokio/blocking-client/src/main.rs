@@ -3,7 +3,7 @@ use aioduct::TokioClient;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
-    let engine = TokioClient::builder(TcpConnector).build();
+    let engine = TokioClient::builder(TcpConnector).build().unwrap();
     let client = BlockingTokioClient::new(engine);
 
     // Synchronous GET

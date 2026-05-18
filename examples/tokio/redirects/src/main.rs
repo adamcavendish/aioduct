@@ -8,7 +8,8 @@ async fn main() -> Result<(), aioduct::Error> {
     // Default: follow up to 10 redirects
     let client = TokioClient::builder(TcpConnector)
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client.get("https://httpbin.org/redirect/3")?.send().await?;
 
@@ -19,7 +20,8 @@ async fn main() -> Result<(), aioduct::Error> {
     let client = TokioClient::builder(TcpConnector)
         .redirect_policy(RedirectPolicy::Limited(1))
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     let req = client.get("https://httpbin.org/redirect/3")?;
     match req.send().await {
@@ -38,7 +40,8 @@ async fn main() -> Result<(), aioduct::Error> {
     let client = TokioClient::builder(TcpConnector)
         .redirect_policy(RedirectPolicy::None)
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client.get("https://httpbin.org/redirect/1")?.send().await?;
 
@@ -56,7 +59,8 @@ async fn main() -> Result<(), aioduct::Error> {
             }
         }))
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get("https://httpbin.org/redirect-to?url=https%3A%2F%2Fexample.com")?

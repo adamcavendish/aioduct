@@ -44,7 +44,8 @@ async fn test_cookie_jar_stores_and_sends() {
     let jar = aioduct::CookieJar::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/set"))
@@ -93,7 +94,8 @@ async fn test_cookie_jar_multiple_cookies() {
     let jar = aioduct::CookieJar::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     client
         .get(&format!("http://{addr}/set1"))
@@ -166,7 +168,8 @@ async fn test_cookie_jar_same_host_shared() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     // First request stores the cookie
     let resp1 = client
@@ -221,7 +224,8 @@ async fn test_cookie_store_max_age_zero() {
     let jar = aioduct::CookieJar::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     client
         .get(&format!("http://{addr}/"))
@@ -275,7 +279,8 @@ async fn test_cookie_store_expired() {
     let jar = aioduct::CookieJar::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     client
         .get(&format!("http://{addr}/"))
@@ -320,7 +325,8 @@ async fn test_cookie_store_path_scoping() {
     let jar = aioduct::CookieJar::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     client
         .get(&format!("http://{addr}/set"))
@@ -382,7 +388,8 @@ async fn test_cookie_store_overwrite() {
     let jar = aioduct::CookieJar::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     client
         .get(&format!("http://{addr}/set1"))
@@ -492,7 +499,8 @@ async fn cookie_jar_stores_multiple_set_cookie_headers() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/set"))
@@ -544,7 +552,8 @@ async fn cookie_jar_should_not_overwrite_manual_cookie_header() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // Pre-populate jar
     let (set_addr, _) = h1_server_with(|_req| async move {
@@ -615,7 +624,8 @@ async fn cookie_path_value_should_preserve_case() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let _ = client
         .get(&format!("http://{addr}/set"))
@@ -672,7 +682,8 @@ async fn cookie_path_match_requires_separator() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let _ = client
         .get(&format!("http://{addr}/set"))
@@ -736,7 +747,8 @@ async fn cookie_expires_attribute_should_be_case_insensitive() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let _ = client
         .get(&format!("http://{addr}/set"))
@@ -922,7 +934,8 @@ async fn cookie_jar_rejects_cross_domain_cookie() {
     let jar = aioduct::CookieJar::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     client
         .get(&format!("http://{addr}/set"))
@@ -1001,7 +1014,8 @@ async fn cookie_positive_max_age_expires_after_duration() {
     let jar = aioduct::CookieJar::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     client
         .get(&format!("http://{addr}/"))

@@ -8,7 +8,8 @@ fn main() -> Result<(), aioduct::Error> {
 
         let client = CompioClient::builder_local(TcpConnector)
             .cache(cache)
-            .build_local();
+            .build_local()
+            .unwrap();
 
         // First request — fetches from server, stores in cache
         let resp = client

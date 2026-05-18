@@ -70,7 +70,7 @@ impl DownloadEngine {
         }
 
         let extra = Arc::new(ExtraRequestConfig::from_cli(&cli));
-        let client = builder.build();
+        let client = builder.build().unwrap();
         Self { client, cli, extra }
     }
 

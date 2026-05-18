@@ -70,7 +70,8 @@ async fn observer_fires_full_lifecycle_on_fresh_connection() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -124,7 +125,8 @@ async fn observer_connection_metrics_fires_on_checkin() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -147,7 +149,8 @@ async fn observer_fires_pool_hit_on_reused_connection() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
-        .build();
+        .build()
+        .unwrap();
 
     // First request — fresh connection
     let resp = client
@@ -193,7 +196,8 @@ async fn observer_bytes_transferred_fires_during_streaming() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -245,7 +249,8 @@ async fn observer_captures_method_and_uri() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(UriCapture(events_clone))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/test-path"))
@@ -266,7 +271,9 @@ async fn observer_no_events_when_not_configured() {
     let (addr, _counter) = h1_server().await;
 
     // Client without observer — should not panic or error
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))

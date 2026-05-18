@@ -76,8 +76,9 @@ mod tests {
     /// Build an engine with NO resolver configured.
     /// We achieve this by building normally then clearing the resolver field.
     fn engine_no_resolver() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-        let mut engine =
-            HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
+        let mut engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .build()
+            .unwrap();
         engine.core.resolver = None;
         engine
     }
@@ -98,6 +99,7 @@ mod tests {
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .resolver(resolver)
             .build()
+            .unwrap()
     }
 
     #[tokio::test]

@@ -37,7 +37,8 @@ async fn test_custom_resolver() {
                 Box<dyn std::future::Future<Output = std::io::Result<std::net::SocketAddr>> + Send>,
             > { Box::pin(async move { Ok(resolver_addr) }) },
         )
-        .build();
+        .build()
+        .unwrap();
 
     // Request to a fake host, but resolver redirects to our test server
     let resp = client
@@ -55,7 +56,8 @@ async fn test_tcp_keepalive() {
     let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tcp_keepalive(Duration::from_secs(60))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -72,7 +74,8 @@ async fn test_local_address_binding() {
     let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -101,7 +104,8 @@ async fn test_http2_config_accepted() {
                 .max_send_buf_size(1024 * 1024)
                 .max_concurrent_reset_streams(100),
         )
-        .build();
+        .build()
+        .unwrap();
 
     // HTTP/1 request still works with h2 config set (config only applies to h2 connections)
     let resp = client
@@ -120,7 +124,8 @@ async fn test_tcp_fast_open_works() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .tcp_fast_open(true)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -141,7 +146,8 @@ async fn test_h2_prior_knowledge() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -169,7 +175,8 @@ async fn test_h2_prior_knowledge_multiple_requests() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     for _ in 0..3 {
         let resp = client
@@ -208,7 +215,8 @@ async fn test_happy_eyeballs_single_addr() {
                     Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
                 >
         })
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://custom-host:{}/", addr.port()))
@@ -227,7 +235,8 @@ async fn test_tcp_keepalive_with_interval_and_retries() {
         .tcp_keepalive(Duration::from_secs(60))
         .tcp_keepalive_interval(Duration::from_secs(10))
         .tcp_keepalive_retries(3)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -265,7 +274,8 @@ async fn test_unix_socket_connection() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .unix_socket(&sock_path)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get("http://localhost/")
@@ -323,7 +333,8 @@ async fn test_happy_eyeballs_multi_addrs_integration() {
         .resolver(MultiResolver {
             addrs: vec![bad_addr, good_addr],
         })
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://multi.example.com:{}/", good_addr.port()))
@@ -356,7 +367,7 @@ async fn test_timings_http_direct() {
     });
 
     let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-        HttpEngineSend::builder(TcpConnector).build();
+        HttpEngineSend::builder(TcpConnector).build().unwrap();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -434,7 +445,8 @@ async fn test_timings_https_with_tls() {
     let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", addr.port()))
@@ -480,7 +492,8 @@ async fn h2_concurrent_requests() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     let mut handles = Vec::new();
     for _ in 0..20 {
@@ -513,7 +526,8 @@ async fn h2_basic_request() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -542,7 +556,8 @@ async fn h2_post_with_body() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .post(&format!("http://{addr}/"))
@@ -572,7 +587,8 @@ async fn h2_connection_reuse() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     for _ in 0..5 {
         let resp = client
@@ -600,7 +616,8 @@ async fn h2_connect_guard_cleans_up_on_failure() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     // First: try connecting to a port that refuses connections.
     // This should fail but the H2ConnectGuard must clean up the pool's connecting_h2 state.
@@ -665,7 +682,8 @@ async fn happy_eyeballs_works_with_local_address() {
             addrs: vec![bad_addr, good_addr],
         })
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://multi.example.com:{}/", good_addr.port()))

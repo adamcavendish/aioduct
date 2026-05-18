@@ -18,7 +18,9 @@ struct PostResponse {
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = CompioClient::builder_local(TcpConnector).build_local();
+        let client = CompioClient::builder_local(TcpConnector)
+            .build_local()
+            .unwrap();
 
         let payload = CreatePost {
             title: "Hello from aioduct".into(),

@@ -263,6 +263,16 @@ impl BodyStream {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for BodyStream {
+    fn drop(&mut self) {
+        if !self.done {
+            self.done = true;
+            self.fire_transfer_aborted(&crate::error::Error::Other("body stream dropped".into()));
+        }
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;

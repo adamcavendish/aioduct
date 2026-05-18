@@ -3,7 +3,9 @@ use aioduct::CompioClient;
 use aioduct::runtime::compio_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
-    let engine = CompioClient::builder_local(TcpConnector).build_local();
+    let engine = CompioClient::builder_local(TcpConnector)
+        .build_local()
+        .unwrap();
     let client = BlockingCompioClient::new(engine);
 
     // Synchronous GET

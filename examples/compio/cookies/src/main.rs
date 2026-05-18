@@ -7,7 +7,8 @@ fn main() -> Result<(), aioduct::Error> {
 
         let client = CompioClient::builder_local(TcpConnector)
             .cookie_jar(jar.clone())
-            .build_local();
+            .build_local()
+            .unwrap();
 
         // First request — server sets cookies
         let resp = client

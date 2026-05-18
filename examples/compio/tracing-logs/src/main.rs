@@ -12,7 +12,8 @@ fn main() -> Result<(), aioduct::Error> {
 
         let client = CompioClient::builder_local(TcpConnector)
             .middleware(TracingMiddleware)
-            .build_local();
+            .build_local()
+            .unwrap();
 
         // Each request will emit tracing spans and events
         let resp = client.get_local("https://httpbin.org/get")?.send().await?;

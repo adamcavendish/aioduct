@@ -6,7 +6,8 @@ async fn main() -> Result<(), aioduct::Error> {
     // This is useful for local services that speak HTTP/2 directly
     let _client = TokioClient::builder(TcpConnector)
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     // Note: most public servers don't support h2c, so we only demonstrate the API.
     // Use the h2c client with a local server that supports cleartext HTTP/2.
@@ -18,7 +19,7 @@ async fn main() -> Result<(), aioduct::Error> {
     // when the server supports it. No special configuration needed.
 
     // Example with a standard HTTPS endpoint (negotiates h2 via ALPN):
-    let standard_client = TokioClient::builder(TcpConnector).build();
+    let standard_client = TokioClient::builder(TcpConnector).build().unwrap();
 
     let resp = standard_client
         .get("https://httpbin.org/get")?

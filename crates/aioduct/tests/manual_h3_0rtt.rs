@@ -18,7 +18,8 @@ async fn h3_0rtt_reconnection_latency() {
         .unwrap()
         .h3_zero_rtt(true)
         .timeout(std::time::Duration::from_secs(15))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: full handshake (stores session ticket)
     let t0 = Instant::now();
@@ -95,7 +96,8 @@ async fn h3_without_0rtt_baseline() {
         .unwrap()
         .h3_zero_rtt(false)
         .timeout(std::time::Duration::from_secs(15))
-        .build();
+        .build()
+        .unwrap();
 
     let t0 = Instant::now();
     let resp = client

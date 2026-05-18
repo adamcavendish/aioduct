@@ -218,7 +218,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// # use aioduct::runtime::tokio_rt::TcpConnector;
     /// let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
     ///     .resolve("example.com", "127.0.0.1:8080".parse().unwrap())
-    ///     .build();
+    ///     .build().unwrap();
     /// ```
     pub fn resolve(self, domain: &str, addr: std::net::SocketAddr) -> Self {
         self.resolve_to_addrs(domain, &[addr])
@@ -247,7 +247,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// # use aioduct::{HttpEngineSend, runtime::TokioRuntime};
     /// let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
     ///     .dns_over_https("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
-    ///     .build();
+    ///     .build().unwrap();
     /// ```
     #[cfg(feature = "doh")]
     pub fn dns_over_https(
@@ -275,7 +275,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// # use aioduct::{HttpEngineSend, runtime::TokioRuntime};
     /// let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
     ///     .dns_over_tls("1.1.1.1".parse().unwrap(), "cloudflare-dns.com")
-    ///     .build();
+    ///     .build().unwrap();
     /// ```
     #[cfg(feature = "dot")]
     pub fn dns_over_tls(

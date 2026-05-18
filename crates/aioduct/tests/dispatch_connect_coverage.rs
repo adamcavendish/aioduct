@@ -94,7 +94,8 @@ async fn observer_fires_tls_timing_on_https() {
         .danger_accept_invalid_hostnames(true)
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", addr.port()))
@@ -210,7 +211,8 @@ async fn observer_tls_h1_alpn_protocol() {
         .danger_accept_invalid_hostnames(true)
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", addr.port()))
@@ -254,7 +256,8 @@ async fn observer_plain_http_no_tls_event() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -298,7 +301,8 @@ async fn concurrent_h2_multiplex_exercises_checkout_path() {
             .http2_prior_knowledge()
             .request_observer(obs.clone())
             .timeout(Duration::from_secs(5))
-            .build(),
+            .build()
+            .unwrap(),
     );
 
     // First request establishes the H2 connection and checks it back into the pool
@@ -432,7 +436,8 @@ async fn connect_tunnel_succeeds_through_proxy() {
         .add_root_certificates(&[cert])
         .danger_accept_invalid_hostnames(true)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // HTTPS request through the CONNECT proxy to the real TLS server
     let resp = client
@@ -466,7 +471,8 @@ async fn proxy_connection_with_keepalive() {
         .tcp_keepalive_interval(Duration::from_secs(10))
         .tcp_keepalive_retries(3)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get("http://example.com/keepalive-test")
@@ -501,7 +507,8 @@ async fn proxy_connection_with_fast_open() {
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .tcp_fast_open(true)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get("http://example.com/fast-open-test")
@@ -583,7 +590,8 @@ async fn socks4_proxy_connection() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::socks4(&format!("socks4://{socks_addr}")).unwrap())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://localhost:{}/", target_addr.port()))
@@ -655,7 +663,8 @@ async fn observer_reports_stale_retry_on_rst() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: establishes connection
     let resp = client
@@ -724,7 +733,8 @@ async fn https_request_populates_timings() {
         .add_root_certificates(&[cert])
         .danger_accept_invalid_hostnames(true)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", addr.port()))
@@ -822,7 +832,8 @@ async fn socks5_proxy_with_keepalive_and_fast_open() {
         .tcp_keepalive_interval(Duration::from_secs(5))
         .tcp_fast_open(true)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://localhost:{}/", target_addr.port()))
@@ -914,7 +925,8 @@ async fn connect_tunnel_with_auth_succeeds() {
         .add_root_certificates(&[cert])
         .danger_accept_invalid_hostnames(true)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", target_addr.port()))
@@ -950,7 +962,8 @@ async fn direct_connection_keepalive_and_fast_open() {
         .tcp_keepalive_retries(3)
         .tcp_fast_open(true)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -1043,7 +1056,8 @@ async fn connection_coalescing_reuses_h2_with_sans() {
         .connection_coalescing(true)
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request to "localhost" establishes the H2 connection
     let resp = client
@@ -1090,7 +1104,8 @@ async fn connection_coalescing_reuses_h2_with_sans() {
                 >
         })
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // Make the initial connection via this client too so the pool is populated
     let resp = client_with_resolver

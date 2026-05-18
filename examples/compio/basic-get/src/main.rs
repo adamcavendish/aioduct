@@ -2,7 +2,9 @@ use aioduct::CompioClient;
 use aioduct::runtime::compio_rt::TcpConnector;
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = CompioClient::builder_local(TcpConnector).build_local();
+        let client = CompioClient::builder_local(TcpConnector)
+            .build_local()
+            .unwrap();
 
         // Simple GET request
         let resp = client.get_local("https://httpbin.org/get")?.send().await?;
