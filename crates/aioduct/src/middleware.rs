@@ -4,7 +4,7 @@ use http::{Method, StatusCode, Uri};
 
 use http_body_util::BodyExt;
 
-use crate::body::RequestBodySend;
+use crate::body::{RequestBodyLocal, RequestBodySend};
 use crate::error::Error;
 
 /// Middleware that can inspect or modify requests and responses.
@@ -50,6 +50,29 @@ where
     }
 }
 
+struct SentinelBody {
+    replaced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl http_body::Body for SentinelBody {
+    type Data = bytes::Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        std::task::Poll::Ready(None)
+    }
+}
+
+impl Drop for SentinelBody {
+    fn drop(&mut self) {
+        self.replaced
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub(crate) struct MiddlewareStack {
     layers: Vec<Arc<dyn Middleware>>,
 }
@@ -81,10 +104,15 @@ impl MiddlewareStack {
         }
     }
 
-    pub fn apply_request_local<B>(&self, request: &mut http::Request<B>, uri: &Uri) {
-        let dummy_body: RequestBodySend = http_body_util::Full::new(bytes::Bytes::new())
-            .map_err(|never| match never {})
-            .boxed_unsync();
+    pub fn apply_request_local(&self, request: &mut http::Request<RequestBodyLocal>, uri: &Uri) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let body_replaced = Arc::new(AtomicBool::new(false));
+        let sentinel = SentinelBody {
+            replaced: Arc::clone(&body_replaced),
+        };
+        let dummy_body: RequestBodySend = sentinel.boxed_unsync();
         let mut proxy = http::Request::new(dummy_body);
         *proxy.method_mut() = request.method().clone();
         *proxy.uri_mut() = request.uri().clone();
@@ -99,6 +127,10 @@ impl MiddlewareStack {
         *request.version_mut() = proxy.version();
         *request.headers_mut() = proxy.headers().clone();
         *request.extensions_mut() = proxy.extensions().clone();
+        if body_replaced.load(Ordering::Relaxed) {
+            let (_, body) = proxy.into_parts();
+            *request.body_mut() = Box::pin(body);
+        }
     }
 
     pub fn apply_response(&self, response: &mut http::Response<RequestBodySend>, uri: &Uri) {
@@ -136,6 +168,10 @@ mod tests {
         http_body_util::Full::new(bytes::Bytes::new())
             .map_err(|never| match never {})
             .boxed_unsync()
+    }
+
+    fn local_body() -> RequestBodyLocal {
+        Box::pin(http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}))
     }
 
     fn test_uri() -> Uri {
@@ -295,9 +331,8 @@ mod tests {
             },
         ));
         let uri = test_uri();
-        // Use a non-RequestBodySend body (e.g., String) to test the generic path
         let mut req = http::Request::get("http://example.com/path")
-            .body(empty_body())
+            .body(local_body())
             .unwrap();
         stack.apply_request_local(&mut req, &uri);
         assert_eq!(req.headers().get("x-injected").unwrap(), "hello");
@@ -313,7 +348,7 @@ mod tests {
         ));
         let uri = test_uri();
         let mut req = http::Request::get("http://example.com")
-            .body(empty_body())
+            .body(local_body())
             .unwrap();
         assert_eq!(req.method(), Method::GET);
         stack.apply_request_local(&mut req, &uri);
@@ -330,7 +365,7 @@ mod tests {
         ));
         let uri = test_uri();
         let mut req = http::Request::get("http://example.com/old")
-            .body(empty_body())
+            .body(local_body())
             .unwrap();
         stack.apply_request_local(&mut req, &uri);
         assert_eq!(req.uri(), "http://redirected.example.com/new");
@@ -346,7 +381,7 @@ mod tests {
         ));
         let uri = test_uri();
         let mut req = http::Request::get("http://example.com")
-            .body(empty_body())
+            .body(local_body())
             .unwrap();
         stack.apply_request_local(&mut req, &uri);
         assert_eq!(req.version(), http::Version::HTTP_2);
@@ -369,7 +404,7 @@ mod tests {
         ));
         let uri = test_uri();
         let mut req = http::Request::get("http://example.com")
-            .body(empty_body())
+            .body(local_body())
             .unwrap();
         stack.apply_request_local(&mut req, &uri);
         assert_eq!(req.headers().get("x-first").unwrap(), "1");
@@ -388,10 +423,9 @@ mod tests {
         let uri = test_uri();
         let mut req = http::Request::get("http://example.com")
             .header("x-existing", "preserved")
-            .body(empty_body())
+            .body(local_body())
             .unwrap();
         stack.apply_request_local(&mut req, &uri);
-        // Existing headers are carried through via the proxy copy
         assert_eq!(req.headers().get("x-existing").unwrap(), "preserved");
         assert_eq!(req.headers().get("x-new").unwrap(), "added");
     }
@@ -446,7 +480,7 @@ mod tests {
         ));
         let uri = test_uri();
         let mut req = http::Request::get("http://example.com")
-            .body(empty_body())
+            .body(local_body())
             .unwrap();
         req.extensions_mut().insert("original".to_string());
         stack.apply_request_local(&mut req, &uri);
@@ -459,6 +493,58 @@ mod tests {
             req.extensions().get::<u32>().copied(),
             Some(42),
             "middleware-added extensions should be propagated back"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_request_local_propagates_body_modification() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
+                *req.body_mut() = http_body_util::Full::new(bytes::Bytes::from("injected"))
+                    .map_err(|never| match never {})
+                    .boxed_unsync();
+            },
+        ));
+        let uri = test_uri();
+        let mut req = http::Request::get("http://example.com")
+            .body(local_body())
+            .unwrap();
+        stack.apply_request_local(&mut req, &uri);
+        let body = std::mem::replace(req.body_mut(), local_body());
+        let collected = http_body_util::BodyExt::collect(body).await.unwrap();
+        assert_eq!(
+            collected.to_bytes(),
+            bytes::Bytes::from("injected"),
+            "body modification by middleware should be propagated back"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_request_local_preserves_body_when_not_modified() {
+        let mut stack = MiddlewareStack::new();
+        stack.push(Arc::new(
+            |req: &mut http::Request<RequestBodySend>, _uri: &Uri| {
+                req.headers_mut()
+                    .insert("x-added", http::header::HeaderValue::from_static("yes"));
+            },
+        ));
+        let uri = test_uri();
+        let original: RequestBodyLocal = Box::pin(
+            http_body_util::Full::new(bytes::Bytes::from("original content"))
+                .map_err(|never| match never {}),
+        );
+        let mut req = http::Request::get("http://example.com")
+            .body(original)
+            .unwrap();
+        stack.apply_request_local(&mut req, &uri);
+        assert_eq!(req.headers().get("x-added").unwrap(), "yes");
+        let body = std::mem::replace(req.body_mut(), local_body());
+        let collected = http_body_util::BodyExt::collect(body).await.unwrap();
+        assert_eq!(
+            collected.to_bytes(),
+            bytes::Bytes::from("original content"),
+            "original body should be preserved when middleware does not replace it"
         );
     }
 }
