@@ -13,7 +13,13 @@ use cli::Cli;
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    let http_client = client::build_client(&cli);
+    let http_client = match client::build_client(&cli) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("aioduct-curl: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let resp = match request::execute(&cli, &http_client).await {
         Ok(r) => r,

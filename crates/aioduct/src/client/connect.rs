@@ -392,7 +392,9 @@ mod tokio_tests {
 
     /// Helper: build an HttpEngineSend with default http2_prior_knowledge = false.
     fn make_engine() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build()
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .build()
+            .unwrap()
     }
 
     /// Helper: build an HttpEngineSend with http2_prior_knowledge = true.
@@ -400,6 +402,7 @@ mod tokio_tests {
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .http2_prior_knowledge()
             .build()
+            .unwrap()
     }
 
     #[tokio::test]

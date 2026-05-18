@@ -3,7 +3,8 @@ use aioduct::WasiClient;
 fn main() {
     let client = WasiClient::builder()
         .user_agent("aioduct-wasi-p2-demo/0.2")
-        .build();
+        .build()
+        .unwrap();
 
     // Simple GET
     println!("=== GET https://httpbin.org/get ===");

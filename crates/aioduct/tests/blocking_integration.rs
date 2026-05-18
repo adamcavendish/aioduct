@@ -121,7 +121,8 @@ fn blocking_timeout() {
     let client = BlockingTokioClient::new(
         TokioClient::builder(TcpConnector)
             .timeout(Duration::from_millis(100))
-            .build(),
+            .build()
+            .unwrap(),
     );
     let result = client.get(&format!("http://{addr}/")).unwrap().send();
     assert!(result.is_err());
@@ -241,7 +242,8 @@ fn blocking_default_headers() {
     let client = BlockingTokioClient::new(
         TokioClient::builder(TcpConnector)
             .default_headers(headers)
-            .build(),
+            .build()
+            .unwrap(),
     );
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -270,7 +272,8 @@ fn blocking_override_default_headers() {
     let client = BlockingTokioClient::new(
         TokioClient::builder(TcpConnector)
             .default_headers(headers)
-            .build(),
+            .build()
+            .unwrap(),
     );
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -329,8 +332,12 @@ fn blocking_get_no_content_length() {
 
 #[test]
 fn blocking_https_only_rejects_http() {
-    let client =
-        BlockingTokioClient::new(TokioClient::builder(TcpConnector).https_only(true).build());
+    let client = BlockingTokioClient::new(
+        TokioClient::builder(TcpConnector)
+            .https_only(true)
+            .build()
+            .unwrap(),
+    );
     let result = client.get("http://example.com/").unwrap().send();
     assert!(result.is_err());
 }

@@ -9,7 +9,8 @@ fn main() -> Result<(), aioduct::Error> {
         let client = SmolClient::builder(TcpConnector)
             .rate_limiter(RateLimiter::new(5, Duration::from_secs(1)))
             .timeout(Duration::from_secs(10))
-            .build();
+            .build()
+            .unwrap();
 
         println!("Sending 5 requests with rate limit of 5/sec...");
 

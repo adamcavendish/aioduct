@@ -87,7 +87,8 @@ fn main() -> Result<(), aioduct::Error> {
         // Client must use H2 prior knowledge since we're connecting plaintext H2
         let client = SmolClient::builder(SmolTcpConnector)
             .http2_prior_knowledge()
-            .build();
+            .build()
+            .unwrap();
 
         // Build an H2 extended CONNECT request (RFC 8441)
         let mut incoming_req = http::Request::builder()

@@ -94,7 +94,8 @@ async fn test_no_decompression_passthrough() {
     let (addr, _counter) = h1_server_with(handler).await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_decompression()
-        .build();
+        .build()
+        .unwrap();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -401,7 +402,8 @@ mod gzip_tests {
 
         let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .no_decompression()
-            .build();
+            .build()
+            .unwrap();
 
         let resp = client
             .get(&format!("http://{addr}/"))
@@ -887,7 +889,8 @@ async fn stacked_content_encoding_not_handled() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -945,7 +948,8 @@ mod case_insensitive_encoding {
 
         let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .timeout(Duration::from_secs(5))
-            .build();
+            .build()
+            .unwrap();
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -979,7 +983,8 @@ mod case_insensitive_encoding {
 
         let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .timeout(Duration::from_secs(5))
-            .build();
+            .build()
+            .unwrap();
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -1013,7 +1018,8 @@ mod case_insensitive_encoding {
 
         let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .timeout(Duration::from_secs(5))
-            .build();
+            .build()
+            .unwrap();
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -1056,7 +1062,8 @@ async fn uppercase_deflate_decompressed() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -1098,7 +1105,8 @@ async fn uppercase_brotli_decompressed() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -1135,7 +1143,8 @@ async fn uppercase_zstd_decompressed() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()

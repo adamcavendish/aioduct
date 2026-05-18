@@ -189,7 +189,8 @@ async fn test_custom_default_headers() {
     headers.insert("x-default", "from-client".parse().unwrap());
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .default_headers(headers)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -362,7 +363,8 @@ async fn test_no_default_headers() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_default_headers()
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -498,7 +500,8 @@ async fn custom_user_agent_via_builder() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .user_agent("aioduct-test-agent")
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))

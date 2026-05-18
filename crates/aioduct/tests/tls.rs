@@ -80,7 +80,8 @@ async fn test_https_local_tls_server() {
     let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", addr.port()))
@@ -167,7 +168,8 @@ async fn test_https_h1_local_tls_server() {
     let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", addr.port()))
@@ -253,7 +255,8 @@ async fn test_https_no_alpn_server() {
     let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", addr.port()))
@@ -333,7 +336,8 @@ async fn test_https_with_webpki_roots_local() {
     let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
         .tls(connector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://localhost:{}/", addr.port()))
@@ -378,7 +382,8 @@ async fn https_connection_not_reused_for_http() {
         .tls(connector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First: HTTPS request
     let resp = client
@@ -448,7 +453,8 @@ async fn hsts_upgrades_redirect_targets() {
         .tls(connector)
         .hsts(hsts_store.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // 1. Visit HTTPS — STS header seeds the HSTS store with "localhost"
     let resp = client

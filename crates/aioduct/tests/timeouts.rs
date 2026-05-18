@@ -62,7 +62,8 @@ async fn test_client_default_timeout_triggers() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(50))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -80,7 +81,8 @@ async fn test_request_timeout_overrides_client_timeout() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(10))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -106,7 +108,8 @@ async fn test_read_timeout_does_not_apply_to_headers() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(100))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -143,7 +146,8 @@ async fn test_read_timeout_applies_to_body() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(100))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -190,7 +194,8 @@ async fn test_read_timeout_allows_slow_but_steady_body() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(200))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -231,7 +236,8 @@ async fn test_content_length_preserved_through_timeout() {
 async fn test_connect_timeout() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connect_timeout(Duration::from_millis(100))
-        .build();
+        .build()
+        .unwrap();
 
     let start = tokio::time::Instant::now();
     let result = client
@@ -258,7 +264,8 @@ async fn client_timeout_triggers_on_slow_response() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(100))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -291,7 +298,8 @@ async fn per_request_timeout_triggers_on_slow_response() {
 async fn connect_timeout_with_unreachable_ip() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connect_timeout(Duration::from_millis(100))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client
         .get("http://192.0.2.1:81/slow")
@@ -320,7 +328,8 @@ async fn read_timeout_does_not_apply_to_headers() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(100))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -343,7 +352,8 @@ async fn request_timeout_overrides_client_timeout() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(50))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -363,7 +373,8 @@ async fn timeout_fast_response_succeeds() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -384,7 +395,8 @@ async fn connect_timeout_does_not_affect_fast_connects() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connect_timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))

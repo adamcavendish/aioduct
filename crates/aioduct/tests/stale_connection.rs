@@ -87,7 +87,8 @@ async fn stale_h1_rst_on_reuse_retries_transparently() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 
@@ -149,7 +150,8 @@ async fn stale_h1_fin_on_reuse_retries_transparently() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 
@@ -215,7 +217,8 @@ async fn stale_h2_goaway_retries_transparently() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 
@@ -253,7 +256,8 @@ async fn stale_retry_does_not_loop_on_persistent_failure() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
     let result = client.get(&url).unwrap().send().await;
@@ -315,7 +319,8 @@ async fn stale_retry_skipped_for_streaming_body() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 
@@ -397,7 +402,8 @@ async fn stale_retry_works_for_post_json_body() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 
@@ -468,7 +474,8 @@ async fn stale_retry_works_for_get_empty_body() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 
@@ -531,7 +538,8 @@ async fn stale_h1_probabilistic_retry() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/");
 

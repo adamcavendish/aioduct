@@ -20,16 +20,9 @@ pub struct WasmClient {
 
 impl WasmClient {
     /// Create a new WASM client with default settings.
+    #[allow(clippy::expect_used)]
     pub fn new() -> Self {
-        let mut default_headers = HeaderMap::new();
-        let ua = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
-        if let Ok(val) = HeaderValue::from_str(ua) {
-            default_headers.insert(http::header::USER_AGENT, val);
-        }
-        Self {
-            default_headers,
-            timeout: None,
-        }
+        Self::builder().build().expect("default build")
     }
 
     /// Create a new builder for configuring the WASM client.
@@ -117,7 +110,7 @@ impl WasmClientBuilder {
     }
 
     /// Build the WASM client.
-    pub fn build(self) -> WasmClient {
+    pub fn build(self) -> Result<WasmClient, crate::error::Error> {
         let mut default_headers = self.default_headers;
         if !default_headers.contains_key(http::header::USER_AGENT) {
             let ua = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
@@ -125,10 +118,10 @@ impl WasmClientBuilder {
                 default_headers.insert(http::header::USER_AGENT, val);
             }
         }
-        WasmClient {
+        Ok(WasmClient {
             default_headers,
             timeout: self.timeout,
-        }
+        })
     }
 }
 
@@ -479,13 +472,17 @@ mod tests {
     fn builder_sets_timeout() {
         let client = WasmClient::builder()
             .timeout(Duration::from_secs(30))
-            .build();
+            .build()
+            .unwrap();
         assert_eq!(client.timeout, Some(Duration::from_secs(30)));
     }
 
     #[test]
     fn builder_sets_user_agent() {
-        let client = WasmClient::builder().user_agent("custom/1.0").build();
+        let client = WasmClient::builder()
+            .user_agent("custom/1.0")
+            .build()
+            .unwrap();
         let ua = client
             .default_headers
             .get(http::header::USER_AGENT)
@@ -495,7 +492,10 @@ mod tests {
 
     #[test]
     fn builder_invalid_user_agent_ignored() {
-        let client = WasmClient::builder().user_agent("bad\x00agent").build();
+        let client = WasmClient::builder()
+            .user_agent("bad\x00agent")
+            .build()
+            .unwrap();
         let ua = client
             .default_headers
             .get(http::header::USER_AGENT)
@@ -507,7 +507,10 @@ mod tests {
     fn builder_default_headers() {
         let mut headers = HeaderMap::new();
         headers.insert("x-custom", HeaderValue::from_static("value"));
-        let client = WasmClient::builder().default_headers(headers).build();
+        let client = WasmClient::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap();
         assert!(client.default_headers.contains_key("x-custom"));
         assert!(
             client

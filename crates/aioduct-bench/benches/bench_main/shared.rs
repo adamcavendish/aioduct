@@ -44,12 +44,14 @@ pub static AIODUCT_H2: LazyLock<AioductClient> = LazyLock::new(|| {
                 .max_concurrent_reset_streams(1024),
         )
         .build()
+        .unwrap()
 });
 
 pub static AIODUCT_H1_LARGE_POOL: LazyLock<AioductClient> = LazyLock::new(|| {
     aioduct::HttpEngineSend::builder(aioduct::runtime::tokio_rt::TcpConnector)
         .pool_max_idle_per_host(100)
         .build()
+        .unwrap()
 });
 
 pub static REQWEST: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);

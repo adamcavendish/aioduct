@@ -69,7 +69,8 @@ fn main() -> Result<(), aioduct::Error> {
         let client = SmolClient::builder(TcpConnector)
             .middleware(LoggingMiddleware)
             .middleware(metrics)
-            .build();
+            .build()
+            .unwrap();
 
         // Middleware sees each request/response
         let _resp = client.get("https://httpbin.org/get")?.send().await?;
@@ -92,7 +93,8 @@ fn main() -> Result<(), aioduct::Error> {
                     );
                 },
             )
-            .build();
+            .build()
+            .unwrap();
 
         let resp = client.get("https://httpbin.org/headers")?.send().await?;
 

@@ -331,6 +331,7 @@ mod compio_tests {
         HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .http2_prior_knowledge()
             .build_local()
+            .unwrap()
     }
 
     #[test]
@@ -642,7 +643,8 @@ mod compio_tests {
             let engine =
                 HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
                     .tls(crate::tls::RustlsConnector::with_webpki_roots())
-                    .build_local();
+                    .build_local()
+                    .unwrap();
             let connector = TcpConnector;
             let stream = crate::runtime::ConnectorLocal::connect(&connector, addr)
                 .await

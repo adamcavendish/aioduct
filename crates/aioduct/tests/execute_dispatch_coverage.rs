@@ -42,7 +42,8 @@ async fn hsts_upgrade_prevents_http_request() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .hsts(store)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     // Request to http://hsts-host.example.com should be upgraded to https://
     // which will fail because there's no TLS server, but the important thing
@@ -100,7 +101,8 @@ async fn hsts_stores_sts_header_from_response() {
         .danger_accept_invalid_hostnames(true)
         .hsts(store.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://127.0.0.1:{}/", addr.port()))
@@ -163,7 +165,8 @@ async fn digest_auth_retry_with_http_version() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("user", "pass")
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // Use version(HTTP_11) explicitly to exercise the version path in retry
     let resp = client
@@ -244,7 +247,8 @@ async fn digest_auth_retry_applies_middleware() {
             },
         )
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -304,7 +308,8 @@ async fn cache_invalidated_by_post_request() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First GET: stores in cache
     let resp = client
@@ -378,7 +383,8 @@ async fn connection_pool_reuse_exercises_hit_path() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: opens connection (pool miss)
     let resp = client
@@ -436,7 +442,8 @@ async fn no_connection_reuse_opens_new_connection_each_time() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_connection_reuse()
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // Each request should open a new connection
     for _ in 0..3 {
@@ -472,7 +479,8 @@ async fn h2_connection_reuse_multiplexes() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // Multiple sequential requests should all multiplex over the same connection
     for i in 0..3 {
@@ -511,7 +519,8 @@ async fn rate_limiter_sleep_path_in_dispatch() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .rate_limiter(aioduct::RateLimiter::new(1, Duration::from_millis(100)))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let start = std::time::Instant::now();
 
@@ -580,7 +589,8 @@ async fn stale_if_error_serves_stale_on_503() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: populate cache
     let resp = client
@@ -634,7 +644,8 @@ async fn stale_if_error_serves_stale_on_connection_failure() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // Populate cache
     let resp = client
@@ -662,7 +673,8 @@ async fn stale_if_error_serves_stale_on_connection_failure() {
                     Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
                 >
         })
-        .build();
+        .build()
+        .unwrap();
 
     // Request to dead port: should serve stale cached data
     let resp = client2
@@ -715,7 +727,8 @@ async fn observer_receives_connection_metrics() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -758,7 +771,8 @@ async fn get_request_with_no_body() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -800,7 +814,8 @@ async fn streaming_body_exercises_streaming_arm() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // Create a streaming body (not buffered)
     let stream_body: aioduct::body::RequestBodySend =
@@ -852,7 +867,8 @@ async fn finalize_response_stores_cacheable_response() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: finalize_response should store the response
     let resp = client
@@ -918,7 +934,8 @@ async fn cookie_jar_stores_set_cookie_from_response() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: server sets a cookie
     let resp = client
@@ -1003,7 +1020,8 @@ async fn stale_connection_retry_succeeds_on_fresh_connection() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: establishes connection, gets pooled
     let resp = client
@@ -1071,7 +1089,8 @@ async fn observer_reports_pool_hit_and_miss() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: pool miss
     let resp = client

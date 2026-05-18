@@ -3,7 +3,9 @@ use aioduct::{CompioClient, Error};
 
 fn main() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = CompioClient::builder_local(TcpConnector).build_local();
+        let client = CompioClient::builder_local(TcpConnector)
+            .build_local()
+            .unwrap();
 
         // error_for_status() converts 4xx/5xx into errors
         match fetch_with_status_check(&client).await {

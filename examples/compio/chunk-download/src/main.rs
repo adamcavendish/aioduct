@@ -7,7 +7,8 @@ fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = CompioClient::builder_local(TcpConnector)
             .timeout(Duration::from_secs(30))
-            .build_local();
+            .build_local()
+            .unwrap();
 
         // httpbin /range/{n} supports Accept-Ranges: bytes, ideal for chunk download demo
         let url = "https://httpbin.org/range/10240";

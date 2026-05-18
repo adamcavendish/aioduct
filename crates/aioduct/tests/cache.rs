@@ -38,7 +38,8 @@ async fn test_cache_stores_and_returns_fresh() {
     let cache = aioduct::HttpCache::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
 
     // First request: hits the server, stores in cache
     let resp = client
@@ -99,7 +100,8 @@ async fn test_cacheable_gzip_response_is_decompressed_before_return_and_cache_hi
     let cache = aioduct::HttpCache::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/gzip-cache");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -164,7 +166,8 @@ async fn test_cache_304_revalidation() {
     let cache = aioduct::HttpCache::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
 
     // First: populate cache
     let resp = client
@@ -217,7 +220,8 @@ async fn test_cache_stale_if_error_serves_stale_on_5xx() {
     let cache = aioduct::HttpCache::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/sie"))
@@ -260,7 +264,8 @@ async fn test_cache_stale_if_error_serves_stale_on_connection_error() {
     let cache = aioduct::HttpCache::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache.clone())
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/sie"))
@@ -286,7 +291,8 @@ async fn test_cache_stale_if_error_serves_stale_on_connection_error() {
                     Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
                 >
         })
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client2
         .get(&format!("http://{addr}/sie"))
@@ -327,7 +333,8 @@ async fn test_cache_stale_if_error_not_applied_without_directive() {
     let cache = aioduct::HttpCache::new();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/no-sie"))
@@ -396,7 +403,8 @@ async fn test_custom_cache_store_with_client() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/custom"))
@@ -464,7 +472,8 @@ async fn test_custom_cache_store_304_revalidation() {
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/cs-reval"))
@@ -505,7 +514,8 @@ async fn test_custom_cache_store_invalidation_on_post() {
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/inv"))
@@ -565,10 +575,12 @@ async fn test_custom_cache_store_shared_across_cloned_clients() {
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
     let client1 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache.clone())
-        .build();
+        .build()
+        .unwrap();
     let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client1
         .get(&format!("http://{addr}/shared"))
@@ -631,7 +643,8 @@ async fn cache_should_respect_vary_header() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request: Accept-Encoding: gzip
     let resp = client
@@ -724,7 +737,8 @@ async fn cache_304_revalidation_stores_cookies() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cache(cache)
         .cookie_jar(jar)
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/resource");
 
@@ -787,7 +801,8 @@ async fn fresh_cache_hit_applies_middleware() {
         .middleware(CacheMiddleware {
             called: middleware_called_clone,
         })
-        .build();
+        .build()
+        .unwrap();
 
     let url = format!("http://{addr}/resource");
 

@@ -165,7 +165,7 @@ runtime_test! {
             http::header::HeaderName::from_static("x-custom"),
             http::header::HeaderValue::from_static("default-val"),
         );
-        let client = new_client_builder().default_headers(headers).build();
+        let client = new_client_builder().default_headers(headers).build().unwrap();
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -192,7 +192,7 @@ runtime_test! {
             http::header::AUTHORIZATION,
             http::header::HeaderValue::from_static("default-token"),
         );
-        let client = new_client_builder().default_headers(headers).build();
+        let client = new_client_builder().default_headers(headers).build().unwrap();
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -259,7 +259,7 @@ runtime_test! {
                     .unwrap()
                     .basic_auth("user", "pass"),
             )
-            .build();
+            .build().unwrap();
 
         let resp = client
             .get("http://example.com/test")
@@ -282,7 +282,7 @@ runtime_test! {
     }
 
     async fn test_https_only_rejects_http() {
-        let client = new_client_builder().https_only(true).build();
+        let client = new_client_builder().https_only(true).build().unwrap();
         let result = client.get("http://example.com/").unwrap().send().await;
         assert!(result.is_err());
     }
@@ -366,7 +366,7 @@ runtime_test! {
 
         let client = new_client_builder()
             .user_agent("aioduct-multi-rt/1.0")
-            .build();
+            .build().unwrap();
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()

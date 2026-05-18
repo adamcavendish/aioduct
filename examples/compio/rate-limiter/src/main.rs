@@ -9,7 +9,8 @@ fn main() -> Result<(), aioduct::Error> {
         let client = CompioClient::builder_local(TcpConnector)
             .rate_limiter(RateLimiter::new(5, Duration::from_secs(1)))
             .timeout(Duration::from_secs(10))
-            .build_local();
+            .build_local()
+            .unwrap();
 
         println!("Sending 5 requests with rate limit of 5/sec...");
 

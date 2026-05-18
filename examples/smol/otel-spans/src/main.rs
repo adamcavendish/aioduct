@@ -15,7 +15,8 @@ fn main() -> Result<(), aioduct::Error> {
         let client = SmolClient::builder(TcpConnector)
             .middleware(OtelMiddleware::new())
             .timeout(Duration::from_secs(10))
-            .build();
+            .build()
+            .unwrap();
 
         // Each request creates an OpenTelemetry span with HTTP semantic conventions
         let resp = client.get("https://httpbin.org/get")?.send().await?;
