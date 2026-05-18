@@ -368,31 +368,31 @@ impl<'a> WasmRequestBuilder<'a> {
             }
         }
 
-        let body_promise = resp
-            .array_buffer()
-            .map_err(|e| Error::Other(format!("arrayBuffer() failed: {e:?}").into()))?;
-        let body_value = JsFuture::from(body_promise)
-            .await
-            .map_err(|e| Error::Other(format!("body read failed: {e:?}").into()))?;
-        let uint8_array = js_sys::Uint8Array::new(&body_value);
-        let body = Bytes::from(uint8_array.to_vec());
-
         Ok(WasmResponse {
             status,
             headers: resp_headers,
-            body,
+            inner: resp,
             url: self.uri,
         })
     }
 }
 
 /// An HTTP response from the WASM/Fetch client.
-#[derive(Debug)]
 pub struct WasmResponse {
     status: StatusCode,
     headers: HeaderMap,
-    body: Bytes,
+    inner: web_sys::Response,
     url: Uri,
+}
+
+impl std::fmt::Debug for WasmResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmResponse")
+            .field("status", &self.status)
+            .field("headers", &self.headers)
+            .field("url", &self.url)
+            .finish()
+    }
 }
 
 impl WasmResponse {
@@ -412,20 +412,43 @@ impl WasmResponse {
     }
 
     /// Consume the response and return the body as bytes.
-    pub fn bytes(self) -> Bytes {
-        self.body
+    pub async fn bytes(self) -> Result<Bytes, Error> {
+        let body_promise = self
+            .inner
+            .array_buffer()
+            .map_err(|e| Error::Other(format!("arrayBuffer() failed: {e:?}").into()))?;
+        let body_value = JsFuture::from(body_promise)
+            .await
+            .map_err(|e| Error::Other(format!("body read failed: {e:?}").into()))?;
+        let uint8_array = js_sys::Uint8Array::new(&body_value);
+        Ok(Bytes::from(uint8_array.to_vec()))
     }
 
     /// Consume the response and return the body as a string.
-    pub fn text(self) -> Result<String, Error> {
-        String::from_utf8(self.body.to_vec())
+    pub async fn text(self) -> Result<String, Error> {
+        let b = self.bytes().await?;
+        String::from_utf8(b.to_vec())
             .map_err(|e| Error::Other(format!("invalid UTF-8 in response body: {e}").into()))
     }
 
     /// Deserialize the response body from JSON.
     #[cfg(feature = "json")]
-    pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
-        serde_json::from_slice(&self.body).map_err(|e| Error::Other(Box::new(e)))
+    pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
+        let b = self.bytes().await?;
+        serde_json::from_slice(&b).map_err(|e| Error::Other(Box::new(e)))
+    }
+
+    /// Convert the response into a streaming byte reader.
+    pub fn into_bytes_stream(self) -> WasmBodyStream {
+        let reader = self.inner.body().and_then(|body| {
+            body.get_reader()
+                .dyn_into::<web_sys::ReadableStreamDefaultReader>()
+                .ok()
+        });
+        WasmBodyStream {
+            reader,
+            done: false,
+        }
     }
 
     /// Return an error if the status code indicates failure (4xx or 5xx).
@@ -436,6 +459,70 @@ impl WasmResponse {
         } else {
             Ok(self)
         }
+    }
+}
+
+/// Async byte stream over a WASM `ReadableStream`.
+pub struct WasmBodyStream {
+    reader: Option<web_sys::ReadableStreamDefaultReader>,
+    done: bool,
+}
+
+impl std::fmt::Debug for WasmBodyStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmBodyStream")
+            .field("done", &self.done)
+            .finish()
+    }
+}
+
+impl WasmBodyStream {
+    /// Returns the next chunk of body data, or `None` when complete.
+    pub async fn next(&mut self) -> Option<Result<Bytes, Error>> {
+        if self.done {
+            return None;
+        }
+
+        let reader = match &self.reader {
+            Some(r) => r,
+            None => {
+                self.done = true;
+                return None;
+            }
+        };
+
+        let result = match JsFuture::from(reader.read()).await {
+            Ok(val) => val,
+            Err(e) => {
+                self.done = true;
+                return Some(Err(Error::Other(
+                    format!("stream read failed: {e:?}").into(),
+                )));
+            }
+        };
+
+        let done = js_sys::Reflect::get(&result, &"done".into())
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        if done {
+            self.done = true;
+            return None;
+        }
+
+        let value = match js_sys::Reflect::get(&result, &"value".into()) {
+            Ok(v) => v,
+            Err(e) => {
+                self.done = true;
+                return Some(Err(Error::Other(
+                    format!("stream value read failed: {e:?}").into(),
+                )));
+            }
+        };
+
+        let uint8_array = js_sys::Uint8Array::new(&value);
+        Some(Ok(Bytes::from(uint8_array.to_vec())))
     }
 }
 
@@ -596,110 +683,6 @@ mod tests {
     }
 
     #[test]
-    fn response_accessors() {
-        let resp = WasmResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::from("hello"),
-            url: "https://example.com".parse().unwrap(),
-        };
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert!(resp.headers().is_empty());
-        assert_eq!(resp.url().to_string(), "https://example.com/");
-    }
-
-    #[test]
-    fn response_bytes() {
-        let resp = WasmResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::from("hello"),
-            url: "https://example.com".parse().unwrap(),
-        };
-        assert_eq!(resp.bytes(), Bytes::from("hello"));
-    }
-
-    #[test]
-    fn response_text_valid_utf8() {
-        let resp = WasmResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::from("hello world"),
-            url: "https://example.com".parse().unwrap(),
-        };
-        assert_eq!(resp.text().unwrap(), "hello world");
-    }
-
-    #[test]
-    fn response_text_invalid_utf8() {
-        let resp = WasmResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::from_static(&[0xff, 0xfe]),
-            url: "https://example.com".parse().unwrap(),
-        };
-        assert!(resp.text().is_err());
-    }
-
-    #[test]
-    fn response_error_for_status_ok() {
-        let resp = WasmResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            url: "https://example.com".parse().unwrap(),
-        };
-        assert!(resp.error_for_status().is_ok());
-    }
-
-    #[test]
-    fn response_error_for_status_client_error() {
-        let resp = WasmResponse {
-            status: StatusCode::NOT_FOUND,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            url: "https://example.com".parse().unwrap(),
-        };
-        let err = resp.error_for_status().unwrap_err();
-        assert!(err.is_status());
-        assert_eq!(err.status(), Some(StatusCode::NOT_FOUND));
-    }
-
-    #[test]
-    fn response_error_for_status_server_error() {
-        let resp = WasmResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            url: "https://example.com".parse().unwrap(),
-        };
-        assert!(resp.error_for_status().is_err());
-    }
-
-    #[test]
-    fn response_error_for_status_redirect_is_ok() {
-        let resp = WasmResponse {
-            status: StatusCode::FOUND,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            url: "https://example.com".parse().unwrap(),
-        };
-        assert!(resp.error_for_status().is_ok());
-    }
-
-    #[test]
-    fn response_debug() {
-        let resp = WasmResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            url: "https://example.com".parse().unwrap(),
-        };
-        let dbg = format!("{resp:?}");
-        assert!(dbg.contains("WasmResponse"));
-    }
-
-    #[test]
     fn client_debug_and_clone() {
         let client = WasmClient::new();
         let cloned = client.clone();
@@ -741,30 +724,5 @@ mod tests {
             req.headers.get(http::header::CONTENT_TYPE).unwrap(),
             "application/vnd.api+json"
         );
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn response_json() {
-        let resp = WasmResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::from(r#"{"key":"value"}"#),
-            url: "https://example.com".parse().unwrap(),
-        };
-        let val: serde_json::Value = resp.json().unwrap();
-        assert_eq!(val["key"], "value");
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn response_json_invalid() {
-        let resp = WasmResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::from("not json"),
-            url: "https://example.com".parse().unwrap(),
-        };
-        assert!(resp.json::<serde_json::Value>().is_err());
     }
 }

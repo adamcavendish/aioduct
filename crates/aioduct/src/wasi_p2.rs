@@ -210,9 +210,7 @@ impl<'a> WasiRequestBuilder<'a> {
     /// Send the request and return the response.
     pub fn send(self) -> Result<WasiResponse, Error> {
         use wasi::http::outgoing_handler;
-        use wasi::http::types::{
-            Fields, IncomingBody, OutgoingBody, OutgoingRequest, RequestOptions, Scheme,
-        };
+        use wasi::http::types::{Fields, OutgoingBody, OutgoingRequest, RequestOptions, Scheme};
 
         let fields = Fields::new();
         for (name, value) in &self.client.default_headers {
@@ -330,37 +328,42 @@ impl<'a> WasiRequestBuilder<'a> {
             .stream()
             .map_err(|()| Error::Other("failed to get body stream".into()))?;
 
-        let mut body_buf = Vec::new();
-        loop {
-            match body_stream.blocking_read(64 * 1024) {
-                Ok(chunk) => body_buf.extend_from_slice(&chunk),
-                Err(wasi::io::streams::StreamError::Closed) => break,
-                Err(e) => {
-                    return Err(Error::Io(std::io::Error::other(format!(
-                        "body read: {e:?}"
-                    ))));
-                }
-            }
-        }
-        drop(body_stream);
-        IncomingBody::finish(incoming_body);
-
         Ok(WasiResponse {
             status,
             headers,
-            body: Bytes::from(body_buf),
+            body: WasiBody::Stream {
+                incoming_body,
+                stream: body_stream,
+            },
             url: self.uri,
         })
     }
 }
 
 /// HTTP response from a WASI-P2 request.
-#[derive(Debug)]
 pub struct WasiResponse {
     status: StatusCode,
     headers: HeaderMap,
-    body: Bytes,
+    body: WasiBody,
     url: Uri,
+}
+
+impl std::fmt::Debug for WasiResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasiResponse")
+            .field("status", &self.status)
+            .field("headers", &self.headers)
+            .field("url", &self.url)
+            .finish()
+    }
+}
+
+enum WasiBody {
+    Stream {
+        incoming_body: wasi::http::types::IncomingBody,
+        stream: wasi::io::streams::InputStream,
+    },
+    Consumed,
 }
 
 impl WasiResponse {
@@ -380,20 +383,62 @@ impl WasiResponse {
     }
 
     /// Consume the response and return the body bytes.
-    pub fn bytes(self) -> Bytes {
-        self.body
+    pub fn bytes(mut self) -> Result<Bytes, Error> {
+        match std::mem::replace(&mut self.body, WasiBody::Consumed) {
+            WasiBody::Stream {
+                incoming_body,
+                stream,
+            } => {
+                let mut buf = Vec::new();
+                loop {
+                    match stream.blocking_read(64 * 1024) {
+                        Ok(chunk) => buf.extend_from_slice(&chunk),
+                        Err(wasi::io::streams::StreamError::Closed) => break,
+                        Err(e) => {
+                            return Err(Error::Io(std::io::Error::other(format!(
+                                "body read: {e:?}"
+                            ))));
+                        }
+                    }
+                }
+                drop(stream);
+                wasi::http::types::IncomingBody::finish(incoming_body);
+                Ok(Bytes::from(buf))
+            }
+            WasiBody::Consumed => Ok(Bytes::new()),
+        }
     }
 
     /// Consume the response and return the body as UTF-8 text.
     pub fn text(self) -> Result<String, Error> {
-        String::from_utf8(self.body.to_vec())
-            .map_err(|e| Error::Other(format!("utf-8: {e}").into()))
+        let b = self.bytes()?;
+        String::from_utf8(b.to_vec()).map_err(|e| Error::Other(format!("utf-8: {e}").into()))
     }
 
     /// Deserialize the response body as JSON.
     #[cfg(feature = "json")]
     pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
-        serde_json::from_slice(&self.body).map_err(|e| Error::Other(format!("json: {e}").into()))
+        let b = self.bytes()?;
+        serde_json::from_slice(&b).map_err(|e| Error::Other(format!("json: {e}").into()))
+    }
+
+    /// Convert the response into a streaming byte reader.
+    pub fn into_bytes_stream(mut self) -> WasiBodyStream {
+        match std::mem::replace(&mut self.body, WasiBody::Consumed) {
+            WasiBody::Stream {
+                incoming_body,
+                stream,
+            } => WasiBodyStream {
+                stream: Some(stream),
+                incoming_body: Some(incoming_body),
+                done: false,
+            },
+            WasiBody::Consumed => WasiBodyStream {
+                stream: None,
+                incoming_body: None,
+                done: true,
+            },
+        }
     }
 
     /// Returns an error if the status code is 4xx or 5xx.
@@ -404,6 +449,76 @@ impl WasiResponse {
         } else {
             Ok(self)
         }
+    }
+}
+
+/// Byte stream over a WASI-P2 response body.
+pub struct WasiBodyStream {
+    stream: Option<wasi::io::streams::InputStream>,
+    incoming_body: Option<wasi::http::types::IncomingBody>,
+    done: bool,
+}
+
+impl std::fmt::Debug for WasiBodyStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasiBodyStream")
+            .field("done", &self.done)
+            .finish()
+    }
+}
+
+impl WasiBodyStream {
+    /// Returns the next chunk of body data, or `None` when complete.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Option<Result<Bytes, Error>> {
+        if self.done {
+            return None;
+        }
+
+        let stream = match &self.stream {
+            Some(s) => s,
+            None => {
+                self.done = true;
+                return None;
+            }
+        };
+
+        match stream.blocking_read(64 * 1024) {
+            Ok(chunk) => {
+                if chunk.is_empty() {
+                    self.done = true;
+                    self.finish();
+                    None
+                } else {
+                    Some(Ok(Bytes::from(chunk)))
+                }
+            }
+            Err(wasi::io::streams::StreamError::Closed) => {
+                self.done = true;
+                self.finish();
+                None
+            }
+            Err(e) => {
+                self.done = true;
+                self.finish();
+                Some(Err(Error::Io(std::io::Error::other(format!(
+                    "body read: {e:?}"
+                )))))
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        drop(self.stream.take());
+        if let Some(body) = self.incoming_body.take() {
+            wasi::http::types::IncomingBody::finish(body);
+        }
+    }
+}
+
+impl Drop for WasiBodyStream {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -513,50 +628,6 @@ mod tests {
             .unwrap()
             .timeout(Duration::from_secs(30));
         assert_eq!(req.timeout, Some(Duration::from_secs(30)));
-    }
-
-    #[test]
-    fn response_error_for_status_ok() {
-        let resp = WasiResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            url: "http://example.com".parse().unwrap(),
-        };
-        assert!(resp.error_for_status().is_ok());
-    }
-
-    #[test]
-    fn response_error_for_status_4xx() {
-        let resp = WasiResponse {
-            status: StatusCode::NOT_FOUND,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            url: "http://example.com".parse().unwrap(),
-        };
-        assert!(resp.error_for_status().is_err());
-    }
-
-    #[test]
-    fn response_error_for_status_5xx() {
-        let resp = WasiResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            headers: HeaderMap::new(),
-            body: Bytes::new(),
-            url: "http://example.com".parse().unwrap(),
-        };
-        assert!(resp.error_for_status().is_err());
-    }
-
-    #[test]
-    fn response_text() {
-        let resp = WasiResponse {
-            status: StatusCode::OK,
-            headers: HeaderMap::new(),
-            body: Bytes::from("hello world"),
-            url: "http://example.com".parse().unwrap(),
-        };
-        assert_eq!(resp.text().unwrap(), "hello world");
     }
 
     #[test]

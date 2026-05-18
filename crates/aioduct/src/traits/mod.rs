@@ -95,6 +95,9 @@ pub trait RequestBuilderExt: Sized {
 
 /// Common interface for reading HTTP responses.
 pub trait ResponseExt {
+    /// The byte stream type returned by [`into_bytes_stream()`](ResponseExt::into_bytes_stream).
+    type ByteStream: ByteStreamExt;
+
     /// Returns the HTTP status code.
     fn status(&self) -> StatusCode;
 
@@ -106,6 +109,19 @@ pub trait ResponseExt {
 
     /// Consume the response and return the body as a UTF-8 string.
     fn text(self) -> impl Future<Output = Result<String, Error>>;
+
+    /// Consume the response and deserialize the body as JSON.
+    #[cfg(feature = "json")]
+    fn json<T: serde::de::DeserializeOwned>(self) -> impl Future<Output = Result<T, Error>>;
+
+    /// Convert the response into an async byte stream.
+    fn into_bytes_stream(self) -> Self::ByteStream;
+}
+
+/// Async byte stream that yields chunks of body data.
+pub trait ByteStreamExt {
+    /// Returns the next chunk of body data, or `None` when complete.
+    fn next(&mut self) -> impl Future<Output = Option<Result<Bytes, Error>>>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]

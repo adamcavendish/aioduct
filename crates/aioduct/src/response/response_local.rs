@@ -59,6 +59,11 @@ impl Response<crate::body::ResponseBodyLocal> {
         }
     }
 
+    /// Convert the response into an async byte stream.
+    pub fn into_bytes_stream(self) -> crate::body::BodyStreamLocal {
+        crate::body::BodyStreamLocal::with_observer(self.inner.into_body(), self.observer_ctx)
+    }
+
     /// Convert the response into a Server-Sent Events stream.
     pub fn into_sse_stream(self) -> crate::sse::SseStreamLocal {
         crate::sse::SseStreamLocal::new(self.inner.into_body())

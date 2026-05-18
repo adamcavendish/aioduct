@@ -15,7 +15,7 @@ fn main() -> Result<(), aioduct::Error> {
         println!("Status: {}", resp.status());
 
         // The response can be converted to a byte stream via into_bytes_stream().
-        // The returned BodyStream implements futures_core::Stream<Item = Result<Bytes, Error>>,
+        // The returned BodyStreamSend implements futures_core::Stream<Item = Result<Bytes, Error>>,
         // so you can use StreamExt from the futures crate to consume it.
         // For simplicity, we just collect all bytes at once here:
         let resp = client
