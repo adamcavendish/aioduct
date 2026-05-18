@@ -3,7 +3,8 @@ use http::Method;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
 
-use super::{HttpClient, RequestBuilderExt, ResponseExt};
+use super::{ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt};
+use crate::body::BodyStreamSend;
 use crate::client::HttpEngineSend;
 use crate::error::{Error, SendError};
 use crate::response::Response;
@@ -63,6 +64,8 @@ impl<R: RuntimePoll, C: ConnectorSend> RequestBuilderExt for OwnedRequestBuilder
 }
 
 impl ResponseExt for Response {
+    type ByteStream = BodyStreamSend;
+
     fn status(&self) -> http::StatusCode {
         self.status()
     }
@@ -77,5 +80,20 @@ impl ResponseExt for Response {
 
     async fn text(self) -> Result<String, Error> {
         self.text().await
+    }
+
+    #[cfg(feature = "json")]
+    async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
+        self.json().await
+    }
+
+    fn into_bytes_stream(self) -> BodyStreamSend {
+        self.into_bytes_stream()
+    }
+}
+
+impl ByteStreamExt for BodyStreamSend {
+    async fn next(&mut self) -> Option<Result<Bytes, Error>> {
+        self.next().await
     }
 }

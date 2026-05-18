@@ -3,9 +3,9 @@ use http::Method;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
 
-use super::{HttpClient, RequestBuilderExt, ResponseExt};
+use super::{ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt};
 use crate::error::{Error, SendError};
-use crate::wasi_p2::{WasiClient, WasiResponse};
+use crate::wasi_p2::{WasiBodyStream, WasiClient, WasiResponse};
 
 /// An owned request builder for the WASI client.
 pub struct OwnedWasiRequestBuilder {
@@ -58,6 +58,8 @@ impl RequestBuilderExt for OwnedWasiRequestBuilder {
 }
 
 impl ResponseExt for WasiResponse {
+    type ByteStream = WasiBodyStream;
+
     fn status(&self) -> http::StatusCode {
         self.status()
     }
@@ -67,11 +69,26 @@ impl ResponseExt for WasiResponse {
     }
 
     async fn bytes(self) -> Result<Bytes, Error> {
-        Ok(self.bytes())
+        self.bytes()
     }
 
     async fn text(self) -> Result<String, Error> {
         self.text()
+    }
+
+    #[cfg(feature = "json")]
+    async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
+        self.json()
+    }
+
+    fn into_bytes_stream(self) -> WasiBodyStream {
+        self.into_bytes_stream()
+    }
+}
+
+impl ByteStreamExt for WasiBodyStream {
+    async fn next(&mut self) -> Option<Result<Bytes, Error>> {
+        WasiBodyStream::next(self)
     }
 }
 

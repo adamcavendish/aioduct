@@ -3,9 +3,9 @@ use http::Method;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
 
-use super::{HttpClient, RequestBuilderExt, ResponseExt};
+use super::{ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt};
 use crate::error::{Error, SendError};
-use crate::wasm::{WasmClient, WasmResponse};
+use crate::wasm::{WasmBodyStream, WasmClient, WasmResponse};
 
 /// An owned request builder for the WASM client.
 pub struct OwnedWasmRequestBuilder {
@@ -58,6 +58,8 @@ impl RequestBuilderExt for OwnedWasmRequestBuilder {
 }
 
 impl ResponseExt for WasmResponse {
+    type ByteStream = WasmBodyStream;
+
     fn status(&self) -> http::StatusCode {
         self.status()
     }
@@ -67,11 +69,26 @@ impl ResponseExt for WasmResponse {
     }
 
     async fn bytes(self) -> Result<Bytes, Error> {
-        Ok(self.bytes())
+        self.bytes().await
     }
 
     async fn text(self) -> Result<String, Error> {
-        self.text()
+        self.text().await
+    }
+
+    #[cfg(feature = "json")]
+    async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
+        self.json().await
+    }
+
+    fn into_bytes_stream(self) -> WasmBodyStream {
+        self.into_bytes_stream()
+    }
+}
+
+impl ByteStreamExt for WasmBodyStream {
+    async fn next(&mut self) -> Option<Result<Bytes, Error>> {
+        self.next().await
     }
 }
 

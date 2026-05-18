@@ -153,7 +153,7 @@ pub mod h3_transport;
 // ── Re-exports: portable ─────────────────────────────────────────────────────
 
 pub use bandwidth::BandwidthLimiter;
-pub use body::{BodyStream, RequestBody};
+pub use body::{BodyStreamSend, RequestBody};
 pub use cache::{CacheConfig, CacheEntry, CacheStore, HttpCache, InMemoryCacheStore};
 pub use cookie::{Cookie, CookieJar, SameSite};
 pub use error::{Error, SendError};

@@ -128,7 +128,7 @@ impl From<RequestBodySend> for RequestBody {
 }
 
 /// Async iterator over response body data frames.
-pub struct BodyStream {
+pub struct BodyStreamSend {
     body: RequestBodySend,
     done: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -139,13 +139,13 @@ pub struct BodyStream {
     transfer_start: Instant,
 }
 
-impl std::fmt::Debug for BodyStream {
+impl std::fmt::Debug for BodyStreamSend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BodyStream").finish()
+        f.debug_struct("BodyStreamSend").finish()
     }
 }
 
-impl BodyStream {
+impl BodyStreamSend {
     #[cfg(test)]
     pub(crate) fn new(body: RequestBodySend) -> Self {
         Self {
@@ -264,7 +264,135 @@ impl BodyStream {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Drop for BodyStream {
+impl Drop for BodyStreamSend {
+    fn drop(&mut self) {
+        if !self.done {
+            self.done = true;
+            self.fire_transfer_aborted(&crate::error::Error::Other("body stream dropped".into()));
+        }
+    }
+}
+
+/// Async iterator over response body data frames for `!Send` bodies.
+///
+/// Used by completion-based runtimes (compio) where the response body is not `Send`.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct BodyStreamLocal {
+    body: ResponseBodyLocal,
+    done: bool,
+    observer_ctx: Option<BodyObserverCtx>,
+    cumulative_bytes: u64,
+    transfer_start: Instant,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for BodyStreamLocal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyStreamLocal").finish()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BodyStreamLocal {
+    pub(crate) fn with_observer(body: ResponseBodyLocal, ctx: Option<BodyObserverCtx>) -> Self {
+        let transfer_start = ctx
+            .as_ref()
+            .map(|c| c.response_started)
+            .unwrap_or_else(Instant::now);
+        Self {
+            body,
+            done: false,
+            observer_ctx: ctx,
+            cumulative_bytes: 0,
+            transfer_start,
+        }
+    }
+
+    /// Returns the next chunk of body data, or `None` when complete.
+    pub async fn next(&mut self) -> Option<Result<Bytes, Error>> {
+        use std::pin::Pin;
+
+        if self.done {
+            return None;
+        }
+
+        loop {
+            match Pin::new(&mut self.body).frame().await {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        let chunk_bytes = data.len() as u64;
+                        self.cumulative_bytes += chunk_bytes;
+                        if let Some(ctx) = &self.observer_ctx {
+                            ctx.observer.on_event(&RequestEvent {
+                                method: ctx.method.clone(),
+                                uri: ctx.uri.clone(),
+                                phase: RequestPhase::BytesTransferred {
+                                    direction: TransferDirection::Download,
+                                    chunk_bytes,
+                                    cumulative_bytes: self.cumulative_bytes,
+                                    elapsed: self.transfer_start.elapsed(),
+                                },
+                                at: observer::Instant::now(),
+                            });
+                        }
+                        return Some(Ok(data));
+                    }
+                }
+                Some(Err(e)) => {
+                    self.done = true;
+                    self.fire_transfer_aborted(&e);
+                    return Some(Err(e));
+                }
+                None => {
+                    self.done = true;
+                    self.fire_transfer_complete();
+                    return None;
+                }
+            }
+        }
+    }
+
+    fn fire_transfer_complete(&self) {
+        if let Some(ctx) = &self.observer_ctx {
+            let transfer_duration = self.transfer_start.elapsed();
+            let throughput = if transfer_duration.as_secs_f64() > 0.0 {
+                (self.cumulative_bytes as f64 / transfer_duration.as_secs_f64()) as f32
+            } else {
+                0.0
+            };
+            ctx.observer.on_event(&RequestEvent {
+                method: ctx.method.clone(),
+                uri: ctx.uri.clone(),
+                phase: RequestPhase::TransferComplete {
+                    direction: TransferDirection::Download,
+                    total_bytes: self.cumulative_bytes,
+                    transfer_duration,
+                    throughput_bytes_per_sec: throughput,
+                },
+                at: observer::Instant::now(),
+            });
+        }
+    }
+
+    fn fire_transfer_aborted(&self, error: &crate::error::Error) {
+        if let Some(ctx) = &self.observer_ctx {
+            ctx.observer.on_event(&RequestEvent {
+                method: ctx.method.clone(),
+                uri: ctx.uri.clone(),
+                phase: RequestPhase::TransferAborted {
+                    direction: TransferDirection::Download,
+                    bytes_transferred: self.cumulative_bytes,
+                    elapsed: self.transfer_start.elapsed(),
+                    error: error.to_string(),
+                },
+                at: observer::Instant::now(),
+            });
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for BodyStreamLocal {
     fn drop(&mut self) {
         if !self.done {
             self.done = true;
@@ -378,9 +506,9 @@ mod tests {
         let hyper_body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
-        let stream = BodyStream::new(hyper_body);
+        let stream = BodyStreamSend::new(hyper_body);
         let dbg = format!("{stream:?}");
-        assert!(dbg.contains("BodyStream"));
+        assert!(dbg.contains("BodyStreamSend"));
     }
 
     #[tokio::test]
@@ -388,7 +516,7 @@ mod tests {
         let hyper_body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
-        let mut stream = BodyStream::new(hyper_body);
+        let mut stream = BodyStreamSend::new(hyper_body);
         assert!(stream.next().await.is_none());
     }
 
@@ -397,7 +525,7 @@ mod tests {
         let hyper_body: RequestBodySend = http_body_util::Full::new(Bytes::from("hello"))
             .map_err(|never| match never {})
             .boxed_unsync();
-        let mut stream = BodyStream::new(hyper_body);
+        let mut stream = BodyStreamSend::new(hyper_body);
         let chunk = stream.next().await.unwrap().unwrap();
         assert_eq!(&chunk[..], b"hello");
         assert!(stream.next().await.is_none());
@@ -408,7 +536,7 @@ mod tests {
         let hyper_body: RequestBodySend = http_body_util::Empty::new()
             .map_err(|never| match never {})
             .boxed_unsync();
-        let mut stream = BodyStream::new(hyper_body);
+        let mut stream = BodyStreamSend::new(hyper_body);
         assert!(stream.next().await.is_none());
         assert!(stream.next().await.is_none());
     }
@@ -459,7 +587,7 @@ mod tests {
         }
 
         let hyper_body: RequestBodySend = ErrorAfterFirst { sent: false }.boxed_unsync();
-        let mut stream = BodyStream::new(hyper_body);
+        let mut stream = BodyStreamSend::new(hyper_body);
 
         // First call should return the error
         let result = stream.next().await;
@@ -506,7 +634,7 @@ mod tests {
         }
 
         let hyper_body: RequestBodySend = TrailerThenData { state: 0 }.boxed_unsync();
-        let mut stream = BodyStream::new(hyper_body);
+        let mut stream = BodyStreamSend::new(hyper_body);
 
         // The trailers frame should be skipped, only data returned
         let chunk = stream.next().await.unwrap().unwrap();
@@ -562,7 +690,7 @@ mod tests {
         let hyper_body: RequestBodySend = http_body_util::Full::new(Bytes::from("hello world"))
             .map_err(|never| match never {})
             .boxed_unsync();
-        let mut stream = BodyStream::with_observer(hyper_body, Some(ctx));
+        let mut stream = BodyStreamSend::with_observer(hyper_body, Some(ctx));
 
         // Read all data
         let chunk = stream.next().await.unwrap().unwrap();
@@ -635,7 +763,7 @@ mod tests {
         };
 
         let hyper_body: RequestBodySend = ErrorBody.boxed_unsync();
-        let mut stream = BodyStream::with_observer(hyper_body, Some(ctx));
+        let mut stream = BodyStreamSend::with_observer(hyper_body, Some(ctx));
 
         // Should get error
         let result = stream.next().await;
@@ -657,7 +785,7 @@ mod tests {
         let hyper_body: RequestBodySend = http_body_util::Full::new(Bytes::from("no observer"))
             .map_err(|never| match never {})
             .boxed_unsync();
-        let mut stream = BodyStream::with_observer(hyper_body, None);
+        let mut stream = BodyStreamSend::with_observer(hyper_body, None);
 
         let chunk = stream.next().await.unwrap().unwrap();
         assert_eq!(&chunk[..], b"no observer");
