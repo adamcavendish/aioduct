@@ -538,6 +538,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             blocked_duration: pool_checkout_start.elapsed(),
                         },
                     );
+                    let saved_parts = if can_stale_retry {
+                        Some((
+                            request.method().clone(),
+                            request.uri().clone(),
+                            request.version(),
+                        ))
+                    } else {
+                        None
+                    };
                     let req_method = request.method().clone();
                     let transfer_start = Instant::now();
                     self.core.notify(
@@ -585,6 +594,47 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 self.core.checkin_connection(pool_key, conn);
                             }
                             return Ok(resp);
+                        }
+                        Err(e)
+                            if saved_parts.is_some()
+                                && HttpEngineCore::<RequestBodySend>::is_stale_connection_error(
+                                    &e,
+                                ) =>
+                        {
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!(
+                                host = authority.host(),
+                                error = %e,
+                                "connection.pool.stale (h2 wait path) — retrying on fresh connection"
+                            );
+                            self.core.fire_connection_metrics(&conn, true);
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::Failed {
+                                    error: e.to_string(),
+                                    will_retry: true,
+                                    elapsed: request_start.elapsed(),
+                                },
+                            );
+                            let Some((method, uri, version)) = saved_parts else {
+                                return Err(e);
+                            };
+                            let headers = stale_retry_headers.cloned().unwrap_or_default();
+                            let retry_body_bytes = replay_body
+                                .as_ref()
+                                .cloned()
+                                .unwrap_or_else(bytes::Bytes::new);
+                            let body: RequestBodySend = http_body_util::Full::new(retry_body_bytes)
+                                .map_err(|never| match never {})
+                                .boxed_unsync();
+                            let mut retry_req = http::Request::new(body);
+                            *retry_req.method_mut() = method;
+                            *retry_req.uri_mut() = uri;
+                            *retry_req.headers_mut() = headers;
+                            *retry_req.version_mut() = version;
+                            request = retry_req;
+                            break;
                         }
                         Err(e) => return Err(e),
                     }
