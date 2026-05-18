@@ -490,6 +490,100 @@ async fn stale_retry_works_for_get_empty_body() {
     assert_eq!(resp.text().await.unwrap(), "ok");
 }
 
+/// #207: Middleware-applied headers must survive stale-connection retry.
+///
+/// A middleware adds `X-Auth: secret-token`. The server RSTs the pooled
+/// connection on reuse, triggering transparent retry on a fresh connection.
+/// The retry request MUST still carry the middleware-added header.
+#[tokio::test]
+async fn stale_retry_preserves_middleware_headers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count2 = request_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let count = request_count2.clone();
+
+            tokio::spawn(async move {
+                let n = count.fetch_add(1, Ordering::SeqCst);
+
+                let mut buf = [0u8; 4096];
+                let bytes_read = match stream.read(&mut buf).await {
+                    Ok(0) => return,
+                    Ok(n) => n,
+                    Err(_) => return,
+                };
+
+                if n == 0 {
+                    // FIRST connection: serve one response, then RST on reuse.
+                    let _ = stream.write_all(http_200_keepalive()).await;
+                    let _ = stream.flush().await;
+
+                    let mut peek = [0u8; 1];
+                    match stream.read(&mut peek).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(_) => {}
+                    }
+
+                    let raw = stream.into_std().unwrap();
+                    let sock = socket2::SockRef::from(&raw);
+                    let _ = sock.set_linger(Some(Duration::from_secs(0)));
+                    drop(raw);
+                } else {
+                    // RETRY connection: check for X-Auth header.
+                    let request_text = String::from_utf8_lossy(&buf[..bytes_read]);
+                    let has_auth = request_text
+                        .lines()
+                        .any(|line| line.to_lowercase().starts_with("x-auth:"));
+
+                    if has_auth {
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nauth-present";
+                        let _ = stream.write_all(resp).await;
+                    } else {
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nauth-missing";
+                        let _ = stream.write_all(resp).await;
+                    }
+                    let _ = stream.flush().await;
+                }
+            });
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .pool_idle_timeout(Duration::from_secs(60))
+        .middleware(
+            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
+                req.headers_mut().insert(
+                    "x-auth",
+                    http::header::HeaderValue::from_static("secret-token"),
+                );
+            },
+        )
+        .build()
+        .unwrap();
+
+    let url = format!("http://{addr}/");
+
+    // First request succeeds; connection pooled.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    // Second request: stale connection triggers retry.
+    // The retry MUST carry the middleware-added X-Auth header.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "auth-present",
+        "middleware-added X-Auth header was lost on stale connection retry"
+    );
+}
+
 /// Probabilistic test: send many requests through a server that randomly
 /// closes connections. Without transparent retry some will fail; with the
 /// fix all should succeed.
