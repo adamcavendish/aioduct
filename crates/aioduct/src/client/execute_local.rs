@@ -261,17 +261,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             resp
         };
 
-        if let Some(ref cache) = self.core.cache {
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            if crate::cache::is_response_cacheable(status, &headers) {
-                let body_bytes = resp.bytes().await?;
-                cache.store(method, &uri, status, &headers, &body_bytes, request_headers);
-                let cached_resp = super::boxed_response_from_bytes(status, &headers, body_bytes);
-                return Ok(Response::from_boxed(cached_resp, uri).into_local());
-            }
-        }
-
         let resp = if let Some(read_timeout) = self.core.read_timeout {
             resp.into_local_with_read_timeout::<R>(read_timeout)
         } else {
@@ -283,6 +272,17 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         } else {
             resp
         };
+
+        if let Some(ref cache) = self.core.cache {
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            if crate::cache::is_response_cacheable(status, &headers) {
+                let body_bytes = resp.bytes().await?;
+                cache.store(method, &uri, status, &headers, &body_bytes, request_headers);
+                let cached_resp = super::boxed_response_from_bytes(status, &headers, body_bytes);
+                return Ok(Response::from_boxed(cached_resp, uri).into_local());
+            }
+        }
 
         Ok(resp)
     }
