@@ -581,7 +581,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             ));
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
-                            self.core.checkin_connection(pool_key, conn);
+                            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                                self.core.checkin_connection(pool_key, conn);
+                            }
                             return Ok(resp);
                         }
                         Err(e) => return Err(e),
@@ -589,8 +591,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 }
             }
             // Timed out waiting — connect ourselves.
-            self.core.pool.unmark_connecting_h2(&pool_key);
-            let _ = self.core.pool.mark_connecting_h2(&pool_key);
+            // Just ensure the mark is set; don't unmark first (avoids TOCTOU race).
+            self.core.pool.mark_connecting_h2(&pool_key);
         }
 
         let mut h2_guard = H2ConnectGuard {
