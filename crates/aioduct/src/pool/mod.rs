@@ -163,6 +163,10 @@ impl<B: 'static> ConnectionPool<B> {
         };
         let max = inner.max_idle_per_host;
 
+        if max == 0 {
+            return;
+        }
+
         for san in connection.sans.iter() {
             inner
                 .san_index
