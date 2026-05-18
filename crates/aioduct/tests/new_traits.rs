@@ -91,7 +91,9 @@ fn tokio_client_and_engine_are_same_type() {
 #[tokio::test]
 async fn builder_auto_wires_default_resolver() {
     let (addr, _counter) = h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .build()
+        .unwrap();
     // Use localhost (not 127.0.0.1) to exercise the resolver
     let resp = client
         .get(&format!("http://localhost:{}/", addr.port()))
@@ -109,7 +111,8 @@ async fn custom_connector_send_integration() {
     let count = connector.count.clone();
     let client = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(connector)
         .no_connection_reuse()
-        .build();
+        .build()
+        .unwrap();
     for _ in 0..3 {
         let resp = client
             .get(&format!("http://{addr}/"))
@@ -131,10 +134,12 @@ async fn custom_connector_two_clients_isolated() {
     let count2 = c2.count.clone();
     let client1 = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(c1)
         .no_connection_reuse()
-        .build();
+        .build()
+        .unwrap();
     let client2 = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(c2)
         .no_connection_reuse()
-        .build();
+        .build()
+        .unwrap();
     client1
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -246,7 +251,8 @@ async fn forward_with_custom_connector() {
     let count = connector.count.clone();
     let client = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(connector)
         .no_connection_reuse()
-        .build();
+        .build()
+        .unwrap();
 
     let req = http::Request::builder()
         .method(http::Method::GET)

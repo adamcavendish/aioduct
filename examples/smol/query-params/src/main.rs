@@ -11,7 +11,7 @@ struct SearchParams {
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = SmolClient::builder(TcpConnector).build();
+        let client = SmolClient::builder(TcpConnector).build().unwrap();
 
         // Simple query parameters via tuples
         let resp = client

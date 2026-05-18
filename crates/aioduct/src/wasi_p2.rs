@@ -42,17 +42,18 @@ impl WasiClientBuilder {
     }
 
     /// Build the client.
-    pub fn build(self) -> WasiClient {
-        WasiClient {
+    pub fn build(self) -> Result<WasiClient, crate::error::Error> {
+        Ok(WasiClient {
             default_headers: self.default_headers,
-        }
+        })
     }
 }
 
 impl WasiClient {
     /// Create a new client with default settings.
+    #[allow(clippy::expect_used)]
     pub fn new() -> Self {
-        Self::builder().build()
+        Self::builder().build().expect("default build")
     }
 
     /// Create a builder for configuring the client.
@@ -427,7 +428,10 @@ mod tests {
 
     #[test]
     fn builder_sets_user_agent() {
-        let client = WasiClient::builder().user_agent("custom/1.0").build();
+        let client = WasiClient::builder()
+            .user_agent("custom/1.0")
+            .build()
+            .unwrap();
         let ua = client
             .default_headers
             .get(http::header::USER_AGENT)
@@ -437,7 +441,10 @@ mod tests {
 
     #[test]
     fn builder_invalid_user_agent_ignored() {
-        let client = WasiClient::builder().user_agent("bad\x00agent").build();
+        let client = WasiClient::builder()
+            .user_agent("bad\x00agent")
+            .build()
+            .unwrap();
         let ua = client
             .default_headers
             .get(http::header::USER_AGENT)

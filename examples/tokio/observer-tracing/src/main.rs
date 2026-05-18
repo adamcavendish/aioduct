@@ -256,7 +256,8 @@ async fn main() -> Result<(), aioduct::Error> {
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .request_observer(TracingObserver)
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     // --- 1. HTTPS GET: shows DNS → TCP → TLS → send → TTFB → complete pipeline ---
     tracing::info!("═══ Example 1: HTTPS GET (full connection lifecycle) ═══");

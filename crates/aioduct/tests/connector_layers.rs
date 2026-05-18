@@ -119,7 +119,8 @@ async fn identity_layer() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(IdentityLayer)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -138,7 +139,8 @@ async fn timeout_layer_fast_connect() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(TimeoutLayer::new(Duration::from_secs(5)))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -154,7 +156,8 @@ async fn timeout_layer_fast_connect() {
 async fn timeout_layer_slow_connect() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connector_layer(TimeoutLayer::new(Duration::from_millis(100)))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client
         .get("http://192.0.2.1:81/slow")
@@ -197,7 +200,8 @@ async fn delay_layer_with_timeout_layer_triggers() {
             delay: Duration::from_millis(200),
             timeout: Duration::from_millis(100),
         })
-        .build();
+        .build()
+        .unwrap();
 
     let result = client
         .get(&format!("http://{addr}/"))
@@ -238,7 +242,8 @@ async fn delay_layer_within_timeout_succeeds() {
             delay: Duration::from_millis(50),
             timeout: Duration::from_millis(500),
         })
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))

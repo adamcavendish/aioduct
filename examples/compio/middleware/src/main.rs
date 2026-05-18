@@ -69,7 +69,8 @@ fn main() -> Result<(), aioduct::Error> {
         let client = CompioClient::builder_local(TcpConnector)
             .middleware(LoggingMiddleware)
             .middleware(metrics)
-            .build_local();
+            .build_local()
+            .unwrap();
 
         // Middleware sees each request/response
         let _resp = client.get_local("https://httpbin.org/get")?.send().await?;
@@ -95,7 +96,8 @@ fn main() -> Result<(), aioduct::Error> {
                     );
                 },
             )
-            .build_local();
+            .build_local()
+            .unwrap();
 
         let resp = client
             .get_local("https://httpbin.org/headers")?

@@ -13,6 +13,7 @@ fn h1_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
+        .unwrap()
 }
 
 fn h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
@@ -21,6 +22,7 @@ fn h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(5))
         .build()
+        .unwrap()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -459,7 +461,8 @@ mod tls_tests {
             HttpEngineSend::builder(TcpConnector)
                 .tls(connector)
                 .timeout(Duration::from_secs(5))
-                .build();
+                .build()
+                .unwrap();
 
         let resp = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -495,7 +498,8 @@ mod tls_tests {
             HttpEngineSend::builder(TcpConnector)
                 .tls(connector)
                 .timeout(Duration::from_secs(5))
-                .build();
+                .build()
+                .unwrap();
 
         let resp = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -529,7 +533,8 @@ mod tls_tests {
             HttpEngineSend::builder(TcpConnector)
                 .tls(connector)
                 .timeout(Duration::from_secs(5))
-                .build();
+                .build()
+                .unwrap();
 
         let result = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -576,7 +581,8 @@ mod tls_tests {
             HttpEngineSend::builder(TcpConnector)
                 .tls(connector)
                 .timeout(Duration::from_secs(5))
-                .build();
+                .build()
+                .unwrap();
 
         let result = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -604,7 +610,8 @@ mod tls_tests {
             HttpEngineSend::builder(TcpConnector)
                 .tls(connector)
                 .timeout(Duration::from_secs(5))
-                .build();
+                .build()
+                .unwrap();
 
         let resp = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -636,7 +643,8 @@ mod tls_tests {
                 .tls(connector)
                 .pool_idle_timeout(Duration::from_secs(60))
                 .timeout(Duration::from_secs(5))
-                .build();
+                .build()
+                .unwrap();
 
         let url = format!("https://localhost:{}/", addr.port());
 

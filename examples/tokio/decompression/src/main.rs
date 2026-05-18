@@ -4,7 +4,7 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 async fn main() -> Result<(), aioduct::Error> {
     // Enable gzip, brotli, zstd, and deflate decompression
     // The client automatically sends Accept-Encoding and decompresses responses
-    let client = TokioClient::builder(TcpConnector).build();
+    let client = TokioClient::builder(TcpConnector).build().unwrap();
 
     // Request with gzip encoding
     let resp = client.get("https://httpbin.org/gzip")?.send().await?;

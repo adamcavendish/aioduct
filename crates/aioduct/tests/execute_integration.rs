@@ -15,6 +15,7 @@ fn client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
         .build()
+        .unwrap()
 }
 
 // ── Redirect Tests ─────────────────────────────────────────────────────
@@ -250,7 +251,8 @@ async fn redirect_policy_none_returns_redirect_response() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .redirect_policy(aioduct::RedirectPolicy::None)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/redirect"))
@@ -286,7 +288,8 @@ async fn redirect_limited_policy_stops_at_limit() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .redirect_policy(aioduct::RedirectPolicy::Limited(2))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client
         .get(&format!("http://{addr}/r"))
@@ -317,7 +320,8 @@ async fn https_only_rejects_http() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .https_only(true)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -354,7 +358,8 @@ async fn cookie_jar_stores_and_sends_cookies() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/set"))
@@ -389,7 +394,8 @@ async fn read_timeout_on_slow_body() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(200))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -467,7 +473,8 @@ async fn middleware_modifies_request() {
             },
         )
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))

@@ -4,7 +4,9 @@ fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         // Enable gzip, brotli, zstd, and deflate decompression
         // The client automatically sends Accept-Encoding and decompresses responses
-        let client = CompioClient::builder_local(TcpConnector).build_local();
+        let client = CompioClient::builder_local(TcpConnector)
+            .build_local()
+            .unwrap();
 
         // Request with gzip encoding
         let resp = client.get_local("https://httpbin.org/gzip")?.send().await?;

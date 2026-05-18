@@ -57,7 +57,8 @@ fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = CompioClient::builder_local(TcpConnector)
             .connector_layer_local(LoggingLayer)
-            .build_local();
+            .build_local()
+            .unwrap();
 
         let resp = client.get_local("https://httpbin.org/get")?.send().await?;
 

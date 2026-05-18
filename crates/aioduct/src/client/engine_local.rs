@@ -12,16 +12,21 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     }
 
     /// Create a new client with default settings for a completion-based runtime.
+    #[allow(clippy::expect_used)]
     pub fn new_local(connector: C) -> Self {
-        Self::builder_local(connector).build_local()
+        Self::builder_local(connector)
+            .build_local()
+            .expect("default build_local")
     }
 
     #[cfg(feature = "rustls")]
+    #[allow(clippy::expect_used)]
     /// Create a client with rustls TLS for a completion-based runtime.
     pub fn with_rustls_local(connector: C) -> Self {
         Self::builder_local(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .build_local()
+            .expect("rustls build_local")
     }
 
     /// Start a GET request to the given URL.
@@ -141,7 +146,8 @@ mod tests {
         install_crypto();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -151,7 +157,8 @@ mod tests {
         install_crypto();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .min_tls_version(crate::tls::TlsVersion::Tls1_2)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -161,7 +168,8 @@ mod tests {
         install_crypto();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .max_tls_version(crate::tls::TlsVersion::Tls1_3)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -172,7 +180,8 @@ mod tests {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .min_tls_version(crate::tls::TlsVersion::Tls1_2)
             .max_tls_version(crate::tls::TlsVersion::Tls1_3)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -184,7 +193,8 @@ mod tests {
         let cert = crate::tls::Certificate::from_der(ca.cert.der().to_vec());
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .add_root_certificates(&[cert])
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -197,7 +207,8 @@ mod tests {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .add_root_certificates(&[cert])
             .min_tls_version(crate::tls::TlsVersion::Tls1_3)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -211,7 +222,8 @@ mod tests {
         let id = crate::tls::Identity::from_pem(pem.as_bytes()).unwrap();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .identity(id)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -226,7 +238,8 @@ mod tests {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .identity(id)
             .min_tls_version(crate::tls::TlsVersion::Tls1_3)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -236,7 +249,8 @@ mod tests {
         install_crypto();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .danger_accept_invalid_hostnames(true)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -251,7 +265,8 @@ mod tests {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .identity(id)
             .danger_accept_invalid_hostnames(true)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -264,7 +279,8 @@ mod tests {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .add_root_certificates(&[cert])
             .danger_accept_invalid_hostnames(true)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -274,7 +290,8 @@ mod tests {
         install_crypto();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .tls_sni(false)
-            .build_local();
+            .build_local()
+            .unwrap();
         let tls = client.core.tls.as_ref().unwrap();
         assert!(!tls.config().enable_sni);
     }
@@ -285,7 +302,8 @@ mod tests {
         install_crypto();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .danger_accept_invalid_certs()
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -294,7 +312,8 @@ mod tests {
     fn build_local_tls_no_config_uses_default_webpki() {
         install_crypto();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.tls.is_some());
     }
 
@@ -305,7 +324,8 @@ mod tests {
         let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .resolve("example.com", addr)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.resolver.is_some());
     }
 
@@ -316,7 +336,8 @@ mod tests {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .resolve("example.com", addr1)
             .resolve("other.com", addr2)
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.resolver.is_some());
     }
 
@@ -324,7 +345,8 @@ mod tests {
     fn build_local_no_connection_reuse() {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
             .no_connection_reuse()
-            .build_local();
+            .build_local()
+            .unwrap();
         assert!(client.core.no_connection_reuse);
     }
 }

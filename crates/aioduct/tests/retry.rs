@@ -159,7 +159,8 @@ async fn test_client_default_retry() {
                 .max_retries(2)
                 .initial_backoff(Duration::from_millis(10)),
         )
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -468,7 +469,8 @@ async fn test_client_default_retry_with_recovery() {
                 .max_retries(3)
                 .initial_backoff(Duration::from_millis(10)),
         )
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))

@@ -18,7 +18,7 @@ struct PostResponse {
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector).build();
+    let client = TokioClient::builder(TcpConnector).build().unwrap();
 
     // POST JSON and deserialize the response
     let payload = CreatePost {

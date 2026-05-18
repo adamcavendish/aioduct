@@ -2,7 +2,7 @@ use aioduct::TokioClient;
 use aioduct::runtime::tokio_rt::TcpConnector;
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector).build();
+    let client = TokioClient::builder(TcpConnector).build().unwrap();
 
     // Build an upgrade request (e.g., for WebSocket)
     let resp = client

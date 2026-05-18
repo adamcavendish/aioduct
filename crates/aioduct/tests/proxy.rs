@@ -33,7 +33,8 @@ async fn test_http_proxy() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get("http://example.com/path")
@@ -72,7 +73,8 @@ async fn test_proxy_settings_no_proxy_bypass() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(settings)
-        .build();
+        .build()
+        .unwrap();
 
     // Request to the bypassed host goes direct
     let resp = client
@@ -106,7 +108,8 @@ async fn test_no_proxy_wildcard_bypasses_all() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(settings)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{target_addr}/"))
@@ -191,7 +194,8 @@ async fn test_socks5_proxy() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}")).unwrap())
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://localhost:{}/", target_addr.port()))
@@ -268,7 +272,8 @@ async fn test_socks5_proxy_with_auth() {
                 .unwrap()
                 .basic_auth("testuser", "testpass"),
         )
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://localhost:{}/", target_addr.port()))
@@ -308,7 +313,8 @@ async fn test_http_proxy_basic_auth() {
                 .unwrap()
                 .basic_auth("Aladdin", "open sesame"),
         )
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get("http://example.com/prox")
@@ -340,7 +346,8 @@ async fn test_http_proxy_preserves_host_header() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get("http://hyper.rs.local/path")
@@ -398,7 +405,8 @@ async fn test_connect_tunnel_includes_proxy_auth() {
                 .unwrap()
                 .basic_auth("Aladdin", "open sesame"),
         )
-        .build();
+        .build()
+        .unwrap();
 
     // HTTPS request triggers CONNECT tunnel
     let result = client
@@ -432,7 +440,8 @@ async fn test_connect_tunnel_detects_auth_required() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .build();
+        .build()
+        .unwrap();
 
     // HTTPS request triggers CONNECT tunnel, which should fail with 407
     let err = client
@@ -472,7 +481,8 @@ async fn test_proxy_settings_routes_http_and_https_separately() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy_settings(settings)
-        .build();
+        .build()
+        .unwrap();
 
     // HTTP request to non-bypassed host goes through HTTP proxy
     let resp = client
@@ -520,7 +530,8 @@ async fn test_connect_tunnel_target_authority() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .build();
+        .build()
+        .unwrap();
 
     let _ = client
         .get("https://hyper.rs.local:8443/path")
@@ -559,7 +570,8 @@ async fn test_connect_tunnel_default_port() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .build();
+        .build()
+        .unwrap();
 
     let _ = client
         .get("https://hyper.rs.local/path")

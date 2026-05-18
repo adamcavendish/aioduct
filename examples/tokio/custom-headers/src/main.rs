@@ -9,7 +9,8 @@ async fn main() -> Result<(), aioduct::Error> {
     let client = TokioClient::builder(TcpConnector)
         .user_agent("my-app/1.0")
         .default_headers(default_headers)
-        .build();
+        .build()
+        .unwrap();
 
     // Per-request headers
     let resp = client

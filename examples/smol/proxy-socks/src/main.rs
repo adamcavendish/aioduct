@@ -11,7 +11,8 @@ fn main() -> Result<(), aioduct::Error> {
             .proxy_settings(ProxySettings::all(
                 ProxyConfig::http("http://proxy.example.com:8080").unwrap(),
             ))
-            .build();
+            .build()
+            .unwrap();
 
         println!("1. HTTP proxy: http://proxy.example.com:8080");
 
@@ -20,7 +21,8 @@ fn main() -> Result<(), aioduct::Error> {
             .proxy_settings(ProxySettings::all(
                 ProxyConfig::socks5("socks5://127.0.0.1:1080").unwrap(),
             ))
-            .build();
+            .build()
+            .unwrap();
 
         println!("2. SOCKS5 proxy: socks5://127.0.0.1:1080");
 
@@ -31,7 +33,8 @@ fn main() -> Result<(), aioduct::Error> {
                     .http(ProxyConfig::http("http://http-proxy:3128").unwrap())
                     .https(ProxyConfig::http("http://https-proxy:3129").unwrap()),
             )
-            .build();
+            .build()
+            .unwrap();
 
         println!("3. Split HTTP/HTTPS proxies");
 
@@ -40,7 +43,8 @@ fn main() -> Result<(), aioduct::Error> {
             .proxy_settings(ProxySettings::all(
                 ProxyConfig::http("http://user:password@proxy.example.com:8080").unwrap(),
             ))
-            .build();
+            .build()
+            .unwrap();
 
         println!("4. Authenticated proxy");
 
@@ -50,7 +54,8 @@ fn main() -> Result<(), aioduct::Error> {
                 ProxySettings::all(ProxyConfig::http("http://proxy.example.com:8080").unwrap())
                     .no_proxy(NoProxy::new("localhost,127.0.0.1,.internal.corp")),
             )
-            .build();
+            .build()
+            .unwrap();
 
         println!("5. Proxy with no-proxy bypass list");
 

@@ -114,7 +114,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
     }
 
     /// Build the configured [`HttpEngineSend`].
-    pub fn build(self) -> HttpEngineSend<R, C> {
+    pub fn build(self) -> Result<HttpEngineSend<R, C>, crate::error::Error> {
         let pool = if self.no_connection_reuse {
             ConnectionPool::new(0, Duration::from_secs(0))
         } else {
@@ -140,7 +140,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
             } else if needs_configured || has_extra_config || has_version_constraints {
                 let versions: Vec<&'static rustls::SupportedProtocolVersion> =
                     if has_version_constraints {
-                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)
+                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)?
                     } else {
                         vec![&rustls::version::TLS12, &rustls::version::TLS13]
                     };
@@ -213,7 +213,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
             connector
         };
 
-        HttpEngineSend {
+        Ok(HttpEngineSend {
             core: HttpEngineCore {
                 pool,
                 redirect_policy: self.redirect_policy,
@@ -280,6 +280,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
             #[cfg(feature = "tower")]
             tower_connector: self.tower_connector,
             _phantom: PhantomData,
-        }
+        })
     }
 }

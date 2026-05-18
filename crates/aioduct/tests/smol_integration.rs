@@ -250,7 +250,8 @@ fn test_smol_h2_prior_knowledge() {
                 aioduct::runtime::smol_rt::TcpConnector,
             )
             .http2_prior_knowledge()
-            .build();
+            .build()
+            .unwrap();
 
         let resp = client
             .get(&format!("http://{addr}/"))
@@ -277,7 +278,8 @@ fn test_smol_h2_multiple_requests() {
                 aioduct::runtime::smol_rt::TcpConnector,
             )
             .http2_prior_knowledge()
-            .build();
+            .build()
+            .unwrap();
         let url = format!("http://{addr}/");
 
         let resp1 = client.get(&url).unwrap().send().await.unwrap();
@@ -332,7 +334,8 @@ fn test_smol_h2_large_body() {
                 aioduct::runtime::smol_rt::TcpConnector,
             )
             .http2_prior_knowledge()
-            .build();
+            .build()
+            .unwrap();
         let payload = "x".repeat(1024 * 1024);
         let resp = client
             .post(&format!("http://{addr}/"))
@@ -494,7 +497,8 @@ fn test_smol_proxy_auth_for_plain_http() {
                     .unwrap()
                     .basic_auth("user", "pass"),
             )
-            .build();
+            .build()
+            .unwrap();
 
         let resp = client
             .get("http://example.com/test")
@@ -569,7 +573,8 @@ fn test_smol_default_headers() {
                 aioduct::runtime::smol_rt::TcpConnector,
             )
             .default_headers(headers)
-            .build();
+            .build()
+            .unwrap();
 
         let resp = client
             .get(&format!("http://{addr}/"))
@@ -593,7 +598,8 @@ fn test_smol_tcp_keepalive_request() {
             .tcp_keepalive(Duration::from_secs(60))
             .tcp_keepalive_interval(Duration::from_secs(10))
             .tcp_keepalive_retries(3)
-            .build();
+            .build()
+            .unwrap();
 
         let resp = client
             .get(&format!("http://{addr}/"))
@@ -738,7 +744,8 @@ mod smol_tls_tests {
                 .tls(tls_config)
                 .timeout(std::time::Duration::from_secs(5))
                 .resolve("localhost", addr)
-                .build();
+                .build()
+                .unwrap();
 
             let resp = client
                 .get(&format!("https://localhost:{}/", addr.port()))
@@ -775,7 +782,8 @@ mod smol_tls_tests {
                 .pool_idle_timeout(std::time::Duration::from_secs(30))
                 .timeout(std::time::Duration::from_secs(5))
                 .resolve("localhost", addr)
-                .build();
+                .build()
+                .unwrap();
 
             let url = format!("https://localhost:{}/", addr.port());
 

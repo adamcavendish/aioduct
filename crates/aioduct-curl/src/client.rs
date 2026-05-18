@@ -5,7 +5,7 @@ use aioduct::{RetryConfig, TokioClient};
 
 use crate::cli::Cli;
 
-pub fn build_client(cli: &Cli) -> TokioClient {
+pub fn build_client(cli: &Cli) -> Result<TokioClient, aioduct::Error> {
     let mut builder = TokioClient::builder(TcpConnector);
 
     if let Some(ref ua) = cli.user_agent {

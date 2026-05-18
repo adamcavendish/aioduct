@@ -6,7 +6,8 @@ fn main() -> Result<(), aioduct::Error> {
         // This is useful for local services that speak HTTP/2 directly
         let _client = CompioClient::builder_local(TcpConnector)
             .http2_prior_knowledge()
-            .build_local();
+            .build_local()
+            .unwrap();
 
         // Note: most public servers don't support h2c, so we only demonstrate the API.
         // Use the h2c client with a local server that supports cleartext HTTP/2.
@@ -18,7 +19,9 @@ fn main() -> Result<(), aioduct::Error> {
         // when the server supports it. No special configuration needed.
 
         // Example with a standard HTTPS endpoint (negotiates h2 via ALPN):
-        let standard_client = CompioClient::builder_local(TcpConnector).build_local();
+        let standard_client = CompioClient::builder_local(TcpConnector)
+            .build_local()
+            .unwrap();
 
         let resp = standard_client
             .get_local("https://httpbin.org/get")?

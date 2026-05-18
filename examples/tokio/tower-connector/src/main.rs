@@ -60,7 +60,8 @@ async fn main() -> Result<(), aioduct::Error> {
 
     let client = TokioClient::builder(TcpConnector)
         .connector_layer(LoggingLayer)
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client.get("https://httpbin.org/get")?.send().await?;
 

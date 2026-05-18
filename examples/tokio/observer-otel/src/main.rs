@@ -317,7 +317,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .request_observer(OtelObserver)
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     println!("=== OTel Observer Example ===\n");
     println!("Each request creates an OTel span with per-phase events.\n");

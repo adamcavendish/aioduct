@@ -431,7 +431,9 @@ mod tests {
         use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
         // Build engine without observer - notify should not panic
-        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
+        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .build()
+            .unwrap();
         let method = http::Method::GET;
         let uri: http::Uri = "http://example.com/".parse().unwrap();
         // Should not panic - observer is None
@@ -465,7 +467,8 @@ mod tests {
         };
         let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .request_observer(obs)
-            .build();
+            .build()
+            .unwrap();
         let method = http::Method::GET;
         let uri: http::Uri = "http://example.com/".parse().unwrap();
         engine
@@ -485,7 +488,9 @@ mod tests {
         use crate::pool::PooledConnection;
         use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
 
-        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).build();
+        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+            .build()
+            .unwrap();
 
         let (client_io, mut server_io) = tokio::io::duplex(1024);
         tokio::spawn(async move {
@@ -537,7 +542,8 @@ mod tests {
         };
         let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .request_observer(obs)
-            .build();
+            .build()
+            .unwrap();
 
         let (client_io, mut server_io) = tokio::io::duplex(1024);
         tokio::spawn(async move {
@@ -597,7 +603,8 @@ mod tests {
         };
         let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .request_observer(obs)
-            .build();
+            .build()
+            .unwrap();
 
         let (client_io, mut server_io) = tokio::io::duplex(1024);
         tokio::spawn(async move {
@@ -650,7 +657,8 @@ mod tests {
         };
         let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
             .request_observer(obs)
-            .build();
+            .build()
+            .unwrap();
 
         let (client_io, server_io) = tokio::io::duplex(65536);
         tokio::spawn(async move {

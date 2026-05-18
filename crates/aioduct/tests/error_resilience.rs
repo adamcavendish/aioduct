@@ -27,7 +27,8 @@ async fn invalid_http_status_line() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -64,7 +65,8 @@ async fn truncated_chunked_encoding() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -100,7 +102,8 @@ async fn headers_too_large() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -134,7 +137,8 @@ async fn response_timeout_mid_headers() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(500))
-        .build();
+        .build()
+        .unwrap();
 
     let start = tokio::time::Instant::now();
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
@@ -166,7 +170,8 @@ async fn response_timeout_mid_body() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(300))
         .timeout(Duration::from_secs(3))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -203,7 +208,8 @@ async fn incomplete_chunked_never_terminated() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(300))
         .timeout(Duration::from_secs(3))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -232,7 +238,8 @@ async fn content_length_mismatch_short_body() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -259,7 +266,8 @@ async fn empty_response_immediate_close() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -280,7 +288,8 @@ async fn http09_style_response() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -305,7 +314,8 @@ async fn null_bytes_in_headers() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -331,7 +341,8 @@ async fn duplicate_conflicting_content_length() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -361,7 +372,8 @@ async fn connection_refused() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -397,7 +409,8 @@ async fn connection_reset_during_body() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -421,7 +434,8 @@ async fn connect_timeout_fires() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(500))
-        .build();
+        .build()
+        .unwrap();
 
     let start = tokio::time::Instant::now();
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
@@ -445,7 +459,8 @@ async fn connect_timeout_with_nonroutable_address() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .connect_timeout(Duration::from_millis(200))
         .timeout(Duration::from_secs(30))
-        .build();
+        .build()
+        .unwrap();
 
     let start = tokio::time::Instant::now();
     let result = client.get("http://192.0.2.1:80/").unwrap().send().await;
@@ -476,7 +491,8 @@ async fn slowloris_response() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(500))
-        .build();
+        .build()
+        .unwrap();
 
     let start = tokio::time::Instant::now();
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
@@ -503,7 +519,8 @@ async fn error_is_connect_for_connection_failures() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let err = client
         .get(&format!("http://{addr}/"))
@@ -530,7 +547,8 @@ async fn error_is_timeout_for_timeouts() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(200))
-        .build();
+        .build()
+        .unwrap();
 
     let err = client
         .get(&format!("http://{addr}/"))
@@ -559,7 +577,8 @@ async fn error_classification_for_malformed_response() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
@@ -586,7 +605,8 @@ async fn client_recovers_after_connection_error() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(2))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client
         .get(&format!("http://{dead_addr}/"))
@@ -616,7 +636,8 @@ async fn client_recovers_after_timeout() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(200))
-        .build();
+        .build()
+        .unwrap();
 
     // First: timeout against blackhole.
     let result = client
@@ -650,7 +671,8 @@ async fn concurrent_requests_mixed_healthy_and_broken() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_millis(500))
-        .build();
+        .build()
+        .unwrap();
 
     let mut handles = Vec::new();
 
@@ -703,7 +725,8 @@ async fn partial_body_rst_mid_stream_returns_error() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -739,7 +762,8 @@ async fn download_zero_byte_body() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -760,7 +784,8 @@ async fn stuttered_chunked_download_complete() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -802,7 +827,8 @@ async fn error_timeout_should_distinguish_connect_vs_read() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .read_timeout(Duration::from_millis(200))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -836,7 +862,8 @@ async fn error_hyper_connection_refused_should_be_connect() {
     // Connect to a port where nothing is listening
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get("http://127.0.0.1:1/").unwrap().send().await;
 

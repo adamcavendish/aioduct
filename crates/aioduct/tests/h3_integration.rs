@@ -18,7 +18,8 @@ async fn h3_basic_get() {
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://127.0.0.1:{}/", addr.port()))
@@ -44,7 +45,8 @@ async fn h3_post_with_body() {
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .post(&format!("https://127.0.0.1:{}/", addr.port()))
@@ -69,7 +71,8 @@ async fn h3_response_body() {
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("https://127.0.0.1:{}/", addr.port()))
@@ -96,7 +99,8 @@ async fn h3_concurrent_requests() {
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
-        .build();
+        .build()
+        .unwrap();
 
     let mut handles = Vec::new();
     for i in 0..5 {
@@ -129,7 +133,8 @@ async fn h3_connection_refused() {
         .http3(true)
         .unwrap()
         .timeout(Duration::from_millis(500))
-        .build();
+        .build()
+        .unwrap();
 
     let result = client.get("https://127.0.0.1:1/").unwrap().send().await;
 
@@ -147,7 +152,8 @@ async fn h3_stop_sending_no_error() {
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .post(&format!("https://127.0.0.1:{}/", addr.port()))

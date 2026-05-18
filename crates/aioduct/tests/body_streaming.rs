@@ -694,7 +694,8 @@ async fn upload_echo_small() {
     let (addr, _) = aioduct_test_server::h1::h1_echo_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(std::time::Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let data = "0123456789";
     let resp = client
@@ -719,7 +720,8 @@ async fn upload_echo_large() {
     let (addr, _) = aioduct_test_server::h1::h1_echo_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .timeout(std::time::Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     let data = "x".repeat(100 * 1024);
     let resp = client

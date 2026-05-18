@@ -3,7 +3,7 @@ use aioduct::{Multipart, Part, TokioClient};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector).build();
+    let client = TokioClient::builder(TcpConnector).build().unwrap();
 
     // Build a multipart form with text and file parts
     let form = Multipart::new()
