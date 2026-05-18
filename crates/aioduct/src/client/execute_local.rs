@@ -394,7 +394,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     self.core
                         .attach_observer(&mut resp, &req_method, original_uri);
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                        self.core.checkin_connection(pool_key, conn);
+                        self.core
+                            .checkin_when_ready_local(pool_key, conn, R::spawn_local);
                     }
                     return Ok(resp);
                 }
@@ -509,7 +510,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
                             if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                                self.core.checkin_connection(pool_key, conn);
+                                self.core
+                                    .checkin_when_ready_local(pool_key, conn, R::spawn_local);
                             }
                             return Ok(resp);
                         }
@@ -789,7 +791,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         }
         if !self.core.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
         {
-            self.core.checkin_connection(pool_key, pooled);
+            self.core
+                .checkin_when_ready_local(pool_key, pooled, R::spawn_local);
         }
 
         Ok(resp)

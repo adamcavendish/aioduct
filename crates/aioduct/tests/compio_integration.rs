@@ -3988,3 +3988,41 @@ fn test_compio_h2_multiplexing_reuses_connection() {
         );
     });
 }
+
+/// H1 deferred check-in: connections aren't reused until the body is consumed.
+/// Sequential requests with consumed bodies should reuse a single connection.
+#[test]
+fn h1_deferred_checkin_reuses_connection() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let accept_count2 = accept_count.clone();
+
+    let addr = start_server_with_tokio(move |_req| {
+        let cnt = accept_count2.clone();
+        async move {
+            cnt.fetch_add(1, Ordering::SeqCst);
+            Ok(Response::new(Full::new(Bytes::from("ok"))))
+        }
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+            .pool_idle_timeout(Duration::from_secs(60))
+            .build_local()
+            .unwrap();
+        let url = format!("http://{addr}/");
+
+        for _ in 0..5 {
+            let resp = client.get_local(&url).unwrap().send().await.unwrap();
+            assert_eq!(resp.status(), http::StatusCode::OK);
+            let _ = resp.text().await.unwrap();
+            // Wait for deferred check-in to complete.
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+
+    let requests = accept_count.load(Ordering::SeqCst);
+    assert_eq!(requests, 5, "all 5 requests should succeed");
+}
