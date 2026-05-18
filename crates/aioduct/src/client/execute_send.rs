@@ -26,6 +26,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ));
         }
 
+        let site_for_cookies: String = original_uri
+            .authority()
+            .map(|a| a.host().to_owned())
+            .unwrap_or_default();
+
         let mut current_uri = self.core.maybe_upgrade_hsts(original_uri);
         let mut current_method = method;
         let mut current_body = body;
@@ -34,8 +39,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         self.core.apply_default_headers(&mut current_headers);
 
         for _ in 0..=self.core.redirect_policy.max_redirects() {
-            self.core
-                .prepare_request_headers(&current_uri, &mut current_headers);
+            self.core.prepare_request_headers(
+                &current_uri,
+                Some(&site_for_cookies),
+                &mut current_headers,
+            );
 
             let (req_body, body_for_replay) = match current_body.take() {
                 Some(RequestBody::Buffered(b)) => {

@@ -111,13 +111,18 @@ impl<B> HttpEngineCore<B> {
         }
     }
 
-    pub(super) fn prepare_request_headers(&self, uri: &Uri, headers: &mut HeaderMap) {
+    pub(super) fn prepare_request_headers(
+        &self,
+        uri: &Uri,
+        site_for_cookies: Option<&str>,
+        headers: &mut HeaderMap,
+    ) {
         if let Some(jar) = &self.cookie_jar
             && let Some(authority) = uri.authority()
         {
             let is_secure = uri.scheme() == Some(&http::uri::Scheme::HTTPS);
             let path = uri.path();
-            jar.apply_to_request(authority.host(), is_secure, path, headers);
+            jar.apply_to_request(authority.host(), is_secure, path, site_for_cookies, headers);
         }
 
         if !headers.contains_key(HOST)

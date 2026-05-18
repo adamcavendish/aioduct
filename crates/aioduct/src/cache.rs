@@ -81,13 +81,13 @@ impl CacheEntry {
 /// All methods receive `&self` and must be safe to call from multiple threads.
 /// Implementations should handle their own synchronization.
 pub trait CacheStore: Send + Sync + 'static {
-    /// Retrieve a cached entry by method and URI.
-    fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry>;
+    /// Retrieve all cached variants for the given method and URI.
+    fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry>;
 
-    /// Store a cache entry.
+    /// Store a cache entry (adds or replaces the matching Vary variant).
     fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry);
 
-    /// Remove entries for the given method and URI.
+    /// Remove all entries for the given method and URI.
     fn remove(&self, method: &Method, uri: &Uri);
 
     /// Remove all entries.
@@ -110,7 +110,7 @@ pub struct InMemoryCacheStore {
 }
 
 struct InMemoryInner {
-    entries: HashMap<CacheKey, CacheEntry>,
+    entries: HashMap<CacheKey, Vec<CacheEntry>>,
     max_entries: usize,
 }
 
@@ -136,15 +136,15 @@ impl std::fmt::Debug for InMemoryCacheStore {
 }
 
 impl CacheStore for InMemoryCacheStore {
-    fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+    fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
         let key = CacheKey {
             method: method.clone(),
             uri: uri.clone(),
         };
         let Ok(inner) = self.inner.lock() else {
-            return None;
+            return Vec::new();
         };
-        inner.entries.get(&key).cloned()
+        inner.entries.get(&key).cloned().unwrap_or_default()
     }
 
     fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
@@ -155,13 +155,32 @@ impl CacheStore for InMemoryCacheStore {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
-        if inner.entries.len() >= inner.max_entries
-            && !inner.entries.contains_key(&key)
+        let total_variants: usize = inner.entries.values().map(|v| v.len()).sum();
+        if total_variants >= inner.max_entries
             && let Some(oldest_key) = find_oldest_entry(&inner.entries)
         {
-            inner.entries.remove(&oldest_key);
+            let should_remove_key = inner.entries.get(&oldest_key).is_none_or(|v| v.len() <= 1);
+            if should_remove_key {
+                inner.entries.remove(&oldest_key);
+            } else if let Some(variants) = inner.entries.get_mut(&oldest_key) {
+                let oldest_idx = variants
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, e)| e.stored_at)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                variants.swap_remove(oldest_idx);
+            }
         }
-        inner.entries.insert(key, entry);
+        let variants = inner.entries.entry(key).or_default();
+        if let Some(existing) = variants
+            .iter_mut()
+            .find(|e| e.request_vary_headers == entry.request_vary_headers)
+        {
+            *existing = entry;
+        } else {
+            variants.push(entry);
+        }
     }
 
     fn remove(&self, method: &Method, uri: &Uri) {
@@ -186,7 +205,7 @@ impl CacheStore for InMemoryCacheStore {
         let Ok(inner) = self.inner.lock() else {
             return 0;
         };
-        inner.entries.len()
+        inner.entries.values().map(|v| v.len()).sum()
     }
 }
 
@@ -273,11 +292,15 @@ impl HttpCache {
             return CacheLookup::Miss;
         }
 
-        let Some(entry) = self.store.get(method, uri) else {
+        let entries = self.store.get(method, uri);
+        if entries.is_empty() {
             return CacheLookup::Miss;
-        };
+        }
 
-        if !vary_matches(&entry, request_headers) {
+        let entry = entries
+            .into_iter()
+            .find(|e| vary_matches(e, request_headers));
+        let Some(entry) = entry else {
             return CacheLookup::Miss;
         };
 
@@ -669,10 +692,11 @@ pub(crate) fn is_response_cacheable(status: StatusCode, headers: &HeaderMap) -> 
         || headers.contains_key(LAST_MODIFIED)
 }
 
-fn find_oldest_entry(entries: &HashMap<CacheKey, CacheEntry>) -> Option<CacheKey> {
+fn find_oldest_entry(entries: &HashMap<CacheKey, Vec<CacheEntry>>) -> Option<CacheKey> {
     entries
         .iter()
-        .min_by_key(|(_, entry)| entry.stored_at)
+        .filter_map(|(key, variants)| variants.iter().map(|e| e.stored_at).min().map(|t| (key, t)))
+        .min_by_key(|(_, t)| *t)
         .map(|(key, _)| key.clone())
 }
 
@@ -1458,7 +1482,7 @@ mod tests {
         }
 
         impl CacheStore for CountingStore {
-            fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+            fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
                 self.inner.get(method, uri)
             }
             fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
@@ -1518,7 +1542,7 @@ mod tests {
         let store = InMemoryCacheStore::new(256);
         let uri: Uri = "http://example.com/a".parse().unwrap();
 
-        assert!(store.get(&Method::GET, &uri).is_none());
+        assert!(store.get(&Method::GET, &uri).is_empty());
         assert!(store.is_empty());
 
         let entry = CacheEntry {
@@ -1541,11 +1565,12 @@ mod tests {
         assert_eq!(store.len(), 1);
         assert!(!store.is_empty());
 
-        let got = store.get(&Method::GET, &uri).unwrap();
-        assert_eq!(got.body, Bytes::from("body"));
+        let got = store.get(&Method::GET, &uri);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].body, Bytes::from("body"));
 
         store.remove(&Method::GET, &uri);
-        assert!(store.get(&Method::GET, &uri).is_none());
+        assert!(store.get(&Method::GET, &uri).is_empty());
         assert_eq!(store.len(), 0);
     }
 
@@ -1604,11 +1629,11 @@ mod tests {
         store.put(&Method::GET, &uri_c, entry("c"));
         assert_eq!(store.len(), 2);
         assert!(
-            store.get(&Method::GET, &uri_a).is_none(),
+            store.get(&Method::GET, &uri_a).is_empty(),
             "oldest entry (a) should be evicted"
         );
-        assert!(store.get(&Method::GET, &uri_b).is_some());
-        assert!(store.get(&Method::GET, &uri_c).is_some());
+        assert!(!store.get(&Method::GET, &uri_b).is_empty());
+        assert!(!store.get(&Method::GET, &uri_c).is_empty());
     }
 
     #[test]
@@ -1640,8 +1665,8 @@ mod tests {
 
         store.put(&Method::GET, &uri_a, entry("a2"));
         assert_eq!(store.len(), 2);
-        let got = store.get(&Method::GET, &uri_a).unwrap();
-        assert_eq!(got.body, Bytes::from("a2"));
+        let got = store.get(&Method::GET, &uri_a);
+        assert_eq!(got[0].body, Bytes::from("a2"));
     }
 
     #[test]
@@ -1674,14 +1699,14 @@ mod tests {
         store.put(&Method::HEAD, &uri, head_entry);
         assert_eq!(store.len(), 2);
 
-        let get_val = store.get(&Method::GET, &uri).unwrap();
-        assert_eq!(get_val.body, Bytes::from("get-body"));
-        let head_val = store.get(&Method::HEAD, &uri).unwrap();
-        assert_eq!(head_val.body, Bytes::from("head-body"));
+        let get_val = store.get(&Method::GET, &uri);
+        assert_eq!(get_val[0].body, Bytes::from("get-body"));
+        let head_val = store.get(&Method::HEAD, &uri);
+        assert_eq!(head_val[0].body, Bytes::from("head-body"));
 
         store.remove(&Method::GET, &uri);
-        assert!(store.get(&Method::GET, &uri).is_none());
-        assert!(store.get(&Method::HEAD, &uri).is_some());
+        assert!(store.get(&Method::GET, &uri).is_empty());
+        assert!(!store.get(&Method::HEAD, &uri).is_empty());
     }
 
     #[test]
@@ -1694,7 +1719,7 @@ mod tests {
         }
 
         impl CacheStore for TrackingStore {
-            fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+            fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
                 self.inner.get(method, uri)
             }
             fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
@@ -1749,7 +1774,7 @@ mod tests {
         }
 
         impl CacheStore for FlagStore {
-            fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+            fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
                 self.inner.get(method, uri)
             }
             fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
@@ -1855,7 +1880,7 @@ mod tests {
         }
 
         impl CacheStore for CountingStore {
-            fn get(&self, method: &Method, uri: &Uri) -> Option<CacheEntry> {
+            fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
                 self.inner.get(method, uri)
             }
             fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
@@ -2093,6 +2118,59 @@ mod tests {
         }
     }
 
+    /// BUG(#136): Multiple Vary variants for the same URL should coexist in cache.
+    #[test]
+    fn test_vary_multiple_variants_stored() {
+        let cache = HttpCache::new();
+        let uri: Uri = "http://example.com/resource".parse().unwrap();
+        let mut resp_headers = HeaderMap::new();
+        resp_headers.insert(CACHE_CONTROL, "max-age=3600".parse().unwrap());
+        resp_headers.insert(http::header::VARY, "Accept-Encoding".parse().unwrap());
+
+        // Store gzip variant
+        let mut gzip_req = HeaderMap::new();
+        gzip_req.insert(http::header::ACCEPT_ENCODING, "gzip".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &resp_headers,
+            &Bytes::from("gzip-body"),
+            &gzip_req,
+        );
+
+        // Store br variant — should NOT overwrite gzip variant
+        let mut br_req = HeaderMap::new();
+        br_req.insert(http::header::ACCEPT_ENCODING, "br".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &resp_headers,
+            &Bytes::from("br-body"),
+            &br_req,
+        );
+
+        // Both variants should be retrievable
+        match cache.lookup(&Method::GET, &uri, &gzip_req) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(
+                    resp.body,
+                    Bytes::from("gzip-body"),
+                    "gzip variant should still be cached"
+                );
+            }
+            _ => panic!("gzip variant was overwritten by br variant"),
+        }
+
+        match cache.lookup(&Method::GET, &uri, &br_req) {
+            CacheLookup::Fresh(resp) => {
+                assert_eq!(resp.body, Bytes::from("br-body"));
+            }
+            _ => panic!("br variant should be cached"),
+        }
+    }
+
     #[test]
     fn test_vary_star_always_misses() {
         let cache = HttpCache::new();
@@ -2321,8 +2399,8 @@ mod tests {
 
         // Now the mutex is poisoned
         let uri: Uri = "http://example.com/poisoned".parse().unwrap();
-        // get should return None on poisoned lock
-        assert!(store.get(&Method::GET, &uri).is_none());
+        // get should return empty on poisoned lock
+        assert!(store.get(&Method::GET, &uri).is_empty());
     }
 
     #[test]

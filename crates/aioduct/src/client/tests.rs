@@ -1443,7 +1443,7 @@ mod builder_tests {
 
         let uri: Uri = "http://example.com/page".parse().unwrap();
         let mut headers = HeaderMap::new();
-        core.prepare_request_headers(&uri, &mut headers);
+        core.prepare_request_headers(&uri, None, &mut headers);
 
         let cookie_header = headers.get(http::header::COOKIE).unwrap().to_str().unwrap();
         assert!(
@@ -1458,7 +1458,7 @@ mod builder_tests {
         let uri: Uri = "http://example.com:8080/path".parse().unwrap();
         let mut headers = HeaderMap::new();
 
-        core.prepare_request_headers(&uri, &mut headers);
+        core.prepare_request_headers(&uri, None, &mut headers);
 
         assert_eq!(headers.get(http::header::HOST).unwrap(), "example.com:8080");
     }
@@ -1470,7 +1470,7 @@ mod builder_tests {
         let mut headers = HeaderMap::new();
         headers.insert(http::header::HOST, "custom-host.com".parse().unwrap());
 
-        core.prepare_request_headers(&uri, &mut headers);
+        core.prepare_request_headers(&uri, None, &mut headers);
 
         assert_eq!(headers.get(http::header::HOST).unwrap(), "custom-host.com");
     }
@@ -1482,7 +1482,7 @@ mod builder_tests {
         let mut headers = HeaderMap::new();
         headers.insert(http::header::HOST, "already-set".parse().unwrap());
 
-        core.prepare_request_headers(&uri, &mut headers);
+        core.prepare_request_headers(&uri, None, &mut headers);
 
         assert!(headers.get(http::header::COOKIE).is_none());
         assert_eq!(headers.get(http::header::HOST).unwrap(), "already-set");
@@ -1604,7 +1604,7 @@ mod builder_tests {
         );
 
         let mut cookie_headers = HeaderMap::new();
-        jar.apply_to_request("secure.example.com", true, "/", &mut cookie_headers);
+        jar.apply_to_request("secure.example.com", true, "/", None, &mut cookie_headers);
         let cookie_val = cookie_headers
             .get(http::header::COOKIE)
             .unwrap()
