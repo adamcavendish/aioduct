@@ -160,8 +160,12 @@ impl<B: 'static> HttpEngineCore<B> {
             "http.send.start"
         );
 
-        let body_size = http_body::Body::size_hint(request.body())
-            .exact()
+        let body_size = request
+            .headers()
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .or_else(|| http_body::Body::size_hint(request.body()).exact())
             .unwrap_or(0);
         conn.bytes_sent += body_size;
         conn.requests_served += 1;
@@ -782,5 +786,62 @@ mod tests {
                 "hyper error with IO ConnectionReset source should be stale; error: {err:?}"
             );
         }
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn bytes_sent_uses_content_length_header_for_streaming_body() {
+        use crate::pool::PooledConnection;
+        use crate::runtime::tokio_rt::TokioIo;
+        use http_body_util::BodyExt;
+
+        let (client_io, server_io) = tokio::io::duplex(65536);
+        tokio::spawn(async move {
+            let io = TokioIo::new(server_io);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(
+                    io,
+                    hyper::service::service_fn(|_req| async {
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(
+                            http_body_util::Empty::<bytes::Bytes>::new(),
+                        ))
+                    }),
+                )
+                .await;
+        });
+
+        let io = TokioIo::new(client_io);
+        let (sender, conn) = hyper::client::conn::http1::handshake(io)
+            .await
+            .expect("h1 handshake");
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let mut pooled = PooledConnection::new_h1(sender);
+
+        let stream_body = futures_util::stream::iter(vec![Ok::<_, crate::error::Error>(
+            hyper::body::Frame::data(bytes::Bytes::from("hello streaming world")),
+        )]);
+        let body: RequestBodySend = http_body_util::StreamBody::new(stream_body).boxed_unsync();
+
+        assert!(
+            http_body::Body::size_hint(&body).exact().is_none(),
+            "streaming body should not have exact size hint"
+        );
+
+        let request = http::Request::post("/upload")
+            .header("content-length", "21")
+            .header("host", "example.com")
+            .body(body)
+            .unwrap();
+
+        let uri: http::Uri = "http://example.com/upload".parse().unwrap();
+        let _ = Core::send_on_connection(&mut pooled, request, uri).await;
+
+        assert_eq!(
+            pooled.bytes_sent, 21,
+            "bytes_sent should use Content-Length header value for streaming bodies"
+        );
     }
 }
