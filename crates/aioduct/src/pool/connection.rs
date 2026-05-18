@@ -98,7 +98,10 @@ impl<B> PooledConnection<B> {
             HttpConnection::H1(s) => s.is_ready(),
             HttpConnection::H2(s) => s.is_ready(),
             #[cfg(all(feature = "http3", feature = "rustls"))]
-            HttpConnection::H3(_) => true,
+            HttpConnection::H3(s) => {
+                use h3::ConnectionState as _;
+                !s.is_closing() && s.get_conn_error().is_none()
+            }
         }
     }
 

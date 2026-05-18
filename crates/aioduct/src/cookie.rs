@@ -91,12 +91,14 @@ impl CookieJar {
         let Ok(mut jar) = self.inner.lock() else {
             return;
         };
-        let cookies = jar.entry(domain.to_owned()).or_default();
 
         for value in headers.get_all(SET_COOKIE) {
             if let Ok(s) = value.to_str()
                 && let Some(cookie) = parse_set_cookie(s, domain, request_path)
             {
+                let effective_domain = cookie.domain.as_deref().unwrap_or(domain).to_owned();
+                let cookies = jar.entry(effective_domain).or_default();
+
                 if cookie.expired {
                     cookies.retain(|c| {
                         !(c.name == cookie.name
@@ -115,16 +117,31 @@ impl CookieJar {
     }
 
     /// Add stored cookies to outgoing request headers.
+    ///
+    /// `site_for_cookies` is the host of the site that initiated the request
+    /// (e.g. the original URL before redirects). When `Some`, SameSite enforcement
+    /// is applied: `Strict`, `Lax`, and cookies without a SameSite attribute
+    /// (defaulting to Lax per RFC 6265bis) are excluded on cross-site requests.
+    /// Only `SameSite=None` cookies pass through. When `None`, SameSite is not
+    /// enforced (useful for first-party same-site requests or backward compat).
+    ///
+    /// Note: this implementation treats ALL cross-site requests as "unsafe" — there
+    /// is no concept of top-level navigation, so `SameSite=Lax` cookies are never
+    /// sent cross-site. Same-site detection uses a simplified eTLD+1 heuristic that
+    /// does not consult the public suffix list.
     pub fn apply_to_request(
         &self,
         domain: &str,
         is_secure: bool,
         request_path: &str,
+        site_for_cookies: Option<&str>,
         headers: &mut HeaderMap,
     ) {
         let Ok(jar) = self.inner.lock() else {
             return;
         };
+
+        let is_cross_site = site_for_cookies.is_some_and(|site| !is_same_site(domain, site));
 
         let mut matching_cookies = Vec::new();
 
@@ -148,6 +165,12 @@ impl CookieJar {
                     && exp <= SystemTime::now()
                 {
                     continue;
+                }
+                if is_cross_site {
+                    match c.same_site.as_ref() {
+                        Some(SameSite::None) => {}
+                        _ => continue,
+                    }
                 }
                 matching_cookies.push(c);
             }
@@ -447,6 +470,29 @@ fn domain_matches(request_domain: &str, cookie_domain: &str) -> bool {
     rd[suffix_start - 1] == b'.' && rd[suffix_start..].eq_ignore_ascii_case(cd)
 }
 
+/// Determine if two domains are "same-site" by comparing their registrable
+/// domain (approximated as the last two domain labels). This is a simplified
+/// heuristic that works for common single-part TLDs (.com, .org, .net) but
+/// does NOT consult the public suffix list — country-code second-level domains
+/// like .co.uk or .com.au are not handled correctly and will be treated as
+/// registrable domains themselves.
+fn is_same_site(domain_a: &str, domain_b: &str) -> bool {
+    registrable_domain(domain_a).eq_ignore_ascii_case(registrable_domain(domain_b))
+}
+
+fn registrable_domain(domain: &str) -> &str {
+    let domain = domain.strip_suffix('.').unwrap_or(domain);
+    let mut labels = domain.rsplit('.');
+    let tld = labels.next().unwrap_or(domain);
+    match labels.next() {
+        Some(sld) => {
+            let start = domain.len() - tld.len() - 1 - sld.len();
+            &domain[start..]
+        }
+        None => domain,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -467,7 +513,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "foo=bar");
     }
 
@@ -478,7 +524,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         let cookie_str = req_headers.get(COOKIE).unwrap().to_str().unwrap();
         assert!(cookie_str.contains("a=1"));
         assert!(cookie_str.contains("b=2"));
@@ -492,7 +538,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers_with_cookies(&["k=new"]));
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "k=new");
     }
 
@@ -503,7 +549,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get(COOKIE).is_none());
     }
 
@@ -514,7 +560,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", true, "/", &mut req_headers);
+        jar.apply_to_request("example.com", true, "/", None, &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "s=secret");
     }
 
@@ -525,7 +571,7 @@ mod tests {
         jar.clear();
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get(COOKIE).is_none());
     }
 
@@ -536,7 +582,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get(COOKIE).is_none());
     }
 
@@ -560,7 +606,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers_with_cookies(&["hostonly=1"]));
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("sub.example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("sub.example.com", false, "/", None, &mut req_headers);
 
         assert!(
             req_headers.get(COOKIE).is_none(),
@@ -578,7 +624,7 @@ mod tests {
         );
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("sub.example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("sub.example.com", false, "/", None, &mut req_headers);
 
         assert_eq!(req_headers.get(COOKIE).unwrap(), "domain=1");
     }
@@ -606,7 +652,7 @@ mod tests {
         jar.store_from_response("a.com", "/", &headers_with_cookies(&["x=1"]));
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("b.com", false, "/", &mut req_headers);
+        jar.apply_to_request("b.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get(COOKIE).is_none());
     }
 
@@ -617,7 +663,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers_with_cookies(&["x=1"]));
 
         let mut req_headers = HeaderMap::new();
-        jar2.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar2.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "x=1");
     }
 
@@ -632,7 +678,7 @@ mod tests {
         );
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get(COOKIE).is_none());
     }
 
@@ -646,7 +692,7 @@ mod tests {
         );
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get(COOKIE).is_none());
     }
 
@@ -660,15 +706,15 @@ mod tests {
         );
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get(COOKIE).is_none());
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/api", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/api", None, &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "k=v");
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/api/sub", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/api/sub", None, &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "k=v");
     }
 
@@ -702,7 +748,7 @@ mod tests {
         );
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("sub.example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("sub.example.com", false, "/", None, &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "k=v");
     }
 
@@ -837,7 +883,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         let cookie = req_headers.get("cookie").unwrap().to_str().unwrap();
         assert!(cookie.contains("token=xyz"));
     }
@@ -850,7 +896,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("other.com", false, "/", &mut req_headers);
+        jar.apply_to_request("other.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get("cookie").is_none());
     }
 
@@ -862,7 +908,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get("cookie").is_none());
     }
 
@@ -874,7 +920,7 @@ mod tests {
         jar.store_from_response("example.com", "/", &headers);
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("example.com", true, "/", &mut req_headers);
+        jar.apply_to_request("example.com", true, "/", None, &mut req_headers);
         assert!(req_headers.get("cookie").is_some());
     }
 
@@ -1039,7 +1085,7 @@ mod tests {
 
         let mut req_headers = HeaderMap::new();
         req_headers.insert(COOKIE, "existing=cookie".parse().unwrap());
-        jar.apply_to_request("example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
         let cookie = req_headers.get(COOKIE).unwrap().to_str().unwrap();
         assert!(
             cookie.contains("existing=cookie"),
@@ -1166,7 +1212,7 @@ mod tests {
         jar.store_from_response("exact.example.com", "/", &headers_with_cookies(&["h=1"]));
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("exact.example.com", false, "/", &mut req_headers);
+        jar.apply_to_request("exact.example.com", false, "/", None, &mut req_headers);
         assert_eq!(req_headers.get(COOKIE).unwrap(), "h=1");
     }
 
@@ -1181,7 +1227,7 @@ mod tests {
         );
 
         let mut req_headers = HeaderMap::new();
-        jar.apply_to_request("totally-different.com", false, "/", &mut req_headers);
+        jar.apply_to_request("totally-different.com", false, "/", None, &mut req_headers);
         assert!(req_headers.get(COOKIE).is_none());
     }
 
@@ -1280,5 +1326,200 @@ mod tests {
         let headers = headers_with_cookies(&["a=b; Domain=evil.com"]);
         jar.store_from_response("example.com", "/", &headers);
         assert!(jar.cookies().is_empty());
+    }
+
+    /// BUG(#139): SameSite=Strict cookies must not be sent on cross-site requests.
+    #[test]
+    fn samesite_strict_not_sent_cross_site() {
+        let jar = CookieJar::new();
+        jar.store_from_response(
+            "example.com",
+            "/",
+            &headers_with_cookies(&["session=abc; SameSite=Strict"]),
+        );
+
+        // Same-site request: cookie should be sent
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request(
+            "example.com",
+            false,
+            "/",
+            Some("example.com"),
+            &mut req_headers,
+        );
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "session=abc");
+
+        // Cross-site request: cookie must NOT be sent
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request(
+            "example.com",
+            false,
+            "/",
+            Some("other.com"),
+            &mut req_headers,
+        );
+        assert!(
+            req_headers.get(COOKIE).is_none(),
+            "SameSite=Strict cookie must not be sent on cross-site request"
+        );
+    }
+
+    /// BUG(#139): SameSite=Lax cookies must not be sent on cross-site non-GET requests.
+    /// For an HTTP client, we treat all cross-site requests as "unsafe" (not top-level nav).
+    #[test]
+    fn samesite_lax_not_sent_cross_site() {
+        let jar = CookieJar::new();
+        jar.store_from_response(
+            "example.com",
+            "/",
+            &headers_with_cookies(&["token=xyz; SameSite=Lax"]),
+        );
+
+        // Same-site: cookie should be sent
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request(
+            "example.com",
+            false,
+            "/",
+            Some("example.com"),
+            &mut req_headers,
+        );
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "token=xyz");
+
+        // Cross-site: Lax cookies not sent (HTTP client has no concept of top-level navigation)
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request(
+            "example.com",
+            false,
+            "/",
+            Some("other.com"),
+            &mut req_headers,
+        );
+        assert!(
+            req_headers.get(COOKIE).is_none(),
+            "SameSite=Lax cookie must not be sent on cross-site request"
+        );
+    }
+
+    /// BUG(#139): SameSite=None cookies are always sent, even cross-site.
+    #[test]
+    fn samesite_none_sent_cross_site() {
+        let jar = CookieJar::new();
+        jar.store_from_response(
+            "example.com",
+            "/",
+            &headers_with_cookies(&["tracking=123; SameSite=None; Secure"]),
+        );
+
+        // Cross-site but SameSite=None: cookie should still be sent
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request(
+            "example.com",
+            true,
+            "/",
+            Some("other.com"),
+            &mut req_headers,
+        );
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "tracking=123");
+    }
+
+    /// BUG(#139): Cookies without SameSite attribute default to Lax behavior.
+    #[test]
+    fn samesite_default_lax_cross_site() {
+        let jar = CookieJar::new();
+        jar.store_from_response("example.com", "/", &headers_with_cookies(&["legacy=old"]));
+
+        // Same-site: sent
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request(
+            "example.com",
+            false,
+            "/",
+            Some("example.com"),
+            &mut req_headers,
+        );
+        assert_eq!(req_headers.get(COOKIE).unwrap(), "legacy=old");
+
+        // Cross-site: default-Lax means not sent
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request(
+            "example.com",
+            false,
+            "/",
+            Some("other.com"),
+            &mut req_headers,
+        );
+        assert!(
+            req_headers.get(COOKIE).is_none(),
+            "Cookie without SameSite should default to Lax (not sent cross-site)"
+        );
+    }
+
+    /// When site_for_cookies is None, SameSite is not enforced (backward compat).
+    #[test]
+    fn samesite_not_enforced_when_no_site_for_cookies() {
+        let jar = CookieJar::new();
+        jar.store_from_response(
+            "example.com",
+            "/",
+            &headers_with_cookies(&["session=abc; SameSite=Strict"]),
+        );
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
+        assert_eq!(
+            req_headers.get(COOKIE).unwrap(),
+            "session=abc",
+            "When site_for_cookies is None, SameSite should not be enforced"
+        );
+    }
+
+    /// BUG(#139): Subdomain of same registrable domain counts as same-site.
+    #[test]
+    fn samesite_subdomain_is_same_site() {
+        let jar = CookieJar::new();
+        jar.store_from_response(
+            "example.com",
+            "/",
+            &headers_with_cookies(&["session=abc; SameSite=Strict; Domain=example.com"]),
+        );
+
+        // Request from sub.example.com to example.com — same site
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request(
+            "api.example.com",
+            false,
+            "/",
+            Some("www.example.com"),
+            &mut req_headers,
+        );
+        assert_eq!(
+            req_headers.get(COOKIE).unwrap(),
+            "session=abc",
+            "Subdomains of same registrable domain should be same-site"
+        );
+    }
+
+    /// BUG(#152): Cookie set from different subdomains with same Domain attribute
+    /// should be deduplicated, not stored twice.
+    #[test]
+    fn cross_subdomain_cookie_deduplication() {
+        let jar = CookieJar::new();
+        // Set session=old from api.example.com with Domain=example.com
+        let headers = headers_with_cookies(&["session=old; Domain=example.com"]);
+        jar.store_from_response("api.example.com", "/", &headers);
+
+        // Set session=new from www.example.com with Domain=example.com
+        // This should UPDATE the existing cookie, not create a duplicate
+        let headers = headers_with_cookies(&["session=new; Domain=example.com"]);
+        jar.store_from_response("www.example.com", "/", &headers);
+
+        let mut req_headers = HeaderMap::new();
+        jar.apply_to_request("example.com", false, "/", None, &mut req_headers);
+        let cookie_str = req_headers.get(COOKIE).unwrap().to_str().unwrap();
+        assert_eq!(
+            cookie_str, "session=new",
+            "cookie should be deduplicated: got '{cookie_str}' (expected only session=new)"
+        );
     }
 }

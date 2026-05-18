@@ -26,7 +26,7 @@ fn bench_apply_to_request(c: &mut Criterion) {
 
                 b.iter(|| {
                     let mut headers = http::HeaderMap::new();
-                    jar.apply_to_request("example.com", true, "/", &mut headers);
+                    jar.apply_to_request("example.com", true, "/", None, &mut headers);
                     std::hint::black_box(&headers);
                 });
             },
