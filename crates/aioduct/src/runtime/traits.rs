@@ -80,6 +80,7 @@ pub trait SocketConfig {
 /// because `compio_net::TcpStream` is tied to the thread-local event loop.
 /// For poll-based runtimes (tokio, smol), implement [`ConnectorSend`] instead
 /// which guarantees `Send` futures.
+// TODO: rename to `ConnectorLocal` for symmetry with `ConnectorSend`.
 #[allow(async_fn_in_trait)]
 pub trait Connector: 'static {
     /// The byte stream type passed to hyper for HTTP framing.
