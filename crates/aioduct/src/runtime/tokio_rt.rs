@@ -8,7 +8,7 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::{Connector, RuntimeCompletion, RuntimePoll};
+use super::{ConnectorLocal, RuntimeCompletion, RuntimePoll};
 
 /// Tokio async runtime implementation.
 pub struct TokioRuntime;
@@ -129,7 +129,7 @@ impl super::SocketConfig for TokioIo<tokio::net::TcpStream> {
 #[derive(Clone, Copy, Default)]
 pub struct TcpConnector;
 
-impl Connector for TcpConnector {
+impl ConnectorLocal for TcpConnector {
     type Stream = TokioIo<tokio::net::TcpStream>;
 
     async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
@@ -676,14 +676,14 @@ mod tests {
         assert_eq!(n, 0);
     }
 
-    // ── Connector connect_bound IPv6 path ──────────────────────────────
+    // ── ConnectorLocal connect_bound IPv6 path ──────────────────────────────
 
     #[tokio::test]
     async fn connector_connect_bound_works_local() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let connector = TcpConnector;
-        let stream = <TcpConnector as crate::runtime::Connector>::connect_bound(
+        let stream = <TcpConnector as crate::runtime::ConnectorLocal>::connect_bound(
             &connector,
             addr,
             "127.0.0.1".parse().unwrap(),
@@ -726,7 +726,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Connector from_std_tcp (Connector trait, not ConnectorSend) ────
+    // ── ConnectorLocal from_std_tcp (ConnectorLocal trait, not ConnectorSend) ────
 
     #[tokio::test]
     async fn connector_trait_from_std_tcp_works() {
@@ -735,13 +735,13 @@ mod tests {
         let std_stream = std::net::TcpStream::connect(addr).unwrap();
         let connector = TcpConnector;
         let result =
-            <TcpConnector as crate::runtime::Connector>::from_std_tcp(&connector, std_stream);
+            <TcpConnector as crate::runtime::ConnectorLocal>::from_std_tcp(&connector, std_stream);
         assert!(result.is_ok());
         let stream = result.unwrap();
         assert!(stream.inner().peer_addr().is_ok());
     }
 
-    // ── Connector connect_bound IPv6 path ─────────────────────────────
+    // ── ConnectorLocal connect_bound IPv6 path ─────────────────────────────
 
     #[tokio::test]
     async fn connector_connect_bound_ipv6() {
@@ -752,7 +752,7 @@ mod tests {
         };
         let addr = listener.local_addr().unwrap();
         let connector = TcpConnector;
-        let stream = <TcpConnector as crate::runtime::Connector>::connect_bound(
+        let stream = <TcpConnector as crate::runtime::ConnectorLocal>::connect_bound(
             &connector,
             addr,
             "::1".parse().unwrap(),

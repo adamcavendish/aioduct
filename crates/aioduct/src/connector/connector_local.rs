@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 
 use tower_service::Service;
 
-use crate::runtime::Connector;
+use crate::runtime::ConnectorLocal;
 
 use super::ConnectInfo;
 
@@ -15,13 +15,13 @@ pub(crate) struct TowerConnectorLocalSlot {
 }
 
 impl TowerConnectorLocalSlot {
-    pub(crate) fn new<C: Connector + Clone>(connector: LayeredConnectorLocal<C>) -> Self {
+    pub(crate) fn new<C: ConnectorLocal + Clone>(connector: LayeredConnectorLocal<C>) -> Self {
         Self {
             inner: std::rc::Rc::new(connector),
         }
     }
 
-    pub(crate) fn get<C: Connector + Clone>(&self) -> &LayeredConnectorLocal<C> {
+    pub(crate) fn get<C: ConnectorLocal + Clone>(&self) -> &LayeredConnectorLocal<C> {
         #[allow(clippy::expect_used)]
         self.inner
             .downcast_ref::<LayeredConnectorLocal<C>>()
@@ -38,18 +38,18 @@ impl Clone for TowerConnectorLocalSlot {
 }
 
 /// Default connector service for the `!Send` local path.
-pub struct ConnectorServiceLocal<C: Connector + Clone> {
+pub struct ConnectorServiceLocal<C: ConnectorLocal + Clone> {
     connector: C,
 }
 
-impl<C: Connector + Clone> ConnectorServiceLocal<C> {
+impl<C: ConnectorLocal + Clone> ConnectorServiceLocal<C> {
     /// Create a new local connector service wrapping the given connector.
     pub fn new(connector: C) -> Self {
         Self { connector }
     }
 }
 
-impl<C: Connector + Clone + Default> Default for ConnectorServiceLocal<C> {
+impl<C: ConnectorLocal + Clone + Default> Default for ConnectorServiceLocal<C> {
     fn default() -> Self {
         Self {
             connector: C::default(),
@@ -57,7 +57,7 @@ impl<C: Connector + Clone + Default> Default for ConnectorServiceLocal<C> {
     }
 }
 
-impl<C: Connector + Clone> Clone for ConnectorServiceLocal<C> {
+impl<C: ConnectorLocal + Clone> Clone for ConnectorServiceLocal<C> {
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
@@ -65,7 +65,7 @@ impl<C: Connector + Clone> Clone for ConnectorServiceLocal<C> {
     }
 }
 
-impl<C: Connector + Clone> Service<ConnectInfo> for ConnectorServiceLocal<C> {
+impl<C: ConnectorLocal + Clone> Service<ConnectInfo> for ConnectorServiceLocal<C> {
     type Response = C::Stream;
     type Error = io::Error;
     type Future = Pin<Box<dyn Future<Output = io::Result<C::Stream>>>>;
@@ -104,11 +104,11 @@ where
 }
 
 /// A local (`!Send`) connector wrapped with tower layers.
-pub(crate) struct LayeredConnectorLocal<C: Connector + Clone> {
+pub(crate) struct LayeredConnectorLocal<C: ConnectorLocal + Clone> {
     inner: std::rc::Rc<dyn BoxedConnectorLocalTrait<C::Stream>>,
 }
 
-impl<C: Connector + Clone> Clone for LayeredConnectorLocal<C> {
+impl<C: ConnectorLocal + Clone> Clone for LayeredConnectorLocal<C> {
     fn clone(&self) -> Self {
         Self {
             inner: std::rc::Rc::clone(&self.inner),
@@ -116,7 +116,7 @@ impl<C: Connector + Clone> Clone for LayeredConnectorLocal<C> {
     }
 }
 
-impl<C: Connector + Clone> LayeredConnectorLocal<C> {
+impl<C: ConnectorLocal + Clone> LayeredConnectorLocal<C> {
     pub fn new<S>(service: S) -> Self
     where
         S: Service<ConnectInfo, Response = C::Stream, Error = io::Error> + Clone + 'static,
@@ -139,7 +139,7 @@ impl<C: Connector + Clone> LayeredConnectorLocal<C> {
 /// Apply a tower layer to a local connector service, producing a layered connector.
 pub(crate) fn apply_layer_local<C, L>(connector: C, layer: L) -> LayeredConnectorLocal<C>
 where
-    C: Connector + Clone,
+    C: ConnectorLocal + Clone,
     L: tower_layer::Layer<ConnectorServiceLocal<C>>,
     L::Service: Service<ConnectInfo, Response = C::Stream, Error = io::Error> + Clone + 'static,
 {

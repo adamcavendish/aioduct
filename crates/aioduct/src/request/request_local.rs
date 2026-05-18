@@ -9,13 +9,13 @@ use crate::body::{RequestBody, RequestBodySend};
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
 use crate::response::Response;
-use crate::runtime::{Connector, RuntimeLocal};
+use crate::runtime::{ConnectorLocal, RuntimeLocal};
 use crate::timeout::Timeout;
 
 use super::EngineRef;
 
 /// Builder for configuring and sending an HTTP request on a `!Send` runtime.
-pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: Connector + Clone> {
+pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     client: EngineRef<'a, HttpEngineLocal<R, C>>,
     method: Method,
     uri: Uri,
@@ -25,7 +25,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: Connector + Clone> {
     timeout: Option<Duration>,
 }
 
-impl<'a, R: RuntimeLocal, C: Connector + Clone> RequestBuilderLocal<'a, R, C> {
+impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, C> {
     pub(crate) fn new(client: &'a HttpEngineLocal<R, C>, method: Method, uri: Uri) -> Self {
         Self {
             client: EngineRef::Borrowed(client),

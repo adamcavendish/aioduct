@@ -11,15 +11,15 @@ use crate::error::Error;
 use crate::observer::{self, RequestPhase};
 use crate::pool::PooledConnection;
 use crate::response::Response;
-use crate::runtime::{Connector, RuntimeLocal, SocketConfig};
+use crate::runtime::{ConnectorLocal, RuntimeLocal, SocketConfig};
 #[allow(deprecated)]
 use crate::timing::TimingCollector;
 
 use super::execute::{CacheLookupOutcome, PostExecuteAction};
 
-// ── Local path (RuntimeLocal + Connector) ────────────────────────────────────
+// ── Local path (RuntimeLocal + ConnectorLocal) ────────────────────────────────────
 
-impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     pub(crate) async fn execute_local(
         &self,
         method: Method,

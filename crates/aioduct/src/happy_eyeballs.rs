@@ -25,7 +25,7 @@ use std::time::Duration;
 use futures_channel::mpsc;
 use futures_core::Stream;
 
-use crate::runtime::{Connector, ConnectorSend, RuntimeLocal, RuntimePoll};
+use crate::runtime::{ConnectorLocal, ConnectorSend, RuntimeLocal, RuntimePoll};
 
 pub(crate) const HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(250);
 
@@ -261,7 +261,7 @@ impl_race_connect! {
 
 // ── Local variant (compio) ───────────────────────────────────────────────────
 
-async fn tcp_connect_local<C: Connector>(
+async fn tcp_connect_local<C: ConnectorLocal>(
     connector: &C,
     addr: SocketAddr,
     local_address: Option<std::net::IpAddr>,
@@ -273,7 +273,7 @@ async fn tcp_connect_local<C: Connector>(
     }
 }
 
-pub(crate) async fn connect_happy_eyeballs_local<R: RuntimeLocal, C: Connector + Clone>(
+pub(crate) async fn connect_happy_eyeballs_local<R: RuntimeLocal, C: ConnectorLocal + Clone>(
     connector: &C,
     addrs: &[SocketAddr],
     local_address: Option<std::net::IpAddr>,
@@ -300,7 +300,7 @@ impl_race_connect! {
     connect_fn: tcp_connect_local,
     wait_result: WaitResultLocal,
     wait_future: WaitFutureLocal,
-    connector_trait: Connector: Clone,
+    connector_trait: ConnectorLocal: Clone,
     runtime_trait: RuntimeLocal,
     spawn_method: spawn_local,
     future_extra_bound: 'static,
