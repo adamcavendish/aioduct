@@ -322,6 +322,31 @@ async fn max_idle_per_host_limits_pool() {
 
 // ── Slow / Partial Body Timing ─────────────────────────────────────────
 
+// #210: pool_max_idle_per_host(0) should disable connection pooling entirely.
+#[tokio::test]
+async fn pool_max_idle_zero_disables_reuse() {
+    let (addr, counter) = aioduct_test_server::h1::h1_server().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .pool_max_idle_per_host(0)
+        .pool_idle_timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+
+    for _ in 0..3 {
+        let resp = client.get(&url).unwrap().send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let _ = resp.text().await.unwrap();
+    }
+
+    assert_eq!(
+        counter.connections(),
+        3,
+        "pool_max_idle_per_host(0) should open a fresh connection every time, got {}",
+        counter.connections()
+    );
+}
+
 #[tokio::test]
 async fn h1_slow_chunked_body_no_pool_corruption() {
     let (addr, _counter) =
