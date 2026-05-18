@@ -36,7 +36,8 @@ async fn test_middleware_adds_request_header() {
                 );
             },
         )
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -77,7 +78,8 @@ async fn test_middleware_modifies_response_header() {
         .middleware(ResponseTagger {
             called: called.clone(),
         })
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -126,7 +128,8 @@ async fn test_multiple_middleware_ordering() {
                 );
             },
         )
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -157,7 +160,8 @@ async fn test_middleware_on_error_callback() {
         .middleware(ErrorRecorder {
             error_seen: error_seen.clone(),
         })
-        .build();
+        .build()
+        .unwrap();
 
     // Connect to a port that will refuse connection
     let result = client.get("http://127.0.0.1:1/").unwrap().send().await;
@@ -201,7 +205,8 @@ async fn test_middleware_on_redirect_callback() {
         .middleware(RedirectRecorder {
             redirect_seen: redirect_seen.clone(),
         })
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{redirect_addr}/"))
@@ -266,7 +271,8 @@ async fn test_middleware_on_retry_callback() {
                 .max_retries(2)
                 .initial_backoff(Duration::from_millis(10)),
         )
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))

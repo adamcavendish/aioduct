@@ -128,7 +128,10 @@ pub async fn patch_json(url: &str, body: &str) -> Result<String, String> {
 
 #[wasm_bindgen]
 pub async fn fetch_with_headers(url: &str) -> Result<String, String> {
-    let client = WasmClient::builder().user_agent("aioduct-demo/1.0").build();
+    let client = WasmClient::builder()
+        .user_agent("aioduct-demo/1.0")
+        .build()
+        .map_err(|e| format!("Client build error: {e}"))?;
 
     let resp = client
         .get(url)
@@ -159,7 +162,8 @@ pub async fn fetch_with_headers(url: &str) -> Result<String, String> {
 pub async fn fetch_with_timeout(url: &str, timeout_ms: u32) -> Result<String, String> {
     let client = WasmClient::builder()
         .timeout(Duration::from_millis(timeout_ms as u64))
-        .build();
+        .build()
+        .map_err(|e| format!("Client build error: {e}"))?;
 
     let resp = client
         .get(url)
@@ -685,7 +689,10 @@ pub async fn fetch_conditional(url: &str) -> Result<String, String> {
 
 #[wasm_bindgen]
 pub async fn fetch_user_agent_echo(user_agent: &str) -> Result<String, String> {
-    let client = WasmClient::builder().user_agent(user_agent).build();
+    let client = WasmClient::builder()
+        .user_agent(user_agent)
+        .build()
+        .map_err(|e| format!("Client build error: {e}"))?;
 
     let resp = client
         .get("https://httpbin.org/user-agent")

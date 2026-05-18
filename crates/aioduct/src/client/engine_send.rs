@@ -19,42 +19,47 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     }
 
     /// Create a new client with default settings.
+    #[allow(clippy::expect_used)]
     pub fn new(connector: C) -> Self {
-        Self::builder(connector).build()
+        Self::builder(connector).build().expect("default build")
     }
 
     #[cfg(feature = "rustls")]
+    #[allow(clippy::expect_used)]
     /// Create a client with rustls TLS using WebPKI root certificates.
     pub fn with_rustls(connector: C) -> Self {
         Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .build()
+            .expect("rustls build")
     }
 
     #[cfg(feature = "rustls-native-roots")]
+    #[allow(clippy::expect_used)]
     /// Create a client with rustls TLS using the system's native root certificates.
     pub fn with_native_roots(connector: C) -> Self {
         Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_native_roots())
             .build()
+            .expect("native-roots build")
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Create a client configured for HTTP/3 with rustls.
     pub fn with_http3(connector: C) -> Result<Self, Error> {
-        Ok(Self::builder(connector)
+        Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .http3(true)?
-            .build())
+            .build()
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
     /// Create a client that upgrades to HTTP/3 via Alt-Svc discovery.
     pub fn with_alt_svc_h3(connector: C) -> Result<Self, Error> {
-        Ok(Self::builder(connector)
+        Self::builder(connector)
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .alt_svc_h3(true)?
-            .build())
+            .build()
     }
 
     /// Start a GET request to the given URL.

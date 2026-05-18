@@ -274,49 +274,62 @@ impl<B> Response<B> {
 impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
     /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes, Error> {
+        use http_body_util::BodyExt;
+
         let observer_ctx = self.observer_ctx;
         let response_started = observer_ctx.as_ref().map(|c| c.response_started);
-        let body = self.inner.into_body();
-        match body.collect().await {
-            Ok(collected) => {
-                let bytes = collected.to_bytes();
-                if let Some(ctx) = &observer_ctx {
-                    let total_bytes = bytes.len() as u64;
-                    let transfer_duration = ctx.response_started.elapsed();
-                    let throughput = if transfer_duration.as_secs_f64() > 0.0 {
-                        (total_bytes as f64 / transfer_duration.as_secs_f64()) as f32
-                    } else {
-                        0.0
-                    };
-                    ctx.observer.on_event(&crate::observer::RequestEvent {
-                        method: ctx.method.clone(),
-                        uri: ctx.uri.clone(),
-                        phase: crate::observer::RequestPhase::TransferComplete {
-                            direction: crate::observer::TransferDirection::Download,
-                            total_bytes,
-                            transfer_duration,
-                            throughput_bytes_per_sec: throughput,
-                        },
-                        at: crate::observer::Instant::now(),
-                    });
+        let mut body = std::pin::pin!(self.inner.into_body());
+        let mut buf = bytes::BytesMut::new();
+        let mut cumulative_bytes: u64 = 0;
+
+        loop {
+            match body.as_mut().frame().await {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        cumulative_bytes += data.len() as u64;
+                        buf.extend_from_slice(&data);
+                    }
                 }
-                Ok(bytes)
-            }
-            Err(e) => {
-                if let Some(ctx) = &observer_ctx {
-                    ctx.observer.on_event(&crate::observer::RequestEvent {
-                        method: ctx.method.clone(),
-                        uri: ctx.uri.clone(),
-                        phase: crate::observer::RequestPhase::TransferAborted {
-                            direction: crate::observer::TransferDirection::Download,
-                            bytes_transferred: 0,
-                            elapsed: response_started.map(|t| t.elapsed()).unwrap_or_default(),
-                            error: e.to_string(),
-                        },
-                        at: crate::observer::Instant::now(),
-                    });
+                Some(Err(e)) => {
+                    if let Some(ctx) = &observer_ctx {
+                        ctx.observer.on_event(&crate::observer::RequestEvent {
+                            method: ctx.method.clone(),
+                            uri: ctx.uri.clone(),
+                            phase: crate::observer::RequestPhase::TransferAborted {
+                                direction: crate::observer::TransferDirection::Download,
+                                bytes_transferred: cumulative_bytes,
+                                elapsed: response_started.map(|t| t.elapsed()).unwrap_or_default(),
+                                error: e.to_string(),
+                            },
+                            at: crate::observer::Instant::now(),
+                        });
+                    }
+                    return Err(e);
                 }
-                Err(e)
+                None => {
+                    let bytes = buf.freeze();
+                    if let Some(ctx) = &observer_ctx {
+                        let total_bytes = bytes.len() as u64;
+                        let transfer_duration = ctx.response_started.elapsed();
+                        let throughput = if transfer_duration.as_secs_f64() > 0.0 {
+                            (total_bytes as f64 / transfer_duration.as_secs_f64()) as f32
+                        } else {
+                            0.0
+                        };
+                        ctx.observer.on_event(&crate::observer::RequestEvent {
+                            method: ctx.method.clone(),
+                            uri: ctx.uri.clone(),
+                            phase: crate::observer::RequestPhase::TransferComplete {
+                                direction: crate::observer::TransferDirection::Download,
+                                total_bytes,
+                                transfer_duration,
+                                throughput_bytes_per_sec: throughput,
+                            },
+                            at: crate::observer::Instant::now(),
+                        });
+                    }
+                    return Ok(bytes);
+                }
             }
         }
     }

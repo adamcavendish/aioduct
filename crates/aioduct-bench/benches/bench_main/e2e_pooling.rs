@@ -14,7 +14,8 @@ fn bench_h1_pool_vs_no_pool(c: &mut Criterion) {
         aioduct::runtime::tokio_rt::TcpConnector,
     >::builder(aioduct::runtime::tokio_rt::TcpConnector)
     .no_connection_reuse()
-    .build();
+    .build()
+    .unwrap();
 
     let mut group = c.benchmark_group("e2e_pooling/h1");
     group.sample_size(10);
@@ -74,7 +75,8 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
             .max_concurrent_reset_streams(1024),
     )
     .no_connection_reuse()
-    .build();
+    .build()
+    .unwrap();
 
     let mut group = c.benchmark_group("e2e_pooling/h2");
     group.sample_size(10);

@@ -102,7 +102,8 @@ async fn test_digest_auth_flow() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("testuser", "testpass")
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -158,7 +159,8 @@ async fn test_digest_auth_post_replays_buffered_body() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("testuser", "testpass")
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .post(&format!("http://{addr}/submit"))
@@ -189,7 +191,8 @@ async fn test_digest_auth_no_challenge() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("user", "pass")
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -265,7 +268,8 @@ async fn digest_auth_sha256_should_not_use_md5() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("testuser", "testpass")
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -332,7 +336,8 @@ async fn digest_auth_qop_auth_int_not_confused_with_auth() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .digest_auth("testuser", "testpass")
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))

@@ -8,7 +8,8 @@ fn main() -> Result<(), aioduct::Error> {
             .max_download_speed(5_000_000) // 5 MB/s shared across all parallel chunks
             .max_requests_per_sec(20) // rate-limit HEAD + Range requests
             .timeout(Duration::from_secs(30))
-            .build();
+            .build()
+            .unwrap();
 
         // httpbin /range/{n} supports Accept-Ranges: bytes, ideal for chunk download demo
         let url = "https://httpbin.org/range/10240";

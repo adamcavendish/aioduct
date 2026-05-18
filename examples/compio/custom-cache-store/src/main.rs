@@ -60,7 +60,8 @@ fn main() -> Result<(), aioduct::Error> {
         let cache = HttpCache::with_store(store);
         let client = CompioClient::builder_local(TcpConnector)
             .cache(cache)
-            .build_local();
+            .build_local()
+            .unwrap();
 
         // First request — hits the server, stores in the custom cache
         let resp = client

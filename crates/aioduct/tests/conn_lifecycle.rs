@@ -15,6 +15,7 @@ fn client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
+        .unwrap()
 }
 
 fn client_with_timeout(t: Duration) -> HttpEngineSend<TokioRuntime, TcpConnector> {
@@ -22,6 +23,7 @@ fn client_with_timeout(t: Duration) -> HttpEngineSend<TokioRuntime, TcpConnector
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(t)
         .build()
+        .unwrap()
 }
 
 // ── Pool Reuse ─────────────────────────────────────────────────────────
@@ -112,7 +114,8 @@ async fn h2_reuse_across_sequential() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..5 {
@@ -134,7 +137,8 @@ async fn h2_multiplex_concurrent() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     // Establish the H2 connection first so it's in the pool.
@@ -192,7 +196,8 @@ async fn h2_large_body_then_reuse() {
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -218,7 +223,8 @@ async fn no_connection_reuse_opens_fresh_each_time() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_connection_reuse()
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..3 {
@@ -239,7 +245,8 @@ async fn no_connection_reuse_skips_checkin() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .no_connection_reuse()
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -264,7 +271,8 @@ async fn idle_timeout_evicts_connection() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_millis(100))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -290,7 +298,8 @@ async fn max_idle_per_host_limits_pool() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_max_idle_per_host(1)
         .pool_idle_timeout(Duration::from_secs(60))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..5 {
@@ -431,7 +440,8 @@ async fn h2_connection_reuse_verified() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..5 {
@@ -530,7 +540,8 @@ async fn h2_concurrent_should_multiplex_single_connection() {
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -574,7 +585,8 @@ async fn h2_slow_body_concurrent_should_still_multiplex() {
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -618,7 +630,8 @@ async fn h2_parallel_downloads_single_connection() {
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let mut handles = Vec::new();
@@ -653,7 +666,8 @@ async fn h1_repeated_body_drop_does_not_leak_connections() {
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(5)
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..20 {
@@ -682,7 +696,8 @@ async fn h1_connection_ready_after_body_consumed() {
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(1)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -709,7 +724,8 @@ async fn h2_pool_eviction_should_not_discard_active_connections() {
         .pool_max_idle_per_host(2)
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..5 {
@@ -734,7 +750,8 @@ async fn h1_pool_max_idle_1_with_body_consumed_reuses() {
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(1)
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..10 {
@@ -760,7 +777,8 @@ async fn h1_concurrent_then_sequential_reuses_pool() {
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(5)
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let mut handles = Vec::new();
@@ -804,7 +822,8 @@ async fn h2_goaway_after_n_forces_new_connection() {
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let resp = client.get(&url).unwrap().send().await.unwrap();
@@ -846,7 +865,8 @@ async fn h1_head_response_connection_reuse() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let resp = client.head(&url).unwrap().send().await.unwrap();
@@ -880,7 +900,8 @@ async fn connection_close_every_response_forces_new_connections() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..20 {
@@ -903,7 +924,8 @@ async fn h1_parallel_downloads_need_multiple_connections() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     let mut handles = Vec::new();
@@ -936,7 +958,8 @@ async fn h2_sequential_200_requests_reuse_one_connection() {
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(30))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for i in 0..200 {
@@ -961,7 +984,8 @@ async fn h1_sequential_100_downloads_one_connection() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(30))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..100 {
@@ -998,7 +1022,8 @@ async fn connection_reuse_after_404() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/notfound"))
@@ -1046,7 +1071,8 @@ async fn connection_reuse_after_204() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/empty"))
@@ -1081,7 +1107,8 @@ async fn h1_sustained_concurrent_load_pool_stability() {
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(10)
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
     let url = format!("http://{addr}/");
 
     for _wave in 0..5 {
@@ -1119,7 +1146,8 @@ async fn pool_key_should_normalize_default_port() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // Request without explicit port
     let resp = client
@@ -1168,7 +1196,8 @@ async fn h1_slow_body_should_not_allow_concurrent_reuse() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(10))
-        .build();
+        .build()
+        .unwrap();
 
     // Start a request with a slow body
     let resp1 = client
@@ -1245,7 +1274,8 @@ async fn h1_connection_close_should_not_be_pooled() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
-        .build();
+        .build()
+        .unwrap();
 
     // First request
     let resp = client

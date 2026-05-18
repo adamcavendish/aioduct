@@ -270,7 +270,8 @@ mod tests {
             TcpConnector,
         )
         .user_agent("blocking-test/1.0")
-        .build();
+        .build()
+        .unwrap();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let result = client.get("http://127.0.0.1:1/nonexistent");
         assert!(result.is_ok());

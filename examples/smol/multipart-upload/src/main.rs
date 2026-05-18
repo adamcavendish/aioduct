@@ -3,7 +3,7 @@ use aioduct::{Multipart, Part, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = SmolClient::builder(TcpConnector).build();
+        let client = SmolClient::builder(TcpConnector).build().unwrap();
 
         // Build a multipart form with text and file parts
         let form = Multipart::new()

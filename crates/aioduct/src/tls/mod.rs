@@ -74,7 +74,7 @@ impl TlsVersion {
     pub(crate) fn filter_versions(
         min: Option<TlsVersion>,
         max: Option<TlsVersion>,
-    ) -> Vec<&'static rustls::SupportedProtocolVersion> {
+    ) -> Result<Vec<&'static rustls::SupportedProtocolVersion>, crate::error::Error> {
         let all = [TlsVersion::Tls1_2, TlsVersion::Tls1_3];
         let versions: Vec<_> = all
             .into_iter()
@@ -93,11 +93,12 @@ impl TlsVersion {
             })
             .map(|v| v.to_rustls())
             .collect();
-        assert!(
-            !versions.is_empty(),
-            "no TLS versions match the configured min/max constraints"
-        );
-        versions
+        if versions.is_empty() {
+            return Err(crate::error::Error::Other(
+                "no TLS versions match the configured min/max constraints".into(),
+            ));
+        }
+        Ok(versions)
     }
 }
 
@@ -258,33 +259,37 @@ mod tests {
 
     #[test]
     fn filter_versions_tls12_only() {
-        let versions = TlsVersion::filter_versions(None, Some(TlsVersion::Tls1_2));
+        let versions = TlsVersion::filter_versions(None, Some(TlsVersion::Tls1_2)).unwrap();
         assert_eq!(versions.len(), 1);
     }
 
     #[test]
     fn filter_versions_tls13_only() {
-        let versions = TlsVersion::filter_versions(Some(TlsVersion::Tls1_3), None);
+        let versions = TlsVersion::filter_versions(Some(TlsVersion::Tls1_3), None).unwrap();
         assert_eq!(versions.len(), 1);
     }
 
     #[test]
     fn filter_versions_both() {
-        let versions = TlsVersion::filter_versions(None, None);
+        let versions = TlsVersion::filter_versions(None, None).unwrap();
         assert_eq!(versions.len(), 2);
     }
 
     #[test]
     fn filter_versions_exact_range() {
         let versions =
-            TlsVersion::filter_versions(Some(TlsVersion::Tls1_2), Some(TlsVersion::Tls1_3));
+            TlsVersion::filter_versions(Some(TlsVersion::Tls1_2), Some(TlsVersion::Tls1_3))
+                .unwrap();
         assert_eq!(versions.len(), 2);
     }
 
     #[test]
-    #[should_panic(expected = "no TLS versions match")]
-    fn filter_versions_empty_panics() {
-        TlsVersion::filter_versions(Some(TlsVersion::Tls1_3), Some(TlsVersion::Tls1_2));
+    fn filter_versions_empty_returns_error() {
+        let result =
+            TlsVersion::filter_versions(Some(TlsVersion::Tls1_3), Some(TlsVersion::Tls1_2));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("no TLS versions match"));
     }
 
     #[test]

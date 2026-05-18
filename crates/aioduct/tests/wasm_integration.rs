@@ -203,7 +203,10 @@ async fn builder_default_headers() {
         http::header::HeaderName::from_static("x-default"),
         http::header::HeaderValue::from_static("from-builder"),
     );
-    let client = WasmClient::builder().default_headers(headers).build();
+    let client = WasmClient::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
     let resp = client
         .get(&format!("{BASE}/echo-headers"))
         .unwrap()
@@ -221,7 +224,8 @@ async fn builder_default_headers() {
 async fn builder_timeout_aborts() {
     let client = WasmClient::builder()
         .timeout(std::time::Duration::from_millis(100))
-        .build();
+        .build()
+        .unwrap();
     let result = client
         .get(&format!("{BASE}/delay/5000"))
         .unwrap()

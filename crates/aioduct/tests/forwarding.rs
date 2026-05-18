@@ -865,7 +865,8 @@ async fn forward_h2_extended_connect() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
         .http2_prior_knowledge()
-        .build();
+        .build()
+        .unwrap();
 
     let mut incoming_req = http::Request::builder()
         .method(http::Method::CONNECT)
