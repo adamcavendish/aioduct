@@ -55,6 +55,44 @@ impl<B: 'static> HttpEngineCore<B> {
         self.pool.checkin(key, conn);
     }
 
+    /// Check in a connection, deferring for H1 until the response body is
+    /// fully consumed so the connection is genuinely ready for reuse.
+    ///
+    /// For H2/H3 (multiplexed) connections, check-in is immediate since they
+    /// can handle concurrent streams. For H1, a background task polls
+    /// `poll_ready` and only returns the connection to the pool once it is
+    /// ready. This prevents concurrent checkouts from finding (and destroying)
+    /// not-ready connections in the pool.
+    pub(super) fn checkin_when_ready<F>(
+        &self,
+        key: crate::pool::PoolKey,
+        mut conn: PooledConnection<B>,
+        spawn: F,
+    ) where
+        F: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>),
+        B: Send + 'static,
+    {
+        Self::populate_sans(&mut conn);
+        if conn.is_multiplex_clone {
+            self.fire_connection_metrics(&conn, false);
+            return;
+        }
+        self.fire_connection_metrics(&conn, false);
+
+        if !conn.is_h1() || conn.is_ready() {
+            self.pool.checkin(key, conn);
+            return;
+        }
+
+        let pool = self.pool.clone();
+        spawn(Box::pin(async move {
+            let ready = std::future::poll_fn(|cx| conn.poll_ready(cx)).await;
+            if ready {
+                pool.checkin(key, conn);
+            }
+        }));
+    }
+
     pub(super) fn fire_connection_metrics(&self, conn: &PooledConnection<B>, closed: bool) {
         if let Some(ref obs) = self.observer
             && let Some(remote_addr) = conn.remote_addr
