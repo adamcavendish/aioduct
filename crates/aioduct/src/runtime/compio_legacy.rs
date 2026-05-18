@@ -12,7 +12,7 @@ use super::legacy::Runtime;
 // Safety: compio is thread-per-core — values never actually cross thread boundaries.
 //
 // This exists solely for backward compatibility with the deprecated `Runtime` trait,
-// which requires `TcpStream: Send`. The new `Connector` trait (used by `HttpEngineLocal`
+// which requires `TcpStream: Send`. The new `ConnectorLocal` trait (used by `HttpEngineLocal`
 // in a future phase) does NOT require `Send` on streams. Remove this when the
 // deprecated `Runtime` trait is deleted in 0.3.0.
 unsafe impl Send for CompioTcpStream {}
@@ -201,7 +201,7 @@ struct AssertSend<F>(F);
 
 // Safety: compio is thread-per-core — these futures never cross thread boundaries.
 // Backward compatibility only: used in the deprecated `Runtime::connect` impl.
-// The new `Connector::connect` is async-fn-in-trait and does not need this.
+// The new `ConnectorLocal::connect` is async-fn-in-trait and does not need this.
 // Remove when the deprecated `Runtime` trait is deleted in 0.3.0.
 unsafe impl<F> Send for AssertSend<F> {}
 

@@ -8,7 +8,7 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::{Connector, RuntimeCompletion, RuntimeLocal};
+use super::{ConnectorLocal, RuntimeCompletion, RuntimeLocal};
 
 /// Compio async runtime implementation using native io_uring/IOCP for TCP I/O.
 pub struct CompioRuntime;
@@ -123,7 +123,7 @@ impl super::SocketConfig for CompioTcpStream {
 #[derive(Clone, Copy)]
 pub struct TcpConnector;
 
-impl Connector for TcpConnector {
+impl ConnectorLocal for TcpConnector {
     type Stream = CompioTcpStream;
 
     async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
@@ -622,7 +622,8 @@ mod tests {
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let connector = TcpConnector;
             let local: std::net::IpAddr = "127.0.0.1".parse().unwrap();
-            let stream = crate::runtime::Connector::connect_bound(&connector, addr, local).await;
+            let stream =
+                crate::runtime::ConnectorLocal::connect_bound(&connector, addr, local).await;
             assert!(stream.is_ok());
         });
     }
@@ -634,12 +635,12 @@ mod tests {
         let std_stream = std::net::TcpStream::connect(addr).unwrap();
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let connector = TcpConnector;
-            let result = crate::runtime::Connector::from_std_tcp(&connector, std_stream);
+            let result = crate::runtime::ConnectorLocal::from_std_tcp(&connector, std_stream);
             assert!(result.is_ok());
         });
     }
 
-    // ── Connector connect_bound IPv6 path ─────────────────────────────
+    // ── ConnectorLocal connect_bound IPv6 path ─────────────────────────────
 
     #[test]
     fn connector_connect_bound_ipv6() {
@@ -651,7 +652,8 @@ mod tests {
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let connector = TcpConnector;
             let local: std::net::IpAddr = "::1".parse().unwrap();
-            let stream = crate::runtime::Connector::connect_bound(&connector, addr, local).await;
+            let stream =
+                crate::runtime::ConnectorLocal::connect_bound(&connector, addr, local).await;
             assert!(stream.is_ok());
         });
     }

@@ -219,7 +219,8 @@ pub use response::Response;
 pub use runtime::Runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::{
-    Connector, ConnectorSend, Resolve, RuntimeCompletion, RuntimeLocal, RuntimePoll, SocketConfig,
+    ConnectorLocal, ConnectorSend, Resolve, RuntimeCompletion, RuntimeLocal, RuntimePoll,
+    SocketConfig,
 };
 #[cfg(feature = "wasi-p2")]
 pub use traits::OwnedWasiRequestBuilder;

@@ -5,11 +5,11 @@ use crate::body::RequestBodyLocal;
 use crate::error::Error;
 use crate::pool::PooledConnection;
 use crate::proxy::ProxyConfig;
-use crate::runtime::{Connector, RuntimeLocal, SocketConfig};
+use crate::runtime::{ConnectorLocal, RuntimeLocal, SocketConfig};
 
 use super::HttpEngineLocal;
 
-impl<R: RuntimeLocal, C: Connector + Clone> HttpEngineLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     pub(super) async fn connect_via_proxy_local(
         &self,
         proxy: &ProxyConfig,
@@ -644,7 +644,7 @@ mod compio_tests {
                     .tls(crate::tls::RustlsConnector::with_webpki_roots())
                     .build_local();
             let connector = TcpConnector;
-            let stream = crate::runtime::Connector::connect(&connector, addr)
+            let stream = crate::runtime::ConnectorLocal::connect(&connector, addr)
                 .await
                 .unwrap();
             let result = engine.connect_tls_local(stream, "example.com").await;

@@ -4,7 +4,7 @@ use crate::body::RequestBodyLocal;
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
 use crate::response::Response;
-use crate::runtime::{Connector, RuntimeLocal};
+use crate::runtime::{ConnectorLocal, RuntimeLocal};
 use bytes::Bytes;
 use http::header::{HOST, HeaderMap, HeaderName, HeaderValue};
 use http::uri::{Parts as UriParts, PathAndQuery, Scheme, Uri};
@@ -20,7 +20,7 @@ type ResponseHook = Box<dyn FnOnce(&mut Response)>;
 ///
 /// Created via [`HttpEngineLocal::forward_local`]. Mirrors [`super::ForwardBuilder`]
 /// for completion-based runtimes.
-pub struct ForwardBuilderLocal<'a, R: RuntimeLocal, C: Connector + Clone, B> {
+pub struct ForwardBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B> {
     client: &'a HttpEngineLocal<R, C>,
     request: http::Request<B>,
     upstream: Option<Uri>,
@@ -34,7 +34,7 @@ pub struct ForwardBuilderLocal<'a, R: RuntimeLocal, C: Connector + Clone, B> {
     on_response: Option<ResponseHook>,
 }
 
-impl<'a, R: RuntimeLocal, C: Connector + Clone, B> ForwardBuilderLocal<'a, R, C, B>
+impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B> ForwardBuilderLocal<'a, R, C, B>
 where
     B: Body<Data = Bytes> + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
