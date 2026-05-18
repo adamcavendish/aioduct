@@ -1344,6 +1344,199 @@ async fn h1_connection_close_should_not_be_pooled() {
 
 // ── H2 multiplex-wait timeout race (#183) ─────────────────────────────
 
+// ── #208: AdaptiveH2c fallback socket configuration ───────────────────
+
+/// Connector wrapper that counts `set_keepalive` calls on its streams.
+#[derive(Clone)]
+struct KeepaliveCountingConnector {
+    inner: TcpConnector,
+    keepalive_calls: Arc<AtomicU32>,
+}
+
+impl KeepaliveCountingConnector {
+    fn new() -> Self {
+        Self {
+            inner: TcpConnector,
+            keepalive_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn keepalive_calls(&self) -> u32 {
+        self.keepalive_calls.load(Ordering::SeqCst)
+    }
+}
+
+/// Stream wrapper that increments a counter when `set_keepalive` is called.
+struct KeepaliveCountingStream {
+    inner: <TcpConnector as ConnectorSend>::Stream,
+    counter: Arc<AtomicU32>,
+}
+
+impl aioduct::runtime::SocketConfig for KeepaliveCountingStream {
+    fn set_keepalive(
+        &self,
+        time: Duration,
+        interval: Option<Duration>,
+        retries: Option<u32>,
+    ) -> io::Result<()> {
+        self.counter.fetch_add(1, Ordering::SeqCst);
+        self.inner.set_keepalive(time, interval, retries)
+    }
+
+    fn set_fast_open(&self) -> io::Result<()> {
+        self.inner.set_fast_open()
+    }
+}
+
+impl hyper::rt::Read for KeepaliveCountingStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl hyper::rt::Write for KeepaliveCountingStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+impl Unpin for KeepaliveCountingStream {}
+
+impl ConnectorSend for KeepaliveCountingConnector {
+    type Stream = KeepaliveCountingStream;
+
+    fn connect(&self, addr: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        let inner = self.inner;
+        let counter = Arc::clone(&self.keepalive_calls);
+        async move {
+            let stream = inner.connect(addr).await?;
+            Ok(KeepaliveCountingStream {
+                inner: stream,
+                counter,
+            })
+        }
+    }
+
+    fn connect_bound(
+        &self,
+        addr: SocketAddr,
+        local: IpAddr,
+    ) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        let inner = self.inner;
+        let counter = Arc::clone(&self.keepalive_calls);
+        async move {
+            let stream = inner.connect_bound(addr, local).await?;
+            Ok(KeepaliveCountingStream {
+                inner: stream,
+                counter,
+            })
+        }
+    }
+}
+
+/// #208: AdaptiveH2c fallback connection must receive socket configuration.
+///
+/// The h2c probe opens a TCP stream and applies socket config. When the probe
+/// fails (h1-only server) and a fallback stream is created, it must also receive
+/// `set_keepalive`. With the bug, only the probe stream gets keepalive.
+#[tokio::test]
+async fn adaptive_h2c_fallback_applies_socket_config() {
+    let (addr, _counter) = aioduct_test_server::h1::h1_server().await;
+
+    let connector = KeepaliveCountingConnector::new();
+    let connector_ref = connector.clone();
+
+    let client = HttpEngineSend::<TokioRuntime, KeepaliveCountingConnector>::builder(connector)
+        .tcp_keepalive(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
+
+    let url = format!("http://{addr}/");
+
+    // Use the forward API with adaptive_h2c to trigger the probe path.
+    let req = http::Request::get(&url)
+        .body(http_body_util::Empty::<bytes::Bytes>::new())
+        .unwrap();
+    let resp = client
+        .forward(req)
+        .upstream(&url)
+        .adaptive_h2c()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    // The probe opens one TCP stream (gets keepalive via the normal path).
+    // When the probe fails, the fallback opens a second TCP stream.
+    // Both streams must have set_keepalive called.
+    // With the bug: only 1 call (probe stream). With fix: 2 calls.
+    let calls = connector_ref.keepalive_calls();
+    assert_eq!(
+        calls, 2,
+        "expected set_keepalive on both probe and fallback streams, got {calls} calls"
+    );
+}
+
+/// #209: AdaptiveH2c fallback must report the correct remote_addr.
+///
+/// When the h2c probe fails and a new fallback connection is created, the
+/// response's remote_addr must reflect the fallback connection's actual address,
+/// not the probe connection's address.
+#[tokio::test]
+async fn adaptive_h2c_fallback_reports_correct_remote_addr() {
+    let (addr, _counter) = aioduct_test_server::h1::h1_server().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .pool_idle_timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
+
+    let url = format!("http://{addr}/");
+
+    let req = http::Request::get(&url)
+        .body(http_body_util::Empty::<bytes::Bytes>::new())
+        .unwrap();
+    let resp = client
+        .forward(req)
+        .upstream(&url)
+        .adaptive_h2c()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let remote = resp.remote_addr();
+    assert_eq!(
+        remote,
+        Some(addr),
+        "fallback connection should report the actual server address, got {remote:?}"
+    );
+}
+
 /// Connector that adds a delay only for the first N connections.
 /// This forces concurrent tasks into the multiplex-wait timeout path
 /// on the first connection, but subsequent connects are fast.
