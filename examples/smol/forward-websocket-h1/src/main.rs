@@ -2,7 +2,6 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector as SmolTcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::service::service_fn;
@@ -78,7 +77,7 @@ fn main() -> Result<(), aioduct::Error> {
         let upstream_addr = start_ws_upstream().await;
         println!("WebSocket upstream running on {upstream_addr}");
 
-        let client = SmolClient::new(SmolTcpConnector);
+        let client = SmolClient::new();
 
         // Build a WebSocket upgrade request (as a gateway would receive from a client)
         let incoming_req = http::Request::builder()

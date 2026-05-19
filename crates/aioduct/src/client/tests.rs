@@ -106,7 +106,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_no_default_headers() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .no_default_headers()
             .build()
             .unwrap();
@@ -115,7 +115,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_user_agent_with_invalid_value() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .user_agent("valid-agent/1.0")
             .build()
             .unwrap();
@@ -124,7 +124,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn client_method_helpers() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         assert!(client.get("http://example.com").is_ok());
         assert!(client.head("http://example.com").is_ok());
         assert!(client.post("http://example.com").is_ok());
@@ -140,13 +140,13 @@ mod builder_tests {
 
     #[tokio::test]
     async fn client_invalid_url() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         assert!(client.get("not a url").is_err());
     }
 
     #[tokio::test]
     async fn client_https_only_rejects_http() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .https_only(true)
             .build()
             .unwrap();
@@ -155,7 +155,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn client_no_connection_reuse_sets_flag() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .no_connection_reuse()
             .build()
             .unwrap();
@@ -164,7 +164,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_tcp_fast_open() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tcp_fast_open(true)
             .build()
             .unwrap();
@@ -173,7 +173,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_tcp_fast_open_disabled() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tcp_fast_open(false)
             .build()
             .unwrap();
@@ -183,7 +183,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_hsts() {
         let store = crate::hsts::HstsStore::new();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .hsts(store)
             .build()
             .unwrap();
@@ -193,7 +193,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_cache() {
         let cache = crate::cache::HttpCache::new();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .cache(cache)
             .build()
             .unwrap();
@@ -203,7 +203,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_cookie_jar() {
         let jar = crate::cookie::CookieJar::new();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .cookie_jar(jar)
             .build()
             .unwrap();
@@ -212,7 +212,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_timeout() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap();
@@ -221,7 +221,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_connect_timeout() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .connect_timeout(Duration::from_secs(5))
             .build()
             .unwrap();
@@ -232,7 +232,7 @@ mod builder_tests {
     async fn builder_default_headers() {
         let mut headers = http::HeaderMap::new();
         headers.insert("x-custom", "value".parse().unwrap());
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .default_headers(headers)
             .build()
             .unwrap();
@@ -241,7 +241,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_retry() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .retry(crate::retry::RetryConfig::default())
             .build()
             .unwrap();
@@ -250,7 +250,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_max_download_speed() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .max_download_speed(1024 * 1024)
             .build()
             .unwrap();
@@ -259,7 +259,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_digest_auth() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .digest_auth("user", "pass")
             .build()
             .unwrap();
@@ -268,7 +268,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_https_only() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .https_only(true)
             .build()
             .unwrap();
@@ -277,14 +277,14 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_debug() {
-        let builder = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector);
+        let builder = HttpEngineSend::<TokioRuntime, TcpConnector>::builder();
         let dbg = format!("{builder:?}");
         assert!(dbg.contains("HttpEngineBuilder"));
     }
 
     #[tokio::test]
     async fn builder_pool_idle_timeout() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .pool_idle_timeout(Duration::from_secs(30))
             .build()
             .unwrap();
@@ -295,7 +295,7 @@ mod builder_tests {
     async fn builder_proxy_shorthand() {
         use crate::proxy::ProxyConfig;
         let config = ProxyConfig::http("http://proxy:8080").unwrap();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .proxy(config)
             .build()
             .unwrap();
@@ -304,7 +304,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn builder_user_agent_invalid_is_ignored() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .user_agent("bad\x00agent")
             .build()
             .unwrap();
@@ -316,7 +316,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_explicit_passthrough() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .build()
             .unwrap();
@@ -327,7 +327,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_version_constraints_only() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .min_tls_version(crate::tls::TlsVersion::Tls1_2)
             .build()
             .unwrap();
@@ -338,7 +338,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_max_version_only() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .max_tls_version(crate::tls::TlsVersion::Tls1_3)
             .build()
             .unwrap();
@@ -349,7 +349,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_min_and_max() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .min_tls_version(crate::tls::TlsVersion::Tls1_2)
             .max_tls_version(crate::tls::TlsVersion::Tls1_3)
             .build()
@@ -363,7 +363,7 @@ mod builder_tests {
         install_crypto();
         let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
         let cert = crate::tls::Certificate::from_der(ca.cert.der().to_vec());
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .add_root_certificates(&[cert])
             .build()
             .unwrap();
@@ -376,7 +376,7 @@ mod builder_tests {
         install_crypto();
         let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
         let cert = crate::tls::Certificate::from_der(ca.cert.der().to_vec());
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .add_root_certificates(&[cert])
             .min_tls_version(crate::tls::TlsVersion::Tls1_3)
             .build()
@@ -392,7 +392,7 @@ mod builder_tests {
         let mut pem = ca.cert.pem();
         pem.push_str(&ca.signing_key.serialize_pem());
         let id = crate::tls::Identity::from_pem(pem.as_bytes()).unwrap();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .identity(id)
             .build()
             .unwrap();
@@ -403,7 +403,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_danger_accept_invalid_certs() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .danger_accept_invalid_certs()
             .build()
             .unwrap();
@@ -414,7 +414,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_danger_accept_invalid_hostnames() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .danger_accept_invalid_hostnames(true)
             .build()
             .unwrap();
@@ -425,7 +425,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_sni_disabled() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls_sni(false)
             .build()
             .unwrap();
@@ -437,7 +437,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_sni_enabled_is_noop() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls_sni(true)
             .build()
             .unwrap();
@@ -449,7 +449,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_tls_explicit_with_sni_disabled() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .tls_sni(false)
             .build()
@@ -467,7 +467,7 @@ mod builder_tests {
         default_headers.insert("x-custom", "default".parse().unwrap());
         default_headers.insert("x-extra", "added".parse().unwrap());
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .default_headers(default_headers)
             .build()
             .unwrap();
@@ -493,7 +493,7 @@ mod builder_tests {
         );
         store.store_from_response("example.com", &sts_headers);
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .hsts(store)
             .build()
             .unwrap();
@@ -510,7 +510,7 @@ mod builder_tests {
     #[test]
     fn hsts_does_not_upgrade_unknown_host() {
         let store = crate::hsts::HstsStore::new();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .hsts(store)
             .build()
             .unwrap();
@@ -526,7 +526,7 @@ mod builder_tests {
 
     #[test]
     fn no_connection_reuse_flag() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .no_connection_reuse()
             .build()
             .unwrap();
@@ -535,7 +535,7 @@ mod builder_tests {
 
     #[test]
     fn bandwidth_limiter_accessor() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .max_download_speed(1024 * 1024)
             .build()
             .unwrap();
@@ -544,13 +544,13 @@ mod builder_tests {
 
     #[test]
     fn bandwidth_limiter_accessor_none() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         assert!(client.bandwidth_limiter().is_none());
     }
 
     #[test]
     fn default_timeout_accessor() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap();
@@ -559,13 +559,13 @@ mod builder_tests {
 
     #[test]
     fn default_timeout_accessor_none() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         assert_eq!(client.default_timeout(), None);
     }
 
     #[test]
     fn default_retry_accessor() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .retry(crate::retry::RetryConfig::default())
             .build()
             .unwrap();
@@ -574,19 +574,19 @@ mod builder_tests {
 
     #[test]
     fn default_retry_accessor_none() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         assert!(client.default_retry().is_none());
     }
 
     #[test]
     fn middleware_accessor() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         assert!(client.middleware().is_empty());
     }
 
     #[tokio::test]
     async fn execute_rejects_http_when_https_only() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .https_only(true)
             .build()
             .unwrap();
@@ -608,7 +608,7 @@ mod builder_tests {
 
     #[tokio::test]
     async fn execute_allows_https_when_https_only() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .https_only(true)
             .build()
             .unwrap();
@@ -633,7 +633,7 @@ mod builder_tests {
         let mut pem = ca.cert.pem();
         pem.push_str(&ca.signing_key.serialize_pem());
         let id = crate::tls::Identity::from_pem(pem.as_bytes()).unwrap();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .identity(id)
             .min_tls_version(crate::tls::TlsVersion::Tls1_3)
             .build()
@@ -650,7 +650,7 @@ mod builder_tests {
         let mut pem = ca.cert.pem();
         pem.push_str(&ca.signing_key.serialize_pem());
         let id = crate::tls::Identity::from_pem(pem.as_bytes()).unwrap();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .add_root_certificates(&[cert])
             .identity(id)
             .min_tls_version(crate::tls::TlsVersion::Tls1_2)
@@ -666,7 +666,7 @@ mod builder_tests {
         install_crypto();
         let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
         let cert = crate::tls::Certificate::from_der(ca.cert.der().to_vec());
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .add_root_certificates(&[cert])
             .danger_accept_invalid_hostnames(true)
             .build()
@@ -678,7 +678,7 @@ mod builder_tests {
     #[test]
     fn builder_tls_danger_invalid_hostnames_with_version_constraints() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .danger_accept_invalid_hostnames(true)
             .min_tls_version(crate::tls::TlsVersion::Tls1_2)
             .build()
@@ -694,7 +694,7 @@ mod builder_tests {
         let mut pem = ca.cert.pem();
         pem.push_str(&ca.signing_key.serialize_pem());
         let id = crate::tls::Identity::from_pem(pem.as_bytes()).unwrap();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .identity(id)
             .danger_accept_invalid_hostnames(true)
             .build()
@@ -705,7 +705,7 @@ mod builder_tests {
     #[test]
     fn builder_static_resolver_setup() {
         let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .resolve("example.com", addr)
             .build()
             .unwrap();
@@ -717,7 +717,7 @@ mod builder_tests {
         use std::net::SocketAddr;
         use std::pin::Pin;
         let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .resolver(
                 |_host: &str,
                  _port: u16|
@@ -735,7 +735,7 @@ mod builder_tests {
     fn builder_static_resolver_multiple_hosts() {
         let addr1: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
         let addr2: std::net::SocketAddr = "127.0.0.1:9090".parse().unwrap();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .resolve("example.com", addr1)
             .resolve("other.com", addr2)
             .build()
@@ -749,7 +749,7 @@ mod builder_tests {
         install_crypto();
         // Verifies the `needs_sni_update` path where no TLS connector is set yet
         // and the fallback creates a webpki_roots connector before disabling SNI.
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls_sni(false)
             .build()
             .unwrap();
@@ -762,7 +762,7 @@ mod builder_tests {
     fn builder_tls_version_only_creates_versioned_connector() {
         install_crypto();
         // Tests the path where only version constraints are set, no extra certs/identity/crls.
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .min_tls_version(crate::tls::TlsVersion::Tls1_3)
             .max_tls_version(crate::tls::TlsVersion::Tls1_3)
             .build()
@@ -776,7 +776,7 @@ mod builder_tests {
         install_crypto();
         // Tests the final else branch: no tls, no version constraints, no extra config,
         // no needs_configured -> with_webpki_roots fallback.
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
             .unwrap();
         assert!(client.core.tls.is_some());
@@ -829,7 +829,7 @@ mod builder_tests {
         );
         store.store_from_response("upgrade.example.com", &sts_headers);
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .hsts(store)
             .build()
             .unwrap();
@@ -844,7 +844,7 @@ mod builder_tests {
     #[test]
     fn maybe_upgrade_hsts_does_not_upgrade_unknown_host() {
         let store = crate::hsts::HstsStore::new();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .hsts(store)
             .build()
             .unwrap();
@@ -864,7 +864,7 @@ mod builder_tests {
         );
         store.store_from_response("secure.example.com", &sts_headers);
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .hsts(store)
             .build()
             .unwrap();
@@ -877,7 +877,7 @@ mod builder_tests {
 
     #[test]
     fn maybe_upgrade_hsts_no_hsts_store_is_noop() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
             .unwrap();
         let uri: Uri = "http://example.com/".parse().unwrap();
@@ -893,7 +893,7 @@ mod builder_tests {
         default_headers.insert("x-custom", "default-value".parse().unwrap());
         default_headers.insert("x-other", "other-value".parse().unwrap());
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .default_headers(default_headers)
             .build()
             .unwrap();
@@ -911,7 +911,7 @@ mod builder_tests {
 
     #[test]
     fn apply_default_headers_adds_accept_encoding() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
             .unwrap();
         let mut headers = http::HeaderMap::new();
@@ -924,7 +924,7 @@ mod builder_tests {
 
     #[test]
     fn apply_default_headers_does_not_overwrite_accept_encoding() {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
             .unwrap();
         let mut headers = http::HeaderMap::new();
@@ -940,7 +940,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_http3_enable_then_disable() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .http3(true)
             .unwrap()
@@ -955,7 +955,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_alt_svc_h3_enable_creates_endpoint() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .alt_svc_h3(true)
             .unwrap()
@@ -975,7 +975,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_alt_svc_h3_disable_clears_endpoint_without_prefer() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .alt_svc_h3(true)
             .unwrap()
@@ -993,7 +993,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_http3_enable_sets_prefer_and_endpoint() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .http3(true)
             .unwrap()
@@ -1007,7 +1007,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_http3_0rtt_sets_flag() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .http3(true)
             .unwrap()
@@ -1021,7 +1021,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_alt_svc_h3_disable_keeps_endpoint_when_prefer_h3() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .http3(true)
             .unwrap()
@@ -1044,8 +1044,7 @@ mod builder_tests {
     async fn builder_http3_without_tls_returns_error() {
         install_crypto();
         // http3(true) without calling .tls() first should fail
-        let result =
-            HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector).http3(true);
+        let result = HttpEngineSend::<TokioRuntime, TcpConnector>::builder().http3(true);
         assert!(result.is_err(), "http3(true) without TLS should return Err");
         let err = result.unwrap_err();
         match err {
@@ -1064,7 +1063,7 @@ mod builder_tests {
     #[tokio::test]
     async fn builder_h3_zero_rtt_default_false() {
         install_crypto();
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(crate::tls::RustlsConnector::with_webpki_roots())
             .http3(true)
             .unwrap()
@@ -1093,7 +1092,7 @@ mod builder_tests {
     }
 
     fn make_test_core() -> HttpEngineCore<crate::body::RequestBodySend> {
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
             .unwrap();
         client.core
@@ -1262,7 +1261,7 @@ mod builder_tests {
 
     #[test]
     fn process_redirect_cross_origin_strips_sensitive_headers() {
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .sensitive_header(http::header::HeaderName::from_static("x-api-key"))
             .build()
             .unwrap()
@@ -1335,7 +1334,7 @@ mod builder_tests {
 
     #[test]
     fn process_redirect_with_referer_enabled() {
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .referer(true)
             .build()
             .unwrap()
@@ -1402,7 +1401,7 @@ mod builder_tests {
         }
 
         let called = Arc::new(AtomicBool::new(false));
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .middleware(TrackingMiddleware {
                 called: called.clone(),
             })
@@ -1435,7 +1434,7 @@ mod builder_tests {
         );
         jar.store_from_response("example.com", "/", &cookie_headers);
 
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .cookie_jar(jar)
             .build()
             .unwrap()
@@ -1567,7 +1566,7 @@ mod builder_tests {
         let jar = crate::cookie::CookieJar::new();
         let store = crate::hsts::HstsStore::new();
 
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .cookie_jar(jar.clone())
             .hsts(store.clone())
             .build()
@@ -1632,7 +1631,7 @@ mod builder_tests {
             &HeaderMap::new(),
         );
 
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .cache(cache.clone())
             .build()
             .unwrap()
@@ -1676,7 +1675,7 @@ mod builder_tests {
         );
         store.store_from_response("target.example.com", &sts_headers);
 
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .hsts(store)
             .build()
             .unwrap()
@@ -1705,7 +1704,7 @@ mod builder_tests {
 
     #[test]
     fn post_execute_redirect_https_only_rejects_http_target() {
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .https_only(true)
             .build()
             .unwrap()
@@ -1725,7 +1724,7 @@ mod builder_tests {
 
     #[test]
     fn post_execute_done_when_redirect_policy_none() {
-        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .redirect_policy(crate::redirect::RedirectPolicy::None)
             .build()
             .unwrap()

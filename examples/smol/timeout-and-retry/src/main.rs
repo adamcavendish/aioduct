@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{RetryConfig, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             // Connection timeout: max time to establish TCP + TLS
             .connect_timeout(Duration::from_secs(5))
             // Request timeout: max total time per request attempt

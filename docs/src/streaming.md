@@ -8,11 +8,10 @@ Convert a response into a `BodyStream` that yields `Bytes` chunks:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     let resp = client
         .get("http://example.com/large-file.bin")?
@@ -38,12 +37,11 @@ Combine `BodyStream` with `tokio::fs::File` to download directly to disk:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     let resp = client
         .get("http://example.com/large-file.bin")?

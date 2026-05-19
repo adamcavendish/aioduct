@@ -1,11 +1,10 @@
 use std::time::Duration;
 
 use aioduct::CompioClient;
-use aioduct::runtime::compio_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .timeout(Duration::from_secs(30))
             .build_local()
             .unwrap();

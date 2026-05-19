@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::server::conn::http1 as server_http1;
@@ -48,7 +47,7 @@ async fn main() -> Result<(), aioduct::Error> {
     let upstream_addr = start_sse_upstream().await;
     println!("SSE upstream running on {upstream_addr}");
 
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     let incoming_req = http::Request::builder()
         .method("GET")

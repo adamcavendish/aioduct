@@ -1,9 +1,8 @@
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{Error, TokioClient};
 
 #[tokio::main]
 async fn main() {
-    let client = TokioClient::builder(TcpConnector).build().unwrap();
+    let client = TokioClient::builder().build().unwrap();
 
     // error_for_status() converts 4xx/5xx into errors
     match fetch_with_status_check(&client).await {

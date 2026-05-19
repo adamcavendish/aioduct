@@ -16,17 +16,16 @@ aioduct provides ergonomic type aliases for the most common configurations:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use std::time::Duration;
 
 // Default configuration
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 
 // With rustls TLS (requires `rustls` and exactly one rustls provider)
-let client = TokioClient::with_rustls(TcpConnector);
+let client = TokioClient::with_rustls();
 
 // Custom configuration via builder
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .timeout(Duration::from_secs(30))
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))
@@ -86,8 +85,7 @@ Fluent builder for configuring a single request. `RequestBuilderSend` is returne
 
 ```rust,no_run
 # use aioduct::{TokioClient, HeaderMap};
-# use aioduct::runtime::tokio_rt::TcpConnector;
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 // Typed header
 use http::header::{HeaderName, HeaderValue, ACCEPT};
 let rb = client.get("http://example.com").unwrap()
@@ -109,8 +107,7 @@ let rb = client.get("http://example.com").unwrap()
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 // Bearer token
 let rb = client.get("http://example.com").unwrap()
     .bearer_auth("my-token");
@@ -124,8 +121,7 @@ let rb = client.get("http://example.com").unwrap()
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 // Raw bytes
 let rb = client.post("http://example.com").unwrap()
     .body("raw body content");
@@ -143,8 +139,7 @@ let rb = client.post("http://example.com").unwrap()
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 let rb = client.get("http://example.com/search").unwrap()
     .query(&[("q", "hello world"), ("page", "1")]);
 // Sends: GET /search?q=hello%20world&page=1
@@ -154,8 +149,7 @@ let rb = client.get("http://example.com/search").unwrap()
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 use std::time::Duration;
 
 let rb = client.get("http://example.com").unwrap()
@@ -171,9 +165,8 @@ let rb = client.get("http://example.com/ws").unwrap()
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 let resp = client.get("http://example.com")?.send().await?;
 # Ok(())
 # }
@@ -187,9 +180,8 @@ The response type returned after sending a request. `ResponseBodySend` is return
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 # let resp = client.get("http://example.com")?.send().await?;
 let status = resp.status();           // StatusCode
 let headers = resp.headers();         // &HeaderMap
@@ -204,9 +196,8 @@ let url = resp.url();                 // &Uri — final URL after redirects
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 // Consume the response, returning Err for 4xx/5xx
 let resp = client.get("http://example.com")?.send().await?
     .error_for_status()?;
@@ -223,9 +214,8 @@ let text = resp.text().await?;
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 // As bytes
 let bytes = client.get("http://example.com")?.send().await?.bytes().await?;
 

@@ -327,7 +327,7 @@ mod tests {
     use crate::runtime::compio_rt::{CompioRuntime, TcpConnector};
 
     fn test_client() -> HttpEngineLocal<CompioRuntime, TcpConnector> {
-        HttpEngineLocal::new_local(TcpConnector)
+        HttpEngineLocal::new()
     }
 
     #[test]

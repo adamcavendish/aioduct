@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 
 use aioduct::Protocol;
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector as SmolTcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::service::service_fn;
@@ -85,7 +84,7 @@ fn main() -> Result<(), aioduct::Error> {
         println!("H2 WebSocket upstream running on {upstream_addr}");
 
         // Client must use H2 prior knowledge since we're connecting plaintext H2
-        let client = SmolClient::builder(SmolTcpConnector)
+        let client = SmolClient::builder()
             .http2_prior_knowledge()
             .build()
             .unwrap();

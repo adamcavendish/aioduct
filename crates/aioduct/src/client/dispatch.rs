@@ -531,7 +531,7 @@ mod tests {
         use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
         // Build engine without observer - notify should not panic
-        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
             .unwrap();
         let method = http::Method::GET;
@@ -565,7 +565,7 @@ mod tests {
         let obs = CountingObserver {
             count: count.clone(),
         };
-        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .request_observer(obs)
             .build()
             .unwrap();
@@ -588,7 +588,7 @@ mod tests {
         use crate::pool::PooledConnection;
         use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
 
-        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
             .unwrap();
 
@@ -640,7 +640,7 @@ mod tests {
         let obs = ConnObserver {
             conn_events: conn_events.clone(),
         };
-        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .request_observer(obs)
             .build()
             .unwrap();
@@ -701,7 +701,7 @@ mod tests {
         let obs = ConnObserver {
             conn_events: conn_events.clone(),
         };
-        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .request_observer(obs)
             .build()
             .unwrap();
@@ -755,7 +755,7 @@ mod tests {
         let obs = ConnObserver {
             conn_events: conn_events.clone(),
         };
-        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .request_observer(obs)
             .build()
             .unwrap();

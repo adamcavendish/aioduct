@@ -1,11 +1,10 @@
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{CookieJar, TokioClient};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     let jar = CookieJar::new();
 
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .cookie_jar(jar.clone())
         .build()
         .unwrap();

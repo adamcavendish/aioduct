@@ -1,11 +1,8 @@
 use aioduct::BlockingCompioClient;
 use aioduct::CompioClient;
-use aioduct::runtime::compio_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
-    let engine = CompioClient::builder_local(TcpConnector)
-        .build_local()
-        .unwrap();
+    let engine = CompioClient::builder().build_local().unwrap();
     let client = BlockingCompioClient::new(engine);
 
     // Synchronous GET

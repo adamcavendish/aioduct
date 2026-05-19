@@ -1,4 +1,3 @@
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{HttpCache, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
@@ -6,10 +5,7 @@ fn main() -> Result<(), aioduct::Error> {
         // Create an in-memory HTTP cache
         let cache = HttpCache::new();
 
-        let client = SmolClient::builder(TcpConnector)
-            .cache(cache)
-            .build()
-            .unwrap();
+        let client = SmolClient::builder().cache(cache).build().unwrap();
 
         // First request — fetches from server, stores in cache
         let resp = client.get("https://httpbin.org/cache/60")?.send().await?;

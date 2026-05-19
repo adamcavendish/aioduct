@@ -39,7 +39,7 @@ async fn hsts_upgrade_prevents_http_request() {
     );
     store.store_from_response("hsts-host.example.com", &sts_headers);
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .hsts(store)
         .timeout(Duration::from_secs(2))
         .build()
@@ -96,7 +96,7 @@ async fn hsts_stores_sts_header_from_response() {
         .await;
 
     let cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .add_root_certificates(&[cert])
         .danger_accept_invalid_hostnames(true)
         .hsts(store.clone())
@@ -162,7 +162,7 @@ async fn digest_auth_retry_with_http_version() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("user", "pass")
         .timeout(Duration::from_secs(5))
         .build()
@@ -236,7 +236,7 @@ async fn digest_auth_retry_applies_middleware() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("user", "pass")
         .middleware(
             |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
@@ -305,7 +305,7 @@ async fn cache_invalidated_by_post_request() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .timeout(Duration::from_secs(5))
         .build()
@@ -381,7 +381,7 @@ async fn connection_pool_reuse_exercises_hit_path() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -439,7 +439,7 @@ async fn no_connection_reuse_opens_new_connection_each_time() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .no_connection_reuse()
         .timeout(Duration::from_secs(5))
         .build()
@@ -476,7 +476,7 @@ async fn h2_connection_reuse_multiplexes() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(5))
         .build()
@@ -516,7 +516,7 @@ async fn rate_limiter_sleep_path_in_dispatch() {
     .await;
 
     // Set a very low rate limit so the second request must wait
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .rate_limiter(aioduct::RateLimiter::new(1, Duration::from_millis(100)))
         .timeout(Duration::from_secs(5))
         .build()
@@ -586,7 +586,7 @@ async fn stale_if_error_serves_stale_on_503() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .timeout(Duration::from_secs(5))
         .build()
@@ -641,7 +641,7 @@ async fn stale_if_error_serves_stale_on_connection_failure() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache.clone())
         .timeout(Duration::from_secs(5))
         .build()
@@ -663,7 +663,7 @@ async fn stale_if_error_serves_stale_on_connection_failure() {
         drop(listener);
         port
     };
-    let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .timeout(Duration::from_secs(2))
         .resolver(move |_host: &str, _port: u16| {
@@ -724,7 +724,7 @@ async fn observer_receives_connection_metrics() {
     .await;
 
     let obs = MetricsObserver::default();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()
@@ -769,7 +769,7 @@ async fn get_request_with_no_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -812,7 +812,7 @@ async fn streaming_body_exercises_streaming_arm() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -864,7 +864,7 @@ async fn finalize_response_stores_cacheable_response() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .timeout(Duration::from_secs(5))
         .build()
@@ -931,7 +931,7 @@ async fn cookie_jar_stores_set_cookie_from_response() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
         .build()
@@ -1018,7 +1018,7 @@ async fn stale_connection_retry_succeeds_on_fresh_connection() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1086,7 +1086,7 @@ async fn observer_reports_pool_hit_and_miss() {
     .await;
 
     let obs = PoolObserver::default();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()

@@ -5,7 +5,6 @@ use aioduct::observer::{
     ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
     RequestObserver, RequestPhase, TransferDirection,
 };
-use aioduct::runtime::smol_rt::TcpConnector;
 
 /// Observer that emits structured tracing events for every request lifecycle phase.
 ///
@@ -252,7 +251,7 @@ fn main() -> Result<(), aioduct::Error> {
             .with_timer(tracing_subscriber::fmt::time::uptime())
             .init();
 
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
             .request_observer(TracingObserver)
             .timeout(Duration::from_secs(10))

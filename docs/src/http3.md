@@ -30,10 +30,9 @@ Force all HTTPS requests through QUIC/HTTP/3:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 // All HTTPS requests will use HTTP/3
-let client = TokioClient::with_http3(TcpConnector)?;
+let client = TokioClient::with_http3()?;
 ```
 
 Or via the builder:
@@ -41,9 +40,8 @@ Or via the builder:
 ```rust,no_run
 use aioduct::TokioClient;
 use aioduct::tls::RustlsConnector;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .tls(RustlsConnector::with_webpki_roots())
     .http3(true)?
     .build()?;
@@ -55,10 +53,9 @@ Start with HTTP/1.1 or HTTP/2 over TCP, and automatically upgrade to HTTP/3 when
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 // First request uses TCP; upgrades to QUIC when Alt-Svc is seen
-let client = TokioClient::with_alt_svc_h3(TcpConnector)?;
+let client = TokioClient::with_alt_svc_h3()?;
 ```
 
 Or via the builder:
@@ -66,9 +63,8 @@ Or via the builder:
 ```rust,no_run
 use aioduct::TokioClient;
 use aioduct::tls::RustlsConnector;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .tls(RustlsConnector::with_webpki_roots())
     .alt_svc_h3(true)
     .build()?;
@@ -104,9 +100,8 @@ For repeat connections to servers that support session tickets, aioduct can send
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
     .http3(true)?
     .h3_zero_rtt(true)

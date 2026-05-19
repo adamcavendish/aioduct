@@ -3,7 +3,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use aioduct::CompioClient;
-use aioduct::runtime::compio_rt::TcpConnector;
 
 /// A simple tower Layer that logs connection attempts.
 /// This demonstrates how to wrap the TCP connector with custom logic.
@@ -55,7 +54,7 @@ where
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .connector_layer_local(LoggingLayer)
             .build_local()
             .unwrap();

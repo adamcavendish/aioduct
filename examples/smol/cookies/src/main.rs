@@ -1,11 +1,10 @@
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{CookieJar, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
         let jar = CookieJar::new();
 
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .cookie_jar(jar.clone())
             .build()
             .unwrap();

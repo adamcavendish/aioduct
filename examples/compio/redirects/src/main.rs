@@ -1,12 +1,11 @@
 use std::time::Duration;
 
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CompioClient, RedirectAction, RedirectPolicy};
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         // Default: follow up to 10 redirects
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .timeout(Duration::from_secs(10))
             .build_local()
             .unwrap();
@@ -20,7 +19,7 @@ fn main() -> Result<(), aioduct::Error> {
         println!("Status: {}", resp.status());
 
         // Limited redirects — requesting 3 redirects but only allowing 1
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .redirect_policy(RedirectPolicy::Limited(1))
             .timeout(Duration::from_secs(10))
             .build_local()
@@ -40,7 +39,7 @@ fn main() -> Result<(), aioduct::Error> {
         }
 
         // No redirects
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .redirect_policy(RedirectPolicy::None)
             .timeout(Duration::from_secs(10))
             .build_local()
@@ -55,7 +54,7 @@ fn main() -> Result<(), aioduct::Error> {
         println!("Location: {:?}", resp.headers().get("location"));
 
         // Custom redirect policy with closure
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .redirect_policy(RedirectPolicy::custom(|_from, to, _status, _method| {
                 // Only follow redirects to the same host
                 if to.host() == Some("httpbin.org") {

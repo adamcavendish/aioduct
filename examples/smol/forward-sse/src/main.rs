@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector as SmolTcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::server::conn::http1 as server_http1;
@@ -52,7 +51,7 @@ fn main() -> Result<(), aioduct::Error> {
         let upstream_addr = start_sse_upstream().await;
         println!("SSE upstream running on {upstream_addr}");
 
-        let client = SmolClient::new(SmolTcpConnector);
+        let client = SmolClient::new();
 
         let incoming_req = http::Request::builder()
             .method("GET")

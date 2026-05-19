@@ -1,4 +1,3 @@
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{TokioClient, TracingMiddleware};
 
 #[tokio::main]
@@ -10,7 +9,7 @@ async fn main() -> Result<(), aioduct::Error> {
 
     tracing::info!("starting tracing example");
 
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .middleware(TracingMiddleware)
         .build()
         .unwrap();

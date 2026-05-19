@@ -17,14 +17,14 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::runtime::{ConnectorSend, TokioRuntime};
 
 fn client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::builder(TcpConnector)
+    HttpEngineSend::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap()
 }
 
 fn client_with_timeout(t: Duration) -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::builder(TcpConnector)
+    HttpEngineSend::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(t)
         .build()
@@ -116,7 +116,7 @@ async fn h1_large_body_then_reuse() {
 #[tokio::test]
 async fn h2_reuse_across_sequential() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .build()
@@ -139,7 +139,7 @@ async fn h2_reuse_across_sequential() {
 #[tokio::test]
 async fn h2_multiplex_concurrent() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .build()
@@ -197,7 +197,7 @@ async fn h2_large_body_then_reuse() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
@@ -226,7 +226,7 @@ async fn h2_large_body_then_reuse() {
 #[tokio::test]
 async fn no_connection_reuse_opens_fresh_each_time() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .no_connection_reuse()
         .build()
         .unwrap();
@@ -248,7 +248,7 @@ async fn no_connection_reuse_opens_fresh_each_time() {
 #[tokio::test]
 async fn no_connection_reuse_skips_checkin() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .no_connection_reuse()
         .build()
         .unwrap();
@@ -274,7 +274,7 @@ async fn no_connection_reuse_skips_checkin() {
 #[tokio::test]
 async fn idle_timeout_evicts_connection() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_millis(100))
         .build()
         .unwrap();
@@ -300,7 +300,7 @@ async fn idle_timeout_evicts_connection() {
 #[tokio::test]
 async fn max_idle_per_host_limits_pool() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_max_idle_per_host(1)
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
@@ -326,7 +326,7 @@ async fn max_idle_per_host_limits_pool() {
 #[tokio::test]
 async fn pool_max_idle_zero_disables_reuse() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_max_idle_per_host(0)
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
@@ -467,7 +467,7 @@ async fn h1_keepalive_reuse_multiple() {
 #[tokio::test]
 async fn h2_connection_reuse_verified() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .build()
@@ -566,7 +566,7 @@ async fn h1_mixed_methods_reuse_connection() {
 #[tokio::test]
 async fn h2_concurrent_should_multiplex_single_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
@@ -611,7 +611,7 @@ async fn h2_slow_body_concurrent_should_still_multiplex() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
@@ -656,7 +656,7 @@ async fn h2_slow_body_concurrent_should_still_multiplex() {
 #[tokio::test]
 async fn h2_parallel_downloads_single_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
@@ -692,7 +692,7 @@ async fn h2_parallel_downloads_single_connection() {
 #[tokio::test]
 async fn h1_repeated_body_drop_does_not_leak_connections() {
     let (addr, counter) = aioduct_test_server::h1::h1_large_body_server(64 * 1024).await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(5)
         .timeout(Duration::from_secs(10))
@@ -722,7 +722,7 @@ async fn h1_repeated_body_drop_does_not_leak_connections() {
 #[tokio::test]
 async fn h1_connection_ready_after_body_consumed() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(1)
         .timeout(Duration::from_secs(5))
@@ -749,7 +749,7 @@ async fn h1_connection_ready_after_body_consumed() {
 #[tokio::test]
 async fn h2_pool_eviction_should_not_discard_active_connections() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(2)
         .http2_prior_knowledge()
@@ -776,7 +776,7 @@ async fn h2_pool_eviction_should_not_discard_active_connections() {
 #[tokio::test]
 async fn h1_pool_max_idle_1_with_body_consumed_reuses() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(1)
         .timeout(Duration::from_secs(5))
@@ -803,7 +803,7 @@ async fn h1_pool_max_idle_1_with_body_consumed_reuses() {
 #[tokio::test]
 async fn h1_concurrent_then_sequential_reuses_pool() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(5)
         .timeout(Duration::from_secs(10))
@@ -848,7 +848,7 @@ async fn h1_concurrent_then_sequential_reuses_pool() {
 #[tokio::test]
 async fn h2_goaway_after_n_forces_new_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_goaway_after(1).await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
@@ -892,7 +892,7 @@ async fn h1_head_response_connection_reuse() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -927,7 +927,7 @@ async fn connection_close_every_response_forces_new_connections() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(10))
         .build()
@@ -951,7 +951,7 @@ async fn connection_close_every_response_forces_new_connections() {
 #[tokio::test]
 async fn h1_parallel_downloads_need_multiple_connections() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(10))
         .build()
@@ -984,7 +984,7 @@ async fn h1_parallel_downloads_need_multiple_connections() {
 #[tokio::test]
 async fn h2_sequential_200_requests_reuse_one_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(30))
@@ -1011,7 +1011,7 @@ async fn h2_sequential_200_requests_reuse_one_connection() {
 #[tokio::test]
 async fn h1_sequential_100_downloads_one_connection() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(30))
         .build()
@@ -1049,7 +1049,7 @@ async fn connection_reuse_after_404() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -1098,7 +1098,7 @@ async fn connection_reuse_after_204() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -1133,7 +1133,7 @@ async fn connection_reuse_after_204() {
 #[tokio::test]
 async fn h1_sustained_concurrent_load_pool_stability() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(10)
         .timeout(Duration::from_secs(10))
@@ -1173,7 +1173,7 @@ async fn h1_sustained_concurrent_load_pool_stability() {
 #[tokio::test]
 async fn pool_key_should_normalize_default_port() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -1223,7 +1223,7 @@ async fn h1_slow_body_should_not_allow_concurrent_reuse() {
         aioduct_test_server::h1::h1_slow_body_server(100, std::time::Duration::from_millis(10))
             .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(10))
         .build()
@@ -1301,7 +1301,7 @@ async fn h1_connection_close_should_not_be_pooled() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -1468,7 +1468,10 @@ async fn adaptive_h2c_fallback_applies_socket_config() {
     let connector = KeepaliveCountingConnector::new();
     let connector_ref = connector.clone();
 
-    let client = HttpEngineSend::<TokioRuntime, KeepaliveCountingConnector>::builder(connector)
+    let client =
+        HttpEngineSend::<TokioRuntime, KeepaliveCountingConnector>::builder_with_connector(
+            connector,
+        )
         .tcp_keepalive(Duration::from_secs(30))
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
@@ -1510,7 +1513,7 @@ async fn adaptive_h2c_fallback_applies_socket_config() {
 async fn adaptive_h2c_fallback_reports_correct_remote_addr() {
     let (addr, _counter) = aioduct_test_server::h1::h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap();
@@ -1627,12 +1630,13 @@ async fn h2_multiplex_wait_timeout_mark_stays_set() {
     // that the late wave sees the mark via connection count.
     let connector = SlowFirstConnector::new(Duration::from_millis(100), 1);
     let connector_ref = connector.clone();
-    let client = HttpEngineSend::<TokioRuntime, SlowFirstConnector>::builder(connector)
-        .http2_prior_knowledge()
-        .timeout(Duration::from_secs(5))
-        .pool_idle_timeout(Duration::from_secs(60))
-        .build()
-        .unwrap();
+    let client =
+        HttpEngineSend::<TokioRuntime, SlowFirstConnector>::builder_with_connector(connector)
+            .http2_prior_knowledge()
+            .timeout(Duration::from_secs(5))
+            .pool_idle_timeout(Duration::from_secs(60))
+            .build()
+            .unwrap();
 
     // All tasks arrive at once. First task marks and connects (100ms delay).
     // Other tasks see mark, enter wait loop (default budget=5s, poll=5ms).
@@ -1718,7 +1722,7 @@ async fn deferred_checkin_times_out_on_dropped_body() {
     });
 
     let idle_timeout = Duration::from_millis(200);
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(idle_timeout)
         .build()
         .unwrap();
@@ -1784,7 +1788,7 @@ async fn pool_reaper_evicts_idle_connections() {
     });
 
     let idle_timeout = Duration::from_millis(150);
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(idle_timeout)
         .build()
         .unwrap();

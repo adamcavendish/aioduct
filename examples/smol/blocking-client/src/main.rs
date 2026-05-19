@@ -1,9 +1,8 @@
 use aioduct::BlockingSmolClient;
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
-    let engine = SmolClient::builder(TcpConnector).build().unwrap();
+    let engine = SmolClient::builder().build().unwrap();
     let client = BlockingSmolClient::new(engine);
 
     // Synchronous GET

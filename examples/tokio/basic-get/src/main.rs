@@ -1,8 +1,7 @@
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector).build().unwrap();
+    let client = TokioClient::builder().build().unwrap();
 
     // Simple GET request
     let resp = client.get("https://httpbin.org/get")?.send().await?;

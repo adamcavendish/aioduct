@@ -8,10 +8,9 @@ Use `Response::links()` to extract all Link header values:
 
 ```rust,no_run
 use aioduct::{TokioClient, Link};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 let resp = client.get("https://api.example.com/items?page=1")?
     .send()
     .await?;

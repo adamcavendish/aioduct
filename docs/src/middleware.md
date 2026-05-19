@@ -19,9 +19,8 @@ For simple request-only middleware, you can pass a closure directly:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .middleware(|req: &mut http::Request<aioduct::RequestBodySend>, _uri: &http::Uri| {
         req.headers_mut().insert(
             http::header::HeaderName::from_static("x-custom"),
@@ -39,7 +38,6 @@ For middleware that needs to modify responses or maintain state, implement the t
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use aioduct::{TokioClient, RequestBodySend, Middleware};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 struct RequestCounter {
     count: Arc<AtomicU64>,
@@ -52,7 +50,7 @@ impl Middleware for RequestCounter {
 }
 
 let counter = Arc::new(AtomicU64::new(0));
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .middleware(RequestCounter { count: counter.clone() })
     .build()?;
 ```
@@ -66,9 +64,8 @@ You can add multiple middleware layers. They execute in order:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .middleware(|req: &mut http::Request<aioduct::RequestBodySend>, _uri: &http::Uri| {
         // Runs first on request
         req.headers_mut().insert(

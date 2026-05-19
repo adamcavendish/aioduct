@@ -12,7 +12,7 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn h3_0rtt_reconnection_latency() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .http3(true)
         .unwrap()
@@ -90,7 +90,7 @@ async fn h3_0rtt_reconnection_latency() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn h3_without_0rtt_baseline() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .http3(true)
         .unwrap()

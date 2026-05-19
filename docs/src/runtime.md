@@ -88,9 +88,8 @@ Enabled with `features = ["tokio"]`.
 
 ```rust
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 ```
 
 - `TokioRuntime` implements `RuntimePoll` using `tokio::runtime::Handle::block_on`, `tokio::spawn`, and `tokio::time::sleep`.
@@ -103,9 +102,8 @@ Enabled with `features = ["smol"]`.
 
 ```rust
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 
-let client = SmolClient::new(TcpConnector);
+let client = SmolClient::new();
 ```
 
 - `SmolRuntime` implements `RuntimePoll` using `smol::block_on`, `smol::spawn`, and `async_io::Timer`.
@@ -118,10 +116,9 @@ Enabled with `features = ["compio"]`.
 
 ```rust
 use aioduct::CompioClient;
-use aioduct::runtime::compio_rt::TcpConnector;
 
 compio_runtime::Runtime::new().unwrap().block_on(async {
-    let client = CompioClient::new(TcpConnector);
+    let client = CompioClient::new();
     let resp = client.get("http://httpbin.org/get")?.send().await?;
     println!("status: {}", resp.status());
     Ok::<_, aioduct::Error>(())

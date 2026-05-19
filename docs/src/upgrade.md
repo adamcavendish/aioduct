@@ -6,10 +6,9 @@ aioduct supports HTTP/1.1 protocol upgrades (101 Switching Protocols) and HTTP/2
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 
 let resp = client
     .get("http://example.com/ws")?
@@ -32,10 +31,9 @@ For HTTP/2 upstreams that support the extended CONNECT protocol, use `Protocol` 
 
 ```rust,no_run
 use aioduct::{TokioClient, Protocol};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .http2_prior_knowledge()
     .build()?;
 

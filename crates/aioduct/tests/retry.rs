@@ -38,7 +38,7 @@ async fn test_retry_on_server_error() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -76,7 +76,7 @@ async fn test_retry_exhausted() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -112,7 +112,7 @@ async fn test_retry_disabled_on_status() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -153,7 +153,7 @@ async fn test_client_default_retry() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .retry(
             aioduct::RetryConfig::default()
                 .max_retries(2)
@@ -196,7 +196,7 @@ async fn test_retry_429_too_many_requests() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -233,7 +233,7 @@ async fn test_retry_with_budget_exhaustion() {
     .await;
 
     let budget = aioduct::RetryBudget::new(1, 1);
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -268,7 +268,7 @@ async fn test_retry_with_timeout_succeeds_on_retry() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -311,7 +311,7 @@ async fn test_retry_budget_deposit_on_success() {
     let budget = aioduct::RetryBudget::new(5, 2);
     assert_eq!(budget.available(), 5);
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -348,7 +348,7 @@ async fn test_retry_exhaustion_returns_last_error() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -389,7 +389,7 @@ async fn test_retry_with_retry_after_header() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -424,7 +424,7 @@ async fn test_retry_on_status_disabled_no_retry() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -463,7 +463,7 @@ async fn test_client_default_retry_with_recovery() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .retry(
             aioduct::RetryConfig::default()
                 .max_retries(3)

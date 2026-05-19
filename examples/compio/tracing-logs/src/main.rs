@@ -1,4 +1,3 @@
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CompioClient, TracingMiddleware};
 
 fn main() -> Result<(), aioduct::Error> {
@@ -10,7 +9,7 @@ fn main() -> Result<(), aioduct::Error> {
 
         tracing::info!("starting tracing example");
 
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .middleware(TracingMiddleware)
             .build_local()
             .unwrap();

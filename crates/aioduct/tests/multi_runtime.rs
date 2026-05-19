@@ -32,7 +32,7 @@ macro_rules! runtime_test {
                         aioduct::runtime::TokioRuntime,
                         aioduct::runtime::tokio_rt::TcpConnector,
                     > {
-                        aioduct::HttpEngineSend::new(aioduct::runtime::tokio_rt::TcpConnector)
+                        aioduct::HttpEngineSend::new()
                     }
 
                     #[allow(unused)]
@@ -40,7 +40,7 @@ macro_rules! runtime_test {
                         aioduct::runtime::TokioRuntime,
                         aioduct::runtime::tokio_rt::TcpConnector,
                     > {
-                        aioduct::HttpEngineSend::builder(aioduct::runtime::tokio_rt::TcpConnector)
+                        aioduct::HttpEngineSend::builder()
                     }
 
                     #[allow(unused)]
@@ -77,7 +77,7 @@ macro_rules! runtime_test {
                             aioduct::runtime::smol_rt::SmolRuntime,
                             aioduct::runtime::smol_rt::TcpConnector,
                         > {
-                            aioduct::HttpEngineSend::new(aioduct::runtime::smol_rt::TcpConnector)
+                            aioduct::HttpEngineSend::new()
                         }
 
                         #[allow(unused)]
@@ -85,7 +85,7 @@ macro_rules! runtime_test {
                             aioduct::runtime::smol_rt::SmolRuntime,
                             aioduct::runtime::smol_rt::TcpConnector,
                         > {
-                            aioduct::HttpEngineSend::builder(aioduct::runtime::smol_rt::TcpConnector)
+                            aioduct::HttpEngineSend::builder()
                         }
 
                         #[allow(unused)]

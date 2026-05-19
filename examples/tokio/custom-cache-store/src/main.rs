@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{CacheEntry, CacheStore, HttpCache, Method, TokioClient, Uri};
 
 /// A custom cache store that logs every operation and wraps a simple HashMap.
@@ -60,10 +59,7 @@ impl CacheStore for LoggingCacheStore {
 async fn main() -> Result<(), aioduct::Error> {
     let store = LoggingCacheStore::new();
     let cache = HttpCache::with_store(store);
-    let client = TokioClient::builder(TcpConnector)
-        .cache(cache)
-        .build()
-        .unwrap();
+    let client = TokioClient::builder().cache(cache).build().unwrap();
 
     // First request — hits the server, stores in the custom cache
     let resp = client.get("https://httpbin.org/cache/60")?.send().await?;

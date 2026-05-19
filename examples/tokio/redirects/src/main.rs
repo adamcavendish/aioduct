@@ -1,12 +1,11 @@
 use std::time::Duration;
 
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{RedirectAction, RedirectPolicy, TokioClient};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // Default: follow up to 10 redirects
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
@@ -17,7 +16,7 @@ async fn main() -> Result<(), aioduct::Error> {
     println!("Status: {}", resp.status());
 
     // Limited redirects — requesting 3 redirects but only allowing 1
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .redirect_policy(RedirectPolicy::Limited(1))
         .timeout(Duration::from_secs(10))
         .build()
@@ -37,7 +36,7 @@ async fn main() -> Result<(), aioduct::Error> {
     }
 
     // No redirects
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .redirect_policy(RedirectPolicy::None)
         .timeout(Duration::from_secs(10))
         .build()
@@ -49,7 +48,7 @@ async fn main() -> Result<(), aioduct::Error> {
     println!("Location: {:?}", resp.headers().get("location"));
 
     // Custom redirect policy with closure
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .redirect_policy(RedirectPolicy::custom(|_from, to, _status, _method| {
             // Only follow redirects to the same host
             if to.host() == Some("httpbin.org") {

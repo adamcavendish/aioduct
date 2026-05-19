@@ -1,12 +1,11 @@
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // Set default headers on the client
     let mut default_headers = http::HeaderMap::new();
     default_headers.insert("x-custom-global", "from-client".parse().unwrap());
 
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .user_agent("my-app/1.0")
         .default_headers(default_headers)
         .build()

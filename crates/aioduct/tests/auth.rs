@@ -26,7 +26,7 @@ async fn test_bearer_auth() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -50,7 +50,7 @@ async fn test_basic_auth() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -100,7 +100,7 @@ async fn test_digest_auth_flow() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("testuser", "testpass")
         .build()
         .unwrap();
@@ -157,7 +157,7 @@ async fn test_digest_auth_post_replays_buffered_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("testuser", "testpass")
         .build()
         .unwrap();
@@ -189,7 +189,7 @@ async fn test_digest_auth_post_replays_buffered_body() {
 async fn test_digest_auth_no_challenge() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("user", "pass")
         .build()
         .unwrap();
@@ -265,7 +265,7 @@ async fn digest_auth_sha256_should_not_use_md5() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("testuser", "testpass")
         .timeout(Duration::from_secs(5))
         .build()
@@ -333,7 +333,7 @@ async fn digest_auth_qop_auth_int_not_confused_with_auth() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("testuser", "testpass")
         .timeout(Duration::from_secs(5))
         .build()

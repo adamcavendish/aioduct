@@ -1,10 +1,9 @@
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
         // Force HTTP/2 without TLS upgrade negotiation (h2c)
         // This is useful for local services that speak HTTP/2 directly
-        let _client = SmolClient::builder(TcpConnector)
+        let _client = SmolClient::builder()
             .http2_prior_knowledge()
             .build()
             .unwrap();
@@ -19,7 +18,7 @@ fn main() -> Result<(), aioduct::Error> {
         // when the server supports it. No special configuration needed.
 
         // Example with a standard HTTPS endpoint (negotiates h2 via ALPN):
-        let standard_client = SmolClient::builder(TcpConnector).build().unwrap();
+        let standard_client = SmolClient::builder().build().unwrap();
 
         let resp = standard_client
             .get("https://httpbin.org/get")?

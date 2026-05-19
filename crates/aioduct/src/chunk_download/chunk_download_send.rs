@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn chunks_clamps_to_one() {
-        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         let dl = client.chunk_download("http://example.com/file");
         let dl = dl.chunks(0);
         assert_eq!(dl.chunks, 1);
@@ -178,14 +178,14 @@ mod tests {
 
     #[test]
     fn chunks_accepts_large_value() {
-        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         let dl = client.chunk_download("http://example.com/file").chunks(100);
         assert_eq!(dl.chunks, 100);
     }
 
     #[test]
     fn debug_format_includes_url() {
-        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         let dl = client.chunk_download("http://example.com/large.bin");
         let dbg = format!("{dl:?}");
         assert!(dbg.contains("ChunkDownload"));

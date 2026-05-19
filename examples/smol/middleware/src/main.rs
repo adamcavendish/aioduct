@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{Middleware, SmolClient};
 
 struct LoggingMiddleware;
@@ -66,7 +65,7 @@ fn main() -> Result<(), aioduct::Error> {
             request_count: request_count.clone(),
         };
 
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .middleware(LoggingMiddleware)
             .middleware(metrics)
             .build()
@@ -84,7 +83,7 @@ fn main() -> Result<(), aioduct::Error> {
         );
 
         // Closure as middleware (request-only)
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .middleware(
                 |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                     req.headers_mut().insert(

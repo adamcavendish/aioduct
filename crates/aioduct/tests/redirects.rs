@@ -32,7 +32,7 @@ async fn test_redirect_302() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{redirect_addr}/"))
         .unwrap()
@@ -62,7 +62,7 @@ async fn test_redirect_relative() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/redirect"))
         .unwrap()
@@ -88,7 +88,7 @@ async fn test_redirect_max_exceeded() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_redirects(3)
         .build()
         .unwrap();
@@ -116,7 +116,7 @@ async fn test_redirect_307_preserves_method() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/redirect"))
         .unwrap()
@@ -148,7 +148,7 @@ async fn test_redirect_303_changes_to_get() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/redirect"))
         .unwrap()
@@ -174,7 +174,7 @@ async fn test_redirect_policy_none() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::none())
         .build()
         .unwrap();
@@ -216,7 +216,7 @@ async fn test_redirect_policy_custom() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::custom(
             |_current, next, _status, _method| {
                 if next.host() == Some("127.0.0.1") {
@@ -265,7 +265,7 @@ async fn test_redirect_301_and_302_and_303_changes_post_to_get() {
         })
         .await;
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         let url = format!("http://{addr}/{code}");
         let resp = client.post(&url).unwrap().send().await.unwrap();
 
@@ -302,7 +302,7 @@ async fn test_redirect_307_and_308_replays_post_body() {
         })
         .await;
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         let url = format!("http://{addr}/{code}");
         let resp = client
             .post(&url)
@@ -347,7 +347,7 @@ async fn test_redirect_removes_sensitive_headers_cross_origin() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{redirect_addr}/sensitive"))
         .unwrap()
@@ -401,7 +401,7 @@ async fn test_redirect_301_302_303_strips_content_headers() {
         })
         .await;
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         let url = format!("http://{addr}/{code}");
         let resp = client
             .post(&url)
@@ -433,7 +433,7 @@ async fn test_redirect_invalid_location_stops() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let result = client
         .get(&format!("http://{addr}/yikes"))
         .unwrap()
@@ -459,7 +459,7 @@ async fn test_redirect_loop_returns_error() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let result = client
         .get(&format!("http://{addr}/loop"))
         .unwrap()
@@ -496,7 +496,7 @@ async fn test_redirect_limit_to_1_ported() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_redirects(1)
         .build()
         .unwrap();
@@ -536,7 +536,7 @@ async fn test_redirect_302_with_set_cookies() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(aioduct::CookieJar::new())
         .build()
         .unwrap();
@@ -575,7 +575,7 @@ async fn test_redirect_referer_is_set_when_enabled() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .referer(true)
         .build()
         .unwrap();
@@ -613,7 +613,7 @@ async fn test_redirect_referer_not_set_by_default() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/start"))
         .unwrap()
@@ -645,7 +645,7 @@ async fn test_304_not_modified_is_not_treated_as_redirect() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -671,7 +671,7 @@ async fn test_redirect_stop_returns_redirect_response() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::custom(
             |_current, _next, _status, _method| aioduct::RedirectAction::Stop,
         ))
@@ -716,7 +716,7 @@ async fn redirect_301_302_303_changes_post_to_get() {
         })
         .await;
 
-        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         let resp = client
             .post(&format!("http://{addr}/{code}"))
             .unwrap()
@@ -757,7 +757,7 @@ async fn redirect_307_preserves_get() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/start"))
         .unwrap()
@@ -788,7 +788,7 @@ async fn redirect_308_preserves_get() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/start"))
         .unwrap()
@@ -823,7 +823,7 @@ async fn redirect_307_preserves_post_with_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/start"))
         .unwrap()
@@ -861,7 +861,7 @@ async fn redirect_308_preserves_post_with_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/start"))
         .unwrap()
@@ -889,7 +889,7 @@ async fn redirect_max_redirects_error() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_redirects(5)
         .build()
         .unwrap();
@@ -929,7 +929,7 @@ async fn redirect_cross_origin_strips_auth() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{redirect_addr}/start"))
         .unwrap()
@@ -968,7 +968,7 @@ async fn redirect_same_origin_preserves_auth() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/start"))
         .unwrap()
@@ -1016,7 +1016,7 @@ async fn redirect_chain_url_reflects_final() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{redirect_addr}/start"))
         .unwrap()
@@ -1045,7 +1045,7 @@ async fn redirect_to_invalid_scheme_returns_error() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
 
     assert!(
@@ -1067,7 +1067,7 @@ async fn redirect_stop_policy_allows_invalid_location() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::none())
         .build()
         .unwrap();
@@ -1111,7 +1111,7 @@ async fn redirect_307_streaming_body_should_not_silently_lose_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1166,7 +1166,7 @@ async fn redirect_308_streaming_body_should_not_silently_lose_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1223,7 +1223,7 @@ async fn redirect_same_host_different_port_representation_strips_auth() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1282,7 +1282,7 @@ async fn redirect_cross_origin_strips_auth_and_cookie() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1344,7 +1344,7 @@ async fn redirect_302_clears_body_and_content_length() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1410,7 +1410,7 @@ async fn redirect_limited_exact_boundary() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::Limited(3))
         .timeout(Duration::from_secs(5))
         .build()
@@ -1443,7 +1443,7 @@ async fn redirect_limited_exact_boundary() {
     }
 
     // Limited(4) should succeed (exactly 4 redirects to reach /final)
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::Limited(4))
         .timeout(Duration::from_secs(5))
         .build()
@@ -1488,7 +1488,7 @@ async fn redirect_stores_cookies_from_redirect_response() {
     .await;
 
     let jar = aioduct::cookie::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
         .build()
@@ -1533,7 +1533,7 @@ async fn redirect_308_preserves_method_and_body_buffered() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1582,7 +1582,7 @@ async fn redirect_303_put_becomes_get() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1633,7 +1633,7 @@ async fn redirect_preserves_custom_headers_same_origin() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1678,7 +1678,7 @@ async fn redirect_location_with_spaces() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1727,7 +1727,7 @@ async fn redirect_relative_location_path_edge() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1777,7 +1777,7 @@ async fn timeout_covers_entire_redirect_chain() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_millis(300))
         .build()
         .unwrap();
@@ -1824,7 +1824,7 @@ async fn redirect_multi_hop_chain_completes() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1868,7 +1868,7 @@ async fn redirect_should_preserve_fragment_when_location_has_none() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1922,7 +1922,7 @@ async fn redirect_referer_set_on_same_origin_when_enabled() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .referer(true)
         .timeout(Duration::from_secs(5))
         .build()
@@ -1973,7 +1973,7 @@ async fn redirect_referer_not_set_cross_origin() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .referer(true)
         .timeout(Duration::from_secs(5))
         .build()
@@ -2008,7 +2008,7 @@ async fn redirect_to_data_scheme_rejected() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -2035,7 +2035,7 @@ async fn redirect_empty_location_header() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -2072,7 +2072,7 @@ async fn redirect_custom_policy_stop_returns_response() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::custom(
             |_current, _next, _status, _method| aioduct::RedirectAction::Stop,
         ))
@@ -2126,7 +2126,7 @@ async fn redirect_target_is_hsts_upgraded() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .hsts(hsts_store)
         .timeout(Duration::from_secs(2))
         .build()
@@ -2188,7 +2188,7 @@ async fn https_only_should_block_http_redirect_target() {
     // spin up TLS in one line). The real bug is: if the initial request is HTTPS,
     // a redirect to HTTP should be blocked. We test the concept:
     // with https_only(true), the initial HTTP request should fail.
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .https_only(true)
         .timeout(Duration::from_secs(5))
         .build()
@@ -2250,7 +2250,7 @@ async fn referer_should_not_leak_on_https_to_http_downgrade() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .referer(true)
         .timeout(Duration::from_secs(5))
         .build()
@@ -2304,7 +2304,7 @@ async fn custom_redirect_policy_infinite_loop_protection() {
     .await;
 
     // Custom policy that always follows — should eventually hit some limit
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::custom(
             |_current, _next, _status, _method| aioduct::RedirectAction::Follow,
         ))
@@ -2376,7 +2376,7 @@ async fn redirect_cross_origin_preserves_custom_sensitive_headers() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .sensitive_header(http::header::HeaderName::from_static("x-api-key"))
         .build()

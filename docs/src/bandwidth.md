@@ -8,9 +8,8 @@ Set a maximum download speed at the client level:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .max_download_speed(1_048_576) // 1 MB/s
     .build()?;
 

@@ -1,4 +1,3 @@
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CompioClient, HttpCache};
 
 fn main() -> Result<(), aioduct::Error> {
@@ -6,10 +5,7 @@ fn main() -> Result<(), aioduct::Error> {
         // Create an in-memory HTTP cache
         let cache = HttpCache::new();
 
-        let client = CompioClient::builder_local(TcpConnector)
-            .cache(cache)
-            .build_local()
-            .unwrap();
+        let client = CompioClient::builder().cache(cache).build_local().unwrap();
 
         // First request — fetches from server, stores in cache
         let resp = client

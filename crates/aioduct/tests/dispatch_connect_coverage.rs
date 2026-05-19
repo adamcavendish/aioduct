@@ -89,7 +89,7 @@ async fn observer_fires_tls_timing_on_https() {
     let cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
     let obs = RecordingObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .add_root_certificates(&[cert])
         .danger_accept_invalid_hostnames(true)
         .request_observer(obs.clone())
@@ -206,7 +206,7 @@ async fn observer_tls_h1_alpn_protocol() {
     let cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
     let obs = RecordingObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .add_root_certificates(&[cert])
         .danger_accept_invalid_hostnames(true)
         .request_observer(obs.clone())
@@ -253,7 +253,7 @@ async fn observer_plain_http_no_tls_event() {
     let (addr, _counter) = aioduct_test_server::h1::h1_server().await;
     let obs = RecordingObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()
@@ -297,7 +297,7 @@ async fn concurrent_h2_multiplex_exercises_checkout_path() {
     let obs = RecordingObserver::default();
 
     let client = Arc::new(
-        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .http2_prior_knowledge()
             .request_observer(obs.clone())
             .timeout(Duration::from_secs(5))
@@ -431,7 +431,7 @@ async fn connect_tunnel_succeeds_through_proxy() {
 
     let cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .add_root_certificates(&[cert])
         .danger_accept_invalid_hostnames(true)
@@ -465,7 +465,7 @@ async fn proxy_connection_with_keepalive() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .tcp_keepalive(Duration::from_secs(30))
         .tcp_keepalive_interval(Duration::from_secs(10))
@@ -503,7 +503,7 @@ async fn proxy_connection_with_fast_open() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
         .tcp_fast_open(true)
         .timeout(Duration::from_secs(5))
@@ -587,7 +587,7 @@ async fn socks4_proxy_connection() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::socks4(&format!("socks4://{socks_addr}")).unwrap())
         .timeout(Duration::from_secs(5))
         .build()
@@ -660,7 +660,7 @@ async fn observer_reports_stale_retry_on_rst() {
 
     let obs = RecordingObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()
@@ -729,7 +729,7 @@ async fn https_request_populates_timings() {
 
     let cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .add_root_certificates(&[cert])
         .danger_accept_invalid_hostnames(true)
         .timeout(Duration::from_secs(5))
@@ -826,7 +826,7 @@ async fn socks5_proxy_with_keepalive_and_fast_open() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}")).unwrap())
         .tcp_keepalive(Duration::from_secs(15))
         .tcp_keepalive_interval(Duration::from_secs(5))
@@ -916,7 +916,7 @@ async fn connect_tunnel_with_auth_succeeds() {
 
     let cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(
             aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
                 .unwrap()
@@ -956,7 +956,7 @@ async fn direct_connection_keepalive_and_fast_open() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tcp_keepalive(Duration::from_secs(30))
         .tcp_keepalive_interval(Duration::from_secs(10))
         .tcp_keepalive_retries(3)
@@ -1051,7 +1051,7 @@ async fn connection_coalescing_reuses_h2_with_sans() {
 
     let obs = RecordingObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .connection_coalescing(true)
         .request_observer(obs.clone())
@@ -1076,7 +1076,7 @@ async fn connection_coalescing_reuses_h2_with_sans() {
     // Note: This requires alt.localhost to also resolve to 127.0.0.1.
     // We use a custom resolver to ensure this.
     let port = addr.port();
-    let client_with_resolver = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client_with_resolver = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::new({
             let mut root_store2 = rustls::RootCertStore::empty();
             root_store2.add(cert_der).unwrap();

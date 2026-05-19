@@ -1,4 +1,3 @@
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{SmolClient, TracingMiddleware};
 
 fn main() -> Result<(), aioduct::Error> {
@@ -10,7 +9,7 @@ fn main() -> Result<(), aioduct::Error> {
 
         tracing::info!("starting tracing example");
 
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .middleware(TracingMiddleware)
             .build()
             .unwrap();

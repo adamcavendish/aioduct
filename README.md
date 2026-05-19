@@ -73,11 +73,10 @@ aioduct = { version = "0.2.0-alpha.1", features = ["tokio"] }
 
 ```rust
 use aioduct::{TokioClient, StatusCode};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     let resp = client.get("http://httpbin.org/get")?
         .send()
@@ -111,9 +110,8 @@ aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls-native-roots
 
 ```rust
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::with_rustls(TcpConnector);
+let client = TokioClient::with_rustls();
 let resp = client.get("https://httpbin.org/get")?.send().await?;
 ```
 
@@ -200,9 +198,8 @@ let resp = client.get("https://example.com/search")?
 ```rust
 use std::time::Duration;
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .timeout(Duration::from_secs(30))
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))
@@ -217,14 +214,13 @@ let client = TokioClient::builder(TcpConnector)
 ```rust
 use aioduct::ProxyConfig;
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(ProxyConfig::socks5("socks5://proxy.example.com:1080").unwrap())
     .build()?;
 
 // With authentication
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(
         ProxyConfig::socks5("socks5://proxy.example.com:1080")
             .unwrap()
@@ -238,9 +234,8 @@ let client = TokioClient::builder(TcpConnector)
 ```rust
 use aioduct::Http2Config;
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
     .http2(
         Http2Config::new()
@@ -256,10 +251,9 @@ let client = TokioClient::builder(TcpConnector)
 
 ```rust
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 
 smol::block_on(async {
-    let client = SmolClient::new(TcpConnector);
+    let client = SmolClient::new();
     let resp = client.get("http://httpbin.org/get")?
         .send()
         .await?;
@@ -272,12 +266,11 @@ smol::block_on(async {
 
 ```rust
 use aioduct::{TokioClient, Protocol};
-use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 
 // Forward a request to an upstream, stripping a path prefix
 let incoming_req = http::Request::builder()

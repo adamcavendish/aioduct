@@ -1,10 +1,9 @@
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // Force HTTP/2 without TLS upgrade negotiation (h2c)
     // This is useful for local services that speak HTTP/2 directly
-    let _client = TokioClient::builder(TcpConnector)
+    let _client = TokioClient::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();
@@ -19,7 +18,7 @@ async fn main() -> Result<(), aioduct::Error> {
     // when the server supports it. No special configuration needed.
 
     // Example with a standard HTTPS endpoint (negotiates h2 via ALPN):
-    let standard_client = TokioClient::builder(TcpConnector).build().unwrap();
+    let standard_client = TokioClient::builder().build().unwrap();
 
     let resp = standard_client
         .get("https://httpbin.org/get")?

@@ -26,7 +26,7 @@ use aioduct_test_server::h2::h2_server_with;
 async fn https_only_rejects_http_url() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .https_only(true)
         .build()
         .unwrap();
@@ -63,7 +63,7 @@ async fn cookie_jar_stores_and_sends() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -105,7 +105,7 @@ async fn middleware_injects_header() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(
             |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(
@@ -165,7 +165,7 @@ async fn observer_receives_lifecycle_events() {
     let (addr, _counter) = h1_server().await;
     let obs = TestObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .request_observer(obs.clone())
         .build()
         .unwrap();
@@ -226,7 +226,7 @@ async fn read_timeout_fires_on_stalled_body() {
         tokio::time::sleep(Duration::from_secs(60)).await;
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .read_timeout(Duration::from_millis(50))
         .build()
         .unwrap();
@@ -251,7 +251,7 @@ async fn read_timeout_fires_on_stalled_body() {
 async fn bandwidth_limiter_allows_request() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_download_speed(1024 * 1024)
         .build()
         .unwrap();
@@ -273,7 +273,7 @@ async fn bandwidth_limiter_allows_request() {
 async fn rate_limiter_allows_request() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_requests_per_sec(100)
         .build()
         .unwrap();
@@ -311,7 +311,7 @@ async fn cache_serves_second_request_from_store() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -348,7 +348,7 @@ async fn hsts_store_basic_request_works() {
     let (addr, _counter) = h1_server().await;
 
     let hsts = aioduct::HstsStore::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .hsts(hsts)
         .build()
         .unwrap();
@@ -377,7 +377,7 @@ async fn no_decompression_omits_accept_encoding() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .no_decompression()
         .build()
         .unwrap();
@@ -402,7 +402,7 @@ async fn no_decompression_omits_accept_encoding() {
 async fn resolve_override_routes_to_target() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .resolve("custom.local", addr)
         .build()
         .unwrap();
@@ -433,7 +433,7 @@ async fn too_many_redirects_returns_error() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_redirects(3)
         .build()
         .unwrap();
@@ -472,7 +472,7 @@ async fn redirect_303_changes_post_to_get() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -497,7 +497,7 @@ async fn redirect_303_changes_post_to_get() {
 
 #[tokio::test]
 async fn connect_timeout_fires_on_unreachable() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .connect_timeout(Duration::from_millis(1))
         .build()
         .unwrap();
@@ -518,7 +518,7 @@ async fn connect_timeout_fires_on_unreachable() {
 async fn tcp_keepalive_basic_request_works() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tcp_keepalive(Duration::from_secs(60))
         .build()
         .unwrap();
@@ -548,7 +548,7 @@ async fn error_for_status_on_500() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -571,7 +571,7 @@ async fn error_for_status_on_500() {
 async fn json_post_sets_content_type() {
     let (addr, _counter) = h1_server_with(echo).await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .post(&format!("http://{addr}/"))
@@ -595,7 +595,7 @@ async fn json_post_sets_content_type() {
 async fn form_post_sets_content_type() {
     let (addr, _counter) = h1_server_with(echo).await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .post(&format!("http://{addr}/"))
@@ -621,7 +621,7 @@ async fn h2c_prior_knowledge_works() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();
@@ -653,7 +653,7 @@ async fn no_connection_reuse_opens_new_connections() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .no_connection_reuse()
         .build()
         .unwrap();
@@ -695,7 +695,7 @@ async fn h2_pool_hit_reuses_connection() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
@@ -744,7 +744,7 @@ async fn h2_concurrent_requests_multiplex_single_connection() {
     .await;
 
     let client = Arc::new(
-        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .http2_prior_knowledge()
             .pool_idle_timeout(Duration::from_secs(60))
             .build()
@@ -785,7 +785,7 @@ async fn stale_connection_retry_on_rst() {
     // open a fresh connection and succeed.
     let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -828,7 +828,7 @@ async fn stale_connection_retry_on_rst() {
 async fn stale_connection_retry_on_fin() {
     let (addr, counter) = aioduct_test_server::stale::h1_fin_on_reuse().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -872,7 +872,7 @@ async fn tls_connection_exercises_tls_path() {
     let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
     let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build()
@@ -909,7 +909,7 @@ async fn tls_h1_connection_path() {
     let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
     let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build()
@@ -943,7 +943,7 @@ async fn tls_h2_multiplex_checkin_path() {
     let connector = aioduct::tls::RustlsConnector::new(client_config);
 
     let client = Arc::new(
-        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .tls(connector)
             .pool_idle_timeout(Duration::from_secs(60))
             .timeout(Duration::from_secs(5))
@@ -997,7 +997,7 @@ async fn http_proxy_injects_proxy_authorization() {
         .unwrap()
         .basic_auth("user", "secret");
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(proxy)
         .timeout(Duration::from_secs(5))
         .build()
@@ -1033,7 +1033,7 @@ async fn h2_pool_hit_observer_reports_hit() {
 
     let obs = TestObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .pool_idle_timeout(Duration::from_secs(60))
         .request_observer(obs.clone())
@@ -1081,7 +1081,7 @@ async fn no_connection_reuse_prevents_pool_checkin_h2() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .no_connection_reuse()
         .build()
@@ -1117,7 +1117,7 @@ async fn h1_pool_hit_reuses_connection() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap();
@@ -1164,7 +1164,7 @@ async fn tls_no_alpn_falls_to_h1() {
     let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
     let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build()
@@ -1192,7 +1192,7 @@ async fn tls_h2_sequential_reuses_connection() {
     let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
     let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
@@ -1224,7 +1224,7 @@ async fn h2_goaway_triggers_fresh_connection() {
     // Server sends GOAWAY after 2 requests
     let (addr, counter) = aioduct_test_server::h2::h2_goaway_after(2).await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
@@ -1285,7 +1285,7 @@ async fn proxy_settings_injects_authorization_on_http() {
 
     let settings = aioduct::ProxySettings::all(proxy);
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy_settings(settings)
         .timeout(Duration::from_secs(5))
         .build()
@@ -1314,7 +1314,7 @@ async fn stale_retry_rst_every_n_succeeds() {
     // request attempts reuse and hits a stale (RST'd) connection, triggering retry.
     let (addr, counter) = aioduct_test_server::stale::h1_rst_every_n(2).await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -1366,7 +1366,7 @@ async fn h2_pool_hit_after_concurrent_establishment() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
@@ -1435,7 +1435,7 @@ async fn hsts_stored_from_https_response() {
     let connector = aioduct::tls::RustlsConnector::new(client_config);
 
     let hsts = aioduct::HstsStore::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .hsts(hsts.clone())
         .timeout(Duration::from_secs(5))
@@ -1485,7 +1485,7 @@ async fn cache_invalidation_on_post() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -1552,7 +1552,7 @@ async fn redirect_307_preserves_method_and_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1584,7 +1584,7 @@ async fn observer_fires_connection_metrics_on_checkin() {
     let (addr, _counter) = h1_server().await;
     let obs = TestObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .request_observer(obs.clone())
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
@@ -1622,7 +1622,7 @@ async fn observer_fires_connection_metrics_on_h2_multiplex_clone() {
     let obs = TestObserver::default();
 
     let client = Arc::new(
-        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .http2_prior_knowledge()
             .pool_idle_timeout(Duration::from_secs(60))
             .request_observer(obs.clone())
@@ -1670,7 +1670,7 @@ async fn hsts_upgrade_redirects_http_to_https() {
     // Verify HSTS is stored
     assert!(hsts.should_upgrade("localhost"));
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .hsts(hsts)
         .timeout(Duration::from_millis(500))
         .build()
@@ -1709,7 +1709,7 @@ async fn default_headers_applied_to_request() {
         http::header::HeaderValue::from_static("default-value"),
     );
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .default_headers(headers)
         .build()
         .unwrap();
@@ -1748,7 +1748,7 @@ async fn default_headers_do_not_override_explicit() {
         http::header::HeaderValue::from_static("default-value"),
     );
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .default_headers(headers)
         .build()
         .unwrap();
@@ -1784,7 +1784,7 @@ async fn redirect_308_streaming_body_errors() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -1830,7 +1830,7 @@ async fn redirect_policy_none_returns_redirect_directly() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::none())
         .timeout(Duration::from_secs(5))
         .build()
@@ -1878,7 +1878,7 @@ async fn referer_header_added_on_redirect() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .referer(true)
         .timeout(Duration::from_secs(5))
         .build()
@@ -1938,7 +1938,7 @@ async fn cache_304_revalidation_via_execute_send() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -1998,7 +1998,7 @@ async fn cache_stale_if_error_on_5xx_via_execute_send() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -2062,7 +2062,7 @@ async fn digest_auth_retry_via_execute_send() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("testuser", "testpass")
         .timeout(Duration::from_secs(5))
         .build()
@@ -2120,7 +2120,7 @@ async fn cookie_jar_stores_and_sends_on_next_request() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -2164,7 +2164,7 @@ async fn host_header_auto_inserted() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -2187,7 +2187,7 @@ async fn observer_receives_stale_retry_event() {
     let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
     let obs = TestObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .request_observer(obs.clone())
@@ -2243,7 +2243,7 @@ async fn middleware_applies_on_fresh_connection() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(
             |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(
@@ -2300,7 +2300,7 @@ async fn unix_socket_connection_path() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .unix_socket(&sock_path)
         .timeout(Duration::from_secs(5))
         .build()
@@ -2347,7 +2347,7 @@ async fn unix_socket_with_connect_timeout() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .unix_socket(&sock_path)
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(5))
@@ -2374,7 +2374,7 @@ async fn adaptive_h2c_probe_succeeds_on_h2_server() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -2435,7 +2435,7 @@ async fn adaptive_h2c_probe_falls_back_to_h1() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -2566,7 +2566,7 @@ async fn connection_coalescing_reuses_h2_tls_connection() {
     client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(std::sync::Arc::new(client_config));
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .connection_coalescing(true)
         .resolve("coalesce-a.local", addr)
@@ -2675,7 +2675,7 @@ async fn connection_coalescing_disabled_opens_separate() {
     client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(std::sync::Arc::new(client_config));
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .connection_coalescing(false)
         .resolve("no-coal-a.local", addr)
@@ -2730,7 +2730,7 @@ async fn h2_multiplex_wait_spin_loop_many_concurrent() {
     .await;
 
     let client = Arc::new(
-        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .http2_prior_knowledge()
             .pool_idle_timeout(Duration::from_secs(60))
             .timeout(Duration::from_secs(10))
@@ -2772,7 +2772,7 @@ async fn forward_h2c_prior_knowledge_exercises_force_h2c() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -2806,7 +2806,7 @@ async fn h2c_probe_cache_ttl_forces_re_probe() {
     .await;
 
     // Very short TTL forces re-probe
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .h2c_probe_ttl(Duration::from_millis(1))
         .timeout(Duration::from_secs(5))
         .build()
@@ -2863,7 +2863,7 @@ async fn h2c_probe_cache_ttl_forces_re_probe() {
 async fn tcp_fast_open_exercises_path() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tcp_fast_open(true)
         .timeout(Duration::from_secs(5))
         .build()
@@ -2886,7 +2886,7 @@ async fn tcp_fast_open_exercises_path() {
 async fn local_address_binding_exercises_connect_bound() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
         .timeout(Duration::from_secs(5))
         .build()
@@ -2909,7 +2909,7 @@ async fn local_address_binding_exercises_connect_bound() {
 async fn tcp_keepalive_interval_and_retries() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tcp_keepalive(Duration::from_secs(60))
         .tcp_keepalive_interval(Duration::from_secs(30))
         .tcp_keepalive_retries(5)
@@ -2951,7 +2951,7 @@ async fn switching_protocols_skips_pool_checkin() {
         tokio::time::sleep(Duration::from_secs(5)).await;
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -2980,7 +2980,7 @@ async fn observer_tls_handshake_complete_event() {
 
     let obs = TestObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .request_observer(obs.clone())
         .timeout(Duration::from_secs(5))
@@ -3018,7 +3018,7 @@ async fn h2_discards_redundant_connection_on_race() {
     .await;
 
     let client = Arc::new(
-        HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .http2_prior_knowledge()
             .pool_idle_timeout(Duration::from_secs(60))
             .timeout(Duration::from_secs(10))
@@ -3058,7 +3058,7 @@ async fn rate_limiter_wait_loop_exercises_sleep() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_requests_per_sec(2)
         .timeout(Duration::from_secs(10))
         .build()
@@ -3122,7 +3122,7 @@ async fn pool_hit_non_retryable_streaming_body_error() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -3177,7 +3177,7 @@ async fn forward_strip_prefix_rewrites_path() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -3214,7 +3214,7 @@ async fn pool_idle_timeout_evicts_old_connection() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_millis(30))
         .timeout(Duration::from_secs(5))
         .build()
@@ -3263,7 +3263,7 @@ async fn forward_on_request_and_on_response_hooks() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -3351,7 +3351,7 @@ async fn chunk_download_with_range_support() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
@@ -3386,7 +3386,7 @@ async fn chunk_download_fallback_no_ranges() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -3416,7 +3416,7 @@ async fn chunk_download_head_failure_returns_error() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -3434,7 +3434,7 @@ async fn chunk_download_head_failure_returns_error() {
 #[cfg(feature = "rustls")]
 #[tokio::test]
 async fn builder_min_tls_version_builds_successfully() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .min_tls_version(aioduct::TlsVersion::Tls1_3)
         .build()
         .unwrap();
@@ -3450,7 +3450,7 @@ async fn builder_min_tls_version_builds_successfully() {
 #[cfg(feature = "rustls")]
 #[tokio::test]
 async fn builder_max_tls_version_builds_successfully() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_tls_version(aioduct::TlsVersion::Tls1_2)
         .build()
         .unwrap();
@@ -3464,7 +3464,7 @@ async fn builder_max_tls_version_builds_successfully() {
 #[cfg(feature = "rustls")]
 #[tokio::test]
 async fn builder_tls_sni_disabled_builds_successfully() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls_sni(false)
         .build()
         .unwrap();
@@ -3491,7 +3491,7 @@ async fn forward_uses_client_timeout_when_no_explicit_timeout() {
         tokio::time::sleep(Duration::from_secs(60)).await;
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_millis(100))
         .build()
         .unwrap();
@@ -3528,7 +3528,7 @@ async fn forward_preserve_host_with_upstream_base_path() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -3585,7 +3585,7 @@ async fn forward_remove_and_forward_header_combined() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let incoming = http::Request::builder()
         .method(http::Method::GET)
@@ -3623,7 +3623,7 @@ async fn observer_receives_connection_metrics() {
     let (addr, _counter) = h1_server().await;
     let obs = TestObserver::default();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .request_observer(obs.clone())
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
@@ -3661,7 +3661,7 @@ async fn forward_adaptive_h2c_exercises_path() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -3707,7 +3707,7 @@ async fn finalize_response_caches_cacheable_response() {
 
     // Client with cache + read_timeout + bandwidth limiter (exercises finalize_response fully)
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .read_timeout(Duration::from_secs(30))
         .max_download_speed(1024 * 1024)
@@ -3751,7 +3751,7 @@ async fn finalize_response_applies_read_timeout_and_bandwidth_without_cache() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .read_timeout(Duration::from_secs(30))
         .max_download_speed(1024 * 1024)
         .build()
@@ -3782,7 +3782,7 @@ async fn not_modified_304_is_not_treated_as_redirect() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .build()
         .unwrap();
 
@@ -3818,7 +3818,7 @@ impl aioduct::Middleware for ResponseInjectMiddleware {
 async fn middleware_on_response_applies_in_finalize() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(ResponseInjectMiddleware)
         .build()
         .unwrap();
@@ -3860,7 +3860,7 @@ async fn cache_invalidation_on_post_variant() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -3908,7 +3908,7 @@ async fn hsts_upgrade_http_to_https() {
     );
     hsts.store_from_response("localhost", &hsts_headers);
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .hsts(hsts)
         .timeout(Duration::from_secs(5))
@@ -3937,7 +3937,7 @@ async fn streaming_body_prevents_stale_retry() {
     // The stale retry is disabled for streaming bodies (can_stale_retry is false)
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -3975,7 +3975,7 @@ async fn user_agent_default_does_not_override_explicit() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .user_agent("default-agent/1.0")
         .build()
         .unwrap();
@@ -4025,7 +4025,7 @@ async fn referer_header_set_on_redirect() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .referer(true)
         .timeout(Duration::from_secs(5))
         .build()
@@ -4096,7 +4096,7 @@ async fn sensitive_headers_stripped_on_cross_origin_redirect() {
             .unwrap();
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .sensitive_header(http::header::HeaderName::from_static("x-secret"))
         .timeout(Duration::from_secs(5))
         .build()
@@ -4147,7 +4147,7 @@ async fn host_header_auto_injected() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -4170,7 +4170,7 @@ async fn empty_middleware_stack_works() {
     let (addr, _counter) = h1_server().await;
 
     // Default client has no middleware
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -4187,7 +4187,7 @@ async fn empty_middleware_stack_works() {
 
 #[tokio::test]
 async fn chunk_download_debug_includes_url() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let dl = client.chunk_download("http://example.com/large.bin");
     let debug = format!("{dl:?}");
     assert!(debug.contains("ChunkDownload"));
@@ -4233,7 +4233,7 @@ async fn retry_budget_exhaustion_on_connection_error_with_middleware() {
 
     // Budget of 0 tokens: first retry attempt will be denied
     let budget = aioduct::RetryBudget::new(0, 1);
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(TrackingMiddleware {
             error_count: error_count_clone,
             retry_count: retry_count_clone,
@@ -4301,7 +4301,7 @@ async fn retry_fully_exhausted_with_middleware_fires_error() {
 
     // Large budget so it never blocks
     let budget = aioduct::RetryBudget::new(100, 1);
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(ErrorTrackMw {
             error_count: error_count_clone,
             retry_count: retry_count_clone,
@@ -4354,7 +4354,7 @@ async fn non_retryable_error_with_middleware() {
         }
     }
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(NonRetryErrorMw {
             error_count: error_count_clone,
         })
@@ -4393,7 +4393,7 @@ async fn h2_multiplex_concurrent_requests_dedup() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .http2_prior_knowledge()
         .build()
@@ -4441,7 +4441,7 @@ async fn stale_if_error_serves_cached_on_network_failure() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache.clone())
         .timeout(Duration::from_secs(2))
         .build()
@@ -4464,7 +4464,7 @@ async fn stale_if_error_serves_cached_on_network_failure() {
         port
     };
 
-    let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .timeout(Duration::from_millis(500))
         .resolver(move |_host: &str, _port: u16| {
@@ -4528,7 +4528,7 @@ async fn adaptive_h2c_probe_error_connects_h1_fallback() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -4579,7 +4579,7 @@ async fn cache_staleness_with_expired_max_age() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -4641,7 +4641,7 @@ async fn retry_on_status_budget_exhaustion_with_middleware() {
 
     // Budget of 1: allows one retry, then exhausted
     let budget = aioduct::RetryBudget::new(1, 0);
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(StatusRetryMw {
             retry_count: retry_count_clone,
         })

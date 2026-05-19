@@ -8,10 +8,9 @@ Create an `HstsStore` and pass it to the client builder:
 
 ```rust,no_run
 use aioduct::{TokioClient, HstsStore};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 let hsts = HstsStore::new();
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
     .hsts(hsts)
     .build()?;

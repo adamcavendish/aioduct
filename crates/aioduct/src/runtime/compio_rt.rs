@@ -120,7 +120,7 @@ impl super::SocketConfig for CompioTcpStream {
 ///
 /// Uses native `compio_net::TcpStream` for io_uring (Linux) / IOCP (Windows)
 /// I/O, bridged to futures-io via `compio_io::compat::AsyncStream`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct TcpConnector;
 
 impl ConnectorLocal for TcpConnector {

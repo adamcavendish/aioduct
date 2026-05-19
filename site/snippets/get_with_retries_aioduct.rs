@@ -1,12 +1,10 @@
 // features: tokio,json
 // runtime: tokio
-use aioduct::HttpEngine;
-use aioduct::runtime::TokioRuntime;
-use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::TokioClient;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = TokioClient::builder()
         .retry(aioduct::RetryConfig::default().max_retries(3))
         .build();
 

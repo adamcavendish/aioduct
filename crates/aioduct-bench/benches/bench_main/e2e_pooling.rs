@@ -12,7 +12,7 @@ fn bench_h1_pool_vs_no_pool(c: &mut Criterion) {
     let no_pool = aioduct::HttpEngineSend::<
         aioduct::runtime::TokioRuntime,
         aioduct::runtime::tokio_rt::TcpConnector,
-    >::builder(aioduct::runtime::tokio_rt::TcpConnector)
+    >::builder()
     .no_connection_reuse()
     .build()
     .unwrap();
@@ -66,7 +66,7 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
     let no_pool = aioduct::HttpEngineSend::<
         aioduct::runtime::TokioRuntime,
         aioduct::runtime::tokio_rt::TcpConnector,
-    >::builder(aioduct::runtime::tokio_rt::TcpConnector)
+    >::builder()
     .http2_prior_knowledge()
     .http2(
         aioduct::Http2Config::new()

@@ -1,12 +1,11 @@
 use aioduct::CompioClient;
-use aioduct::runtime::compio_rt::TcpConnector;
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         // Set default headers on the client
         let mut default_headers = http::HeaderMap::new();
         default_headers.insert("x-custom-global", "from-client".parse().unwrap());
 
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .user_agent("my-app/1.0")
             .default_headers(default_headers)
             .build_local()

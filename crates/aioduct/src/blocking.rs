@@ -266,12 +266,10 @@ mod tests {
     #[test]
     fn blocking_tokio_default_headers() {
         use crate::runtime::tokio_rt::TcpConnector;
-        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::builder(
-            TcpConnector,
-        )
-        .user_agent("blocking-test/1.0")
-        .build()
-        .unwrap();
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::builder()
+            .user_agent("blocking-test/1.0")
+            .build()
+            .unwrap();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let result = client.get("http://127.0.0.1:1/nonexistent");
         assert!(result.is_ok());
@@ -281,8 +279,7 @@ mod tests {
     #[test]
     fn blocking_client_all_methods() {
         use crate::runtime::tokio_rt::TcpConnector;
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         assert!(client.get("http://127.0.0.1:1/").is_ok());
         assert!(client.head("http://127.0.0.1:1/").is_ok());
@@ -301,8 +298,7 @@ mod tests {
     #[test]
     fn blocking_client_invalid_url() {
         use crate::runtime::tokio_rt::TcpConnector;
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         assert!(client.get("not a valid url\n").is_err());
     }
@@ -311,8 +307,7 @@ mod tests {
     #[test]
     fn blocking_client_invalid_url_all_methods() {
         use crate::runtime::tokio_rt::TcpConnector;
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let bad_url = "not a valid url\n";
         assert!(client.head(bad_url).is_err());
@@ -329,8 +324,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/", addr))
@@ -346,8 +340,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/", addr))
@@ -363,8 +356,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/", addr))
@@ -381,8 +373,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/", addr))
@@ -407,8 +398,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/", addr))
@@ -427,8 +417,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .head(&format!("http://{}/test", addr))
@@ -444,8 +433,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .post(&format!("http://{}/submit", addr))
@@ -471,8 +459,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .put(&format!("http://{}/resource", addr))
@@ -498,8 +485,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .patch(&format!("http://{}/resource", addr))
@@ -525,8 +511,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .delete(&format!("http://{}/resource/42", addr))
@@ -551,8 +536,7 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .request(Method::OPTIONS, &format!("http://{}/options", addr))
@@ -578,8 +562,7 @@ mod tests {
                 .body(http_body_util::Full::new(bytes::Bytes::from("not found")))
                 .unwrap())
         });
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/missing", addr))
@@ -607,8 +590,7 @@ mod tests {
                 )))
                 .unwrap())
         });
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/fail", addr))
@@ -634,8 +616,7 @@ mod tests {
                 .body(http_body_util::Full::new(bytes::Bytes::from("forbidden")))
                 .unwrap())
         });
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/secret", addr))
@@ -661,8 +642,7 @@ mod tests {
                 .body(http_body_util::Full::new(bytes::Bytes::from("1234567")))
                 .unwrap())
         });
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/", addr))
@@ -684,8 +664,7 @@ mod tests {
                 .body(http_body_util::Full::new(bytes::Bytes::from(body)))
                 .unwrap())
         });
-        let engine =
-            crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new(TcpConnector);
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let resp = client
             .get(&format!("http://{}/", addr))

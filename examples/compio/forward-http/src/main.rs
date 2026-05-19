@@ -2,7 +2,6 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 
 use aioduct::CompioClient;
-use aioduct::runtime::compio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::server::conn::http1 as server_http1;
@@ -58,7 +57,7 @@ fn main() -> Result<(), aioduct::Error> {
         let upstream_addr = start_upstream().await;
         println!("Upstream running on {upstream_addr}");
 
-        let client = CompioClient::new_local(TcpConnector);
+        let client = CompioClient::new();
 
         let incoming_req = http::Request::builder()
             .method("GET")

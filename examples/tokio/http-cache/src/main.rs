@@ -1,4 +1,3 @@
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{HttpCache, TokioClient};
 
 #[tokio::main]
@@ -6,10 +5,7 @@ async fn main() -> Result<(), aioduct::Error> {
     // Create an in-memory HTTP cache
     let cache = HttpCache::new();
 
-    let client = TokioClient::builder(TcpConnector)
-        .cache(cache)
-        .build()
-        .unwrap();
+    let client = TokioClient::builder().cache(cache).build().unwrap();
 
     // First request — fetches from server, stores in cache
     let resp = client.get("https://httpbin.org/cache/60")?.send().await?;

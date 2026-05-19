@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 
 use aioduct::Protocol;
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::service::service_fn;
@@ -81,7 +80,7 @@ async fn main() -> Result<(), aioduct::Error> {
     println!("H2 WebSocket upstream running on {upstream_addr}");
 
     // Client must use H2 prior knowledge since we're connecting plaintext H2
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();

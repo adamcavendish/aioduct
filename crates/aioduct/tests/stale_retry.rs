@@ -25,7 +25,7 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 // ---------------------------------------------------------------------------
 
 fn make_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -33,14 +33,14 @@ fn make_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
 }
 
 fn make_client_no_timeout() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap()
 }
 
 fn make_h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .http2_prior_knowledge()
@@ -130,7 +130,7 @@ async fn h2_goaway_detected_as_stale() {
 #[tokio::test]
 async fn fresh_connection_refused_not_stale() {
     let (addr, counter) = aioduct_test_server::stale::h1_always_rst().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
         .build()
@@ -174,7 +174,7 @@ async fn timeout_error_not_stale() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_millis(500))
         .build()
@@ -342,7 +342,7 @@ async fn no_retry_streaming_body() {
 #[tokio::test]
 async fn no_retry_when_no_connection_reuse() {
     let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .no_connection_reuse()
         .timeout(Duration::from_secs(5))
         .build()
@@ -538,7 +538,7 @@ async fn retry_preserves_method_uri_headers_body() {
 #[tokio::test]
 async fn retry_does_not_infinite_loop() {
     let (addr, counter) = aioduct_test_server::stale::h1_always_rst().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(2))
         .build()
@@ -843,7 +843,7 @@ async fn stale_retry_preserves_content_type_for_json() {
     let client = aioduct::HttpEngineSend::<
         aioduct::runtime::TokioRuntime,
         aioduct::runtime::tokio_rt::TcpConnector,
-    >::builder(aioduct::runtime::tokio_rt::TcpConnector)
+    >::builder()
     .pool_idle_timeout(Duration::from_secs(60))
     .timeout(Duration::from_secs(5))
     .build()

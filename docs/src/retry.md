@@ -7,11 +7,10 @@ aioduct supports automatic retries with configurable exponential backoff. Retrie
 ```rust,no_run
 use std::time::Duration;
 use aioduct::{TokioClient, RetryConfig};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     let resp = client
         .get("http://example.com/api")?
@@ -67,9 +66,8 @@ A `RetryBudget` prevents retry storms by limiting the total retry rate across al
 ```rust,no_run
 use std::time::Duration;
 use aioduct::{TokioClient, RetryConfig, RetryBudget};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .retry(
         RetryConfig::default()
             .budget(RetryBudget::new(10, 1)),  // max 10 tokens, +1 per success
@@ -84,9 +82,8 @@ Set a default retry policy for all requests:
 ```rust,no_run
 use std::time::Duration;
 use aioduct::{TokioClient, RetryConfig};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .retry(
         RetryConfig::default()
             .max_retries(5)
@@ -103,8 +100,7 @@ A retry config on a request takes precedence over the client default:
 ```rust,no_run
 # use std::time::Duration;
 # use aioduct::{TokioClient, RetryConfig};
-# use aioduct::runtime::tokio_rt::TcpConnector;
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 let resp = client
     .post("http://example.com/idempotent-endpoint")?
     .retry(RetryConfig::default().max_retries(1))
@@ -119,11 +115,10 @@ let resp = client
 ```rust,no_run
 use std::time::Duration;
 use aioduct::{TokioClient, RetryConfig};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .retry(
             RetryConfig::default()
                 .max_retries(3)

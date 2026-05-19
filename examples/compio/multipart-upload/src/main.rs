@@ -1,11 +1,8 @@
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CompioClient, Multipart, Part};
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = CompioClient::builder_local(TcpConnector)
-            .build_local()
-            .unwrap();
+        let client = CompioClient::builder().build_local().unwrap();
 
         // Build a multipart form with text and file parts
         let form = Multipart::new()
