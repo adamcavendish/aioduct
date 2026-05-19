@@ -163,7 +163,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     self.core
                         .attach_observer(&mut resp, &req_method, original_uri);
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                        self.core.checkin_when_ready(pool_key, conn, R::spawn_send);
+                        self.core.checkin_when_ready::<R, _, _>(
+                            pool_key,
+                            conn,
+                            R::spawn_send,
+                            R::sleep(self.core.pool.idle_timeout()),
+                        );
                     }
                     return Ok(resp);
                 }
@@ -305,7 +310,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         self.core
                             .attach_observer(&mut resp, &req_method, original_uri);
                         if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                            self.core.checkin_when_ready(pool_key, conn, R::spawn_send);
+                            self.core.checkin_when_ready::<R, _, _>(
+                                pool_key,
+                                conn,
+                                R::spawn_send,
+                                R::sleep(self.core.pool.idle_timeout()),
+                            );
                         }
                         return Ok(resp);
                     }
@@ -499,8 +509,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 self.core
                     .attach_observer(&mut resp, &req_method, original_uri);
                 if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                    self.core
-                        .checkin_when_ready(pool_key, pooled, R::spawn_send);
+                    self.core.checkin_when_ready::<R, _, _>(
+                        pool_key,
+                        pooled,
+                        R::spawn_send,
+                        R::sleep(self.core.pool.idle_timeout()),
+                    );
                 }
                 return Ok(resp);
             }
@@ -592,7 +606,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
                             if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                                self.core.checkin_when_ready(pool_key, conn, R::spawn_send);
+                                self.core.checkin_when_ready::<R, _, _>(
+                                    pool_key,
+                                    conn,
+                                    R::spawn_send,
+                                    R::sleep(self.core.pool.idle_timeout()),
+                                );
                             }
                             return Ok(resp);
                         }
@@ -1029,8 +1048,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .attach_observer(&mut resp, &req_method, original_uri);
         if !self.core.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
         {
-            self.core
-                .checkin_when_ready(pool_key, pooled, R::spawn_send);
+            self.core.checkin_when_ready::<R, _, _>(
+                pool_key,
+                pooled,
+                R::spawn_send,
+                R::sleep(self.core.pool.idle_timeout()),
+            );
         }
 
         Ok(resp)

@@ -394,8 +394,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     self.core
                         .attach_observer(&mut resp, &req_method, original_uri);
                     if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
-                        self.core
-                            .checkin_when_ready_local(pool_key, conn, R::spawn_local);
+                        self.core.checkin_when_ready_local::<R, _, _>(
+                            pool_key,
+                            conn,
+                            R::spawn_local,
+                            R::sleep(self.core.pool.idle_timeout()),
+                        );
                     }
                     return Ok(resp);
                 }
@@ -511,7 +515,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                 .attach_observer(&mut resp, &req_method, original_uri);
                             if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
                                 self.core
-                                    .checkin_when_ready_local(pool_key, conn, R::spawn_local);
+                                    .checkin_when_ready_local::<R, _, _>(pool_key, conn, R::spawn_local, R::sleep(self.core.pool.idle_timeout()));
                             }
                             return Ok(resp);
                         }
@@ -791,8 +795,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         }
         if !self.core.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
         {
-            self.core
-                .checkin_when_ready_local(pool_key, pooled, R::spawn_local);
+            self.core.checkin_when_ready_local::<R, _, _>(
+                pool_key,
+                pooled,
+                R::spawn_local,
+                R::sleep(self.core.pool.idle_timeout()),
+            );
         }
 
         Ok(resp)

@@ -327,3 +327,41 @@ mod tests {
         );
     }
 }
+
+/// Races a future against a deadline. Returns `Some(value)` if the future
+/// completes first, or `None` if the deadline fires (timeout).
+pub(crate) async fn race_deadline<F, S, T>(future: F, deadline: S) -> Option<T>
+where
+    F: Future<Output = T>,
+    S: Future<Output = ()>,
+{
+    pin_project! {
+        struct SelectLeft<F, S> {
+            #[pin]
+            left: F,
+            #[pin]
+            deadline: S,
+        }
+    }
+
+    impl<F: Future<Output = T>, S: Future<Output = ()>, T> Future for SelectLeft<F, S> {
+        type Output = Option<T>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let proj = self.project();
+            if let Poll::Ready(val) = proj.left.poll(cx) {
+                return Poll::Ready(Some(val));
+            }
+            if let Poll::Ready(()) = proj.deadline.poll(cx) {
+                return Poll::Ready(None);
+            }
+            Poll::Pending
+        }
+    }
+
+    SelectLeft {
+        left: future,
+        deadline,
+    }
+    .await
+}
