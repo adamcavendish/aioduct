@@ -1201,3 +1201,43 @@ async fn checkout_tries_multiple_candidates_lifo() {
     // Then empty
     assert!(pool.checkout(&k).is_none());
 }
+
+#[tokio::test]
+async fn evict_removes_all_connections_for_key() {
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let k = key("example.com:80");
+
+    let conn1 = make_h1_conn().await;
+    pool.checkin(k.clone(), conn1);
+    let conn2 = make_h1_conn().await;
+    pool.checkin(k.clone(), conn2);
+
+    tokio::task::yield_now().await;
+
+    pool.evict(&k);
+    assert!(
+        pool.checkout(&k).is_none(),
+        "evict should remove all connections for the key"
+    );
+}
+
+#[tokio::test]
+async fn evict_does_not_affect_other_keys() {
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let k1 = key("a.example.com:80");
+    let k2 = key("b.example.com:80");
+
+    let conn1 = make_h1_conn().await;
+    pool.checkin(k1.clone(), conn1);
+    let conn2 = make_h1_conn().await;
+    pool.checkin(k2.clone(), conn2);
+
+    tokio::task::yield_now().await;
+
+    pool.evict(&k1);
+    assert!(pool.checkout(&k1).is_none());
+    assert!(
+        pool.checkout(&k2).is_some(),
+        "evict should not affect other keys"
+    );
+}
