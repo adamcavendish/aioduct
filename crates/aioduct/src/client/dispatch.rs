@@ -41,6 +41,17 @@ impl<B: 'static> HttpEngineCore<B> {
     #[cfg(not(feature = "rustls"))]
     fn populate_sans(_conn: &mut PooledConnection<B>) {}
 
+    /// Returns true if the response indicates the connection should not be reused.
+    pub(super) fn should_skip_checkin(resp: &Response) -> bool {
+        if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+            return true;
+        }
+        resp.headers()
+            .get(http::header::CONNECTION)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("close"))
+    }
+
     pub(super) fn checkin_connection(
         &self,
         key: crate::pool::PoolKey,
@@ -928,5 +939,50 @@ mod tests {
             pooled.bytes_sent, 21,
             "bytes_sent should use Content-Length header value for streaming bodies"
         );
+    }
+
+    fn empty_response(status: u16, headers: &[(&str, &str)]) -> Response {
+        use http_body_util::BodyExt;
+        let mut builder = http::Response::builder().status(status);
+        for (k, v) in headers {
+            builder = builder.header(*k, *v);
+        }
+        let body: crate::body::RequestBodySend = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let inner = builder
+            .body(crate::response::ResponseBodySend::from_boxed(body))
+            .unwrap();
+        Response::new(inner, "http://example.com/".parse().unwrap())
+    }
+
+    #[test]
+    fn should_skip_checkin_switching_protocols() {
+        let resp = empty_response(101, &[]);
+        assert!(Core::should_skip_checkin(&resp));
+    }
+
+    #[test]
+    fn should_skip_checkin_connection_close() {
+        let resp = empty_response(200, &[("connection", "close")]);
+        assert!(Core::should_skip_checkin(&resp));
+    }
+
+    #[test]
+    fn should_skip_checkin_connection_close_case_insensitive() {
+        let resp = empty_response(200, &[("connection", "Close")]);
+        assert!(Core::should_skip_checkin(&resp));
+    }
+
+    #[test]
+    fn should_not_skip_checkin_normal_response() {
+        let resp = empty_response(200, &[]);
+        assert!(!Core::should_skip_checkin(&resp));
+    }
+
+    #[test]
+    fn should_not_skip_checkin_keepalive() {
+        let resp = empty_response(200, &[("connection", "keep-alive")]);
+        assert!(!Core::should_skip_checkin(&resp));
     }
 }
