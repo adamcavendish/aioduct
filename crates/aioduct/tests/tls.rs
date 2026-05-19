@@ -77,7 +77,7 @@ async fn test_https_local_tls_server() {
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build()
@@ -165,7 +165,7 @@ async fn test_https_h1_local_tls_server() {
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build()
@@ -252,7 +252,7 @@ async fn test_https_no_alpn_server() {
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
 
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build()
@@ -333,7 +333,7 @@ async fn test_https_with_webpki_roots_local() {
     // (default ALPN) but against self-signed cert
     let connector = aioduct::tls::RustlsConnector::danger_accept_invalid_certs();
 
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build()
@@ -378,7 +378,7 @@ async fn https_connection_not_reused_for_http() {
     // Start a plain HTTP server
     let (http_addr, http_counter) = aioduct_test_server::h1::h1_server().await;
 
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
         .tls(connector)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
@@ -449,7 +449,7 @@ async fn hsts_upgrades_redirect_targets() {
     let connector = aioduct::tls::RustlsConnector::new(client_config);
 
     let hsts_store = aioduct::hsts::HstsStore::new();
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
         .tls(connector)
         .hsts(hsts_store.clone())
         .timeout(Duration::from_secs(5))

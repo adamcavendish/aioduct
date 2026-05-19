@@ -6,11 +6,10 @@ aioduct records the duration of each connection phase for every request. Access 
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::with_rustls(TcpConnector);
+    let client = TokioClient::with_rustls();
 
     let resp = client
         .get("https://httpbin.org/get")?

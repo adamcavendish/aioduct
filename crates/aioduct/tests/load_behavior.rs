@@ -7,7 +7,7 @@ use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
 fn client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::builder(TcpConnector)
+    HttpEngineSend::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(10))
         .build()
@@ -72,7 +72,7 @@ async fn h1_concurrent_50_requests() {
 #[tokio::test]
 async fn h2_concurrent_100_requests() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
@@ -107,7 +107,7 @@ async fn h2_concurrent_100_requests() {
 #[tokio::test]
 async fn h1_pool_saturation_and_recovery() {
     let (addr, _counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_max_idle_per_host(2)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(10))
@@ -274,7 +274,7 @@ async fn h1_large_body_concurrent() {
 #[tokio::test]
 async fn rate_limiter_should_throttle_send_client() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .rate_limiter(aioduct::RateLimiter::new(5, Duration::from_secs(1)))
         .timeout(Duration::from_secs(10))
         .build()
@@ -337,7 +337,7 @@ async fn rate_limiter_large_max_tokens_truncation() {
 #[tokio::test]
 async fn h2_sequential_50_requests() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
@@ -366,7 +366,7 @@ async fn h2_sequential_50_requests() {
 async fn bandwidth_limiter_should_not_busy_loop() {
     let (addr, _) = aioduct_test_server::h1::h1_large_body_server(64 * 1024).await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .max_download_speed(512) // 512 bytes/sec
         .build()
         .unwrap();

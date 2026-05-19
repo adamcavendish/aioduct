@@ -17,9 +17,8 @@ Configure digest auth at the client level:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .digest_auth("username", "password")
     .build()?;
 

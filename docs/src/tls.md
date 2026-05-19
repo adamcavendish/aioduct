@@ -29,12 +29,11 @@ aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls-native-roots
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // with_rustls() configures WebPKI root certificates automatically
-    let client = TokioClient::with_rustls(TcpConnector);
+    let client = TokioClient::with_rustls();
 
     let resp = client
         .get("https://httpbin.org/get")?
@@ -84,10 +83,9 @@ For advanced use cases, configure the `RustlsConnector` directly:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::tls::RustlsConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .tls(RustlsConnector::with_webpki_roots())
     .build()?;
 ```
@@ -98,9 +96,8 @@ For development and testing, you can disable certificate verification:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .danger_accept_invalid_certs()
     .build()?;
 ```
@@ -113,10 +110,9 @@ To enforce that all requests use HTTPS:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::tls::RustlsConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .tls(RustlsConnector::with_webpki_roots())
     .https_only(true)
     .build()?;

@@ -1,12 +1,11 @@
 use std::time::Duration;
 
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{RateLimiter, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
         // Rate limit to 5 requests per second
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .rate_limiter(RateLimiter::new(5, Duration::from_secs(1)))
             .timeout(Duration::from_secs(10))
             .build()

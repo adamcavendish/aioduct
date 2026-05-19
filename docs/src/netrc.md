@@ -28,10 +28,9 @@ The simplest approach is to add `NetrcMiddleware` to your client. It reads the n
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::NetrcMiddleware;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .middleware(NetrcMiddleware::from_default().unwrap())
     .build()?;
 

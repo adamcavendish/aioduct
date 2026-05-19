@@ -5,7 +5,6 @@ use aioduct::observer::{
     ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
     RequestObserver, RequestPhase, TransferDirection,
 };
-use aioduct::runtime::tokio_rt::TcpConnector;
 use opentelemetry::KeyValue;
 use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer, TracerProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
@@ -313,7 +312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tracer = provider.tracer("aioduct-observer-otel-example");
 
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .request_observer(OtelObserver)
         .timeout(Duration::from_secs(10))

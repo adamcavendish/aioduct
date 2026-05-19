@@ -1,9 +1,8 @@
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = SmolClient::builder(TcpConnector).build().unwrap();
+        let client = SmolClient::builder().build().unwrap();
 
         // Simple GET request
         let resp = client.get("https://httpbin.org/get")?.send().await?;

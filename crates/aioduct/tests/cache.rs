@@ -36,7 +36,7 @@ async fn test_cache_stores_and_returns_fresh() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -98,7 +98,7 @@ async fn test_cacheable_gzip_response_is_decompressed_before_return_and_cache_hi
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -164,7 +164,7 @@ async fn test_cache_304_revalidation() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -218,7 +218,7 @@ async fn test_cache_stale_if_error_serves_stale_on_5xx() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -262,7 +262,7 @@ async fn test_cache_stale_if_error_serves_stale_on_connection_error() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache.clone())
         .build()
         .unwrap();
@@ -282,7 +282,7 @@ async fn test_cache_stale_if_error_serves_stale_on_connection_error() {
         drop(listener);
         port
     };
-    let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .resolver(move |_host: &str, _port: u16| {
             let addr = std::net::SocketAddr::from(([127, 0, 0, 1], dead_port));
@@ -331,7 +331,7 @@ async fn test_cache_stale_if_error_not_applied_without_directive() {
     .await;
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -401,7 +401,7 @@ async fn test_custom_cache_store_with_client() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -470,7 +470,7 @@ async fn test_custom_cache_store_304_revalidation() {
     .await;
 
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -512,7 +512,7 @@ async fn test_custom_cache_store_invalidation_on_post() {
     .await;
 
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -573,11 +573,11 @@ async fn test_custom_cache_store_shared_across_cloned_clients() {
     .await;
 
     let cache = aioduct::HttpCache::with_store(aioduct::InMemoryCacheStore::new(64));
-    let client1 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client1 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache.clone())
         .build()
         .unwrap();
-    let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client2 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .build()
         .unwrap();
@@ -640,7 +640,7 @@ async fn cache_should_respect_vary_header() {
     .await;
 
     let cache = aioduct::cache::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .timeout(Duration::from_secs(5))
         .build()
@@ -734,7 +734,7 @@ async fn cache_304_revalidation_stores_cookies() {
 
     let cache = aioduct::HttpCache::new();
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .cookie_jar(jar)
         .build()
@@ -796,7 +796,7 @@ async fn fresh_cache_hit_applies_middleware() {
     }
 
     let cache = aioduct::HttpCache::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cache(cache)
         .middleware(CacheMiddleware {
             called: middleware_called_clone,

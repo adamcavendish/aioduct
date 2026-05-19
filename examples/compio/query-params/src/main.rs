@@ -1,5 +1,4 @@
 use aioduct::CompioClient;
-use aioduct::runtime::compio_rt::TcpConnector;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -11,9 +10,7 @@ struct SearchParams {
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = CompioClient::builder_local(TcpConnector)
-            .build_local()
-            .unwrap();
+        let client = CompioClient::builder().build_local().unwrap();
 
         // Simple query parameters via tuples
         let resp = client

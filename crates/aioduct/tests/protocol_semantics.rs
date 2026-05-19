@@ -9,7 +9,7 @@ use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
 fn h1_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::builder(TcpConnector)
+    HttpEngineSend::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -17,7 +17,7 @@ fn h1_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
 }
 
 fn h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::builder(TcpConnector)
+    HttpEngineSend::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(5))
@@ -457,12 +457,11 @@ mod tls_tests {
         let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
         let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-        let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-            HttpEngineSend::builder(TcpConnector)
-                .tls(connector)
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap();
+        let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+            .tls(connector)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
 
         let resp = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -494,12 +493,11 @@ mod tls_tests {
         let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
         let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-        let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-            HttpEngineSend::builder(TcpConnector)
-                .tls(connector)
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap();
+        let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+            .tls(connector)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
 
         let resp = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -529,12 +527,11 @@ mod tls_tests {
         let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
         let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-        let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-            HttpEngineSend::builder(TcpConnector)
-                .tls(connector)
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap();
+        let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+            .tls(connector)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
 
         let result = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -577,12 +574,11 @@ mod tls_tests {
         // Use WebPKI roots only — does NOT trust the self-signed cert
         let connector = aioduct::tls::RustlsConnector::with_webpki_roots();
 
-        let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-            HttpEngineSend::builder(TcpConnector)
-                .tls(connector)
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap();
+        let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+            .tls(connector)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
 
         let result = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -606,12 +602,11 @@ mod tls_tests {
         let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
         let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-        let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-            HttpEngineSend::builder(TcpConnector)
-                .tls(connector)
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap();
+        let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+            .tls(connector)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
 
         let resp = client
             .get(&format!("https://localhost:{}/", addr.port()))
@@ -638,13 +633,12 @@ mod tls_tests {
         let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
         let connector = aioduct::tls::RustlsConnector::new(client_config);
 
-        let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-            HttpEngineSend::builder(TcpConnector)
-                .tls(connector)
-                .pool_idle_timeout(Duration::from_secs(60))
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap();
+        let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+            .tls(connector)
+            .pool_idle_timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
 
         let url = format!("https://localhost:{}/", addr.port());
 

@@ -6,10 +6,9 @@ aioduct automatically negotiates HTTP/2 when the server supports it via ALPN dur
 
 ```rust,no_run
 use aioduct::{TokioClient, Http2Config};
-use aioduct::runtime::tokio_rt::TcpConnector;
 use std::time::Duration;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
     .http2(
         Http2Config::new()

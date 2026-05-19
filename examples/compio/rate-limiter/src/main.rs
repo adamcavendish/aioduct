@@ -1,12 +1,11 @@
 use std::time::Duration;
 
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CompioClient, RateLimiter};
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         // Rate limit to 5 requests per second
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .rate_limiter(RateLimiter::new(5, Duration::from_secs(1)))
             .timeout(Duration::from_secs(10))
             .build_local()

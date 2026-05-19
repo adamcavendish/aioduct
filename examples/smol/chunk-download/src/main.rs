@@ -1,10 +1,9 @@
 use std::time::Duration;
 
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .max_download_speed(5_000_000) // 5 MB/s shared across all parallel chunks
             .max_requests_per_sec(20) // rate-limit HEAD + Range requests
             .timeout(Duration::from_secs(30))

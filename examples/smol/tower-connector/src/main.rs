@@ -3,7 +3,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 /// A simple tower Layer that logs connection attempts.
 /// This demonstrates how to wrap the TCP connector with custom logic.
 #[derive(Clone)]
@@ -58,7 +57,7 @@ fn main() -> Result<(), aioduct::Error> {
         // This is useful for adding logging, metrics, or custom
         // logic at the connection establishment level.
 
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .connector_layer(LoggingLayer)
             .build()
             .unwrap();

@@ -63,7 +63,7 @@ async fn test_upgrade_websocket() {
         conn.await.unwrap();
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -128,7 +128,7 @@ async fn test_upgrade_flush_and_shutdown() {
             .await;
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/ws"))
         .unwrap()

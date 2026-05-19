@@ -10,10 +10,9 @@ Use `Response::problem_details()` to check and parse a Problem Details response:
 
 ```rust,no_run
 use aioduct::{TokioClient, ProblemDetails};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 let resp = client.get("https://api.example.com/resource")?
     .send()
     .await?;

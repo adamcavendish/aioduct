@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{RetryConfig, TokioClient};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -37,7 +36,7 @@ pub struct DownloadResult {
 
 impl DownloadEngine {
     pub fn new(cli: Arc<Cli>) -> Self {
-        let mut builder = TokioClient::builder(TcpConnector)
+        let mut builder = TokioClient::builder()
             .timeout(cli.timeout_duration())
             .connect_timeout(cli.connect_timeout_duration());
 

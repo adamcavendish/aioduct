@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{OtelMiddleware, TokioClient};
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
@@ -12,7 +11,7 @@ async fn main() -> Result<(), aioduct::Error> {
 
     opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .middleware(OtelMiddleware::new())
         .timeout(Duration::from_secs(10))
         .build()

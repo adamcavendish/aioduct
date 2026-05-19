@@ -14,7 +14,7 @@ use aioduct_test_server::tls::install_crypto_provider;
 async fn h3_basic_get() {
     let (addr, _cert, _counter) = aioduct_test_server::h3::h3_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
@@ -41,7 +41,7 @@ async fn h3_post_with_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
@@ -67,7 +67,7 @@ async fn h3_response_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
@@ -95,7 +95,7 @@ async fn h3_concurrent_requests() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
@@ -128,7 +128,7 @@ async fn h3_concurrent_requests() {
 async fn h3_connection_refused() {
     install_crypto_provider();
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()
@@ -148,7 +148,7 @@ async fn h3_stop_sending_no_error() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .http3(true)
         .unwrap()

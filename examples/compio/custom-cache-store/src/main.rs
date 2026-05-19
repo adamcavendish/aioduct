@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CacheEntry, CacheStore, CompioClient, HttpCache, Method, Uri};
 
 /// A custom cache store that logs every operation and wraps a simple HashMap.
@@ -60,10 +59,7 @@ fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let store = LoggingCacheStore::new();
         let cache = HttpCache::with_store(store);
-        let client = CompioClient::builder_local(TcpConnector)
-            .cache(cache)
-            .build_local()
-            .unwrap();
+        let client = CompioClient::builder().cache(cache).build_local().unwrap();
 
         // First request — hits the server, stores in the custom cache
         let resp = client

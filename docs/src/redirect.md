@@ -24,9 +24,8 @@ Sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are automat
 
 ```rust,no_run
 use aioduct::{TokioClient, RedirectPolicy};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .redirect_policy(RedirectPolicy::none())
     .build()?;
 ```
@@ -35,15 +34,14 @@ let client = TokioClient::builder(TcpConnector)
 
 ```rust,no_run
 use aioduct::{TokioClient, RedirectPolicy};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 // Also available via the shorthand:
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .max_redirects(5)
     .build()?;
 
 // Equivalent to:
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .redirect_policy(RedirectPolicy::limited(5))
     .build()?;
 ```
@@ -54,9 +52,8 @@ The custom callback receives the current URI, next (redirect target) URI, status
 
 ```rust,no_run
 use aioduct::{TokioClient, RedirectAction, RedirectPolicy};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .redirect_policy(RedirectPolicy::custom(|current, next, status, method| {
         // Only follow redirects that stay on the same host
         if current.host() == next.host() {
@@ -81,9 +78,8 @@ By default, aioduct does **not** set a `Referer` header on redirect hops. Enable
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .referer(true)
     .build()?;
 ```

@@ -15,14 +15,13 @@ Buffered bodies can be retried and redirected automatically. Streaming bodies ar
 
 ```rust,no_run
 use aioduct::{TokioClient, body::RequestBodySend};
-use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::{BodyExt, StreamBody};
 use futures_util::stream;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     // Create a stream of body frames
     let chunks = vec![
@@ -47,14 +46,13 @@ async fn main() -> Result<(), aioduct::Error> {
 
 ```rust,no_run
 use aioduct::{TokioClient, body::RequestBodySend};
-use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::{BodyExt, StreamBody};
 use tokio::io::AsyncReadExt;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .build()?;
 

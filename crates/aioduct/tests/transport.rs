@@ -29,7 +29,7 @@ async fn test_custom_resolver() {
     let (target_addr, _counter) = h1_server().await;
 
     let resolver_addr = target_addr;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .resolver(
             move |_host: &str,
                   _port: u16|
@@ -54,7 +54,7 @@ async fn test_custom_resolver() {
 #[tokio::test]
 async fn test_tcp_keepalive() {
     let (addr, _counter) = h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tcp_keepalive(Duration::from_secs(60))
         .build()
         .unwrap();
@@ -72,7 +72,7 @@ async fn test_tcp_keepalive() {
 #[tokio::test]
 async fn test_local_address_binding() {
     let (addr, _counter) = h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
         .build()
         .unwrap();
@@ -90,7 +90,7 @@ async fn test_local_address_binding() {
 #[tokio::test]
 async fn test_http2_config_accepted() {
     let (addr, _counter) = h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2(
             aioduct::Http2Config::new()
                 .initial_stream_window_size(1024 * 1024)
@@ -122,7 +122,7 @@ async fn test_http2_config_accepted() {
 async fn test_tcp_fast_open_works() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tcp_fast_open(true)
         .build()
         .unwrap();
@@ -144,7 +144,7 @@ async fn test_h2_prior_knowledge() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();
@@ -173,7 +173,7 @@ async fn test_h2_prior_knowledge_multiple_requests() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();
@@ -207,7 +207,7 @@ async fn test_happy_eyeballs_single_addr() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .resolver(move |_host: &str, _port: u16| {
             let addr = addr;
             Box::pin(async move { Ok(addr) })
@@ -231,7 +231,7 @@ async fn test_happy_eyeballs_single_addr() {
 async fn test_tcp_keepalive_with_interval_and_retries() {
     let (addr, _counter) = h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tcp_keepalive(Duration::from_secs(60))
         .tcp_keepalive_interval(Duration::from_secs(10))
         .tcp_keepalive_retries(3)
@@ -272,7 +272,7 @@ async fn test_unix_socket_connection() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .unix_socket(&sock_path)
         .build()
         .unwrap();
@@ -329,7 +329,7 @@ async fn test_happy_eyeballs_multi_addrs_integration() {
         }
     }
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .resolver(MultiResolver {
             addrs: vec![bad_addr, good_addr],
         })
@@ -367,7 +367,7 @@ async fn test_timings_http_direct() {
     });
 
     let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-        HttpEngineSend::builder(TcpConnector).build().unwrap();
+        HttpEngineSend::builder().build().unwrap();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -442,7 +442,7 @@ async fn test_timings_https_with_tls() {
         .with_no_client_auth();
     client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder(TcpConnector)
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
         .tls(connector)
         .timeout(Duration::from_secs(5))
         .build()
@@ -490,7 +490,7 @@ async fn h2_concurrent_requests() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();
@@ -524,7 +524,7 @@ async fn h2_basic_request() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();
@@ -554,7 +554,7 @@ async fn h2_post_with_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();
@@ -585,7 +585,7 @@ async fn h2_connection_reuse() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .build()
         .unwrap();
@@ -613,7 +613,7 @@ async fn h2_connect_guard_cleans_up_on_failure() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(2))
         .build()
@@ -676,7 +676,7 @@ async fn happy_eyeballs_works_with_local_address() {
         }
     }
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
         .resolver(MultiResolver {
             addrs: vec![bad_addr, good_addr],

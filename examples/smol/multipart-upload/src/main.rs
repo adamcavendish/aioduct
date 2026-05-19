@@ -1,9 +1,8 @@
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{Multipart, Part, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = SmolClient::builder(TcpConnector).build().unwrap();
+        let client = SmolClient::builder().build().unwrap();
 
         // Build a multipart form with text and file parts
         let form = Multipart::new()

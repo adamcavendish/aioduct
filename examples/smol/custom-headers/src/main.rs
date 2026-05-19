@@ -1,12 +1,11 @@
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
         // Set default headers on the client
         let mut default_headers = http::HeaderMap::new();
         default_headers.insert("x-custom-global", "from-client".parse().unwrap());
 
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .user_agent("my-app/1.0")
             .default_headers(default_headers)
             .build()

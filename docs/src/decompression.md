@@ -26,12 +26,11 @@ When any decompression feature is enabled:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // With the `gzip` feature enabled, gzip responses are decompressed automatically
-    let client = TokioClient::with_rustls(TcpConnector);
+    let client = TokioClient::with_rustls();
 
     let text = client.get("https://httpbin.org/gzip")?
         .send().await?
@@ -47,8 +46,7 @@ Use `no_decompression()` on the builder to disable all automatic decompression. 
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .no_decompression()
     .build()?;
 ```

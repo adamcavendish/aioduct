@@ -1,10 +1,9 @@
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
         // Enable gzip, brotli, zstd, and deflate decompression
         // The client automatically sends Accept-Encoding and decompresses responses
-        let client = SmolClient::builder(TcpConnector).build().unwrap();
+        let client = SmolClient::builder().build().unwrap();
 
         // Request with gzip encoding
         let resp = client.get("https://httpbin.org/gzip")?.send().await?;

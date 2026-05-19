@@ -1,10 +1,9 @@
 use std::time::Duration;
 
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .max_download_speed(5_000_000) // 5 MB/s shared across all parallel chunks
         .max_requests_per_sec(20) // rate-limit HEAD + Range requests
         .timeout(Duration::from_secs(30))

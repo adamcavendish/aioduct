@@ -12,7 +12,7 @@ use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
 fn client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-    HttpEngineSend::builder(TcpConnector)
+    HttpEngineSend::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap()
@@ -248,7 +248,7 @@ async fn redirect_policy_none_returns_redirect_response() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::None)
         .timeout(Duration::from_secs(5))
         .build()
@@ -285,7 +285,7 @@ async fn redirect_limited_policy_stops_at_limit() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .redirect_policy(aioduct::RedirectPolicy::Limited(2))
         .timeout(Duration::from_secs(5))
         .build()
@@ -317,7 +317,7 @@ async fn redirect_limited_policy_stops_at_limit() {
 async fn https_only_rejects_http() {
     let (addr, _) = aioduct_test_server::h1::h1_server().await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .https_only(true)
         .timeout(Duration::from_secs(5))
         .build()
@@ -355,7 +355,7 @@ async fn cookie_jar_stores_and_sends_cookies() {
     .await;
 
     let jar = aioduct::cookie::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
         .build()
@@ -391,7 +391,7 @@ async fn read_timeout_on_slow_body() {
     let (addr, _) =
         aioduct_test_server::h1::h1_slow_body_server(100, Duration::from_millis(500)).await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .read_timeout(Duration::from_millis(200))
         .timeout(Duration::from_secs(5))
         .build()
@@ -463,7 +463,7 @@ async fn middleware_modifies_request() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(
             |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(

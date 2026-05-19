@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CompioClient, Middleware};
 
 struct LoggingMiddleware;
@@ -66,7 +65,7 @@ fn main() -> Result<(), aioduct::Error> {
             request_count: request_count.clone(),
         };
 
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .middleware(LoggingMiddleware)
             .middleware(metrics)
             .build_local()
@@ -87,7 +86,7 @@ fn main() -> Result<(), aioduct::Error> {
         );
 
         // Closure as middleware (request-only)
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .middleware(
                 |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                     req.headers_mut().insert(

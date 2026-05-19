@@ -270,7 +270,7 @@ mod tests {
     use crate::runtime::compio_rt::{CompioRuntime, TcpConnector};
 
     fn test_client() -> HttpEngineLocal<CompioRuntime, TcpConnector> {
-        HttpEngineLocal::new_local(TcpConnector)
+        HttpEngineLocal::new()
     }
 
     fn dummy_request(path: &str) -> http::Request<http_body_util::Empty<Bytes>> {

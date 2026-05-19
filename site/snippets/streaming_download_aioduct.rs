@@ -1,12 +1,10 @@
 // features: tokio
 // runtime: tokio
-use aioduct::HttpEngine;
-use aioduct::runtime::TokioRuntime;
-use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::TokioClient;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = TokioClient::builder()
         .bandwidth_limit(1_048_576) // 1 MB/s
         .build();
 

@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{OtelMiddleware, SmolClient};
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
@@ -12,7 +11,7 @@ fn main() -> Result<(), aioduct::Error> {
 
         opentelemetry::global::set_tracer_provider(provider.clone());
 
-        let client = SmolClient::builder(TcpConnector)
+        let client = SmolClient::builder()
             .middleware(OtelMiddleware::new())
             .timeout(Duration::from_secs(10))
             .build()

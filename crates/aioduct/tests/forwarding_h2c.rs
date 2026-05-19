@@ -28,7 +28,7 @@ async fn forward_h2c_to_h2_upstream() {
     .await;
 
     // Client without http2_prior_knowledge — uses h1 by default
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let incoming_req = http::Request::builder()
         .method("POST")
         .uri("/grpc.Service/Method")
@@ -59,7 +59,7 @@ async fn forward_adaptive_h2c_to_h2_server() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     // First request: probes h2c, should succeed
     let req1 = http::Request::builder()
@@ -115,7 +115,7 @@ async fn forward_adaptive_h2c_falls_back_to_h1() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     // First request: probes h2c, fails, falls back to h1
     let req1 = http::Request::builder()
@@ -171,7 +171,7 @@ async fn forward_h2c_preserves_request_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let payload = "hello gRPC body content";
     let req = http::Request::builder()
         .method("POST")
@@ -214,7 +214,7 @@ async fn forward_h2c_rewrites_host_and_preserves_custom_headers() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -252,7 +252,7 @@ async fn forward_h2c_with_strip_prefix() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/api/v1/resource")
@@ -283,7 +283,7 @@ async fn forward_h2c_with_upstream_base_path() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/items")
@@ -320,7 +320,7 @@ async fn forward_h2c_extra_and_remove_headers() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -360,7 +360,7 @@ async fn forward_h2c_on_request_hook() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -392,7 +392,7 @@ async fn forward_h2c_on_response_hook() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -437,7 +437,7 @@ async fn forward_h2c_timeout() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/slow")
@@ -472,7 +472,7 @@ async fn forward_h2c_preserve_host() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/test")
@@ -510,7 +510,7 @@ async fn forward_adaptive_h2c_probe_cache_isolates_authorities() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     // Probe h2 server — should cache as h2c-capable
     let req = http::Request::builder()
@@ -588,7 +588,7 @@ async fn forward_h2c_query_string_preserved() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method("GET")
         .uri("/search?q=grpc&limit=10")
@@ -625,7 +625,7 @@ async fn forward_mixed_h1_h2c_pool_isolation() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     // Request 1: forward to h1 upstream (no h2c)
     let req_h1 = http::Request::builder()

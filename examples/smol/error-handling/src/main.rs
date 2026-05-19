@@ -1,9 +1,8 @@
-use aioduct::runtime::smol_rt::TcpConnector;
 use aioduct::{Error, SmolClient};
 
 fn main() {
     smol::block_on(async {
-        let client = SmolClient::builder(TcpConnector).build().unwrap();
+        let client = SmolClient::builder().build().unwrap();
 
         // error_for_status() converts 4xx/5xx into errors
         match fetch_with_status_check(&client).await {

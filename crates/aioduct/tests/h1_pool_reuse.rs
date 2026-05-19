@@ -79,7 +79,7 @@ async fn h1_delayed_body_causes_connection_churn() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(10)
         .build()
@@ -165,7 +165,7 @@ async fn h1_concurrent_waves_with_delayed_body() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(10)
         .build()
@@ -247,7 +247,7 @@ async fn h1_sequential_requests_reuse_connection() {
         }
     });
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap();

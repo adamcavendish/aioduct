@@ -359,7 +359,7 @@ mod tests {
     use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
     fn test_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
-        HttpEngineSend::new(TcpConnector)
+        HttpEngineSend::new()
     }
 
     fn dummy_request(path: &str) -> http::Request<http_body_util::Empty<Bytes>> {

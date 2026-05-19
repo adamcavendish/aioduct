@@ -362,12 +362,12 @@ mod compio_tests {
 
     /// Helper: build an HttpEngineLocal with default settings (http2_prior_knowledge = false).
     fn make_local_engine() -> HttpEngineLocal<CompioRuntime, TcpConnector> {
-        HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector)
+        HttpEngineLocal::<CompioRuntime, TcpConnector>::new()
     }
 
     /// Helper: build an HttpEngineLocal with http2_prior_knowledge = true.
     fn make_h2_local_engine() -> HttpEngineLocal<CompioRuntime, TcpConnector> {
-        HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .http2_prior_knowledge()
             .build_local()
             .unwrap()
@@ -679,11 +679,10 @@ mod compio_tests {
             });
 
             crate::tls::install_default_crypto_provider();
-            let engine =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .tls(crate::tls::RustlsConnector::with_webpki_roots())
-                    .build_local()
-                    .unwrap();
+            let engine = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .tls(crate::tls::RustlsConnector::with_webpki_roots())
+                .build_local()
+                .unwrap();
             let connector = TcpConnector;
             let stream = crate::runtime::ConnectorLocal::connect(&connector, addr)
                 .await

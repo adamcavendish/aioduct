@@ -18,7 +18,7 @@ use http_body_util::BodyExt;
 #[tokio::test]
 async fn test_get_request() {
     let (addr, _counter) = h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -35,7 +35,7 @@ async fn test_get_request() {
 #[tokio::test]
 async fn test_post_request() {
     let (addr, _counter) = h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .post(&format!("http://{addr}/"))
@@ -51,7 +51,7 @@ async fn test_post_request() {
 #[tokio::test]
 async fn test_connection_reuse() {
     let (addr, _counter) = h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let url = format!("http://{addr}/");
 
     let resp1 = client.get(&url).unwrap().send().await.unwrap();
@@ -67,7 +67,7 @@ async fn test_connection_reuse() {
 #[tokio::test]
 async fn test_host_header_and_path() {
     let (addr, _counter) = h1_server_with(echo_headers).await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .get(&format!("http://{addr}/some/path?key=value"))
@@ -99,7 +99,7 @@ async fn test_custom_header() {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(custom.to_string()))))
     })
     .await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let resp = client
         .get(&format!("http://{addr}/"))
@@ -116,13 +116,13 @@ async fn test_custom_header() {
 
 #[tokio::test]
 async fn test_invalid_url() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     assert!(client.get("not a url").is_err());
 }
 
 #[tokio::test]
 async fn test_missing_scheme() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     assert!(client.get("127.0.0.1/path").is_err());
 }
 #[tokio::test]
@@ -133,7 +133,7 @@ async fn test_query_params() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/search"))
         .unwrap()
@@ -158,7 +158,7 @@ async fn test_default_user_agent() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -187,7 +187,7 @@ async fn test_custom_default_headers() {
 
     let mut headers = http::HeaderMap::new();
     headers.insert("x-default", "from-client".parse().unwrap());
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .default_headers(headers)
         .build()
         .unwrap();
@@ -215,7 +215,7 @@ async fn test_request_headers_override_defaults() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -239,7 +239,7 @@ async fn test_put_request() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .put(&format!("http://{addr}/"))
         .unwrap()
@@ -264,7 +264,7 @@ async fn test_patch_request() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .patch(&format!("http://{addr}/"))
         .unwrap()
@@ -283,7 +283,7 @@ async fn test_delete_request() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .delete(&format!("http://{addr}/"))
         .unwrap()
@@ -308,7 +308,7 @@ async fn test_head_request() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .head(&format!("http://{addr}/"))
         .unwrap()
@@ -332,7 +332,7 @@ async fn test_query_params_with_existing_query() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/?existing=1"))
         .unwrap()
@@ -361,7 +361,7 @@ async fn test_no_default_headers() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .no_default_headers()
         .build()
         .unwrap();
@@ -385,7 +385,7 @@ async fn test_custom_method() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .request(http::Method::OPTIONS, &format!("http://{addr}/"))
         .unwrap()
@@ -410,7 +410,7 @@ async fn test_multiple_headers_same_name() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let mut headers = http::HeaderMap::new();
     headers.append("x-multi", "value1".parse().unwrap());
     headers.append("x-multi", "value2".parse().unwrap());
@@ -444,7 +444,7 @@ async fn auto_headers_no_accept_by_default() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -476,7 +476,7 @@ async fn donot_set_content_length_0_if_have_no_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -498,7 +498,7 @@ async fn custom_user_agent_via_builder() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .user_agent("aioduct-test-agent")
         .build()
         .unwrap();
@@ -521,7 +521,7 @@ async fn response_text_and_content_length() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -541,7 +541,7 @@ async fn response_bytes_and_content_length() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -562,7 +562,7 @@ async fn response_json_string() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -587,7 +587,7 @@ async fn json_content_type_default() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/"))
         .unwrap()
@@ -614,7 +614,7 @@ async fn json_content_type_not_overridden_if_set() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/"))
         .unwrap()
@@ -646,7 +646,7 @@ async fn body_pipe_response_to_post() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
 
     let res1 = client
         .get(&format!("http://{addr}/get"))
@@ -678,7 +678,7 @@ async fn raw_server_custom_response() {
         raw_server(|_req| async { b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nraw".to_vec() })
             .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -716,7 +716,7 @@ async fn text_part() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/multipart/1"))
         .unwrap()
@@ -760,7 +760,7 @@ async fn stream_part() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/multipart/stream"))
         .unwrap()
@@ -805,7 +805,7 @@ async fn file_part() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .post(&format!("http://{addr}/multipart/file"))
         .unwrap()
@@ -824,7 +824,7 @@ async fn raw_server_chunked_response() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()

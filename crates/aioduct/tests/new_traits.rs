@@ -70,7 +70,7 @@ impl ConnectorSend for CountingConnector {
 #[tokio::test]
 async fn tokio_engine_alias_works() {
     let (addr, _counter) = h1_server().await;
-    let client = aioduct::TokioEngine::new(TcpConnector);
+    let client = aioduct::TokioEngine::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -91,7 +91,7 @@ fn tokio_client_and_engine_are_same_type() {
 #[tokio::test]
 async fn builder_auto_wires_default_resolver() {
     let (addr, _counter) = h1_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .build()
         .unwrap();
     // Use localhost (not 127.0.0.1) to exercise the resolver
@@ -109,10 +109,11 @@ async fn custom_connector_send_integration() {
     let (addr, _counter) = h1_server().await;
     let connector = CountingConnector::new();
     let count = connector.count.clone();
-    let client = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(connector)
-        .no_connection_reuse()
-        .build()
-        .unwrap();
+    let client =
+        HttpEngineSend::<TokioRuntime, CountingConnector>::builder_with_connector(connector)
+            .no_connection_reuse()
+            .build()
+            .unwrap();
     for _ in 0..3 {
         let resp = client
             .get(&format!("http://{addr}/"))
@@ -132,11 +133,11 @@ async fn custom_connector_two_clients_isolated() {
     let c2 = CountingConnector::new();
     let count1 = c1.count.clone();
     let count2 = c2.count.clone();
-    let client1 = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(c1)
+    let client1 = HttpEngineSend::<TokioRuntime, CountingConnector>::builder_with_connector(c1)
         .no_connection_reuse()
         .build()
         .unwrap();
-    let client2 = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(c2)
+    let client2 = HttpEngineSend::<TokioRuntime, CountingConnector>::builder_with_connector(c2)
         .no_connection_reuse()
         .build()
         .unwrap();
@@ -186,7 +187,7 @@ async fn forward_preserves_method_and_body() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method(http::Method::POST)
         .uri(format!("http://{upstream_addr}/"))
@@ -219,7 +220,7 @@ async fn forward_strips_connection_header() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let req = http::Request::builder()
         .method(http::Method::GET)
         .uri("/test")
@@ -249,10 +250,11 @@ async fn forward_with_custom_connector() {
 
     let connector = CountingConnector::new();
     let count = connector.count.clone();
-    let client = HttpEngineSend::<TokioRuntime, CountingConnector>::builder(connector)
-        .no_connection_reuse()
-        .build()
-        .unwrap();
+    let client =
+        HttpEngineSend::<TokioRuntime, CountingConnector>::builder_with_connector(connector)
+            .no_connection_reuse()
+            .build()
+            .unwrap();
 
     let req = http::Request::builder()
         .method(http::Method::GET)

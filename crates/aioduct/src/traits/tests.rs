@@ -24,7 +24,7 @@ fn generic_build<C: HttpClient>(client: &C) -> Result<C::RequestBuilder, Error> 
 
 #[test]
 fn generic_request_building() {
-    let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let builder = generic_build(&engine);
     assert!(builder.is_ok());
 }
@@ -43,16 +43,14 @@ mod compio_local_tests {
 
     #[test]
     fn generic_request_building_local() {
-        let engine =
-            HttpEngineLocal::<CompioRuntime, CompioTcpConnector>::new_local(CompioTcpConnector);
+        let engine = HttpEngineLocal::<CompioRuntime, CompioTcpConnector>::new();
         let builder = generic_build(&engine);
         assert!(builder.is_ok());
     }
 
     #[test]
     fn local_client_all_methods() {
-        let engine =
-            HttpEngineLocal::<CompioRuntime, CompioTcpConnector>::new_local(CompioTcpConnector);
+        let engine = HttpEngineLocal::<CompioRuntime, CompioTcpConnector>::new();
         assert!(engine.get("http://example.com").is_ok());
         assert!(engine.head("http://example.com").is_ok());
         assert!(engine.post("http://example.com").is_ok());
@@ -63,8 +61,7 @@ mod compio_local_tests {
 
     #[test]
     fn local_client_invalid_url() {
-        let engine =
-            HttpEngineLocal::<CompioRuntime, CompioTcpConnector>::new_local(CompioTcpConnector);
+        let engine = HttpEngineLocal::<CompioRuntime, CompioTcpConnector>::new();
         assert!(engine.get("not a valid url\n").is_err());
     }
 

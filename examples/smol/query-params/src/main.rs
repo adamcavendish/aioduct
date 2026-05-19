@@ -1,5 +1,4 @@
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -11,7 +10,7 @@ struct SearchParams {
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = SmolClient::builder(TcpConnector).build().unwrap();
+        let client = SmolClient::builder().build().unwrap();
 
         // Simple query parameters via tuples
         let resp = client

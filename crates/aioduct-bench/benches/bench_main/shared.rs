@@ -31,11 +31,10 @@ pub static RT: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap());
 
 // ── Shared clients ──────────────────────────────────────────────────────────
 
-pub static AIODUCT_H1: LazyLock<AioductClient> =
-    LazyLock::new(|| aioduct::HttpEngineSend::new(aioduct::runtime::tokio_rt::TcpConnector));
+pub static AIODUCT_H1: LazyLock<AioductClient> = LazyLock::new(aioduct::HttpEngineSend::new);
 
 pub static AIODUCT_H2: LazyLock<AioductClient> = LazyLock::new(|| {
-    aioduct::HttpEngineSend::builder(aioduct::runtime::tokio_rt::TcpConnector)
+    aioduct::HttpEngineSend::builder()
         .http2_prior_knowledge()
         .http2(
             aioduct::Http2Config::new()
@@ -48,7 +47,7 @@ pub static AIODUCT_H2: LazyLock<AioductClient> = LazyLock::new(|| {
 });
 
 pub static AIODUCT_H1_LARGE_POOL: LazyLock<AioductClient> = LazyLock::new(|| {
-    aioduct::HttpEngineSend::builder(aioduct::runtime::tokio_rt::TcpConnector)
+    aioduct::HttpEngineSend::builder()
         .pool_max_idle_per_host(100)
         .build()
         .unwrap()

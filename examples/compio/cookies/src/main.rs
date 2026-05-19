@@ -1,11 +1,10 @@
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CompioClient, CookieJar};
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let jar = CookieJar::new();
 
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             .cookie_jar(jar.clone())
             .build_local()
             .unwrap();

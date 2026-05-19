@@ -6,12 +6,11 @@ aioduct includes a built-in request forwarding builder for reverse proxy and API
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 
 // Incoming request from your framework (axum, actix, hyper, etc.)
 let incoming_req = http::Request::builder()
@@ -78,12 +77,11 @@ When `Connection: Upgrade` is present, `ForwardBuilder`:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 
 let ws_req = http::Request::builder()
     .method("GET")
@@ -121,12 +119,11 @@ When the request method is `CONNECT` and a `Protocol` extension is present, `For
 
 ```rust,no_run
 use aioduct::{TokioClient, Protocol};
-use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .http2_prior_knowledge()
     .build()?;
 
@@ -157,11 +154,10 @@ Use `on_request` and `on_response` for transformations not covered by other buil
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
 # use bytes::Bytes;
 # use http_body_util::Full;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = TokioClient::new(TcpConnector);
+# let client = TokioClient::new();
 # let incoming_req = http::Request::builder().uri("/test").body(Full::new(Bytes::new())).unwrap();
 let resp = client
     .forward(incoming_req)
@@ -184,11 +180,10 @@ For gRPC or other HTTP/2 cleartext (h2c) upstreams, use `.h2c()` to force HTTP/2
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
 # use bytes::Bytes;
 # use http_body_util::Full;
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 
 let grpc_req = http::Request::builder()
     .method("POST")
@@ -213,11 +208,10 @@ When you don't know whether the upstream speaks h2c, use `.adaptive_h2c()`. On t
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
 # use bytes::Bytes;
 # use http_body_util::Full;
 # async fn example() -> Result<(), aioduct::Error> {
-let client = TokioClient::new(TcpConnector);
+let client = TokioClient::new();
 
 let req = http::Request::builder()
     .method("POST")
@@ -240,9 +234,8 @@ Configure the probe cache TTL (default 5 minutes) on the client:
 
 ```rust,no_run
 # use aioduct::TokioClient;
-# use aioduct::runtime::tokio_rt::TcpConnector;
 # use std::time::Duration;
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .h2c_probe_ttl(Duration::from_secs(600))
     .build()?;
 ```

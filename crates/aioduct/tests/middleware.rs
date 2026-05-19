@@ -27,7 +27,7 @@ async fn test_middleware_adds_request_header() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(
             |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(
@@ -74,7 +74,7 @@ async fn test_middleware_modifies_response_header() {
     }
 
     let called = Arc::new(AtomicBool::new(false));
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(ResponseTagger {
             called: called.clone(),
         })
@@ -111,7 +111,7 @@ async fn test_multiple_middleware_ordering() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(
             |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                 req.headers_mut().insert(
@@ -156,7 +156,7 @@ async fn test_middleware_on_error_callback() {
     }
 
     let error_seen = Arc::new(AtomicBool::new(false));
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(ErrorRecorder {
             error_seen: error_seen.clone(),
         })
@@ -201,7 +201,7 @@ async fn test_middleware_on_redirect_callback() {
     .await;
 
     let redirect_seen = Arc::new(AtomicBool::new(false));
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(RedirectRecorder {
             redirect_seen: redirect_seen.clone(),
         })
@@ -262,7 +262,7 @@ async fn test_middleware_on_retry_callback() {
     .await;
 
     let retry_seen = Arc::new(AtomicBool::new(false));
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .middleware(RetryRecorder {
             retry_seen: retry_seen.clone(),
         })

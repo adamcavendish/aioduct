@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use aioduct::runtime::compio_rt::TcpConnector;
 use aioduct::{CompioClient, RetryConfig};
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = CompioClient::builder_local(TcpConnector)
+        let client = CompioClient::builder()
             // Connection timeout: max time to establish TCP + TLS
             .connect_timeout(Duration::from_secs(5))
             // Request timeout: max total time per request attempt

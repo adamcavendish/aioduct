@@ -42,7 +42,7 @@ async fn test_cookie_jar_stores_and_sends() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -92,7 +92,7 @@ async fn test_cookie_jar_multiple_cookies() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -136,7 +136,7 @@ async fn test_no_cookie_jar_no_cookies() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -166,7 +166,7 @@ async fn test_cookie_jar_same_host_shared() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -222,7 +222,7 @@ async fn test_cookie_store_max_age_zero() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -277,7 +277,7 @@ async fn test_cookie_store_expired() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -323,7 +323,7 @@ async fn test_cookie_store_path_scoping() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -386,7 +386,7 @@ async fn test_cookie_store_overwrite() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -431,7 +431,7 @@ async fn cookie_response_accessor() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -496,7 +496,7 @@ async fn cookie_jar_stores_multiple_set_cookie_headers() {
     .await;
 
     let jar = aioduct::cookie::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
         .build()
@@ -549,7 +549,7 @@ async fn cookie_jar_should_not_overwrite_manual_cookie_header() {
     .await;
 
     let jar = aioduct::cookie::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar.clone())
         .timeout(Duration::from_secs(5))
         .build()
@@ -621,7 +621,7 @@ async fn cookie_path_value_should_preserve_case() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
         .build()
@@ -679,7 +679,7 @@ async fn cookie_path_match_requires_separator() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
         .build()
@@ -744,7 +744,7 @@ async fn cookie_expires_attribute_should_be_case_insensitive() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .timeout(Duration::from_secs(5))
         .build()
@@ -945,7 +945,7 @@ async fn cookie_jar_rejects_cross_domain_cookie() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();
@@ -981,7 +981,7 @@ async fn response_cookies_filters_mismatched_domain() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new(TcpConnector);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -1025,7 +1025,7 @@ async fn cookie_positive_max_age_expires_after_duration() {
     .await;
 
     let jar = aioduct::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .cookie_jar(jar)
         .build()
         .unwrap();

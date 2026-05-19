@@ -34,11 +34,10 @@ aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-ri
 
 ```rust,no_run
 use aioduct::{TokioClient, StatusCode};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     let resp = client
         .get("http://httpbin.org/get")?
@@ -56,11 +55,10 @@ async fn main() -> Result<(), aioduct::Error> {
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::with_rustls(TcpConnector);
+    let client = TokioClient::with_rustls();
 
     let resp = client
         .get("https://httpbin.org/get")?
@@ -78,7 +76,6 @@ Requires the `json` feature.
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -95,7 +92,7 @@ struct User {
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::with_rustls(TcpConnector);
+    let client = TokioClient::with_rustls();
 
     let resp = client
         .post("https://api.example.com/users")?
@@ -116,11 +113,10 @@ async fn main() -> Result<(), aioduct::Error> {
 
 ```rust,no_run
 use aioduct::SmolClient;
-use aioduct::runtime::smol_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = SmolClient::new(TcpConnector);
+        let client = SmolClient::new();
 
         let resp = client
             .get("http://httpbin.org/get")?
@@ -138,9 +134,8 @@ fn main() -> Result<(), aioduct::Error> {
 ```rust,no_run
 use std::time::Duration;
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .timeout(Duration::from_secs(30))
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))

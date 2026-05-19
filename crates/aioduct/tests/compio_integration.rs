@@ -53,7 +53,7 @@ where
 fn test_compio_get_request() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -71,7 +71,7 @@ fn test_compio_get_request() {
 fn test_compio_post_request() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .post_local(&format!("http://{addr}/"))
             .unwrap()
@@ -88,7 +88,7 @@ fn test_compio_post_request() {
 fn test_compio_connection_reuse() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let url = format!("http://{addr}/");
 
         let resp1 = client.get_local(&url).unwrap().send().await.unwrap();
@@ -119,7 +119,7 @@ fn test_compio_redirect_302() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{redirect_addr}/"))
             .unwrap()
@@ -141,7 +141,7 @@ fn test_compio_timeout_triggers() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let result = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -166,7 +166,7 @@ fn test_compio_custom_header() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -228,7 +228,7 @@ fn test_compio_h2_prior_knowledge() {
     };
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .http2_prior_knowledge()
             .build_local()
             .unwrap();
@@ -254,7 +254,7 @@ fn test_compio_large_body() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let payload = "x".repeat(1024 * 1024);
         let resp = client
             .post_local(&format!("http://{addr}/"))
@@ -277,7 +277,7 @@ fn test_compio_large_response_body() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -303,7 +303,7 @@ fn test_compio_head_request() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .request_local(http::Method::HEAD, &format!("http://{addr}/"))
             .unwrap()
@@ -328,7 +328,7 @@ fn test_compio_default_headers() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .user_agent("compio-test/1.0")
             .build_local()
             .unwrap();
@@ -350,7 +350,7 @@ fn test_compio_pool_reuse_after_body_consumed() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let url = format!("http://{addr}/");
 
         for _ in 0..5 {
@@ -373,7 +373,7 @@ fn test_compio_bearer_auth() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -393,7 +393,7 @@ fn test_compio_http_client_trait() {
     let addr = start_server_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let engine = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let engine = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let client = engine;
 
         let resp = client
@@ -652,12 +652,11 @@ mod compio_tls_tests {
         let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_config));
 
         compio_runtime::Runtime::new().unwrap().block_on(async {
-            let client =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .tls(connector)
-                    .timeout(Duration::from_secs(5))
-                    .build_local()
-                    .unwrap();
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .tls(connector)
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
             let resp = client.get_local(&url(addr)).unwrap().send().await.unwrap();
 
             assert_eq!(resp.status(), http::StatusCode::OK);
@@ -673,12 +672,11 @@ mod compio_tls_tests {
 
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let root_cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
-            let client =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .add_root_certificates(&[root_cert])
-                    .timeout(Duration::from_secs(5))
-                    .build_local()
-                    .unwrap();
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .add_root_certificates(&[root_cert])
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
             let resp = client.get_local(&url(addr)).unwrap().send().await.unwrap();
 
             assert_eq!(resp.status(), http::StatusCode::OK);
@@ -695,13 +693,12 @@ mod compio_tls_tests {
 
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let root_cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
-            let client =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .add_root_certificates(&[root_cert])
-                    .min_tls_version(TlsVersion::Tls1_3)
-                    .timeout(Duration::from_secs(5))
-                    .build_local()
-                    .unwrap();
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .add_root_certificates(&[root_cert])
+                .min_tls_version(TlsVersion::Tls1_3)
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
             let resp = client.get_local(&url(addr)).unwrap().send().await.unwrap();
 
             assert_eq!(resp.status(), http::StatusCode::OK);
@@ -717,13 +714,12 @@ mod compio_tls_tests {
 
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let root_cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
-            let client =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .add_root_certificates(&[root_cert])
-                    .max_tls_version(TlsVersion::Tls1_2)
-                    .timeout(Duration::from_secs(5))
-                    .build_local()
-                    .unwrap();
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .add_root_certificates(&[root_cert])
+                .max_tls_version(TlsVersion::Tls1_2)
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
             let result = client.get_local(&url(addr)).unwrap().send().await;
 
             assert!(result.is_err(), "TLS version mismatch should cause error");
@@ -738,13 +734,12 @@ mod compio_tls_tests {
 
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let root_cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
-            let client =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .add_root_certificates(&[root_cert])
-                    .tls_sni(false)
-                    .timeout(Duration::from_secs(5))
-                    .build_local()
-                    .unwrap();
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .add_root_certificates(&[root_cert])
+                .tls_sni(false)
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
             let resp = client.get_local(&url(addr)).unwrap().send().await.unwrap();
 
             assert_eq!(resp.status(), http::StatusCode::OK);
@@ -765,13 +760,12 @@ mod compio_tls_tests {
 
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let root_cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
-            let client =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .add_root_certificates(&[root_cert])
-                    .danger_accept_invalid_hostnames(true)
-                    .timeout(Duration::from_secs(5))
-                    .build_local()
-                    .unwrap();
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .add_root_certificates(&[root_cert])
+                .danger_accept_invalid_hostnames(true)
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
             let resp = client.get_local(&url(addr)).unwrap().send().await.unwrap();
 
             assert_eq!(resp.status(), http::StatusCode::OK);
@@ -791,13 +785,12 @@ mod compio_tls_tests {
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let ca_cert = aioduct::tls::Certificate::from_der(ca.cert_der.to_vec());
             let identity = aioduct::tls::Identity::from_pem(&client_pem).unwrap();
-            let client =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .add_root_certificates(&[ca_cert])
-                    .identity(identity)
-                    .timeout(Duration::from_secs(5))
-                    .build_local()
-                    .unwrap();
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .add_root_certificates(&[ca_cert])
+                .identity(identity)
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
             let resp = client.get_local(&url(addr)).unwrap().send().await.unwrap();
 
             assert_eq!(resp.status(), http::StatusCode::OK);
@@ -859,13 +852,12 @@ mod compio_tls_tests {
         compio_runtime::Runtime::new().unwrap().block_on(async {
             let root_cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
             let hsts = aioduct::hsts::HstsStore::new();
-            let client =
-                HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
-                    .add_root_certificates(&[root_cert])
-                    .hsts(hsts.clone())
-                    .timeout(Duration::from_secs(5))
-                    .build_local()
-                    .unwrap();
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+                .add_root_certificates(&[root_cert])
+                .hsts(hsts.clone())
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
 
             let resp = client.get_local(&url(addr)).unwrap().send().await.unwrap();
             assert_eq!(resp.status(), http::StatusCode::OK);
@@ -895,7 +887,7 @@ fn test_compio_sse_stream() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -928,7 +920,7 @@ fn test_compio_query_params() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -962,7 +954,7 @@ fn test_compio_json_body() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .post_local(&format!("http://{addr}/"))
             .unwrap()
@@ -997,7 +989,7 @@ fn test_compio_form_body() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .post_local(&format!("http://{addr}/"))
             .unwrap()
@@ -1025,7 +1017,7 @@ fn test_compio_basic_auth() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -1042,7 +1034,7 @@ fn test_compio_basic_auth() {
 #[test]
 fn test_compio_try_clone() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let builder = client
             .get_local("http://example.com/")
             .unwrap()
@@ -1071,7 +1063,7 @@ fn test_compio_headers_bulk() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let mut headers = http::HeaderMap::new();
         headers.insert("x-one", "1".parse().unwrap());
         headers.insert("x-two", "2".parse().unwrap());
@@ -1099,7 +1091,7 @@ fn test_compio_forward_basic_get() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/hello/world")
@@ -1130,7 +1122,7 @@ fn test_compio_forward_strip_prefix() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/api/v1/users")
@@ -1166,7 +1158,7 @@ fn test_compio_forward_preserve_host() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/")
@@ -1203,7 +1195,7 @@ fn test_compio_forward_extra_header() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/")
@@ -1264,7 +1256,7 @@ fn test_compio_chunk_download_with_ranges() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let result = client
             .chunk_download_local(&format!("http://{addr}/"))
             .chunks(2)
@@ -1292,7 +1284,7 @@ fn test_compio_chunk_download_fallback_no_ranges() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let result = client
             .chunk_download_local(&format!("http://{addr}/"))
             .download()
@@ -1307,7 +1299,7 @@ fn test_compio_chunk_download_fallback_no_ranges() {
 #[test]
 fn test_compio_https_only_rejects_http() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .https_only(true)
             .build_local()
             .unwrap();
@@ -1324,7 +1316,7 @@ fn test_compio_https_only_rejects_http() {
 fn test_compio_no_connection_reuse() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .no_connection_reuse()
             .build_local()
             .unwrap();
@@ -1363,7 +1355,7 @@ fn test_compio_cookie_jar() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let jar = aioduct::cookie::CookieJar::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .cookie_jar(jar)
             .build_local()
             .unwrap();
@@ -1403,7 +1395,7 @@ fn test_compio_middleware() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .middleware(
                 |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
                     req.headers_mut().insert(
@@ -1438,7 +1430,7 @@ fn test_compio_read_timeout_fires() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .read_timeout(Duration::from_millis(50))
             .build_local()
             .unwrap();
@@ -1459,7 +1451,7 @@ fn test_compio_bandwidth_limiter() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .max_download_speed(1024 * 1024)
             .build_local()
             .unwrap();
@@ -1477,7 +1469,7 @@ fn test_compio_bandwidth_limiter() {
 fn test_compio_rate_limiter() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .max_requests_per_sec(100)
             .build_local()
             .unwrap();
@@ -1503,7 +1495,7 @@ fn test_compio_error_for_status() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -1528,7 +1520,7 @@ fn test_compio_decompression_disabled() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .no_decompression()
             .build_local()
             .unwrap();
@@ -1547,7 +1539,7 @@ fn test_compio_decompression_disabled() {
 fn test_compio_tcp_keepalive() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .tcp_keepalive(Duration::from_secs(60))
             .build_local()
             .unwrap();
@@ -1565,7 +1557,7 @@ fn test_compio_tcp_keepalive() {
 fn test_compio_resolve_override() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .resolve("custom-host.local", addr)
             .build_local()
             .unwrap();
@@ -1588,7 +1580,7 @@ fn test_compio_request_local_with_delete() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .request_local(http::Method::DELETE, &format!("http://{addr}/"))
             .unwrap()
@@ -1616,7 +1608,7 @@ fn test_compio_observer() {
             fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
         }
 
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .request_observer(Obs(phases_clone))
             .build_local()
             .unwrap();
@@ -1654,7 +1646,7 @@ fn test_compio_redirect_with_method_change() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .post_local(&format!("http://{redirect_addr}/"))
             .unwrap()
@@ -1680,7 +1672,7 @@ fn test_compio_too_many_redirects() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .max_redirects(3)
             .build_local()
             .unwrap();
@@ -1696,7 +1688,7 @@ fn test_compio_too_many_redirects() {
 #[test]
 fn test_compio_connect_timeout() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .connect_timeout(Duration::from_millis(1))
             .build_local()
             .unwrap();
@@ -1718,7 +1710,7 @@ fn test_compio_hsts_store() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let hsts = aioduct::hsts::HstsStore::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .hsts(hsts)
             .build_local()
             .unwrap();
@@ -1745,7 +1737,7 @@ fn test_compio_cache_basic() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let cache = aioduct::cache::HttpCache::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .cache(cache)
             .build_local()
             .unwrap();
@@ -1799,7 +1791,7 @@ fn test_compio_cache_stale_if_error_on_5xx() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let cache = aioduct::cache::HttpCache::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .cache(cache)
             .build_local()
             .unwrap();
@@ -1872,7 +1864,7 @@ fn test_compio_cache_stale_if_error_on_network_error() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let cache = aioduct::cache::HttpCache::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .cache(cache)
             .timeout(Duration::from_millis(500))
             .build_local()
@@ -1949,7 +1941,7 @@ fn test_compio_cache_304_revalidation() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let cache = aioduct::cache::HttpCache::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .cache(cache)
             .build_local()
             .unwrap();
@@ -2004,7 +1996,7 @@ fn test_compio_cache_invalidation_on_post() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let cache = aioduct::cache::HttpCache::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .cache(cache)
             .build_local()
             .unwrap();
@@ -2064,7 +2056,7 @@ fn test_compio_cookie_store_from_response() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let jar = aioduct::cookie::CookieJar::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .cookie_jar(jar)
             .build_local()
             .unwrap();
@@ -2152,7 +2144,7 @@ fn test_compio_digest_auth_retry() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .digest_auth("admin", "secret123")
             .build_local()
             .unwrap();
@@ -2214,7 +2206,7 @@ fn test_compio_digest_auth_retry_with_body() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .digest_auth("user", "pass")
             .build_local()
             .unwrap();
@@ -2243,7 +2235,7 @@ fn test_compio_finalize_response_with_read_timeout_and_bandwidth() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .read_timeout(Duration::from_secs(5))
             .max_download_speed(1024 * 1024)
             .build_local()
@@ -2283,7 +2275,7 @@ fn test_compio_read_timeout_with_slow_body() {
     };
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .read_timeout(Duration::from_millis(50))
             .build_local()
             .unwrap();
@@ -2327,7 +2319,7 @@ fn test_compio_hsts_store_from_response_header() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let hsts = aioduct::hsts::HstsStore::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .hsts(hsts.clone())
             .build_local()
             .unwrap();
@@ -2364,7 +2356,7 @@ fn test_compio_forward_on_request_hook() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/")
@@ -2402,7 +2394,7 @@ fn test_compio_forward_on_response_hook() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/")
@@ -2447,7 +2439,7 @@ fn test_compio_forward_remove_header() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/")
@@ -2486,7 +2478,7 @@ fn test_compio_forward_forward_header() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/")
@@ -2521,7 +2513,7 @@ fn test_compio_forward_timeout() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/")
@@ -2557,7 +2549,7 @@ fn test_compio_forward_upstream_base_path() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/resource/123")
@@ -2590,7 +2582,7 @@ fn test_compio_forward_query_string_preserved() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/search?q=hello&page=1")
@@ -2623,7 +2615,7 @@ fn test_compio_forward_query_string_preserved() {
 #[test]
 fn test_compio_forward_no_upstream_errors() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/")
@@ -2654,7 +2646,7 @@ fn test_compio_chunk_download_local_fallback_no_ranges() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let result = client
             .chunk_download_local(&format!("http://{addr}/file"))
             .chunks(4)
@@ -2706,7 +2698,7 @@ fn test_compio_chunk_download_local_with_ranges() {
 
     let body_data_check = body_data.clone();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let result = client
             .chunk_download_local(&format!("http://{addr}/file"))
             .chunks(4)
@@ -2732,7 +2724,7 @@ fn test_compio_chunk_download_head_failure() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let result = client
             .chunk_download_local(&format!("http://{addr}/missing"))
             .download()
@@ -2758,7 +2750,7 @@ fn test_compio_forward_local_preserve_host_with_base_path() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/users/123")
@@ -2798,7 +2790,7 @@ fn test_compio_forward_local_strip_prefix() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let incoming = http::Request::builder()
             .method("GET")
             .uri("/api/users/456")
@@ -2840,7 +2832,7 @@ fn test_compio_forward_local_client_timeout() {
     };
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .timeout(Duration::from_millis(100))
             .build_local()
             .unwrap();
@@ -2885,7 +2877,7 @@ fn test_compio_finalize_response_local_caches() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let cache = aioduct::HttpCache::new();
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .cache(cache)
             .build_local()
             .unwrap();
@@ -2926,7 +2918,7 @@ fn test_compio_304_not_modified_not_redirect() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
         let resp = client
             .get_local(&format!("http://{addr}/resource"))
             .unwrap()
@@ -2943,7 +2935,7 @@ fn test_compio_304_not_modified_not_redirect() {
 #[test]
 fn test_compio_https_only_rejects_http_execute_local_path() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .https_only(true)
             .build_local()
             .unwrap();
@@ -3197,7 +3189,7 @@ fn test_compio_socks5_proxy_local() {
     let socks5_addr = start_socks5_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::socks5(&format!("socks5://{socks5_addr}")).unwrap())
             .timeout(Duration::from_secs(2))
             .build_local()
@@ -3223,7 +3215,7 @@ fn test_compio_socks5_proxy_with_auth_local() {
     let socks5_addr = start_socks5_auth_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(
                 aioduct::proxy::ProxyConfig::socks5(&format!("socks5://{socks5_addr}"))
                     .unwrap()
@@ -3253,7 +3245,7 @@ fn test_compio_socks4_proxy_local() {
     let socks4_addr = start_socks4_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::socks4(&format!("socks4://{socks4_addr}")).unwrap())
             .timeout(Duration::from_secs(2))
             .build_local()
@@ -3278,7 +3270,7 @@ fn test_compio_http_proxy_local() {
     let http_proxy_addr = start_http_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::http(&format!("http://{http_proxy_addr}")).unwrap())
             .build_local()
             .unwrap();
@@ -3354,7 +3346,7 @@ fn test_compio_http_proxy_with_auth_local() {
     };
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(
                 aioduct::proxy::ProxyConfig::http(&format!("http://{proxy_addr}"))
                     .unwrap()
@@ -3388,7 +3380,7 @@ fn test_compio_socks5_proxy_with_keepalive_and_fast_open() {
     let socks5_addr = start_socks5_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::socks5(&format!("socks5://{socks5_addr}")).unwrap())
             .tcp_keepalive(Duration::from_secs(30))
             .tcp_keepalive_interval(Duration::from_secs(10))
@@ -3431,7 +3423,7 @@ fn test_compio_observer_tcp_connected_on_plain_http() {
             fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
         }
 
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .request_observer(PhaseObs(phases_clone))
             .no_connection_reuse()
             .build_local()
@@ -3505,7 +3497,7 @@ fn test_compio_observer_pool_hit_vs_miss() {
             fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
         }
 
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .request_observer(PhaseObs(phases_clone))
             .build_local()
             .unwrap();
@@ -3568,7 +3560,7 @@ fn test_compio_streaming_body_request() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
 
         // Create a streaming body (non-buffered) -- this exercises the
         // RequestBody::Streaming branch at execute_local.rs line 58
@@ -3615,7 +3607,7 @@ fn test_compio_streaming_body_not_replayable_on_redirect() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new_local(TcpConnector);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
 
         let stream_body: aioduct::body::RequestBodySend =
             http_body_util::Full::new(Bytes::from("stream-data"))
@@ -3642,7 +3634,7 @@ fn test_compio_streaming_body_not_replayable_on_redirect() {
 fn test_compio_tcp_fast_open_direct() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .tcp_fast_open(true)
             .build_local()
             .unwrap();
@@ -3701,7 +3693,7 @@ fn test_compio_http_connect_tunnel_proxy_local() {
     let proxy_addr = rx.recv().unwrap();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
             .timeout(Duration::from_secs(2))
             .build_local()
@@ -3777,7 +3769,7 @@ fn test_compio_http_connect_tunnel_with_auth_local() {
     let proxy_addr = rx.recv().unwrap();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(
                 aioduct::proxy::ProxyConfig::http(&format!("http://{proxy_addr}"))
                     .unwrap()
@@ -3809,7 +3801,7 @@ fn test_compio_socks5_proxy_with_tcp_keepalive() {
     let socks5_addr = start_socks5_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::socks5(&format!("socks5://{socks5_addr}")).unwrap())
             .tcp_keepalive(Duration::from_secs(60))
             .timeout(Duration::from_secs(2))
@@ -3837,7 +3829,7 @@ fn test_compio_http_proxy_connection_reuse_local() {
     let http_proxy_addr = start_http_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::http(&format!("http://{http_proxy_addr}")).unwrap())
             .build_local()
             .unwrap();
@@ -3884,7 +3876,7 @@ fn test_compio_socks4_proxy_with_tcp_options() {
     let socks4_addr = start_socks4_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::socks4(&format!("socks4://{socks4_addr}")).unwrap())
             .tcp_keepalive(Duration::from_secs(30))
             .tcp_fast_open(true)
@@ -3965,7 +3957,7 @@ fn test_compio_h2_multiplexing_reuses_connection() {
     };
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .http2_prior_knowledge()
             .build_local()
             .unwrap();
@@ -4008,7 +4000,7 @@ fn h1_deferred_checkin_reuses_connection() {
     });
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder_local(TcpConnector)
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .pool_idle_timeout(Duration::from_secs(60))
             .build_local()
             .unwrap();

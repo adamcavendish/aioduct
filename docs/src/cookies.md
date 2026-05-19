@@ -8,10 +8,9 @@ Create a `CookieJar` and pass it to the client builder:
 
 ```rust,no_run
 use aioduct::{TokioClient, CookieJar};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 let jar = CookieJar::new();
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .cookie_jar(jar)
     .build()?;
 ```
@@ -30,11 +29,10 @@ let client = TokioClient::builder(TcpConnector)
 
 ```rust,no_run
 use aioduct::{TokioClient, CookieJar};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .cookie_jar(CookieJar::new())
         .build()?;
 

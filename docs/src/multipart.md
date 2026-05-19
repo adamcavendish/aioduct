@@ -6,11 +6,10 @@ aioduct supports building `multipart/form-data` request bodies for file uploads 
 
 ```rust,no_run
 use aioduct::{TokioClient, Multipart};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     let form = Multipart::new()
         .text("username", "alice")
@@ -57,11 +56,10 @@ Combine text fields and file parts freely:
 
 ```rust,no_run
 use aioduct::{TokioClient, Multipart};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::new(TcpConnector);
+    let client = TokioClient::new();
 
     let image_data = std::fs::read("photo.jpg").unwrap();
 

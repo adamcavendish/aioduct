@@ -1,14 +1,12 @@
 // features: tokio,json
 // runtime: tokio
-use aioduct::{HttpEngine, CookieJar};
-use aioduct::runtime::TokioRuntime;
-use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{TokioClient, CookieJar};
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     let jar = Arc::new(CookieJar::new());
-    let client = HttpEngine::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+    let client = TokioClient::builder()
         .cookie_jar(jar.clone())
         .build();
 

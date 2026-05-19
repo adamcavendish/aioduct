@@ -6,15 +6,14 @@ aioduct supports routing requests through HTTP and SOCKS5 proxies. For HTTP targ
 
 ```rust,no_run
 use aioduct::{TokioClient, ProxyConfig};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 // HTTP proxy
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(ProxyConfig::http("http://proxy.example.com:8080").unwrap())
     .build()?;
 
 // SOCKS5 proxy
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(ProxyConfig::socks5("socks5://socks-proxy.example.com:1080").unwrap())
     .build()?;
 ```
@@ -25,9 +24,8 @@ Use `system_proxy()` to read proxy settings from environment variables:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .system_proxy()
     .build()?;
 ```
@@ -56,14 +54,13 @@ Use `ProxySettings` for fine-grained control:
 
 ```rust,no_run
 use aioduct::{TokioClient, ProxyConfig, ProxySettings, NoProxy};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 let settings = ProxySettings::all(
     ProxyConfig::http("http://proxy.example.com:8080").unwrap()
 )
 .no_proxy(NoProxy::new("localhost, .internal.corp, 10.0.0.0/8"));
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy_settings(settings)
     .build()?;
 ```
@@ -72,13 +69,12 @@ You can also set different proxies for HTTP and HTTPS:
 
 ```rust,no_run
 # use aioduct::{TokioClient, ProxyConfig, ProxySettings, NoProxy};
-# use aioduct::runtime::tokio_rt::TcpConnector;
 let settings = ProxySettings::default()
     .http(ProxyConfig::http("http://http-proxy:3128").unwrap())
     .https(ProxyConfig::http("http://https-proxy:3129").unwrap())
     .no_proxy(NoProxy::new("localhost"));
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy_settings(settings)
     .build()?;
 ```
@@ -87,9 +83,8 @@ let client = TokioClient::builder(TcpConnector)
 
 ```rust,no_run
 use aioduct::{TokioClient, ProxyConfig};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(
         ProxyConfig::http("http://proxy.example.com:8080")
             .unwrap()
@@ -120,11 +115,10 @@ This ensures end-to-end encryption — the proxy only sees the target hostname, 
 
 ```rust,no_run
 use aioduct::{TokioClient, ProxyConfig};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = TokioClient::builder(TcpConnector)
+    let client = TokioClient::builder()
         .proxy(
             ProxyConfig::http("http://corporate-proxy:3128")
                 .unwrap()
@@ -149,15 +143,14 @@ SOCKS4/SOCKS4a proxies are also supported. SOCKS4a extends SOCKS4 with domain na
 
 ```rust,no_run
 use aioduct::{TokioClient, ProxyConfig};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 // SOCKS4a proxy (domain resolution on proxy)
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(ProxyConfig::socks4("socks4a://localhost:1080").unwrap())
     .build()?;
 
 // SOCKS4 proxy
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(ProxyConfig::socks4("socks4://localhost:1080").unwrap())
     .build()?;
 ```
@@ -172,15 +165,14 @@ SOCKS5 proxies tunnel TCP connections at a lower level than HTTP proxies. After 
 
 ```rust,no_run
 use aioduct::{TokioClient, ProxyConfig};
-use aioduct::runtime::tokio_rt::TcpConnector;
 
 // Without auth
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(ProxyConfig::socks5("socks5://localhost:1080").unwrap())
     .build()?;
 
 // With username/password auth
-let client = TokioClient::builder(TcpConnector)
+let client = TokioClient::builder()
     .proxy(
         ProxyConfig::socks5("socks5://localhost:1080")
             .unwrap()
