@@ -63,15 +63,23 @@ impl<B: 'static> HttpEngineCore<B> {
     /// `poll_ready` and only returns the connection to the pool once it is
     /// ready. This prevents concurrent checkouts from finding (and destroying)
     /// not-ready connections in the pool.
-    pub(super) fn checkin_when_ready<F>(
+    ///
+    /// The background task times out after the pool's idle timeout — if the
+    /// body isn't consumed by then, the connection is dropped.
+    pub(super) fn checkin_when_ready<R, F, S>(
         &self,
         key: crate::pool::PoolKey,
         mut conn: PooledConnection<B>,
         spawn: F,
+        sleep: S,
     ) where
+        R: crate::runtime::RuntimePoll,
         F: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>),
+        S: std::future::Future<Output = ()> + Send + 'static,
         B: Send + 'static,
     {
+        self.pool.ensure_reaper::<R>();
+
         Self::populate_sans(&mut conn);
         if conn.is_multiplex_clone {
             self.fire_connection_metrics(&conn, false);
@@ -86,8 +94,9 @@ impl<B: 'static> HttpEngineCore<B> {
 
         let pool = self.pool.clone();
         spawn(Box::pin(async move {
-            let ready = std::future::poll_fn(|cx| conn.poll_ready(cx)).await;
-            if ready {
+            let ready_fut = std::future::poll_fn(|cx| conn.poll_ready(cx));
+            let result = crate::timeout::race_deadline(ready_fut, sleep).await;
+            if let Some(true) = result {
                 pool.checkin(key, conn);
             }
         }));
@@ -95,15 +104,20 @@ impl<B: 'static> HttpEngineCore<B> {
 
     /// Like [`checkin_when_ready`](Self::checkin_when_ready) but for the Local
     /// (`!Send`) path. The spawn closure accepts a non-Send future.
-    pub(super) fn checkin_when_ready_local<F>(
+    pub(super) fn checkin_when_ready_local<R, F, S>(
         &self,
         key: crate::pool::PoolKey,
         mut conn: PooledConnection<B>,
         spawn: F,
+        sleep: S,
     ) where
+        R: crate::runtime::RuntimeLocal,
         F: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>),
+        S: std::future::Future<Output = ()> + 'static,
         B: 'static,
     {
+        self.pool.ensure_reaper_local::<R>();
+
         Self::populate_sans(&mut conn);
         if conn.is_multiplex_clone {
             self.fire_connection_metrics(&conn, false);
@@ -118,8 +132,9 @@ impl<B: 'static> HttpEngineCore<B> {
 
         let pool = self.pool.clone();
         spawn(Box::pin(async move {
-            let ready = std::future::poll_fn(|cx| conn.poll_ready(cx)).await;
-            if ready {
+            let ready_fut = std::future::poll_fn(|cx| conn.poll_ready(cx));
+            let result = crate::timeout::race_deadline(ready_fut, sleep).await;
+            if let Some(true) = result {
                 pool.checkin(key, conn);
             }
         }));
