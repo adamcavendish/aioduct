@@ -4,11 +4,12 @@
 
 ```
 src/
-  lib.rs              # Re-exports, compile_error gate
+  lib.rs              # Re-exports, compile_error gate, type aliases
   error.rs            # Error enum, type aliases
-  client.rs           # Client<R> and ClientBuilder<R>
-  request.rs          # RequestBuilder<R> — fluent request API
-  response.rs         # Response — status, headers, body consumption
+  engine.rs           # HttpEngineCore<B>, HttpEngineSend<R,C>, HttpEngineLocal<R,C>
+  engine_builder.rs   # HttpEngineBuilder<R,C> — fluent client configuration
+  request.rs          # RequestBuilderSend<R,C>, RequestBuilderLocal<R,C>
+  response.rs         # ResponseBodySend, ResponseBodyLocal — status, headers, body consumption
   body.rs             # BodyStream, RequestBody (buffered/streaming)
   timeout.rs          # Pin-projected Timeout future
   cookie.rs           # CookieJar, Cookie, Set-Cookie parsing
@@ -30,13 +31,15 @@ src/
   socks4.rs           # SOCKS4/4a handshake
   socks5.rs           # SOCKS5 handshake
   blocking.rs         # Blocking client wrapper (requires tokio)
+  traits.rs           # HttpClient, RequestBuilderExt, ResponseExt, ByteStreamExt
   runtime/
-    mod.rs            # Runtime trait, HyperExecutor<R>
-    tokio_rt.rs       # TokioRuntime, TokioIo, TokioSleep
-    smol_rt.rs        # SmolRuntime, SmolIo, SmolSleep
-    compio_rt.rs      # CompioRuntime
+    mod.rs            # RuntimeCompletion, RuntimePoll, RuntimeLocal traits
+    tokio_rt.rs       # TokioRuntime, TcpConnector, TokioIo
+    smol_rt.rs        # SmolRuntime, TcpConnector, SmolIo
+    compio_rt.rs      # CompioRuntime, TcpConnector
+  connector.rs        # ConnectorSend, ConnectorLocal traits, SocketConfig
   pool/
-    mod.rs            # ConnectionPool<R> — keyed pooling
+    mod.rs            # ConnectionPool — keyed pooling
     connection.rs     # PooledConnection, HttpConnection enum
   tls/
     mod.rs            # TlsConnect trait, re-exports
@@ -44,7 +47,6 @@ src/
   h3/
     mod.rs            # HTTP/3 transport (experimental)
   http2.rs            # Http2Config
-  connector.rs        # Tower Service connector (requires tower)
   hickory.rs          # HickoryResolver (requires hickory-dns)
   wasm/               # WASM/browser runtime
 ```
@@ -54,34 +56,34 @@ src/
 A request in aioduct goes through these stages:
 
 ```
-Client::get("http://example.com/path")
-  → RequestBuilder (accumulate headers, body, timeout, query params)
-  → RequestBuilder::send()
-    → apply timeout wrapper (Timeout future)
-    → rate limiter wait (if configured)
-    → check HTTP cache (if configured, return cached response on hit)
-    → Client::execute()
-      → merge default headers
-      → apply cookie jar cookies (if configured)
-      → retry loop (if configured):
-        → redirect loop (up to max_redirects):
-          → run middleware on_request hooks
-          → build http::Request with method, path-only URI, headers
-          → Client::execute_single()
-            → pool checkout (reuse existing connection?)
-            → if miss: DNS resolve → Happy Eyeballs (interleave IPv6/IPv4)
-              → TCP connect → TLS handshake (if HTTPS)
-            → ALPN → select h1 or h2 sender
-            → send request on connection
-            → pool checkin
-          → digest auth retry (if 401 + WWW-Authenticate: Digest)
-          → run middleware on_response hooks
-          → store response cookies in jar (if configured)
-          → check redirect status → follow or return
-      → cache response (if configured and cacheable)
-      → decompress body (if content-encoding matches)
-      → apply bandwidth limiter (if configured)
-  → Response
+client.get("http://example.com/path")?
+  -> RequestBuilderSend (accumulate headers, body, timeout, query params)
+  -> RequestBuilderSend::send()
+    -> apply timeout wrapper (Timeout future)
+    -> rate limiter wait (if configured)
+    -> check HTTP cache (if configured, return cached response on hit)
+    -> HttpEngineCore::execute()
+      -> merge default headers
+      -> apply cookie jar cookies (if configured)
+      -> retry loop (if configured):
+        -> redirect loop (up to max_redirects):
+          -> run middleware on_request hooks
+          -> build http::Request with method, path-only URI, headers
+          -> execute_single()
+            -> pool checkout (reuse existing connection?)
+            -> if miss: ConnectorSend::connect(&SocketConfig)
+              -> TCP connect -> TLS handshake (if HTTPS)
+            -> ALPN -> select h1 or h2 sender
+            -> send request on connection
+            -> pool checkin
+          -> digest auth retry (if 401 + WWW-Authenticate: Digest)
+          -> run middleware on_response hooks
+          -> store response cookies in jar (if configured)
+          -> check redirect status -> follow or return
+      -> cache response (if configured and cacheable)
+      -> decompress body (if content-encoding matches)
+      -> apply bandwidth limiter (if configured)
+  -> ResponseBodySend
 ```
 
 ## Key Design Decisions
@@ -93,13 +95,35 @@ hyper 1.x provides raw connection-level primitives. hyper-util wraps them in a l
 - **IO adapters** (TokioIo, SmolIo): Bridge runtime-specific `AsyncRead`/`AsyncWrite` to `hyper::rt::Read`/`hyper::rt::Write`. Each is ~50 lines of unsafe pin projection.
 - **HyperExecutor**: A generic executor that delegates `spawn` to the active Runtime. Uses `PhantomData<fn() -> R>` (not `PhantomData<R>`) to ensure it is always `Unpin`, which hyper's h2 handshake requires.
 
+### Split Engine Types: Send vs Local
+
+The v0.2 architecture splits the client into two engine types to cleanly support both poll-based and completion-based runtimes:
+
+- **`HttpEngineSend<R: RuntimePoll, C: ConnectorSend>`** — for runtimes where futures are `Send` (tokio, smol). The connector produces streams that are `Send`, enabling work-stealing schedulers.
+- **`HttpEngineLocal<R: RuntimeLocal, C: ConnectorLocal>`** — for thread-per-core runtimes (compio) where futures are `!Send`. The connector produces streams that stay on the local thread.
+
+Both share `HttpEngineCore<B>` for configuration state (pool settings, timeouts, middleware, TLS, etc.), minimizing code duplication.
+
+### Connector Abstraction
+
+Networking is decoupled from the runtime via connector traits:
+
+- **`ConnectorSend`**: `Clone + Send + Sync + 'static`, connects asynchronously, returns a `Send` stream.
+- **`ConnectorLocal`**: `'static`, connects asynchronously, returns a `!Send` stream.
+
+Each runtime module provides a default `TcpConnector` that implements the appropriate trait. Users can supply custom connectors for testing, proxying, or alternative transports.
+
 ### Generic over Runtime
 
-`Client<R: Runtime>` carries the runtime as a type parameter rather than using dynamic dispatch. This means:
+`HttpEngineSend<R, C>` and `HttpEngineLocal<R, C>` carry the runtime and connector as type parameters rather than using dynamic dispatch. This means:
 
 - Zero-cost abstraction — no vtable overhead
 - All runtime-specific code is monomorphized away
 - The compiler can inline across the runtime boundary
+
+### Portable Traits
+
+The `HttpClient`, `RequestBuilderExt`, `ResponseExt`, and `ByteStreamExt` traits provide a common interface that works across both `Send` and `Local` engine variants, enabling generic code that is runtime-agnostic.
 
 ### Connection Pool
 

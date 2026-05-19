@@ -16,12 +16,12 @@ This is a single automatic retry — if the second request also returns 401, it 
 Configure digest auth at the client level:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .digest_auth("username", "password")
-    .build();
+    .build()?;
 
 // The client handles the 401 → retry flow automatically
 let resp = client

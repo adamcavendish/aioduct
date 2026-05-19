@@ -9,11 +9,11 @@ aioduct can parse RFC 9457 Problem Details responses — a standardized JSON for
 Use `Response::problem_details()` to check and parse a Problem Details response:
 
 ```rust,no_run
-use aioduct::{Client, ProblemDetails};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, ProblemDetails};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = Client::<TokioRuntime>::new();
+let client = TokioClient::new(TcpConnector);
 let resp = client.get("https://api.example.com/resource")?
     .send()
     .await?;

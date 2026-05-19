@@ -5,12 +5,12 @@ aioduct supports building `multipart/form-data` request bodies for file uploads 
 ## Basic Usage
 
 ```rust,no_run
-use aioduct::{Client, Multipart};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, Multipart};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let form = Multipart::new()
         .text("username", "alice")
@@ -56,12 +56,12 @@ The `data` parameter accepts anything that implements `Into<Bytes>` — `&[u8]`,
 Combine text fields and file parts freely:
 
 ```rust,no_run
-use aioduct::{Client, Multipart};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, Multipart};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let image_data = std::fs::read("photo.jpg").unwrap();
 

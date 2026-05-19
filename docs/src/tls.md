@@ -8,33 +8,33 @@ Use the `rustls` TLS backend with the ring crypto provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 Use the same rustls backend with the AWS-LC crypto provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 Add `rustls-native-roots` alongside either provider to use the OS certificate store:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ## Quick Start
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // with_rustls() configures WebPKI root certificates automatically
-    let client = Client::<TokioRuntime>::with_rustls();
+    let client = TokioClient::with_rustls(TcpConnector);
 
     let resp = client
         .get("https://httpbin.org/get")?
@@ -68,7 +68,7 @@ This happens transparently — the client automatically selects the best protoco
 
 ### Root Certificates
 
-`Client::with_rustls()` uses [webpki-roots](https://crates.io/crates/webpki-roots), which bundles Mozilla's root certificate store directly in the binary. No system certificate store access is needed.
+`TokioClient::with_rustls()` uses [webpki-roots](https://crates.io/crates/webpki-roots), which bundles Mozilla's root certificate store directly in the binary. No system certificate store access is needed.
 
 Enable `rustls-native-roots` to build the connector from the operating system certificate store instead. This feature enables the rustls backend but does not select a crypto provider by itself; combine it with either `rustls-ring` or `rustls-aws-lc-rs`.
 
@@ -83,14 +83,13 @@ The backend/provider split keeps room for future TLS backends. A `native-tls` ba
 For advanced use cases, configure the `RustlsConnector` directly:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::tls::RustlsConnector;
 
-let connector = RustlsConnector::with_webpki_roots();
-let client = Client::<TokioRuntime>::builder()
-    .tls(connector)
-    .build();
+let client = TokioClient::builder(TcpConnector)
+    .tls(RustlsConnector::with_webpki_roots())
+    .build()?;
 ```
 
 ## Accepting Invalid Certificates
@@ -98,12 +97,12 @@ let client = Client::<TokioRuntime>::builder()
 For development and testing, you can disable certificate verification:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .danger_accept_invalid_certs()
-    .build();
+    .build()?;
 ```
 
 > **Warning**: Never use this in production. It disables all certificate verification, making the connection vulnerable to MITM attacks.
@@ -113,14 +112,14 @@ let client = Client::<TokioRuntime>::builder()
 To enforce that all requests use HTTPS:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::tls::RustlsConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .tls(RustlsConnector::with_webpki_roots())
     .https_only(true)
-    .build();
+    .build()?;
 
 // This will return an error:
 // client.get("http://example.com")?.send().await?;

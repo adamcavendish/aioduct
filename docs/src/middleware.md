@@ -6,8 +6,8 @@ aioduct supports a middleware layer that lets you intercept and modify requests 
 
 ```rust,no_run
 pub trait Middleware: Send + Sync + 'static {
-    fn on_request(&self, request: &mut http::Request<AioductBody>, uri: &Uri) { }
-    fn on_response(&self, response: &mut http::Response<AioductBody>, uri: &Uri) { }
+    fn on_request(&self, request: &mut http::Request<RequestBodySend>, uri: &Uri) { }
+    fn on_response(&self, response: &mut http::Response<RequestBodySend>, uri: &Uri) { }
 }
 ```
 
@@ -18,17 +18,17 @@ Both methods have default no-op implementations, so you only need to override wh
 For simple request-only middleware, you can pass a closure directly:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
-    .middleware(|req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
+let client = TokioClient::builder(TcpConnector)
+    .middleware(|req: &mut http::Request<aioduct::RequestBodySend>, _uri: &http::Uri| {
         req.headers_mut().insert(
             http::header::HeaderName::from_static("x-custom"),
             http::header::HeaderValue::from_static("value"),
         );
     })
-    .build();
+    .build()?;
 ```
 
 ## Using a Struct
@@ -38,23 +38,23 @@ For middleware that needs to modify responses or maintain state, implement the t
 ```rust,no_run
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use aioduct::{Client, AioductBody, Middleware};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, RequestBodySend, Middleware};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 struct RequestCounter {
     count: Arc<AtomicU64>,
 }
 
 impl Middleware for RequestCounter {
-    fn on_request(&self, _req: &mut http::Request<AioductBody>, _uri: &http::Uri) {
+    fn on_request(&self, _req: &mut http::Request<RequestBodySend>, _uri: &http::Uri) {
         self.count.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 let counter = Arc::new(AtomicU64::new(0));
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .middleware(RequestCounter { count: counter.clone() })
-    .build();
+    .build()?;
 ```
 
 ## Stacking Multiple Middleware
@@ -65,25 +65,25 @@ You can add multiple middleware layers. They execute in order:
 - **Response hooks** run last-to-first (reverse order).
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
-    .middleware(|req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
+let client = TokioClient::builder(TcpConnector)
+    .middleware(|req: &mut http::Request<aioduct::RequestBodySend>, _uri: &http::Uri| {
         // Runs first on request
         req.headers_mut().insert(
             http::header::HeaderName::from_static("x-trace-id"),
             http::header::HeaderValue::from_static("abc123"),
         );
     })
-    .middleware(|req: &mut http::Request<aioduct::AioductBody>, _uri: &http::Uri| {
+    .middleware(|req: &mut http::Request<aioduct::RequestBodySend>, _uri: &http::Uri| {
         // Runs second on request
         req.headers_mut().insert(
             http::header::HeaderName::from_static("x-auth"),
             http::header::HeaderValue::from_static("Bearer tok"),
         );
     })
-    .build();
+    .build()?;
 ```
 
 ## When Middleware Runs

@@ -2,29 +2,36 @@
 
 This page covers the main types and their methods. For full documentation, see `cargo doc --features tokio,rustls,rustls-ring,json`.
 
-## Client
+## Client Types
 
-The main entry point. Generic over a `Runtime`.
+aioduct provides ergonomic type aliases for the most common configurations:
+
+| Type Alias     | Expands To                                          | Runtime   |
+|----------------|-----------------------------------------------------|-----------|
+| `TokioClient`  | `HttpEngineSend<TokioRuntime, tokio_rt::TcpConnector>` | tokio     |
+| `SmolClient`   | `HttpEngineSend<SmolRuntime, smol_rt::TcpConnector>`   | smol      |
+| `CompioClient` | `HttpEngineLocal<CompioRuntime, compio_rt::TcpConnector>` | compio |
 
 ### Construction
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
+use std::time::Duration;
 
 // Default configuration
-let client = Client::<TokioRuntime>::new();
+let client = TokioClient::new(TcpConnector);
 
 // With rustls TLS (requires `rustls` and exactly one rustls provider)
-let client = Client::<TokioRuntime>::with_rustls();
+let client = TokioClient::with_rustls(TcpConnector);
 
-// Custom configuration
-let client = Client::<TokioRuntime>::builder()
-    .timeout(std::time::Duration::from_secs(30))
+// Custom configuration via builder
+let client = TokioClient::builder(TcpConnector)
+    .timeout(Duration::from_secs(30))
     .max_redirects(5)
-    .pool_idle_timeout(std::time::Duration::from_secs(90))
+    .pool_idle_timeout(Duration::from_secs(90))
     .pool_max_idle_per_host(10)
-    .build();
+    .build()?;
 ```
 
 ### HTTP Methods
@@ -39,9 +46,11 @@ let client = Client::<TokioRuntime>::builder()
 | `delete(url)` | Start a DELETE request       |
 | `request(method, url)` | Start a request with any HTTP method |
 
-All methods return `Result<RequestBuilder>` — the URL is parsed immediately and invalid URLs produce an error.
+All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>` for `HttpEngineLocal`) — the URL is parsed immediately and invalid URLs produce an error.
 
-### ClientBuilder Options
+### HttpEngineBuilder Options
+
+`HttpEngineBuilder<R, C>` is returned by `TokioClient::builder(connector)` (and similarly for other client types).
 
 | Method                  | Default      | Description                          |
 |-------------------------|-------------|--------------------------------------|
@@ -62,7 +71,6 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 | `no_decompression()`    | —           | Disable automatic response decompression |
 | `system_proxy()`        | —           | Read proxy from HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars |
 | `proxy_settings(ProxySettings)` | None | Fine-grained HTTP/HTTPS proxy with bypass rules |
-| `resolver(impl Resolve)` | None   | Custom DNS resolver, overrides runtime default |
 | `http2(Http2Config)`    | None   | Configure HTTP/2 parameters (window sizes, keepalive, frame size) |
 | `middleware(impl Middleware)` | None | Add a middleware layer that can inspect/modify requests and responses |
 | `retry(RetryConfig)`    | None        | Default retry policy for all requests |
@@ -70,16 +78,16 @@ All methods return `Result<RequestBuilder>` — the URL is parsed immediately an
 | `rate_limiter(RateLimiter)` | None   | Token-bucket rate limiter for outgoing requests |
 | `cache(HttpCache)`      | None        | Enable in-memory HTTP response caching |
 
-## RequestBuilder
+## RequestBuilderSend / RequestBuilderLocal
 
-Fluent builder for configuring a single request.
+Fluent builder for configuring a single request. `RequestBuilderSend` is returned by `HttpEngineSend` methods; `RequestBuilderLocal` is returned by `HttpEngineLocal` methods. Both implement `RequestBuilderExt`.
 
 ### Headers
 
 ```rust,no_run
-# use aioduct::{Client, HeaderMap};
-# use aioduct::runtime::TokioRuntime;
-# let client = Client::<TokioRuntime>::new();
+# use aioduct::{TokioClient, HeaderMap};
+# use aioduct::runtime::tokio_rt::TcpConnector;
+# let client = TokioClient::new(TcpConnector);
 // Typed header
 use http::header::{HeaderName, HeaderValue, ACCEPT};
 let rb = client.get("http://example.com").unwrap()
@@ -100,9 +108,9 @@ let rb = client.get("http://example.com").unwrap()
 ### Authentication
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
-# let client = Client::<TokioRuntime>::new();
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
+# let client = TokioClient::new(TcpConnector);
 // Bearer token
 let rb = client.get("http://example.com").unwrap()
     .bearer_auth("my-token");
@@ -115,9 +123,9 @@ let rb = client.get("http://example.com").unwrap()
 ### Body
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
-# let client = Client::<TokioRuntime>::new();
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
+# let client = TokioClient::new(TcpConnector);
 // Raw bytes
 let rb = client.post("http://example.com").unwrap()
     .body("raw body content");
@@ -134,9 +142,9 @@ let rb = client.post("http://example.com").unwrap()
 ### Query Parameters
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
-# let client = Client::<TokioRuntime>::new();
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
+# let client = TokioClient::new(TcpConnector);
 let rb = client.get("http://example.com/search").unwrap()
     .query(&[("q", "hello world"), ("page", "1")]);
 // Sends: GET /search?q=hello%20world&page=1
@@ -145,9 +153,9 @@ let rb = client.get("http://example.com/search").unwrap()
 ### Other Options
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
-# let client = Client::<TokioRuntime>::new();
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
+# let client = TokioClient::new(TcpConnector);
 use std::time::Duration;
 
 let rb = client.get("http://example.com").unwrap()
@@ -162,24 +170,26 @@ let rb = client.get("http://example.com/ws").unwrap()
 ### Sending
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = Client::<TokioRuntime>::new();
+# let client = TokioClient::new(TcpConnector);
 let resp = client.get("http://example.com")?.send().await?;
 # Ok(())
 # }
 ```
 
-## Response
+## ResponseBodySend / ResponseBodyLocal
+
+The response type returned after sending a request. `ResponseBodySend` is returned by `HttpEngineSend`; `ResponseBodyLocal` by `HttpEngineLocal`. Both implement `ResponseExt`.
 
 ### Inspecting
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = Client::<TokioRuntime>::new();
+# let client = TokioClient::new(TcpConnector);
 # let resp = client.get("http://example.com")?.send().await?;
 let status = resp.status();           // StatusCode
 let headers = resp.headers();         // &HeaderMap
@@ -193,10 +203,10 @@ let url = resp.url();                 // &Uri — final URL after redirects
 ### Error on Status
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = Client::<TokioRuntime>::new();
+# let client = TokioClient::new(TcpConnector);
 // Consume the response, returning Err for 4xx/5xx
 let resp = client.get("http://example.com")?.send().await?
     .error_for_status()?;
@@ -212,10 +222,10 @@ let text = resp.text().await?;
 ### Consuming the Body
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
 # async fn example() -> Result<(), aioduct::Error> {
-# let client = Client::<TokioRuntime>::new();
+# let client = TokioClient::new(TcpConnector);
 // As bytes
 let bytes = client.get("http://example.com")?.send().await?.bytes().await?;
 
@@ -233,6 +243,19 @@ let body = client.get("http://example.com")?.send().await?.into_body();
 # Ok(())
 # }
 ```
+
+## Portable Traits
+
+These traits provide a common interface across both `Send` and `Local` engine variants:
+
+| Trait               | Description                                              |
+|---------------------|----------------------------------------------------------|
+| `HttpClient`        | Common client interface (`get`, `post`, etc.)            |
+| `RequestBuilderExt` | Common request builder methods (`header`, `body`, etc.)  |
+| `ResponseExt`       | Common response methods (`status`, `text`, `bytes`, etc.)|
+| `ByteStreamExt`     | Streaming body helpers                                   |
+
+Use these traits to write generic code that works with any aioduct client type.
 
 ## Redirects
 
@@ -266,3 +289,11 @@ use aioduct::Error;
 // Error::Status(_)       — HTTP 4xx/5xx from error_for_status()
 // Error::Other(_)        — other boxed errors
 ```
+
+### Error Convenience Methods
+
+| Method          | Description                                      |
+|-----------------|--------------------------------------------------|
+| `is_closed()`   | Returns `true` if the error is a closed connection |
+| `is_timeout()`  | Returns `true` if the error is a timeout          |
+| `is_connect()`  | Returns `true` if the error occurred during connect |
