@@ -39,8 +39,8 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Streaming** — chunked downloads and streaming uploads without buffering
 - **Chunk download** — parallel HTTP Range requests for large files
 - **HTTP upgrade** — WebSocket and other protocol upgrades via HTTP/1.1 101 and HTTP/2 extended CONNECT (RFC 8441)
-- **Request forwarding** — proxy/gateway builder via `Client::forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, supports H2 extended CONNECT tunneling, per-forward h2c for gRPC upstreams, and adaptive h2c/h1 fallback with per-authority capability caching
-- **Blocking client** — synchronous wrapper for non-async contexts (requires tokio)
+- **Request forwarding** — proxy/gateway builder via `client.forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, supports H2 extended CONNECT tunneling, per-forward h2c for gRPC upstreams, and adaptive h2c/h1 fallback with per-authority capability caching
+- **Blocking client** — synchronous wrapper for non-async contexts (`BlockingTokioClient`, `BlockingSmolClient`, `BlockingCompioClient`)
 - **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration; DNS-over-HTTPS (`doh` feature) and DNS-over-TLS (`dot` feature)
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
 - **Connection coalescing** — reuses h2/h3 connections whose TLS certificate SANs cover the target domain (RFC 7540 §9.1.1), matching browser behavior
@@ -68,16 +68,16 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio"] }
 ```
 
 ```rust
-use aioduct::{Client, StatusCode};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, StatusCode};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let resp = client.get("http://httpbin.org/get")?
         .send()
@@ -94,23 +94,26 @@ async fn main() -> Result<(), aioduct::Error> {
 Enable the `rustls` TLS backend plus exactly one rustls crypto provider:
 
 ```toml
-aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 To use rustls with AWS-LC instead of ring, select the AWS-LC provider:
 
 ```toml
-aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 To use the OS certificate store, add `rustls-native-roots` alongside either TLS provider:
 
 ```toml
-aioduct = { version = "0.1", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ```rust
-let client = Client::<TokioRuntime>::with_rustls();
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+let client = TokioClient::with_rustls(TcpConnector);
 let resp = client.get("https://httpbin.org/get")?.send().await?;
 ```
 
@@ -196,42 +199,48 @@ let resp = client.get("https://example.com/search")?
 
 ```rust
 use std::time::Duration;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .timeout(Duration::from_secs(30))
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))
     .pool_max_idle_per_host(10)
     .tcp_keepalive(Duration::from_secs(60))
     .local_address("192.168.1.100".parse().unwrap())
-    .build();
+    .build()?;
 ```
 
 ### SOCKS5 Proxy
 
 ```rust
 use aioduct::ProxyConfig;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .proxy(ProxyConfig::socks5("socks5://proxy.example.com:1080").unwrap())
-    .build();
+    .build()?;
 
 // With authentication
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .proxy(
         ProxyConfig::socks5("socks5://proxy.example.com:1080")
             .unwrap()
             .basic_auth("user", "pass"),
     )
-    .build();
+    .build()?;
 ```
 
 ### HTTP/2 Tuning
 
 ```rust
 use aioduct::Http2Config;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
     .http2(
         Http2Config::new()
@@ -240,17 +249,17 @@ let client = Client::<TokioRuntime>::builder()
             .keep_alive_interval(Duration::from_secs(20))
             .keep_alive_while_idle(true),
     )
-    .build();
+    .build()?;
 ```
 
 ### Smol Runtime
 
 ```rust
-use aioduct::Client;
-use aioduct::runtime::SmolRuntime;
+use aioduct::SmolClient;
+use aioduct::runtime::smol_rt::TcpConnector;
 
 smol::block_on(async {
-    let client = Client::<SmolRuntime>::new();
+    let client = SmolClient::new(TcpConnector);
     let resp = client.get("http://httpbin.org/get")?
         .send()
         .await?;
@@ -262,13 +271,13 @@ smol::block_on(async {
 ### Request Forwarding (Reverse Proxy)
 
 ```rust
-use aioduct::{Client, Protocol};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, Protocol};
+use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::Full;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = Client::<TokioRuntime>::new();
+let client = TokioClient::new(TcpConnector);
 
 // Forward a request to an upstream, stripping a path prefix
 let incoming_req = http::Request::builder()
@@ -345,27 +354,58 @@ Both tools are workspace members (`publish = false`) and serve as real-world int
 ## Architecture
 
 ```
-Client<R: Runtime>
-  ├── RequestBuilder      ← fluent API (headers, body, auth, query, timeout)
-  ├── ConnectionPool<R>   ← keyed by (scheme, authority), idle eviction
-  ├── TLS (rustls)        ← async handshake, ALPN → h1/h2
-  └── Runtime trait       ← TcpStream, Sleep, spawn, resolve
-       ├── TokioRuntime
-       ├── SmolRuntime
-       └── CompioRuntime
+HttpEngineSend<R: RuntimePoll, C: ConnectorSend>  ← tokio, smol (Send futures)
+HttpEngineLocal<R: RuntimeLocal, C: ConnectorLocal>  ← compio (completion-based, !Send)
+  ├── HttpEngineCore<B>       ← shared config (pool, timeouts, middleware, etc.)
+  ├── RequestBuilderSend      ← fluent API (headers, body, auth, query, timeout)
+  ├── ConnectionPool          ← keyed by (scheme, authority), idle eviction
+  ├── TLS (rustls)            ← async handshake, ALPN → h1/h2
+  ├── ConnectorSend / ConnectorLocal  ← TCP connect + TLS
+  └── Runtime traits
+       ├── RuntimeCompletion  ← base: sleep
+       ├── RuntimePoll        ← Send spawn (tokio, smol)
+       └── RuntimeLocal       ← !Send spawn (compio)
+
+Type aliases:
+  TokioClient  = HttpEngineSend<TokioRuntime, tokio_rt::TcpConnector>
+  SmolClient   = HttpEngineSend<SmolRuntime, smol_rt::TcpConnector>
+  CompioClient = HttpEngineLocal<CompioRuntime, compio_rt::TcpConnector>
 ```
 
-The `Runtime` trait abstracts over async runtimes:
+The runtime and connector responsibilities are split into separate traits:
 
 ```rust
-pub trait Runtime: Send + Sync + 'static {
-    type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
+/// Base runtime — sleep and time
+pub trait RuntimeCompletion: Send + Sync + 'static {
     type Sleep: Future<Output = ()> + Send;
-
-    async fn connect(addr: SocketAddr) -> io::Result<Self::TcpStream>;
-    async fn resolve(host: &str, port: u16) -> io::Result<SocketAddr>;
     fn sleep(duration: Duration) -> Self::Sleep;
+}
+
+/// Send-capable runtime — spawn Send futures (tokio, smol)
+pub trait RuntimePoll: RuntimeCompletion {
     fn spawn<F: Future<Output = ()> + Send + 'static>(future: F);
+}
+
+/// !Send runtime — spawn local futures (compio)
+pub trait RuntimeLocal: RuntimeCompletion {
+    fn spawn_local<F: Future<Output = ()> + 'static>(future: F);
+}
+
+/// Send connector — TCP connect (Clone + Send + Sync)
+pub trait ConnectorSend: Clone + Send + Sync + 'static {
+    type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
+    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::TcpStream>;
+}
+
+/// !Send connector — for completion-based runtimes
+pub trait ConnectorLocal: Clone + 'static {
+    type TcpStream: hyper::rt::Read + hyper::rt::Write + Unpin + 'static;
+    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::TcpStream>;
+}
+
+/// DNS resolution (pluggable)
+pub trait Resolve: Send + Sync + 'static {
+    async fn resolve(&self, host: &str, port: u16) -> io::Result<SocketAddr>;
 }
 ```
 

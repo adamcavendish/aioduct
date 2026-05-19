@@ -7,22 +7,22 @@ aioduct supports streaming request bodies for large file uploads without bufferi
 Internally, request bodies are represented as `RequestBody`, which has two variants:
 
 - **Buffered** — an in-memory `Bytes` buffer (used by `.body()`, `.json()`, `.form()`, `.multipart()`)
-- **Streaming** — a `AioductBody` that produces chunks on demand
+- **Streaming** — a `RequestBodySend` that produces chunks on demand
 
 Buffered bodies can be retried and redirected automatically. Streaming bodies are consumed on first use — retries and 307/308 redirects that preserve the body will send an empty body on subsequent attempts.
 
 ## Basic Streaming Upload
 
 ```rust,no_run
-use aioduct::{Client, AioductBody};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, body::RequestBodySend};
+use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::{BodyExt, StreamBody};
 use futures_util::stream;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     // Create a stream of body frames
     let chunks = vec![
@@ -30,7 +30,7 @@ async fn main() -> Result<(), aioduct::Error> {
         Ok(hyper::body::Frame::data(Bytes::from("chunk 2 "))),
         Ok(hyper::body::Frame::data(Bytes::from("chunk 3"))),
     ];
-    let body: AioductBody = StreamBody::new(stream::iter(chunks)).boxed();
+    let body: RequestBodySend = StreamBody::new(stream::iter(chunks)).boxed();
 
     let resp = client
         .post("http://httpbin.org/post")?
@@ -46,17 +46,17 @@ async fn main() -> Result<(), aioduct::Error> {
 ## Streaming from a File
 
 ```rust,no_run
-use aioduct::{Client, AioductBody};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, body::RequestBodySend};
+use aioduct::runtime::tokio_rt::TcpConnector;
 use bytes::Bytes;
 use http_body_util::{BodyExt, StreamBody};
 use tokio::io::AsyncReadExt;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder()
+    let client = TokioClient::builder(TcpConnector)
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
-        .build();
+        .build()?;
 
     let file = tokio::fs::File::open("large_file.bin").await.unwrap();
     let reader = tokio::io::BufReader::new(file);
@@ -66,7 +66,7 @@ async fn main() -> Result<(), aioduct::Error> {
             .map(|bytes| hyper::body::Frame::data(bytes))
             .map_err(|e| aioduct::Error::Io(e))
     });
-    let body: AioductBody = StreamBody::new(mapped).boxed();
+    let body: RequestBodySend = StreamBody::new(mapped).boxed();
 
     let resp = client
         .put("https://httpbin.org/put")?

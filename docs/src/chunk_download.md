@@ -5,12 +5,12 @@ aioduct supports parallel chunk download for large files by splitting the downlo
 ## Basic Usage
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let result = client
         .chunk_download("http://example.com/large-file.bin")
@@ -57,13 +57,13 @@ For parallel download to activate, the server must:
 ## Example: Download and Save to File
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let result = client
         .chunk_download("http://example.com/large-file.zip")
@@ -81,6 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Notes
 
-- The `Client` is cloned (cheaply — all internal state is behind `Arc`) for each parallel task
+- The client is cloned (cheaply — all internal state is behind `Arc`) for each parallel task
 - If any chunk request fails, the entire download fails
 - The number of chunks is capped at the total file size (1-byte minimum per chunk)

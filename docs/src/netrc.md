@@ -27,13 +27,13 @@ The file is typically located at `~/.netrc` (or `%USERPROFILE%\_netrc` on Window
 The simplest approach is to add `NetrcMiddleware` to your client. It reads the netrc file once and injects Basic Auth headers for matching hosts:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::NetrcMiddleware;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .middleware(NetrcMiddleware::from_default().unwrap())
-    .build();
+    .build()?;
 
 // Requests to api.example.com automatically get Basic Auth
 let resp = client

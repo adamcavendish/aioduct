@@ -8,14 +8,14 @@ Enable the `http3` transport feature with the rustls backend and a rustls crypto
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "http3", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "http3", "rustls", "rustls-ring"] }
 ```
 
 To use AWS-LC instead of ring, select the AWS-LC rustls provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 The `http3` feature only selects the QUIC/HTTP/3 transport dependencies. Today HTTP/3 still requires the rustls backend because quinn uses rustls for QUIC TLS; choose exactly one of `rustls-ring` or `rustls-aws-lc-rs`.
@@ -29,24 +29,24 @@ There are two modes for HTTP/3:
 Force all HTTPS requests through QUIC/HTTP/3:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 // All HTTPS requests will use HTTP/3
-let client = Client::<TokioRuntime>::with_http3();
+let client = TokioClient::with_http3(TcpConnector)?;
 ```
 
 Or via the builder:
 
 ```rust,no_run
-use aioduct::Client;
+use aioduct::TokioClient;
 use aioduct::tls::RustlsConnector;
-use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .tls(RustlsConnector::with_webpki_roots())
-    .http3(true)
-    .build();
+    .http3(true)?
+    .build()?;
 ```
 
 ### Alt-Svc Auto-Upgrade Mode
@@ -54,24 +54,24 @@ let client = Client::<TokioRuntime>::builder()
 Start with HTTP/1.1 or HTTP/2 over TCP, and automatically upgrade to HTTP/3 when the server advertises it via the `Alt-Svc` header:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 // First request uses TCP; upgrades to QUIC when Alt-Svc is seen
-let client = Client::<TokioRuntime>::with_alt_svc_h3();
+let client = TokioClient::with_alt_svc_h3(TcpConnector)?;
 ```
 
 Or via the builder:
 
 ```rust,no_run
-use aioduct::Client;
+use aioduct::TokioClient;
 use aioduct::tls::RustlsConnector;
-use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .tls(RustlsConnector::with_webpki_roots())
     .alt_svc_h3(true)
-    .build();
+    .build()?;
 ```
 
 > **Important:** `.tls()` must be called before `.http3(true)` or `.alt_svc_h3(true)` when you provide a custom TLS connector because HTTP/3 reuses that rustls configuration to build the QUIC endpoint.
@@ -103,14 +103,14 @@ When HTTP/3 is **not** enabled (default), the client uses TCP with HTTP/1.1 or H
 For repeat connections to servers that support session tickets, aioduct can send the first request immediately without waiting for a full QUIC handshake:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
-    .http3(true)
+    .http3(true)?
     .h3_zero_rtt(true)
-    .build();
+    .build()?;
 ```
 
 ### Safety

@@ -13,7 +13,7 @@ aioduct can automatically decompress response bodies based on the `Content-Encod
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring", "gzip", "brotli"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-ring", "gzip", "brotli"] }
 ```
 
 ## How It Works
@@ -25,13 +25,13 @@ When any decompression feature is enabled:
 3. The `Content-Encoding` and `Content-Length` headers are removed from the decompressed response.
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
     // With the `gzip` feature enabled, gzip responses are decompressed automatically
-    let client = Client::<TokioRuntime>::with_rustls();
+    let client = TokioClient::with_rustls(TcpConnector);
 
     let text = client.get("https://httpbin.org/gzip")?
         .send().await?
@@ -46,11 +46,11 @@ async fn main() -> Result<(), aioduct::Error> {
 Use `no_decompression()` on the builder to disable all automatic decompression. The raw compressed bytes are returned as-is.
 
 ```rust,no_run
-# use aioduct::Client;
-# use aioduct::runtime::TokioRuntime;
-let client = Client::<TokioRuntime>::builder()
+# use aioduct::TokioClient;
+# use aioduct::runtime::tokio_rt::TcpConnector;
+let client = TokioClient::builder(TcpConnector)
     .no_decompression()
-    .build();
+    .build()?;
 ```
 
 ## Supported Encodings

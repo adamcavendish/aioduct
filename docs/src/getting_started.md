@@ -6,39 +6,39 @@ Add aioduct to your `Cargo.toml` with at least one runtime feature:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio"] }
 ```
 
 For HTTPS support, add the `rustls` backend and exactly one rustls crypto provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 To use rustls with AWS-LC instead, select the AWS-LC provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 For JSON serialization/deserialization:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.1", features = ["tokio", "rustls", "rustls-ring", "json"] }
+aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-ring", "json"] }
 ```
 
 ## Quick Example
 
 ```rust,no_run
-use aioduct::{Client, StatusCode};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, StatusCode};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let resp = client
         .get("http://httpbin.org/get")?
@@ -55,12 +55,12 @@ async fn main() -> Result<(), aioduct::Error> {
 ## HTTPS with rustls
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::with_rustls();
+    let client = TokioClient::with_rustls(TcpConnector);
 
     let resp = client
         .get("https://httpbin.org/get")?
@@ -77,8 +77,8 @@ async fn main() -> Result<(), aioduct::Error> {
 Requires the `json` feature.
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -95,7 +95,7 @@ struct User {
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::with_rustls();
+    let client = TokioClient::with_rustls(TcpConnector);
 
     let resp = client
         .post("https://api.example.com/users")?
@@ -115,12 +115,12 @@ async fn main() -> Result<(), aioduct::Error> {
 ## Using the smol Runtime
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::SmolRuntime;
+use aioduct::SmolClient;
+use aioduct::runtime::smol_rt::TcpConnector;
 
 fn main() -> Result<(), aioduct::Error> {
     smol::block_on(async {
-        let client = Client::<SmolRuntime>::new();
+        let client = SmolClient::new(TcpConnector);
 
         let resp = client
             .get("http://httpbin.org/get")?
@@ -137,13 +137,13 @@ fn main() -> Result<(), aioduct::Error> {
 
 ```rust,no_run
 use std::time::Duration;
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .timeout(Duration::from_secs(30))
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))
     .pool_max_idle_per_host(10)
-    .build();
+    .build()?;
 ```

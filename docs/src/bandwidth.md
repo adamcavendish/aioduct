@@ -7,12 +7,12 @@ aioduct provides a token-bucket bandwidth limiter for throttling download speed.
 Set a maximum download speed at the client level:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .max_download_speed(1_048_576) // 1 MB/s
-    .build();
+    .build()?;
 
 let resp = client
     .get("https://example.com/large-file.tar.gz")?

@@ -4,7 +4,7 @@ aioduct includes [criterion](https://github.com/bheisler/criterion.rs) benchmark
 
 | Crate | Version | Description |
 |-------|---------|-------------|
-| **aioduct** | 0.1.0 | This crate — hyper 1.x, no hyper-util, async-native |
+| **aioduct** | 0.2.0 | This crate — hyper 1.x, no hyper-util, async-native |
 | **reqwest** | 0.12 | The most popular Rust HTTP client, built on hyper + hyper-util + tower |
 | **hyper-util** | 0.1 | hyper's official high-level client (`legacy::Client`), minimal wrapper |
 | **isahc** | 1.8 | Built on libcurl via curl-sys, independent HTTP stack |

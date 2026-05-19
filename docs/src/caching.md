@@ -5,13 +5,13 @@ aioduct includes an in-memory HTTP cache that respects `Cache-Control` directive
 ## Enabling the Cache
 
 ```rust,no_run
-use aioduct::{Client, HttpCache};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, HttpCache};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 let cache = HttpCache::new();
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .cache(cache)
-    .build();
+    .build()?;
 ```
 
 ## Cache-Control Directives
@@ -102,8 +102,8 @@ let cache2 = cache.clone(); // shares the same data
 Implement the `CacheStore` trait to plug in a custom backend (moka, foyer, Redis, etc.):
 
 ```rust,no_run
-use aioduct::{CacheStore, CacheEntry, HttpCache, Client};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{CacheStore, CacheEntry, HttpCache, TokioClient};
+use aioduct::runtime::tokio_rt::TcpConnector;
 use http::{Method, Uri};
 
 struct MyCacheStore { /* ... */ }
@@ -129,9 +129,9 @@ impl CacheStore for MyCacheStore {
 }
 
 let cache = HttpCache::with_store(MyCacheStore { /* ... */ });
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .cache(cache)
-    .build();
+    .build()?;
 ```
 
 The built-in `InMemoryCacheStore` is available if you need a reference implementation or want to wrap it with additional behavior (metrics, logging, etc.).

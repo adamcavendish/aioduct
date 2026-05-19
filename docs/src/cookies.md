@@ -7,13 +7,13 @@ aioduct supports automatic cookie management through a `CookieJar`. When enabled
 Create a `CookieJar` and pass it to the client builder:
 
 ```rust,no_run
-use aioduct::{Client, CookieJar};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, CookieJar};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 let jar = CookieJar::new();
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .cookie_jar(jar)
-    .build();
+    .build()?;
 ```
 
 ## How It Works
@@ -29,14 +29,14 @@ let client = Client::<TokioRuntime>::builder()
 ## Example: Session-Based API
 
 ```rust,no_run
-use aioduct::{Client, CookieJar};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, CookieJar};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::builder()
+    let client = TokioClient::builder(TcpConnector)
         .cookie_jar(CookieJar::new())
-        .build();
+        .build()?;
 
     // Login — server sets session cookie
     client

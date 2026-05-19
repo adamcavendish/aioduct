@@ -7,14 +7,14 @@ aioduct supports automatic HTTP-to-HTTPS upgrade via the `Strict-Transport-Secur
 Create an `HstsStore` and pass it to the client builder:
 
 ```rust,no_run
-use aioduct::{Client, HstsStore};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, HstsStore};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 let hsts = HstsStore::new();
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
     .hsts(hsts)
-    .build();
+    .build()?;
 ```
 
 ## How It Works

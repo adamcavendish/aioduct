@@ -7,11 +7,11 @@ aioduct can parse `Link` headers (RFC 8288) from HTTP responses. Link headers ar
 Use `Response::links()` to extract all Link header values:
 
 ```rust,no_run
-use aioduct::{Client, Link};
-use aioduct::runtime::TokioRuntime;
+use aioduct::{TokioClient, Link};
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 # async fn example() -> Result<(), aioduct::Error> {
-let client = Client::<TokioRuntime>::new();
+let client = TokioClient::new(TcpConnector);
 let resp = client.get("https://api.example.com/items?page=1")?
     .send()
     .await?;

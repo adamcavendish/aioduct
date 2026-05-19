@@ -5,12 +5,12 @@ aioduct has built-in support for consuming [Server-Sent Events](https://develope
 ## Basic Usage
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let resp = client
         .get("http://example.com/events")?
@@ -74,12 +74,12 @@ data: actual event
 ## Example: Streaming LLM API
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::with_rustls();
+    let client = TokioClient::with_rustls(TcpConnector);
 
     let resp = client
         .post("https://api.example.com/v1/chat/completions")?

@@ -7,12 +7,12 @@ aioduct supports streaming response bodies chunk-by-chunk, avoiding the need to 
 Convert a response into a `BodyStream` that yields `Bytes` chunks:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let resp = client
         .get("http://example.com/large-file.bin")?
@@ -37,13 +37,13 @@ async fn main() -> Result<(), aioduct::Error> {
 Combine `BodyStream` with `tokio::fs::File` to download directly to disk:
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::<TokioRuntime>::new();
+    let client = TokioClient::new(TcpConnector);
 
     let resp = client
         .get("http://example.com/large-file.bin")?

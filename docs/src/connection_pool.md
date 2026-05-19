@@ -33,13 +33,13 @@ When the `http3` feature is enabled with the rustls backend and one rustls provi
 
 ```rust,no_run
 use std::time::Duration;
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .pool_idle_timeout(Duration::from_secs(90))  // default: 90s
     .pool_max_idle_per_host(10)                   // default: 10
-    .build();
+    .build()?;
 ```
 
 ### Options
@@ -66,13 +66,13 @@ When enabled (default), aioduct reuses h2/h3 connections for different hostnames
 ### Configuration
 
 ```rust,no_run
-use aioduct::Client;
-use aioduct::runtime::TokioRuntime;
+use aioduct::TokioClient;
+use aioduct::runtime::tokio_rt::TcpConnector;
 
 // Enabled by default; disable if needed:
-let client = Client::<TokioRuntime>::builder()
+let client = TokioClient::builder(TcpConnector)
     .connection_coalescing(false)
-    .build();
+    .build()?;
 ```
 
 ### Requirements

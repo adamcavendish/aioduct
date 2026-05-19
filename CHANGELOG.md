@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.1] - 2026-05-19
+
+### Breaking Changes
+- Renamed `Client<R>` → `HttpEngineSend<R, C>` (poll-based runtimes) and `HttpEngineLocal<R, C>` (completion-based runtimes)
+- Monolithic `Runtime` trait split into `RuntimeCompletion`, `RuntimePoll`, `RuntimeLocal`
+- Networking extracted from runtime trait into `ConnectorSend` / `ConnectorLocal` traits — connector is now passed at construction time
+- `RequestBuilder` split into `RequestBuilderSend` and `RequestBuilderLocal`
+- `ResponseBody` split into `ResponseBodySend` and `ResponseBodyLocal`
+- WASM/WASI response body methods are now async and fallible (lazy streaming instead of eager buffering)
+- `ResponseExt` trait gains `type ByteStream`, `json()`, `into_bytes_stream()`
+- `Connector` trait renamed to `ConnectorLocal`
+
+### Added
+- Type aliases: `TokioClient`, `SmolClient`, `CompioClient`, `WasmClient`, `WasiClient`
+- Engine aliases: `TokioEngine`, `SmolEngine`, `CompioEngine`
+- Blocking wrappers: `BlockingTokioClient`, `BlockingSmolClient`, `BlockingCompioClient`
+- Portable traits: `HttpClient`, `RequestBuilderExt`, `ResponseExt`, `ByteStreamExt`
+- WASM/WASI lazy body streaming with `WasmBodyStream` and `WasiBodyStream`
+- Deferred H1 connection pool check-in — connections return to pool only after response body is fully consumed
+- H2 multiplex-wait path — concurrent requests to the same origin wait for in-flight H2 handshake instead of opening redundant connections
+- AdaptiveH2c fallback — probes h2c, falls back to h1 if rejected, caches result per origin
+- `pool_max_idle_per_host(0)` disables connection pooling entirely
+- Happy Eyeballs (RFC 8305) — parallel dual-stack connection racing
+- `HttpClient` trait for runtime-agnostic client code
+- `tower` feature gate with `connector_layer` / `connector_layer_local` for Tower service integration
+
+### Fixed
+- Pool checkout returns stale connections when idle timeout expired
+- H2 multiplex clones not evicted when underlying transport breaks
+- Connection `upgrade()` handle consumed before caller can use it
+- `Connection: close` header not respected — connection was returned to pool
+- TLS H1 upgrade path did not apply socket config
+- Pool reaper panic when spawned outside async runtime context
+- Decompression busy-spin consuming 100% CPU on slow streams
+- SOCKS proxy timeout not propagated to handshake phase
+- Middleware body propagation losing streamed chunks
+- Cookie and cache correctness issues (#136, #139, #152, #123)
+- H3 body streaming and trailer handling (#130, #125)
+- WASM timeout leak on dropped futures (#173)
+- Cache body buffering bypassing `read_timeout` and `bandwidth_limiter` (#169)
+- `bytes_sent` metric reporting 0 for streaming request bodies (#184)
+- Stale connection retry now preserves middleware-injected headers (#207)
+- AdaptiveH2c fallback missing socket config and wrong `remote_addr` (#208, #209)
+- Chunk download rejecting valid 200 OK responses
+- Numerous additional correctness and security fixes (batches 2–10)
+
 ## [0.1.10] - 2026-05-11
 
 ### Fixed
