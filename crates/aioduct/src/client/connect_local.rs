@@ -306,12 +306,27 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             }
             _ => {
                 let (sender, conn) = hyper::client::conn::http1::handshake(tls_stream).await?;
+
+                let handle = crate::upgrade::UpgradeHandleLocal::new();
+                let handle_clone = handle.clone();
+
                 R::spawn_local(async move {
-                    let _ = conn.await;
+                    match conn.without_shutdown().await {
+                        Ok(parts) => {
+                            let upgraded =
+                                crate::upgrade::UpgradedLocal::new(parts.io, parts.read_buf);
+                            handle_clone.fulfill(upgraded);
+                        }
+                        Err(_) => {
+                            handle_clone.fail();
+                        }
+                    }
                 });
+
                 let mut pooled = PooledConnection::new_h1(sender);
                 pooled.tls_info = Some(tls_info);
                 pooled.tls_handshake_duration = Some(tls_duration);
+                pooled.upgrade_handle_local = Some(handle);
                 Ok(pooled)
             }
         }

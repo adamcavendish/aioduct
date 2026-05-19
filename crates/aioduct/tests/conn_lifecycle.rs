@@ -1666,3 +1666,150 @@ async fn h2_multiplex_wait_timeout_mark_stays_set() {
         "expected 1 TCP connection (all others should multiplex via wait), got {conns}"
     );
 }
+
+/// Deferred check-in timeout: when a response body is dropped without being
+/// consumed, the background `checkin_when_ready` task should time out (using
+/// pool idle timeout) and drop the connection rather than leaking it forever.
+///
+/// After the timeout expires, a new request should open a fresh connection
+/// since the old one was dropped (not returned to pool).
+#[tokio::test]
+async fn deferred_checkin_times_out_on_dropped_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accept_count = Arc::new(AtomicU32::new(0));
+    let accept_count2 = accept_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            accept_count2.fetch_add(1, Ordering::SeqCst);
+
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if !buf[..n].starts_with(b"GET") {
+                        break;
+                    }
+
+                    let headers =
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: keep-alive\r\n\r\n";
+                    if stream.write_all(headers).await.is_err() {
+                        break;
+                    }
+                    let _ = stream.flush().await;
+                    // Send only partial body — client will never see full body
+                    if stream.write_all(b"partial").await.is_err() {
+                        break;
+                    }
+                    let _ = stream.flush().await;
+                    // Hold connection open (don't send remaining bytes)
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            });
+        }
+    });
+
+    let idle_timeout = Duration::from_millis(200);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .pool_idle_timeout(idle_timeout)
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+
+    // Send request and immediately drop the response (body not consumed).
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    drop(resp);
+
+    // Wait for the deferred check-in to time out.
+    tokio::time::sleep(idle_timeout + Duration::from_millis(100)).await;
+
+    // Second request: should open a new connection because the first was
+    // dropped by the timeout (not returned to pool).
+    let resp2 = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp2.status(), 200);
+    drop(resp2);
+
+    assert_eq!(
+        accept_count.load(Ordering::SeqCst),
+        2,
+        "dropping body without consumption should cause deferred check-in to \
+         time out and drop the connection, requiring a new one for the next request"
+    );
+}
+
+/// Pool reaper: idle connections should be evicted after idle_timeout even
+/// without any new checkout attempts triggering inline eviction.
+#[tokio::test]
+async fn pool_reaper_evicts_idle_connections() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accept_count = Arc::new(AtomicU32::new(0));
+    let accept_count2 = accept_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            accept_count2.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if !buf[..n].starts_with(b"GET") {
+                        break;
+                    }
+                    let resp =
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok";
+                    if stream.write_all(resp).await.is_err() {
+                        break;
+                    }
+                    let _ = stream.flush().await;
+                }
+            });
+        }
+    });
+
+    let idle_timeout = Duration::from_millis(150);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder(TcpConnector)
+        .pool_idle_timeout(idle_timeout)
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+
+    // First request: opens connection, body consumed, connection returned to pool.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+    // Wait for deferred check-in.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(accept_count.load(Ordering::SeqCst), 1);
+
+    // Wait longer than idle_timeout so the reaper evicts the connection.
+    tokio::time::sleep(idle_timeout + Duration::from_millis(100)).await;
+
+    // Second request: should need a new connection since the reaper removed it.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    assert_eq!(
+        accept_count.load(Ordering::SeqCst),
+        2,
+        "pool reaper should have evicted idle connection, requiring a new one"
+    );
+}

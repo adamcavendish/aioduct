@@ -120,6 +120,14 @@ impl<B: 'static> ConnectionPool<B> {
         }
     }
 
+    /// Returns the configured idle timeout for this pool.
+    pub(crate) fn idle_timeout(&self) -> Duration {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .idle_timeout
+    }
+
     /// Retrieve an idle, ready connection for the given key.
     ///
     /// Uses LIFO ordering (most recently returned first) and checks readiness
@@ -299,7 +307,6 @@ impl<B: 'static> ConnectionPool<B> {
         found_conn
     }
 
-    #[allow(dead_code)]
     pub(crate) fn ensure_reaper<R: RuntimePoll>(&self)
     where
         B: Send,
@@ -343,7 +350,6 @@ impl<B: 'static> ConnectionPool<B> {
     }
 
     /// Ensure the reaper is running on a local (single-threaded) runtime.
-    #[allow(dead_code)]
     pub(crate) fn ensure_reaper_local<R: crate::runtime::RuntimeLocal>(&self) {
         if !self.reaper_spawned.swap(true, Ordering::AcqRel) {
             self.spawn_reaper_local::<R>();
