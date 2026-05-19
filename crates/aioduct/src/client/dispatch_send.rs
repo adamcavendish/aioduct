@@ -162,7 +162,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     ));
                     self.core
                         .attach_observer(&mut resp, &req_method, original_uri);
-                    if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                    if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
                         self.core.checkin_when_ready::<R, _, _>(
                             pool_key,
                             conn,
@@ -182,6 +182,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         error = %e,
                         "connection.pool.stale — retrying on fresh connection"
                     );
+                    if conn.is_h2_or_h3() {
+                        self.core.pool.evict(&pool_key);
+                    }
                     self.core.fire_connection_metrics(&conn, true);
                     self.core.notify(
                         &req_method,
@@ -309,7 +312,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         ));
                         self.core
                             .attach_observer(&mut resp, &req_method, original_uri);
-                        if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                        if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
                             self.core.checkin_when_ready::<R, _, _>(
                                 pool_key,
                                 conn,
@@ -329,6 +332,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             error = %e,
                             "connection.pool.coalesced.stale — retrying on fresh connection"
                         );
+                        if conn.is_h2_or_h3() {
+                            self.core.pool.evict(&pool_key);
+                        }
                         self.core.fire_connection_metrics(&conn, true);
                         self.core.notify(
                             &req_method,
@@ -508,7 +514,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 ));
                 self.core
                     .attach_observer(&mut resp, &req_method, original_uri);
-                if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
                     self.core.checkin_when_ready::<R, _, _>(
                         pool_key,
                         pooled,
@@ -605,7 +611,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             ));
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
-                            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                            if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
                                 self.core.checkin_when_ready::<R, _, _>(
                                     pool_key,
                                     conn,
@@ -627,6 +633,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 error = %e,
                                 "connection.pool.stale (h2 wait path) — retrying on fresh connection"
                             );
+                            if conn.is_h2_or_h3() {
+                                self.core.pool.evict(&pool_key);
+                            }
                             self.core.fire_connection_metrics(&conn, true);
                             self.core.notify(
                                 &req_method,
@@ -1046,7 +1055,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         ));
         self.core
             .attach_observer(&mut resp, &req_method, original_uri);
-        if !self.core.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
+        if !self.core.no_connection_reuse
+            && !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp)
         {
             self.core.checkin_when_ready::<R, _, _>(
                 pool_key,

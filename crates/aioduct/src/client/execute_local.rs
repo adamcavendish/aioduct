@@ -393,7 +393,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     ));
                     self.core
                         .attach_observer(&mut resp, &req_method, original_uri);
-                    if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                    if let Some(handle) = conn.upgrade_handle_local.take() {
+                        resp.extensions_mut().insert(handle);
+                    }
+                    if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp) {
                         self.core.checkin_when_ready_local::<R, _, _>(
                             pool_key,
                             conn,
@@ -407,6 +410,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     if saved_parts.is_some()
                         && HttpEngineCore::<RequestBodyLocal>::is_stale_connection_error(&e) =>
                 {
+                    if conn.is_h2_or_h3() {
+                        self.core.pool.evict(&pool_key);
+                    }
                     self.core.fire_connection_metrics(&conn, true);
                     // saved_parts is guaranteed Some by the match arm guard.
                     let Some((method, uri, headers, version)) = saved_parts else {
@@ -513,7 +519,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             ));
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
-                            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+                            if let Some(handle) = conn.upgrade_handle_local.take() {
+                                resp.extensions_mut().insert(handle);
+                            }
+                            if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp) {
                                 self.core
                                     .checkin_when_ready_local::<R, _, _>(pool_key, conn, R::spawn_local, R::sleep(self.core.pool.idle_timeout()));
                             }
@@ -525,6 +534,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                     &e,
                                 ) =>
                         {
+                            if conn.is_h2_or_h3() {
+                                self.core.pool.evict(&pool_key);
+                            }
                             self.core.fire_connection_metrics(&conn, true);
                             let Some((method, uri, headers, version)) = saved_parts else {
                                 return Err(e);
@@ -793,7 +805,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         if let Some(handle) = pooled.upgrade_handle_local.take() {
             resp.extensions_mut().insert(handle);
         }
-        if !self.core.no_connection_reuse && resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
+        if !self.core.no_connection_reuse
+            && !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp)
         {
             self.core.checkin_when_ready_local::<R, _, _>(
                 pool_key,

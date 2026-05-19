@@ -194,6 +194,17 @@ impl<B: 'static> ConnectionPool<B> {
         });
     }
 
+    /// Evict all idle connections for a pool key.
+    ///
+    /// Used after detecting a stale H2/H3 connection to ensure multiplexed
+    /// clones sharing the same broken transport are not re-issued on retry.
+    pub(crate) fn evict(&self, key: &PoolKey) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        inner.idle.remove(key);
+    }
+
     /// Returns true if there is an in-progress H2/H3 connection for this key.
     /// If so, returns true to let the caller wait and retry checkout.
     /// If not, marks the key as connecting and returns false.
@@ -273,9 +284,11 @@ impl<B: 'static> ConnectionPool<B> {
                     break;
                 }
 
-                if let Some(entry) = queue.remove(i)
-                    && entry.connection.is_ready()
-                {
+                if !queue[i].connection.is_ready() {
+                    continue;
+                }
+
+                if let Some(entry) = queue.remove(i) {
                     if queue.is_empty() {
                         found_key = Some(key.clone());
                     }
