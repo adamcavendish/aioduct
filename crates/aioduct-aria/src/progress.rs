@@ -1,14 +1,22 @@
+use std::io::IsTerminal;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-use crate::engine::DownloadResult;
+pub struct DownloadResult {
+    pub output: PathBuf,
+    pub total_size: u64,
+    pub error: Option<String>,
+}
 
 pub struct ProgressTracker {
     multi: MultiProgress,
     quiet: bool,
+    is_tty: bool,
+    use_tui: bool,
     start: Instant,
 }
 
@@ -20,29 +28,49 @@ pub struct ProgressHandle {
 }
 
 impl ProgressTracker {
-    pub fn new(quiet: bool) -> Self {
+    pub fn new(quiet: bool, plain: bool) -> Self {
+        let is_tty = std::io::stderr().is_terminal();
+        let use_tui = is_tty && !plain;
         Self {
             multi: MultiProgress::new(),
             quiet,
+            is_tty,
+            use_tui,
             start: Instant::now(),
         }
     }
 
     pub fn add_download(&self, _url: &str, filename: &str) -> ProgressHandle {
-        let bar = if self.quiet {
+        let bar = if self.quiet || self.use_tui {
             ProgressBar::hidden()
-        } else {
+        } else if self.is_tty {
             let bar = self.multi.add(ProgressBar::new(0));
             bar.set_style(
                 ProgressStyle::default_bar()
                     .template(
-                        "{spinner:.green} [{bar:30.cyan/dim}] {bytes}/{total_bytes} ({bytes_per_sec}) ETA {eta} | {msg}",
+                        "{spinner:.green} [{bar:30.cyan/blue}] \
+                         {bytes:.green}/{total_bytes:.green} \
+                         ({percent:.bold.white}%) \
+                         {binary_bytes_per_sec:.yellow} \
+                         ETA {eta:.cyan} \
+                         | {msg:.magenta}",
                     )
                     .unwrap()
-                    .progress_chars("=>-"),
+                    .progress_chars("━╸─"),
             );
             bar.set_message(truncate_str(filename, 30).to_string());
             bar.enable_steady_tick(std::time::Duration::from_millis(100));
+            bar
+        } else {
+            // Non-TTY: use simple line-based output (like aria2 with --console-log-level=notice)
+            let bar = self.multi.add(ProgressBar::new(0));
+            bar.set_style(
+                ProgressStyle::default_bar()
+                    .template("[{elapsed_precise}] {bytes}/{total_bytes} ({percent}%) {binary_bytes_per_sec} | {msg}")
+                    .unwrap(),
+            );
+            bar.set_message(truncate_str(filename, 40).to_string());
+            bar.enable_steady_tick(std::time::Duration::from_secs(1));
             bar
         };
 
@@ -63,6 +91,72 @@ impl ProgressTracker {
         let err_count = results.iter().filter(|r| r.error.is_some()).count();
         let total_bytes: u64 = results.iter().map(|r| r.total_size).sum();
 
+        if self.is_tty {
+            self.print_summary_color(results, elapsed, ok_count, err_count, total_bytes);
+        } else {
+            self.print_summary_plain(results, elapsed, ok_count, err_count, total_bytes);
+        }
+    }
+
+    fn print_summary_color(
+        &self,
+        results: &[DownloadResult],
+        elapsed: std::time::Duration,
+        ok_count: usize,
+        err_count: usize,
+        total_bytes: u64,
+    ) {
+        println!();
+        println!("\x1b[1;35mDownload Results:\x1b[0m");
+        println!(
+            "\x1b[36m{:<6}\x1b[0m|\x1b[36m{:<5}\x1b[0m|\x1b[36m{:>12}\x1b[0m|path/URI",
+            "gid", "stat", "avg speed"
+        );
+        println!("\x1b[90m======+=====+============+==============================\x1b[0m");
+
+        for (i, r) in results.iter().enumerate() {
+            let gid = format!("{:04x}", i);
+            let (stat, stat_color) = if r.error.is_some() {
+                ("ERR", "\x1b[1;31m")
+            } else {
+                ("OK", "\x1b[1;32m")
+            };
+            let speed = if elapsed.as_secs() > 0 && r.error.is_none() {
+                format_speed(r.total_size as f64 / elapsed.as_secs_f64())
+            } else {
+                "-".to_string()
+            };
+            let path = r.output.display().to_string();
+            println!(
+                " \x1b[36m{gid:>4}\x1b[0m|{stat_color} {stat:>3}\x1b[0m|\x1b[33m{speed:>11}\x1b[0m | {path}"
+            );
+            if let Some(ref err) = r.error {
+                println!("      |     |            |  \x1b[31mError: {err}\x1b[0m");
+            }
+        }
+
+        println!();
+        let status_color = if err_count > 0 {
+            "\x1b[1;33m"
+        } else {
+            "\x1b[1;32m"
+        };
+        println!(
+            "{status_color}Status: {ok_count} completed, {err_count} failed\x1b[0m | \
+             Total: \x1b[1;36m{}\x1b[0m | Time: \x1b[1m{:.1}s\x1b[0m",
+            format_size(total_bytes),
+            elapsed.as_secs_f64(),
+        );
+    }
+
+    fn print_summary_plain(
+        &self,
+        results: &[DownloadResult],
+        elapsed: std::time::Duration,
+        ok_count: usize,
+        err_count: usize,
+        total_bytes: u64,
+    ) {
         println!();
         println!("Download Results:");
         println!("{:<6}|{:<5}|{:>12}|path/URI", "gid", "stat", "avg speed");
@@ -105,13 +199,18 @@ impl ProgressHandle {
         self.bar.set_position(bytes);
     }
 
+    pub fn add_downloaded(&self, bytes: u64) {
+        let prev = self.downloaded.fetch_add(bytes, Ordering::Relaxed);
+        self.bar.set_position(prev + bytes);
+    }
+
     pub fn finish_ok(&self) {
-        self.bar.finish_with_message("done");
+        self.bar.finish_with_message("✓ done");
     }
 
     pub fn finish_err(&self, msg: &str) {
         self.bar
-            .finish_with_message(format!("ERR: {}", truncate_str(msg, 40)));
+            .finish_with_message(format!("✗ {}", truncate_str(msg, 40)));
     }
 }
 
