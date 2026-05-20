@@ -28,6 +28,7 @@ crossterm.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "signal"] }
 indicatif = { workspace = true, features = ["tokio"] }
 http.workspace = true
+quick-xml.workspace = true
 ratatui.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

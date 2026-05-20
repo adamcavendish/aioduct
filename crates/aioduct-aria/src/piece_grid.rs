@@ -170,7 +170,7 @@ impl AppState {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum PieceState {
+pub enum PieceState {
     Pending,
     InFlight,
     Complete,
@@ -182,6 +182,7 @@ struct FrameData {
     remaining: u32,
     piece_length: u32,
     total_length: u64,
+    downloaded_bytes: u64,
     speed_bps: f64,
     filename: String,
     num_workers: usize,
@@ -255,6 +256,7 @@ async fn run_tui(
             remaining: storage.remaining_pieces(),
             piece_length: storage.piece_length(),
             total_length,
+            downloaded_bytes: 0,
             speed_bps: 0.0,
             filename: filename.clone(),
             num_workers,
@@ -271,8 +273,9 @@ async fn run_tui(
                 .filter(|w| w.current_piece.is_some())
                 .map(|w| w.downloaded_bytes())
                 .sum();
-            completed_bytes + inflight_bytes
+            (completed_bytes + inflight_bytes).min(total_length)
         };
+        data.downloaded_bytes = current_downloaded;
         app.update_live_speed(current_downloaded);
         app.update_worker_speeds(&worker_states);
 
@@ -340,7 +343,7 @@ fn restore_terminal() -> io::Result<()> {
     Ok(())
 }
 
-fn collect_piece_states(storage: &PieceStorage) -> Vec<PieceState> {
+pub fn collect_piece_states(storage: &PieceStorage) -> Vec<PieceState> {
     let total = storage.total_pieces();
     (0..total)
         .map(|i| {
@@ -353,6 +356,187 @@ fn collect_piece_states(storage: &PieceStorage) -> Vec<PieceState> {
             }
         })
         .collect()
+}
+
+pub struct HeatMapParams<'a> {
+    pub pieces: &'a [PieceState],
+    pub total_pieces: u32,
+    pub piece_length: u32,
+    pub scroll_offset: u16,
+    pub frame_count: u64,
+}
+
+pub fn render_overview_bar(
+    f: &mut Frame,
+    area: Rect,
+    params: &HeatMapParams,
+    worker_states: &SharedWorkerStates,
+) {
+    if area.width == 0 || params.total_pieces == 0 {
+        return;
+    }
+
+    let workers = worker_states.lock().unwrap();
+    let width = area.width as u32;
+    let mut spans: Vec<Span> = Vec::with_capacity(width as usize);
+
+    for col in 0..width {
+        let start = (col as u64 * params.total_pieces as u64) / width as u64;
+        let end = ((col as u64 + 1) * params.total_pieces as u64) / width as u64;
+
+        let mut complete = 0u32;
+        let mut inflight = 0u32;
+        let mut total = 0u32;
+        let mut max_fill: f64 = 0.0;
+
+        for idx in start..end {
+            if (idx as u32) < params.total_pieces {
+                total += 1;
+                match params.pieces[idx as usize] {
+                    PieceState::Complete => complete += 1,
+                    PieceState::InFlight => {
+                        inflight += 1;
+                        for w in workers.iter() {
+                            if w.current_piece == Some(idx as u32) {
+                                let ratio =
+                                    (w.downloaded_bytes() as f64 / w.piece_length as f64).min(1.0);
+                                max_fill = max_fill.max(ratio);
+                            }
+                        }
+                    }
+                    PieceState::Pending => {}
+                }
+            }
+        }
+
+        let color = if total == 0 {
+            Color::Rgb(45, 50, 65)
+        } else if complete == total {
+            Color::Rgb(40, 200, 80)
+        } else if inflight > 0 {
+            let g = 140 + (60.0 * max_fill) as u8;
+            Color::Rgb(220, g, 0)
+        } else if complete > 0 {
+            Color::Rgb(0, 128, 0)
+        } else {
+            Color::Rgb(45, 50, 65)
+        };
+
+        spans.push(Span::styled("▮", Style::default().fg(color)));
+    }
+
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+pub fn render_heat_map(
+    f: &mut Frame,
+    area: Rect,
+    params: &HeatMapParams,
+    worker_states: &SharedWorkerStates,
+) {
+    if area.width == 0 || area.height == 0 || params.total_pieces == 0 {
+        return;
+    }
+
+    let total = params.total_pieces as usize;
+
+    let margin_left: u16 = 6;
+    let usable_w = area.width.saturating_sub(margin_left) as usize;
+    let usable_h = area.height as usize;
+
+    let (cell_w, cell_h, cols) = compute_cell_size(total, usable_w, usable_h);
+    let gap_y: u16 = if cell_h > 2 { 1 } else { 0 };
+    let stride_y = cell_h + gap_y as usize;
+    let rows_needed = total.div_ceil(cols);
+
+    let visible_grid_rows = usable_h.checked_div(stride_y).unwrap_or(1);
+    let max_scroll = rows_needed.saturating_sub(visible_grid_rows) as u16;
+    let scroll = params.scroll_offset.min(max_scroll);
+
+    let states = worker_states.lock().unwrap();
+    let buf = f.buffer_mut();
+
+    for grid_row in 0..visible_grid_rows {
+        let actual_row = grid_row + scroll as usize;
+        if actual_row >= rows_needed {
+            break;
+        }
+
+        let byte_offset = actual_row as u64 * cols as u64 * params.piece_length as u64;
+        let label = format_offset_label(byte_offset);
+        let label_y = area.y + (grid_row * stride_y) as u16;
+        if label_y < area.y + area.height {
+            let label_style = Style::default().fg(Color::DarkGray);
+            for (i, ch) in label.chars().enumerate() {
+                let x = area.x + i as u16;
+                if x < area.x + margin_left
+                    && let Some(cell) = buf.cell_mut((x, label_y))
+                {
+                    cell.set_char(ch);
+                    cell.set_style(label_style);
+                }
+            }
+        }
+
+        for col in 0..cols {
+            let piece_idx = actual_row * cols + col;
+            if piece_idx >= total {
+                break;
+            }
+
+            let state = params.pieces[piece_idx];
+
+            let fill_ratio = match state {
+                PieceState::Complete => 1.0,
+                PieceState::InFlight => states
+                    .iter()
+                    .find(|w| w.current_piece == Some(piece_idx as u32))
+                    .map(|w| {
+                        if w.piece_length > 0 {
+                            (w.downloaded_bytes() as f64 / w.piece_length as f64).min(1.0)
+                        } else {
+                            0.0
+                        }
+                    })
+                    .unwrap_or(0.0),
+                PieceState::Pending => 0.0,
+            };
+
+            let bg_color = progress_color(fill_ratio, state, params.frame_count, piece_idx);
+            let border_color = dim_color(bg_color, 0.4);
+
+            let cell_x = area.x + margin_left + (col * cell_w) as u16;
+            let cell_y = area.y + (grid_row * stride_y) as u16;
+
+            for dy in 0..cell_h as u16 {
+                for dx in 0..cell_w as u16 {
+                    let x = cell_x + dx;
+                    let y = cell_y + dy;
+                    if x < area.x + area.width
+                        && y < area.y + area.height
+                        && let Some(cell) = buf.cell_mut((x, y))
+                    {
+                        let is_border = dx == cell_w as u16 - 1 && cell_w > 2;
+                        let color = if is_border { border_color } else { bg_color };
+                        cell.set_char(' ');
+                        cell.set_style(Style::default().bg(color));
+                    }
+                }
+            }
+        }
+    }
+
+    if rows_needed > visible_grid_rows {
+        let scroll_area = Rect {
+            x: area.x + area.width - 1,
+            y: area.y,
+            width: 1,
+            height: area.height,
+        };
+        let mut scrollbar_state = ScrollbarState::new(rows_needed).position(scroll as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        f.render_stateful_widget(scrollbar, scroll_area, &mut scrollbar_state);
+    }
 }
 
 // ─── Main UI Layout ─────────────────────────────────────────────────────────
@@ -394,14 +578,12 @@ fn draw_ui(
 // ─── Header ─────────────────────────────────────────────────────────────────
 
 fn draw_header(f: &mut Frame, area: Rect, data: &FrameData, app: &AppState) {
-    let pct = if data.total_pieces > 0 {
-        data.completed as f64 / data.total_pieces as f64
+    let downloaded = data.downloaded_bytes;
+    let pct = if data.total_length > 0 {
+        downloaded as f64 / data.total_length as f64
     } else {
         0.0
     };
-
-    let downloaded = data.completed as u64 * data.piece_length as u64;
-    let downloaded = downloaded.min(data.total_length);
 
     // Line 1: app name + filename + size + inline progress + percent + help hint
     let progress_bar_width = 20usize;
@@ -497,16 +679,22 @@ fn draw_pieces_tab(
         ])
         .split(area);
 
-    draw_overview_bar(f, chunks[0], data);
+    draw_overview_bar(f, chunks[0], data, worker_states);
     draw_heat_map(f, chunks[1], data, app, worker_states);
     draw_info_strip(f, chunks[2], app, worker_states);
 }
 
-fn draw_overview_bar(f: &mut Frame, area: Rect, data: &FrameData) {
+fn draw_overview_bar(
+    f: &mut Frame,
+    area: Rect,
+    data: &FrameData,
+    worker_states: &SharedWorkerStates,
+) {
     if area.width == 0 || data.total_pieces == 0 {
         return;
     }
 
+    let workers = worker_states.lock().unwrap();
     let width = area.width as u32;
     let mut spans: Vec<Span> = Vec::with_capacity(width as usize);
 
@@ -517,13 +705,23 @@ fn draw_overview_bar(f: &mut Frame, area: Rect, data: &FrameData) {
         let mut complete = 0u32;
         let mut inflight = 0u32;
         let mut total = 0u32;
+        let mut max_fill: f64 = 0.0;
 
         for idx in start..end {
             if (idx as u32) < data.total_pieces {
                 total += 1;
                 match data.pieces[idx as usize] {
                     PieceState::Complete => complete += 1,
-                    PieceState::InFlight => inflight += 1,
+                    PieceState::InFlight => {
+                        inflight += 1;
+                        for w in workers.iter() {
+                            if w.current_piece == Some(idx as u32) {
+                                let ratio =
+                                    (w.downloaded_bytes() as f64 / w.piece_length as f64).min(1.0);
+                                max_fill = max_fill.max(ratio);
+                            }
+                        }
+                    }
                     PieceState::Pending => {}
                 }
             }
@@ -534,7 +732,8 @@ fn draw_overview_bar(f: &mut Frame, area: Rect, data: &FrameData) {
         } else if complete == total {
             Color::Rgb(40, 200, 80)
         } else if inflight > 0 {
-            Color::Rgb(220, 180, 0)
+            let g = 140 + (60.0 * max_fill) as u8;
+            Color::Rgb(220, g, 0)
         } else if complete > 0 {
             Color::Rgb(0, 128, 0)
         } else {
@@ -1010,11 +1209,11 @@ fn draw_event_log(f: &mut Frame, area: Rect, app: &AppState, events: &SharedEven
 // ─── Footer ─────────────────────────────────────────────────────────────────
 
 fn draw_footer(f: &mut Frame, area: Rect, data: &FrameData) {
-    let eta = if data.speed_bps > 0.0 && data.remaining > 0 {
-        let remaining_bytes = data.remaining as f64 * data.piece_length as f64;
-        let secs = remaining_bytes / data.speed_bps;
+    let eta = if data.speed_bps > 0.0 && data.downloaded_bytes < data.total_length {
+        let remaining_bytes = data.total_length - data.downloaded_bytes;
+        let secs = remaining_bytes as f64 / data.speed_bps;
         format_eta(secs)
-    } else if data.remaining == 0 {
+    } else if data.downloaded_bytes >= data.total_length && data.total_length > 0 {
         "done".to_string()
     } else {
         "---".to_string()
@@ -1049,8 +1248,8 @@ fn draw_footer(f: &mut Frame, area: Rect, data: &FrameData) {
         Span::styled(
             format!(
                 " │ {:.0}% complete",
-                if data.total_pieces > 0 {
-                    data.completed as f64 / data.total_pieces as f64 * 100.0
+                if data.total_length > 0 {
+                    data.downloaded_bytes as f64 / data.total_length as f64 * 100.0
                 } else {
                     0.0
                 }

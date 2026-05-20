@@ -9,6 +9,7 @@ use tracing::{debug, trace, warn};
 use crate::disk_writer::DiskWriter;
 use crate::progress::ProgressHandle;
 use crate::request_config::ExtraRequestConfig;
+use crate::scheduler::GlobalScheduler;
 use crate::segment_man::SegmentMan;
 use crate::speed_monitor::SpeedMonitor;
 use crate::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus, push_event};
@@ -180,12 +181,12 @@ async fn worker_loop(
                         }
                     }
 
-                    if retries > ctx.max_retries {
+                    if retries >= ctx.max_retries {
                         ctx.segment_man.fail_piece(assignment.index);
                         push_event(
                             &ctx.events,
                             format!(
-                                "W{worker_id}: piece #{} FAILED after {} retries",
+                                "W{worker_id}: piece #{} FAILED after {} attempts",
                                 assignment.index, ctx.max_retries
                             ),
                         );
@@ -302,4 +303,170 @@ async fn download_piece(
     }
 
     Ok(data)
+}
+
+// ─── Pool Worker (multi-file mode) ─────────────────────────────────────────
+
+pub struct PoolWorkerContext {
+    pub client: TokioClient,
+    pub extra: Arc<ExtraRequestConfig>,
+    pub scheduler: Arc<GlobalScheduler>,
+    pub worker_states: SharedWorkerStates,
+    pub events: SharedEventLog,
+    pub cancel: CancellationToken,
+    pub max_retries: u32,
+}
+
+impl PoolWorkerContext {
+    pub async fn run(&self, worker_id: usize) -> Result<(), aioduct::Error> {
+        pool_worker_loop(self, worker_id).await
+    }
+}
+
+async fn pool_worker_loop(ctx: &PoolWorkerContext, worker_id: usize) -> Result<(), aioduct::Error> {
+    loop {
+        if ctx.cancel.is_cancelled() {
+            break;
+        }
+
+        let assignment = match ctx.scheduler.next_work(worker_id) {
+            Some(a) => a,
+            None => {
+                if ctx.scheduler.all_complete() {
+                    break;
+                }
+                tokio::select! {
+                    _ = ctx.scheduler.work_available().notified() => continue,
+                    _ = ctx.cancel.cancelled() => break,
+                }
+            }
+        };
+
+        trace!(
+            worker_id,
+            file_id = assignment.file_id,
+            piece = assignment.piece.index,
+            offset = assignment.piece.offset,
+            length = assignment.piece.length,
+            "pool worker assigned piece"
+        );
+
+        let piece_counter = {
+            let mut states = ctx.worker_states.lock().unwrap();
+            if let Some(ws) = states.get_mut(worker_id) {
+                ws.file_id = Some(assignment.file_id);
+                ws.file_name = assignment.url.rsplit('/').next().unwrap_or("").to_string();
+                ws.current_piece = Some(assignment.piece.index);
+                ws.piece_length = assignment.piece.length;
+                ws.piece_downloaded.store(0, Ordering::Relaxed);
+                ws.status = WorkerStatus::Downloading;
+                ws.retries = 0;
+                Arc::clone(&ws.piece_downloaded)
+            } else {
+                Arc::new(std::sync::atomic::AtomicU64::new(0))
+            }
+        };
+
+        let mut retries = 0u32;
+        loop {
+            piece_counter.store(0, Ordering::Relaxed);
+
+            let result = download_piece(
+                &ctx.client,
+                &assignment.url,
+                assignment.piece.offset,
+                assignment.piece.length,
+                &ctx.extra,
+                &ctx.cancel,
+                &piece_counter,
+            )
+            .await;
+
+            match result {
+                Ok(data) => {
+                    assignment
+                        .disk_writer
+                        .write_at(assignment.piece.offset, &data)
+                        .map_err(aioduct::Error::Io)?;
+                    ctx.scheduler
+                        .complete_piece(assignment.file_id, assignment.piece.index);
+
+                    debug!(
+                        worker_id,
+                        file_id = assignment.file_id,
+                        piece = assignment.piece.index,
+                        bytes = data.len(),
+                        "pool piece complete"
+                    );
+                    push_event(
+                        &ctx.events,
+                        format!(
+                            "W{worker_id}: file#{} piece #{} complete ({} bytes)",
+                            assignment.file_id,
+                            assignment.piece.index,
+                            data.len()
+                        ),
+                    );
+                    break;
+                }
+                Err(_) if ctx.cancel.is_cancelled() => {
+                    ctx.scheduler
+                        .fail_piece(assignment.file_id, assignment.piece.index);
+                    update_worker_status(&ctx.worker_states, worker_id, WorkerStatus::Done);
+                    return Ok(());
+                }
+                Err(e) => {
+                    retries += 1;
+                    warn!(
+                        worker_id,
+                        file_id = assignment.file_id,
+                        piece = assignment.piece.index,
+                        retries,
+                        max_retries = ctx.max_retries,
+                        error = %e,
+                        "pool piece download failed, retrying"
+                    );
+                    push_event(
+                        &ctx.events,
+                        format!(
+                            "W{worker_id}: file#{} piece #{} retry {}/{} — {}",
+                            assignment.file_id, assignment.piece.index, retries, ctx.max_retries, e
+                        ),
+                    );
+
+                    {
+                        let mut states = ctx.worker_states.lock().unwrap();
+                        if let Some(ws) = states.get_mut(worker_id) {
+                            ws.status = WorkerStatus::Retrying;
+                            ws.retries = retries;
+                        }
+                    }
+
+                    if retries >= ctx.max_retries {
+                        ctx.scheduler
+                            .fail_piece(assignment.file_id, assignment.piece.index);
+                        push_event(
+                            &ctx.events,
+                            format!(
+                                "W{worker_id}: file#{} piece #{} FAILED after {} attempts",
+                                assignment.file_id, assignment.piece.index, ctx.max_retries
+                            ),
+                        );
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500 * retries as u64)).await;
+
+                    {
+                        let mut states = ctx.worker_states.lock().unwrap();
+                        if let Some(ws) = states.get_mut(worker_id) {
+                            ws.status = WorkerStatus::Downloading;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    update_worker_status(&ctx.worker_states, worker_id, WorkerStatus::Done);
+    Ok(())
 }

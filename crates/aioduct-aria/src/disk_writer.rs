@@ -43,6 +43,19 @@ impl DiskWriter {
     pub fn sync(&self) -> io::Result<()> {
         self.file.sync_data()
     }
+
+    #[cfg(test)]
+    pub fn null() -> Self {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        Self {
+            file,
+            total_length: 0,
+        }
+    }
 }
 
 #[cfg(test)]

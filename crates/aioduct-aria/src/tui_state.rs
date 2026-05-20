@@ -3,6 +3,8 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::file_entry::FileId;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStatus {
     Idle,
@@ -24,6 +26,8 @@ impl fmt::Display for WorkerStatus {
 
 pub struct WorkerState {
     pub id: usize,
+    pub file_id: Option<FileId>,
+    pub file_name: String,
     pub current_piece: Option<u32>,
     pub piece_downloaded: Arc<AtomicU64>,
     pub piece_length: u64,
@@ -36,6 +40,8 @@ impl WorkerState {
     pub fn new(id: usize) -> Self {
         Self {
             id,
+            file_id: None,
+            file_name: String::new(),
             current_piece: None,
             piece_downloaded: Arc::new(AtomicU64::new(0)),
             piece_length: 0,

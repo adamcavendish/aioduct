@@ -11,12 +11,15 @@ use tracing::{debug, info, warn};
 use crate::cli::Cli;
 use crate::control_file::ControlFile;
 use crate::disk_writer::DiskWriter;
+use crate::file_entry::{FileEntry, FileId};
 use crate::filename;
+use crate::multi_file_tui::MultiFileTui;
 use crate::piece::storage::PieceStorage;
 use crate::piece_grid::PieceGrid;
 use crate::progress::DownloadResult;
 use crate::progress::ProgressHandle;
 use crate::request_config::ExtraRequestConfig;
+use crate::scheduler::GlobalScheduler;
 use crate::segment_man::SegmentMan;
 use crate::speed_monitor::SpeedMonitor;
 use crate::tui_state;
@@ -39,6 +42,10 @@ pub struct DownloadTask {
 }
 
 impl DownloadEngine {
+    pub fn client(&self) -> &TokioClient {
+        &self.client
+    }
+
     pub fn new(cli: Arc<Cli>) -> Self {
         let mut builder = TokioClient::builder()
             .timeout(cli.timeout_duration())
@@ -77,31 +84,46 @@ impl DownloadEngine {
         Self { client, cli, extra }
     }
 
-    pub async fn probe(&self, url: &str) -> Result<DownloadTask, aioduct::Error> {
+    pub async fn probe(
+        &self,
+        url: &str,
+        known_size: Option<u64>,
+        relative_path: Option<&str>,
+    ) -> Result<DownloadTask, aioduct::Error> {
         debug!(url, "probing URL");
-        let req = self.client.head(url)?;
-        let req = self.extra.apply_to(req);
 
-        let resp = req.send().await?;
-        let headers = resp.headers();
+        let (total_size, supports_range, etag, last_modified, name) = if let Some(size) = known_size
+        {
+            // WebDAV already told us the size; skip HEAD to avoid stalling
+            // on servers that don't handle HEAD well for large files.
+            let name = filename::from_url(url);
+            (Some(size), true, None, None, name)
+        } else {
+            let req = self.client.head(url)?;
+            let req = self.extra.apply_to(req);
 
-        let total_size = resp.content_length();
-        let supports_range = headers
-            .get("accept-ranges")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("bytes"));
+            let resp = req.send().await?;
+            let headers = resp.headers();
 
-        let etag = headers
-            .get(http::header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let last_modified = headers
-            .get(http::header::LAST_MODIFIED)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+            let total_size = resp.content_length();
+            let supports_range = headers
+                .get("accept-ranges")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.contains("bytes"));
+            let etag = headers
+                .get(http::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let last_modified = headers
+                .get(http::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let name = filename::from_url_and_headers(url, headers);
 
-        let name = filename::from_url_and_headers(url, headers);
-        let output = self.resolve_output_path(&name);
+            (total_size, supports_range, etag, last_modified, name)
+        };
+
+        let output = self.resolve_output_path(&name, relative_path);
 
         info!(
             url,
@@ -143,6 +165,329 @@ impl DownloadEngine {
         }
     }
 
+    pub async fn download_multi(&self, tasks: Vec<DownloadTask>) -> Vec<DownloadResult> {
+        let num_workers = self.cli.split.min(self.cli.max_connection_per_server);
+        let scheduler = Arc::new(GlobalScheduler::new(num_workers));
+        let cancel = CancellationToken::new();
+        let worker_states = tui_state::new_worker_states(num_workers);
+        let events = tui_state::new_event_log();
+
+        let mut results: Vec<Option<DownloadResult>> = (0..tasks.len()).map(|_| None).collect();
+        let mut file_id_to_task_idx: Vec<(FileId, usize)> = Vec::new();
+        let mut file_created_at: Vec<(FileId, String)> = Vec::new();
+        let mut non_range_handles: Vec<(usize, tokio::task::JoinHandle<DownloadResult>)> =
+            Vec::new();
+
+        for (idx, task) in tasks.iter().enumerate() {
+            if task.supports_range && task.total_size.is_some_and(|s| s > 0) {
+                let total_size = task.total_size.unwrap();
+                let piece_length =
+                    compute_piece_length(total_size, self.cli.split as u32, self.cli.piece_size);
+                let control_path = ControlFile::control_path(&task.output);
+                let (storage, created_at) = resume_or_new_storage(
+                    task,
+                    &control_path,
+                    total_size,
+                    piece_length,
+                    &self.cli,
+                    &crate::progress::ProgressHandle::hidden(),
+                );
+
+                if storage.all_complete() {
+                    results[idx] = Some(DownloadResult {
+                        output: task.output.clone(),
+                        total_size,
+                        error: None,
+                    });
+                    let _ = std::fs::remove_file(&control_path);
+                    continue;
+                }
+
+                if let Some(parent) = task.output.parent()
+                    && let Err(e) = std::fs::create_dir_all(parent)
+                {
+                    results[idx] = Some(DownloadResult {
+                        output: task.output.clone(),
+                        total_size: 0,
+                        error: Some(e.to_string()),
+                    });
+                    continue;
+                }
+
+                let disk_writer = match DiskWriter::open_or_create(&task.output, total_size) {
+                    Ok(dw) => Arc::new(dw),
+                    Err(e) => {
+                        results[idx] = Some(DownloadResult {
+                            output: task.output.clone(),
+                            total_size: 0,
+                            error: Some(e.to_string()),
+                        });
+                        continue;
+                    }
+                };
+
+                let file_id = idx as FileId;
+                let segment_man = Arc::new(SegmentMan::new(storage, self.cli.split as u32));
+                let filename = task
+                    .output
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+
+                let entry = FileEntry {
+                    id: file_id,
+                    url: task.url.clone(),
+                    output: task.output.clone(),
+                    filename,
+                    total_size,
+                    piece_length,
+                    segment_man,
+                    disk_writer,
+                    control_path,
+                    supports_range: true,
+                };
+
+                scheduler.add_file(entry);
+                file_id_to_task_idx.push((file_id, idx));
+                file_created_at.push((file_id, created_at));
+            } else {
+                // Non-range files: spawn concurrent download
+                let engine = self.clone();
+                let url = task.url.clone();
+                let output = task.output.clone();
+                non_range_handles.push((
+                    idx,
+                    tokio::spawn(async move {
+                        let progress = crate::progress::ProgressHandle::hidden();
+                        let req = match engine.client.get(&url) {
+                            Ok(r) => engine.extra.apply_to(r),
+                            Err(e) => {
+                                return DownloadResult {
+                                    output,
+                                    total_size: 0,
+                                    error: Some(e.to_string()),
+                                };
+                            }
+                        };
+                        match req.send().await {
+                            Ok(resp) => {
+                                let total = resp.content_length().unwrap_or(0);
+                                progress.set_total(total);
+                                let mut file = match File::create(&output).await {
+                                    Ok(f) => f,
+                                    Err(e) => {
+                                        return DownloadResult {
+                                            output,
+                                            total_size: 0,
+                                            error: Some(e.to_string()),
+                                        };
+                                    }
+                                };
+                                let mut stream = resp.into_bytes_stream();
+                                let mut downloaded: u64 = 0;
+                                while let Some(chunk) = stream.next().await {
+                                    match chunk {
+                                        Ok(bytes) => {
+                                            if let Err(e) = file.write_all(&bytes).await {
+                                                return DownloadResult {
+                                                    output,
+                                                    total_size: 0,
+                                                    error: Some(e.to_string()),
+                                                };
+                                            }
+                                            downloaded += bytes.len() as u64;
+                                        }
+                                        Err(e) => {
+                                            return DownloadResult {
+                                                output,
+                                                total_size: downloaded,
+                                                error: Some(e.to_string()),
+                                            };
+                                        }
+                                    }
+                                }
+                                let _ = file.flush().await;
+                                DownloadResult {
+                                    output,
+                                    total_size: downloaded,
+                                    error: None,
+                                }
+                            }
+                            Err(e) => DownloadResult {
+                                output,
+                                total_size: 0,
+                                error: Some(e.to_string()),
+                            },
+                        }
+                    }),
+                ));
+            }
+        }
+
+        // If nothing to download in pool mode, await non-range and return
+        if file_id_to_task_idx.is_empty() {
+            for (idx, handle) in non_range_handles {
+                match handle.await {
+                    Ok(r) => results[idx] = Some(r),
+                    Err(e) => {
+                        results[idx] = Some(DownloadResult {
+                            output: tasks[idx].output.clone(),
+                            total_size: 0,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                }
+            }
+            return results.into_iter().flatten().collect();
+        }
+
+        // Start multi-file TUI
+        let multi_tui = if !self.cli.plain {
+            Some(MultiFileTui::start(
+                Arc::clone(&scheduler),
+                Arc::clone(&worker_states),
+                Arc::clone(&events),
+                cancel.clone(),
+                num_workers,
+                tasks.len(),
+            ))
+        } else {
+            None
+        };
+
+        // Spawn multi-file checkpoint task
+        let checkpoint_scheduler = Arc::clone(&scheduler);
+        let checkpoint_cancel = cancel.child_token();
+        // Build checkpoint metadata indexed by file_id
+        #[allow(clippy::type_complexity)]
+        let mut checkpoint_meta: Vec<Option<(Option<String>, Option<String>, String)>> =
+            vec![None; tasks.len()];
+        for (file_id, idx) in &file_id_to_task_idx {
+            let t = &tasks[*idx];
+            let ca = file_created_at
+                .iter()
+                .find(|(id, _)| id == file_id)
+                .map(|(_, s)| s.clone())
+                .unwrap_or_default();
+            checkpoint_meta[*file_id as usize] =
+                Some((t.etag.clone(), t.last_modified.clone(), ca));
+        }
+        let checkpoint_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        checkpoint_scheduler.for_each_active_file(|file| {
+                            let fid = file.id as usize;
+                            if let Some(Some((etag, last_mod, created_at))) = checkpoint_meta.get(fid) {
+                                file.segment_man.snapshot_storage(|storage| {
+                                    let cf = ControlFile::from_storage(
+                                        storage,
+                                        &file.url,
+                                        etag.as_deref(),
+                                        last_mod.as_deref(),
+                                        created_at,
+                                    );
+                                    let _ = cf.save(&file.control_path);
+                                });
+                            }
+                        });
+                    }
+                    _ = checkpoint_cancel.cancelled() => break,
+                }
+            }
+        });
+
+        // Spawn pool workers
+        let pool_ctx = Arc::new(worker::PoolWorkerContext {
+            client: self.client.clone(),
+            extra: Arc::clone(&self.extra),
+            scheduler: Arc::clone(&scheduler),
+            worker_states: Arc::clone(&worker_states),
+            events: Arc::clone(&events),
+            cancel: cancel.clone(),
+            max_retries: self.cli.max_tries,
+        });
+
+        let mut handles = Vec::with_capacity(num_workers);
+        for worker_id in 0..num_workers {
+            let ctx = Arc::clone(&pool_ctx);
+            handles.push(tokio::spawn(async move { ctx.run(worker_id).await }));
+        }
+
+        // Wait for all workers
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    warn!(error = %e, "pool worker error");
+                }
+                Err(e) => {
+                    warn!(error = %e, "pool worker panicked");
+                }
+            }
+        }
+
+        cancel.cancel();
+        let _ = checkpoint_handle.await;
+        if let Some(tui) = multi_tui {
+            tui.stop().await;
+        }
+
+        // Clean up control files for completed files, save for incomplete
+        for (file_id, _) in &file_id_to_task_idx {
+            let fid = *file_id as usize;
+            let task = &tasks[fid];
+            let control_path = ControlFile::control_path(&task.output);
+            let snap = scheduler
+                .snapshot_files()
+                .iter()
+                .find(|s| s.id == *file_id)
+                .cloned();
+            if let Some(snap) = snap
+                && snap.remaining_pieces == 0
+            {
+                let _ = std::fs::remove_file(&control_path);
+            }
+        }
+
+        // Collect results for pool files
+        let snapshots = scheduler.snapshot_files();
+        for (file_id, _task_idx) in &file_id_to_task_idx {
+            let idx = *file_id as usize;
+            if let Some(snap) = snapshots.iter().find(|s| s.id == *file_id) {
+                let task = &tasks[idx];
+                let error = if snap.remaining_pieces > 0 {
+                    Some("download incomplete".to_string())
+                } else {
+                    None
+                };
+                results[idx] = Some(DownloadResult {
+                    output: task.output.clone(),
+                    total_size: snap.total_size,
+                    error,
+                });
+            }
+        }
+
+        // Await non-range downloads
+        for (idx, handle) in non_range_handles {
+            match handle.await {
+                Ok(r) => results[idx] = Some(r),
+                Err(e) => {
+                    results[idx] = Some(DownloadResult {
+                        output: tasks[idx].output.clone(),
+                        total_size: 0,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+
+        results.into_iter().flatten().collect()
+    }
+
     async fn download_single(
         &self,
         task: &DownloadTask,
@@ -156,6 +501,12 @@ impl DownloadEngine {
 
         let total = resp.content_length().unwrap_or(0);
         progress.set_total(total);
+
+        if let Some(parent) = task.output.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(aioduct::Error::Io)?;
+        }
 
         let mut file = File::create(&task.output)
             .await
@@ -209,6 +560,10 @@ impl DownloadEngine {
             progress.set_downloaded(total_size);
             let _ = std::fs::remove_file(&control_path);
             return Ok(total_size);
+        }
+
+        if let Some(parent) = task.output.parent() {
+            std::fs::create_dir_all(parent).map_err(aioduct::Error::Io)?;
         }
 
         let disk_writer = Arc::new(
@@ -342,11 +697,14 @@ impl DownloadEngine {
         Ok(total_size)
     }
 
-    fn resolve_output_path(&self, name: &str) -> PathBuf {
+    fn resolve_output_path(&self, name: &str, relative_path: Option<&str>) -> PathBuf {
         if let Some(ref out) = self.cli.out {
             self.cli.dir.join(out)
         } else {
-            let path = self.cli.dir.join(name);
+            let path = match relative_path {
+                Some(rel) => self.cli.dir.join(rel),
+                None => self.cli.dir.join(name),
+            };
             if !self.cli.no_continue && ControlFile::control_path(&path).exists() {
                 path
             } else if !self.cli.allow_overwrite && self.cli.auto_file_renaming && path.exists() {

@@ -57,7 +57,7 @@ fn percent_decode(s: &str) -> Result<String, ()> {
     String::from_utf8(result).map_err(|_| ())
 }
 
-fn from_url(url: &str) -> String {
+pub fn from_url(url: &str) -> String {
     let path = url
         .split('?')
         .next()
