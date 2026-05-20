@@ -345,3 +345,203 @@ async fn h1_head_reuses_connection_despite_content_length() {
         connections,
     );
 }
+
+/// 204 No Content responses must not have a body per RFC 9110.
+/// Verify the connection is reused even if the server (incorrectly)
+/// includes a Content-Length header.
+#[tokio::test]
+async fn h1_204_no_content_reuses_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let accept_count2 = accept_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            accept_count2.fetch_add(1, Ordering::SeqCst);
+
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if !buf[..n].starts_with(b"DELETE") && !buf[..n].starts_with(b"POST") {
+                        break;
+                    }
+
+                    // 204 with no body (correct behavior).
+                    let headers = b"HTTP/1.1 204 No Content\r\nConnection: keep-alive\r\n\r\n";
+                    if stream.write_all(headers).await.is_err() {
+                        break;
+                    }
+                    let _ = stream.flush().await;
+                }
+            });
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/resource");
+
+    for _ in 0..5 {
+        let resp = client
+            .request(http::Method::DELETE, &url)
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 204);
+    }
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let connections = accept_count.load(Ordering::SeqCst);
+    assert_eq!(
+        connections, 1,
+        "sequential 204 responses should reuse a single connection, \
+         but server accepted {}",
+        connections,
+    );
+}
+
+/// 304 Not Modified responses must not have a body per RFC 9110, but
+/// servers often include Content-Length reflecting the full resource size.
+/// This is the same pattern as HEAD — Content-Length present, no body.
+#[tokio::test]
+async fn h1_304_not_modified_reuses_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let accept_count2 = accept_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            accept_count2.fetch_add(1, Ordering::SeqCst);
+
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if !buf[..n].starts_with(b"GET") {
+                        break;
+                    }
+
+                    // 304 with Content-Length reflecting the full resource (common pattern).
+                    let headers = b"HTTP/1.1 304 Not Modified\r\n\
+                        Content-Length: 5242880\r\n\
+                        ETag: \"abc123\"\r\n\
+                        Connection: keep-alive\r\n\r\n";
+                    if stream.write_all(headers).await.is_err() {
+                        break;
+                    }
+                    let _ = stream.flush().await;
+                }
+            });
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/large-file");
+
+    for _ in 0..5 {
+        let resp = client
+            .get(&url)
+            .unwrap()
+            .header(
+                http::header::IF_NONE_MATCH,
+                http::HeaderValue::from_static("\"abc123\""),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 304);
+    }
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let connections = accept_count.load(Ordering::SeqCst);
+    assert_eq!(
+        connections, 1,
+        "sequential 304 responses (with Content-Length) should reuse a single connection, \
+         but server accepted {} — 304 body-less responses are stalling pool check-in",
+        connections,
+    );
+}
+
+/// OPTIONS responses typically have Content-Length: 0 or a small body.
+/// Verify connection reuse works normally (no special handling needed).
+#[tokio::test]
+async fn h1_options_reuses_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let accept_count2 = accept_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            accept_count2.fetch_add(1, Ordering::SeqCst);
+
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if !buf[..n].starts_with(b"OPTIONS") {
+                        break;
+                    }
+
+                    let headers = b"HTTP/1.1 200 OK\r\n\
+                        Allow: GET, HEAD, OPTIONS\r\n\
+                        Content-Length: 0\r\n\
+                        Connection: keep-alive\r\n\r\n";
+                    if stream.write_all(headers).await.is_err() {
+                        break;
+                    }
+                    let _ = stream.flush().await;
+                }
+            });
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+
+    for _ in 0..5 {
+        let resp = client
+            .request(http::Method::OPTIONS, &url)
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let connections = accept_count.load(Ordering::SeqCst);
+    assert_eq!(
+        connections, 1,
+        "sequential OPTIONS responses should reuse a single connection, \
+         but server accepted {}",
+        connections,
+    );
+}
