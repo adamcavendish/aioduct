@@ -189,6 +189,14 @@ impl ProgressTracker {
 }
 
 impl ProgressHandle {
+    pub fn hidden() -> Self {
+        Self {
+            bar: ProgressBar::hidden(),
+            downloaded: Arc::new(AtomicU64::new(0)),
+            total: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
     pub fn set_total(&self, total: u64) {
         self.total.store(total, Ordering::Relaxed);
         self.bar.set_length(total);

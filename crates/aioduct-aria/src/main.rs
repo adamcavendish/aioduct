@@ -5,25 +5,34 @@ mod control_file;
 mod disk_writer;
 mod endgame;
 mod engine;
+mod file_entry;
 mod filename;
+mod multi_file_tui;
 mod piece;
 mod piece_grid;
 mod progress;
 mod request_config;
+mod scheduler;
 mod segment_man;
 mod speed_monitor;
 mod tui_state;
+mod webdav;
 mod worker;
 
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
-use tokio::sync::Semaphore;
 
 use cli::Cli;
 use engine::DownloadEngine;
-use progress::{DownloadResult, ProgressTracker};
+use progress::ProgressTracker;
+
+struct ExpandedUri {
+    url: String,
+    known_size: Option<u64>,
+    relative_path: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -56,75 +65,102 @@ async fn main() -> ExitCode {
 
     let cli = Arc::new(cli);
     let engine = DownloadEngine::new(Arc::clone(&cli));
+
+    // WebDAV recursive expansion
+    let uris: Vec<ExpandedUri> = if cli.recursive {
+        expand_webdav_uris(&engine, &cli, &uris).await
+    } else {
+        uris.into_iter()
+            .map(|url| ExpandedUri {
+                url,
+                known_size: None,
+                relative_path: None,
+            })
+            .collect()
+    };
+
+    if uris.is_empty() {
+        eprintln!("No downloadable files found.");
+        return ExitCode::from(28);
+    }
+
     let tracker = ProgressTracker::new(cli.quiet, cli.plain);
 
     if cli.dry_run {
         return dry_run(&engine, &uris).await;
     }
 
-    let semaphore = Arc::new(Semaphore::new(cli.max_concurrent_downloads));
-    let mut results: Vec<DownloadResult> = Vec::with_capacity(uris.len());
+    download_multi_mode(&engine, &cli, &tracker, &uris).await
+}
 
-    let mut handles = Vec::new();
+async fn dry_run(engine: &DownloadEngine, uris: &[ExpandedUri]) -> ExitCode {
+    for eu in uris {
+        match engine
+            .probe(&eu.url, eu.known_size, eu.relative_path.as_deref())
+            .await
+        {
+            Ok(task) => {
+                let size = task
+                    .total_size
+                    .map(progress::format_size)
+                    .unwrap_or_else(|| "unknown".to_string());
+                println!(
+                    "{}\n  Output: {}\n  Size: {}\n  Range: {}\n",
+                    eu.url,
+                    task.output.display(),
+                    size,
+                    if task.supports_range { "yes" } else { "no" },
+                );
+            }
+            Err(e) => {
+                eprintln!("{}\n  Error: {e}\n", eu.url);
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
 
-    for url in &uris {
-        // Semaphore is never closed
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
-
-        let task = match engine.probe(url).await {
-            Ok(t) => t,
+async fn download_multi_mode(
+    engine: &DownloadEngine,
+    cli: &Cli,
+    tracker: &ProgressTracker,
+    uris: &[ExpandedUri],
+) -> ExitCode {
+    let mut tasks = Vec::new();
+    for eu in uris {
+        match engine
+            .probe(&eu.url, eu.known_size, eu.relative_path.as_deref())
+            .await
+        {
+            Ok(task) => {
+                if !cli.quiet {
+                    let size_str = task
+                        .total_size
+                        .map(progress::format_size)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let range_str = if task.supports_range { "yes" } else { "no" };
+                    eprintln!(
+                        "[INFO] {} | size: {} | range: {}",
+                        task.output.display(),
+                        size_str,
+                        range_str,
+                    );
+                }
+                tasks.push(task);
+            }
             Err(e) => {
                 if !cli.quiet {
-                    eprintln!("[ERROR] {url}: {e}");
+                    eprintln!("[ERROR] {}: {e}", eu.url);
                 }
-                results.push(DownloadResult {
-                    output: cli.dir.join("unknown"),
-                    total_size: 0,
-                    error: Some(e.to_string()),
-                });
-                continue;
-            }
-        };
-
-        if !cli.quiet {
-            let size_str = task
-                .total_size
-                .map(progress::format_size)
-                .unwrap_or_else(|| "unknown".to_string());
-            let range_str = if task.supports_range { "yes" } else { "no" };
-            eprintln!(
-                "[INFO] {} | size: {} | range: {} | segments: {}",
-                task.output.display(),
-                size_str,
-                range_str,
-                if task.supports_range { cli.split } else { 1 },
-            );
-        }
-
-        let progress = tracker.add_download(url, &task.output.display().to_string());
-
-        let engine = engine.clone();
-        handles.push(tokio::spawn(async move {
-            let result = engine.download(&task, &progress).await;
-            if result.error.is_some() {
-                progress.finish_err(result.error.as_deref().unwrap_or("unknown"));
-            } else {
-                progress.finish_ok();
-            }
-            drop(permit);
-            result
-        }));
-    }
-
-    for handle in handles {
-        match handle.await {
-            Ok(result) => results.push(result),
-            Err(e) => {
-                eprintln!("[ERROR] task panicked: {e}");
             }
         }
     }
 
+    if tasks.is_empty() {
+        return ExitCode::from(28);
+    }
+
+    let results = engine.download_multi(tasks).await;
     tracker.print_summary(&results);
 
     let has_errors = results.iter().any(|r| r.error.is_some());
@@ -135,28 +171,55 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn dry_run(engine: &DownloadEngine, uris: &[String]) -> ExitCode {
-    for url in uris {
-        match engine.probe(url).await {
-            Ok(task) => {
-                let size = task
-                    .total_size
-                    .map(progress::format_size)
-                    .unwrap_or_else(|| "unknown".to_string());
-                println!(
-                    "{}\n  Output: {}\n  Size: {}\n  Range: {}\n",
-                    url,
-                    task.output.display(),
-                    size,
-                    if task.supports_range { "yes" } else { "no" },
-                );
+async fn expand_webdav_uris(
+    engine: &DownloadEngine,
+    cli: &Cli,
+    uris: &[String],
+) -> Vec<ExpandedUri> {
+    let extra = request_config::ExtraRequestConfig::from_cli(cli);
+    let max_depth = if cli.max_depth == 0 {
+        None
+    } else {
+        Some(cli.max_depth)
+    };
+
+    let mut expanded = Vec::new();
+    for uri in uris {
+        if uri.ends_with('/') {
+            if !cli.quiet {
+                eprintln!("[INFO] Enumerating WebDAV directory: {uri}");
             }
-            Err(e) => {
-                eprintln!("{url}\n  Error: {e}\n");
+            match webdav::enumerate(engine.client(), uri, &extra, max_depth).await {
+                Ok(files) => {
+                    if !cli.quiet {
+                        eprintln!("[INFO] Found {} files in {uri}", files.len());
+                    }
+                    for f in files {
+                        expanded.push(ExpandedUri {
+                            url: f.url,
+                            known_size: f.size,
+                            relative_path: Some(f.relative_path),
+                        });
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[ERROR] WebDAV enumeration failed for {uri}: {e}");
+                    expanded.push(ExpandedUri {
+                        url: uri.clone(),
+                        known_size: None,
+                        relative_path: None,
+                    });
+                }
             }
+        } else {
+            expanded.push(ExpandedUri {
+                url: uri.clone(),
+                known_size: None,
+                relative_path: None,
+            });
         }
     }
-    ExitCode::SUCCESS
+    expanded
 }
 
 fn init_logging(cli: &Cli) {

@@ -146,6 +146,14 @@ pub struct Cli {
     /// Use plain newline-based progress output instead of the TUI
     #[arg(long)]
     pub plain: bool,
+
+    /// Enable recursive download for WebDAV directories
+    #[arg(long, short = 'r')]
+    pub recursive: bool,
+
+    /// Maximum recursion depth for WebDAV directories (0 = unlimited)
+    #[arg(long, default_value_t = 0)]
+    pub max_depth: u32,
 }
 
 impl Cli {
