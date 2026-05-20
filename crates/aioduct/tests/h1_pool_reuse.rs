@@ -267,3 +267,81 @@ async fn h1_sequential_requests_reuse_connection() {
         "sequential requests with consumed bodies should reuse a single connection"
     );
 }
+
+/// HEAD responses have no body, but the server may send Content-Length.
+/// Hyper's H1 state machine sees Content-Length and marks the connection as
+/// not-ready (expecting body bytes). Without the HEAD fix, the deferred
+/// check-in task waits for body bytes that never arrive and the connection
+/// is dropped on idle timeout.
+#[tokio::test]
+async fn h1_head_reuses_connection_despite_content_length() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accept_count = Arc::new(AtomicUsize::new(0));
+    let accept_count2 = accept_count.clone();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            accept_count2.fetch_add(1, Ordering::SeqCst);
+
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    let is_head = buf[..n].starts_with(b"HEAD");
+                    let is_get = buf[..n].starts_with(b"GET");
+                    if !is_head && !is_get {
+                        break;
+                    }
+
+                    let headers = b"HTTP/1.1 200 OK\r\n\
+                        Content-Length: 1073741824\r\n\
+                        Accept-Ranges: bytes\r\n\
+                        Connection: keep-alive\r\n\r\n";
+                    if stream.write_all(headers).await.is_err() {
+                        break;
+                    }
+                    let _ = stream.flush().await;
+
+                    if is_get {
+                        if stream.write_all(b"hello").await.is_err() {
+                            break;
+                        }
+                        let _ = stream.flush().await;
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+
+    for _ in 0..5 {
+        let resp = client
+            .request(http::Method::HEAD, &url)
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let connections = accept_count.load(Ordering::SeqCst);
+    assert_eq!(
+        connections, 1,
+        "sequential HEAD requests should reuse a single connection, \
+         but server accepted {} — HEAD responses are stalling pool check-in",
+        connections,
+    );
+}
