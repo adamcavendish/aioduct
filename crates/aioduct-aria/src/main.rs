@@ -1,9 +1,19 @@
+#![allow(dead_code)]
+
 mod cli;
+mod control_file;
+mod disk_writer;
+mod endgame;
 mod engine;
 mod filename;
+mod piece;
+mod piece_grid;
 mod progress;
 mod request_config;
-mod segment;
+mod segment_man;
+mod speed_monitor;
+mod tui_state;
+mod worker;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -12,8 +22,8 @@ use clap::Parser;
 use tokio::sync::Semaphore;
 
 use cli::Cli;
-use engine::{DownloadEngine, DownloadResult};
-use progress::ProgressTracker;
+use engine::DownloadEngine;
+use progress::{DownloadResult, ProgressTracker};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -46,7 +56,7 @@ async fn main() -> ExitCode {
 
     let cli = Arc::new(cli);
     let engine = DownloadEngine::new(Arc::clone(&cli));
-    let tracker = ProgressTracker::new(cli.quiet);
+    let tracker = ProgressTracker::new(cli.quiet, cli.plain);
 
     if cli.dry_run {
         return dry_run(&engine, &uris).await;
@@ -152,7 +162,12 @@ async fn dry_run(engine: &DownloadEngine, uris: &[String]) -> ExitCode {
 fn init_logging(cli: &Cli) {
     use tracing_subscriber::EnvFilter;
 
-    let filter = EnvFilter::try_new(&cli.log_level).unwrap_or_else(|_| EnvFilter::new("warn"));
+    let level = if cli.log.is_some() && cli.log_level == "warn" {
+        "debug"
+    } else {
+        &cli.log_level
+    };
+    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("warn"));
 
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
 

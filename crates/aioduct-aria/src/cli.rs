@@ -28,11 +28,11 @@ pub struct Cli {
     pub out: Option<String>,
 
     /// Number of parallel connections per download
-    #[arg(short = 's', long, default_value_t = 4)]
+    #[arg(short = 's', long, default_value_t = 8)]
     pub split: usize,
 
     /// Maximum connections per server
-    #[arg(short = 'x', long, default_value_t = 4)]
+    #[arg(short = 'x', long, default_value_t = 8)]
     pub max_connection_per_server: usize,
 
     /// Maximum concurrent downloads
@@ -43,9 +43,13 @@ pub struct Cli {
     #[arg(short = 'k', long, default_value = "1M", value_parser = parse_size)]
     pub min_split_size: u64,
 
-    /// Continue/resume a partially downloaded file
-    #[arg(short = 'c', long = "continue")]
-    pub continue_download: bool,
+    /// Piece size for download segmentation (e.g. 1M, 4M). Auto-determined if not set.
+    #[arg(long, value_parser = parse_size)]
+    pub piece_size: Option<u64>,
+
+    /// Disable automatic resume of partially downloaded files
+    #[arg(long = "no-continue")]
+    pub no_continue: bool,
 
     /// Timeout in seconds
     #[arg(short = 't', long, default_value_t = 60)]
@@ -99,11 +103,11 @@ pub struct Cli {
     #[arg(short = 'q', long)]
     pub quiet: bool,
 
-    /// Log file path (- for stdout)
+    /// Write internal debug log to file (- for stdout)
     #[arg(short = 'l', long)]
     pub log: Option<PathBuf>,
 
-    /// Log level
+    /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "warn")]
     pub log_level: String,
 
@@ -138,6 +142,10 @@ pub struct Cli {
     /// Allow overwriting existing files
     #[arg(long)]
     pub allow_overwrite: bool,
+
+    /// Use plain newline-based progress output instead of the TUI
+    #[arg(long)]
+    pub plain: bool,
 }
 
 impl Cli {
