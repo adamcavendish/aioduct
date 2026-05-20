@@ -168,6 +168,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             conn,
                             R::spawn_send,
                             R::sleep(self.core.pool.idle_timeout()),
+                            req_method == http::Method::HEAD,
                         );
                     }
                     return Ok(resp);
@@ -318,6 +319,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 conn,
                                 R::spawn_send,
                                 R::sleep(self.core.pool.idle_timeout()),
+                                req_method == http::Method::HEAD,
                             );
                         }
                         return Ok(resp);
@@ -520,6 +522,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         pooled,
                         R::spawn_send,
                         R::sleep(self.core.pool.idle_timeout()),
+                        req_method == http::Method::HEAD,
                     );
                 }
                 return Ok(resp);
@@ -617,6 +620,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                     conn,
                                     R::spawn_send,
                                     R::sleep(self.core.pool.idle_timeout()),
+                                    req_method == http::Method::HEAD,
                                 );
                             }
                             return Ok(resp);
@@ -1063,6 +1067,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 pooled,
                 R::spawn_send,
                 R::sleep(self.core.pool.idle_timeout()),
+                req_method == http::Method::HEAD,
             );
         }
 

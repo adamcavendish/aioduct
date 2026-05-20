@@ -402,6 +402,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             conn,
                             R::spawn_local,
                             R::sleep(self.core.pool.idle_timeout()),
+                            req_method == http::Method::HEAD,
                         );
                     }
                     return Ok(resp);
@@ -524,7 +525,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             }
                             if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp) {
                                 self.core
-                                    .checkin_when_ready_local::<R, _, _>(pool_key, conn, R::spawn_local, R::sleep(self.core.pool.idle_timeout()));
+                                    .checkin_when_ready_local::<R, _, _>(pool_key, conn, R::spawn_local, R::sleep(self.core.pool.idle_timeout()), req_method == http::Method::HEAD);
                             }
                             return Ok(resp);
                         }
@@ -813,6 +814,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 pooled,
                 R::spawn_local,
                 R::sleep(self.core.pool.idle_timeout()),
+                req_method == http::Method::HEAD,
             );
         }
 
