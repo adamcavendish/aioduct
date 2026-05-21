@@ -705,7 +705,7 @@ impl DownloadEngine {
                 Some(rel) => self.cli.dir.join(rel),
                 None => self.cli.dir.join(name),
             };
-            if !self.cli.no_continue && ControlFile::control_path(&path).exists() {
+            if !self.cli.no_resume && ControlFile::control_path(&path).exists() {
                 path
             } else if !self.cli.allow_overwrite && self.cli.auto_file_renaming && path.exists() {
                 filename::auto_rename(&path)
@@ -732,7 +732,7 @@ fn resume_or_new_storage(
     cli: &Cli,
     progress: &ProgressHandle,
 ) -> (PieceStorage, String) {
-    if cli.no_continue {
+    if cli.no_resume {
         return (PieceStorage::new(total_size, piece_length), now_string());
     }
 
