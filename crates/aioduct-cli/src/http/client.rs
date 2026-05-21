@@ -1,11 +1,19 @@
 use std::time::Duration;
 
+use aioduct::observer::RequestObserver;
 use aioduct::{RetryConfig, TokioClient};
 
-use crate::cli::Cli;
+use super::cli::HttpArgs;
 
-pub fn build_client(cli: &Cli) -> Result<TokioClient, aioduct::Error> {
+pub fn build_client(
+    cli: &HttpArgs,
+    observer: Option<impl RequestObserver>,
+) -> Result<TokioClient, aioduct::Error> {
     let mut builder = TokioClient::builder();
+
+    if let Some(obs) = observer {
+        builder = builder.request_observer(obs);
+    }
 
     if let Some(ref ua) = cli.user_agent {
         builder = builder.user_agent(ua);

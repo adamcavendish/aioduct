@@ -6,13 +6,13 @@ use aioduct::TokioClient;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
-use crate::disk_writer::DiskWriter;
-use crate::progress::ProgressHandle;
-use crate::request_config::ExtraRequestConfig;
-use crate::scheduler::GlobalScheduler;
-use crate::segment_man::SegmentMan;
-use crate::speed_monitor::SpeedMonitor;
-use crate::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus, push_event};
+use super::disk_writer::DiskWriter;
+use super::progress::ProgressHandle;
+use super::request_config::ExtraRequestConfig;
+use super::scheduler::GlobalScheduler;
+use super::segment_man::SegmentMan;
+use super::speed_monitor::SpeedMonitor;
+use super::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus, push_event};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const STALL_CHECK_INTERVAL: Duration = Duration::from_secs(10);

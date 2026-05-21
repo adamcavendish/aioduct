@@ -123,7 +123,7 @@ impl RequestObserver for TracingObserver {
                 );
             }
 
-            RequestPhase::RequestSent { duration } => {
+            RequestPhase::RequestSent { duration, .. } => {
                 tracing::debug!(
                     %method, %uri,
                     send_ms = format_args!("{:.2}", duration.as_secs_f64() * 1000.0),

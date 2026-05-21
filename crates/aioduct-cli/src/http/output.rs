@@ -1,25 +1,27 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 use aioduct::Response;
 
-use crate::cli::Cli;
+use super::cli::HttpArgs;
 
-pub async fn handle(cli: &Cli, resp: Response) -> Result<(), aioduct::Error> {
-    if cli.verbose {
-        eprint_response_info(&resp);
-    }
-
+pub async fn handle(
+    cli: &HttpArgs,
+    resp: Response,
+    tui_active: bool,
+) -> Result<(), aioduct::Error> {
     if let Some(ref path) = cli.dump_header {
         dump_headers(&resp, path)?;
     }
 
     if cli.head {
-        print_headers(&resp);
+        if !tui_active {
+            print_headers(&resp);
+        }
         return Ok(());
     }
 
-    if cli.include {
+    if cli.include && !tui_active {
         print_headers(&resp);
     }
 
@@ -33,7 +35,7 @@ pub async fn handle(cli: &Cli, resp: Response) -> Result<(), aioduct::Error> {
         }
     } else if let Some(ref path) = cli.output {
         write_body_to_file(resp, path).await?;
-    } else {
+    } else if !tui_active {
         let body = resp.bytes().await?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
@@ -43,15 +45,28 @@ pub async fn handle(cli: &Cli, resp: Response) -> Result<(), aioduct::Error> {
         }
     }
 
-    if let Some(ref fmt) = cli.write_out {
+    if let Some(ref fmt) = cli.write_out
+        && !tui_active
+    {
         print_write_out(fmt, status);
     }
 
     Ok(())
 }
 
+fn version_string(v: http::Version) -> &'static str {
+    match v {
+        http::Version::HTTP_09 => "0.9",
+        http::Version::HTTP_10 => "1.0",
+        http::Version::HTTP_11 => "1.1",
+        http::Version::HTTP_2 => "2",
+        http::Version::HTTP_3 => "3",
+        _ => "?",
+    }
+}
+
 fn print_headers(resp: &Response) {
-    println!("HTTP/{:?} {}", resp.version(), resp.status());
+    println!("HTTP/{} {}", version_string(resp.version()), resp.status());
     for (name, value) in resp.headers() {
         if let Ok(v) = value.to_str() {
             println!("{}: {}", name.as_str(), v);
@@ -60,19 +75,15 @@ fn print_headers(resp: &Response) {
     println!();
 }
 
-fn eprint_response_info(resp: &Response) {
-    eprintln!("< HTTP/{:?} {}", resp.version(), resp.status());
-    for (name, value) in resp.headers() {
-        if let Ok(v) = value.to_str() {
-            eprintln!("< {}: {}", name.as_str(), v);
-        }
-    }
-    eprintln!("<");
-}
-
 fn dump_headers(resp: &Response, path: &Path) -> Result<(), aioduct::Error> {
     let mut out = std::fs::File::create(path).map_err(aioduct::Error::Io)?;
-    writeln!(out, "HTTP/{:?} {}", resp.version(), resp.status()).map_err(aioduct::Error::Io)?;
+    writeln!(
+        out,
+        "HTTP/{} {}",
+        version_string(resp.version()),
+        resp.status()
+    )
+    .map_err(aioduct::Error::Io)?;
     for (name, value) in resp.headers() {
         if let Ok(v) = value.to_str() {
             writeln!(out, "{}: {}", name.as_str(), v).map_err(aioduct::Error::Io)?;
@@ -116,12 +127,7 @@ fn filename_from_url(url: &str) -> String {
 }
 
 fn atty_stdout() -> bool {
-    unsafe { libc_isatty(1) != 0 }
-}
-
-unsafe extern "C" {
-    #[link_name = "isatty"]
-    fn libc_isatty(fd: i32) -> i32;
+    std::io::stdout().is_terminal()
 }
 
 #[cfg(test)]
@@ -136,6 +142,15 @@ mod tests {
         );
         assert_eq!(filename_from_url("https://example.com/"), "output");
         assert_eq!(filename_from_url("https://example.com/dl?v=1"), "dl");
+    }
+
+    #[test]
+    fn version_string_formats() {
+        assert_eq!(version_string(http::Version::HTTP_09), "0.9");
+        assert_eq!(version_string(http::Version::HTTP_10), "1.0");
+        assert_eq!(version_string(http::Version::HTTP_11), "1.1");
+        assert_eq!(version_string(http::Version::HTTP_2), "2");
+        assert_eq!(version_string(http::Version::HTTP_3), "3");
     }
 
     #[test]

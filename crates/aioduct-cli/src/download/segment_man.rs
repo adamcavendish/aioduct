@@ -2,9 +2,9 @@ use std::sync::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::endgame::EndGameTracker;
-use crate::piece::selector;
-use crate::piece::storage::PieceStorage;
+use super::endgame::EndGameTracker;
+use super::piece::selector;
+use super::piece::storage::PieceStorage;
 
 pub struct PieceAssignment {
     pub index: u32,

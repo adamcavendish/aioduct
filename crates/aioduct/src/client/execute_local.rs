@@ -17,6 +17,8 @@ use crate::timing::TimingCollector;
 
 use super::execute::{CacheLookupOutcome, PostExecuteAction};
 
+use super::extract_headers;
+
 // ── Local path (RuntimeLocal + ConnectorLocal) ────────────────────────────────────
 
 impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
@@ -362,6 +364,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 original_uri,
                 RequestPhase::RequestSent {
                     duration: transfer_start.duration_since(pool_checkout_start),
+                    headers: extract_headers(request.headers()),
                 },
             );
             match HttpEngineCore::send_on_connection(&mut conn, request, original_uri.clone()).await
@@ -483,6 +486,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         original_uri,
                         RequestPhase::RequestSent {
                             duration: transfer_start.duration_since(pool_checkout_start),
+                            headers: extract_headers(request.headers()),
                         },
                     );
                     match HttpEngineCore::send_on_connection(
@@ -774,6 +778,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             original_uri,
             RequestPhase::RequestSent {
                 duration: transfer_start.duration_since(pool_checkout_start),
+                headers: extract_headers(request.headers()),
             },
         );
         let mut resp =

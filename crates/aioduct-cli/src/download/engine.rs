@@ -8,22 +8,22 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::cli::Cli;
-use crate::control_file::ControlFile;
-use crate::disk_writer::DiskWriter;
-use crate::file_entry::{FileEntry, FileId};
-use crate::filename;
-use crate::multi_file_tui::MultiFileTui;
-use crate::piece::storage::PieceStorage;
-use crate::piece_grid::PieceGrid;
-use crate::progress::DownloadResult;
-use crate::progress::ProgressHandle;
-use crate::request_config::ExtraRequestConfig;
-use crate::scheduler::GlobalScheduler;
-use crate::segment_man::SegmentMan;
-use crate::speed_monitor::SpeedMonitor;
-use crate::tui_state;
-use crate::worker;
+use super::cli::Cli;
+use super::control_file::ControlFile;
+use super::disk_writer::DiskWriter;
+use super::file_entry::{FileEntry, FileId};
+use super::filename;
+use super::multi_file_tui::MultiFileTui;
+use super::piece::storage::PieceStorage;
+use super::piece_grid::PieceGrid;
+use super::progress::DownloadResult;
+use super::progress::ProgressHandle;
+use super::request_config::ExtraRequestConfig;
+use super::scheduler::GlobalScheduler;
+use super::segment_man::SegmentMan;
+use super::speed_monitor::SpeedMonitor;
+use super::tui_state;
+use super::worker;
 
 #[derive(Clone)]
 pub struct DownloadEngine {
@@ -190,7 +190,7 @@ impl DownloadEngine {
                     total_size,
                     piece_length,
                     &self.cli,
-                    &crate::progress::ProgressHandle::hidden(),
+                    &super::progress::ProgressHandle::hidden(),
                 );
 
                 if storage.all_complete() {
@@ -259,7 +259,7 @@ impl DownloadEngine {
                 non_range_handles.push((
                     idx,
                     tokio::spawn(async move {
-                        let progress = crate::progress::ProgressHandle::hidden();
+                        let progress = super::progress::ProgressHandle::hidden();
                         let req = match engine.client.get(&url) {
                             Ok(r) => engine.extra.apply_to(r),
                             Err(e) => {

@@ -3,9 +3,12 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{RequestBuilderSend, Response};
 use http::{HeaderName, HeaderValue, Method};
 
-use crate::cli::Cli;
+use super::cli::HttpArgs;
 
-pub async fn execute(cli: &Cli, client: &aioduct::TokioClient) -> Result<Response, aioduct::Error> {
+pub async fn execute(
+    cli: &HttpArgs,
+    client: &aioduct::TokioClient,
+) -> Result<Response, aioduct::Error> {
     let method: Method = cli.effective_method().parse().map_err(|_| {
         aioduct::Error::InvalidUrl(format!("invalid method: {}", cli.effective_method()))
     })?;
@@ -15,17 +18,20 @@ pub async fn execute(cli: &Cli, client: &aioduct::TokioClient) -> Result<Respons
     req = apply_auth(cli, req);
     req = apply_body(cli, req)?;
 
-    if cli.verbose {
-        eprint_request_info(cli, &req);
-    }
-
     Ok(req.send().await?)
 }
 
 fn apply_headers<'a>(
-    cli: &Cli,
+    cli: &HttpArgs,
     mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
 ) -> RequestBuilderSend<'a, TokioRuntime, TcpConnector> {
+    if cli.compressed {
+        req = req.header(
+            http::header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, deflate, br, zstd"),
+        );
+    }
+
     for h in &cli.headers {
         if let Some((name, value)) = h.split_once(':')
             && let (Ok(n), Ok(v)) = (
@@ -47,7 +53,7 @@ fn apply_headers<'a>(
 }
 
 fn apply_auth<'a>(
-    cli: &Cli,
+    cli: &HttpArgs,
     mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
 ) -> RequestBuilderSend<'a, TokioRuntime, TcpConnector> {
     if let Some(ref user_str) = cli.user {
@@ -66,7 +72,7 @@ fn apply_auth<'a>(
 }
 
 fn apply_body<'a>(
-    cli: &Cli,
+    cli: &HttpArgs,
     mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
 ) -> Result<RequestBuilderSend<'a, TokioRuntime, TcpConnector>, aioduct::Error> {
     if let Some(ref data) = cli.data {
@@ -89,27 +95,4 @@ fn apply_body<'a>(
     }
 
     Ok(req)
-}
-
-fn eprint_request_info(cli: &Cli, _req: &RequestBuilderSend<'_, TokioRuntime, TcpConnector>) {
-    let method = cli.effective_method();
-    let url: http::Uri = match cli.url.parse() {
-        Ok(u) => u,
-        Err(_) => return,
-    };
-    let path = url.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-    let host = url.host().unwrap_or("");
-
-    eprintln!("> {method} {path} HTTP/1.1");
-    eprintln!("> Host: {host}");
-    for h in &cli.headers {
-        eprintln!("> {h}");
-    }
-    if let Some(ref ua) = cli.user_agent {
-        eprintln!("> User-Agent: {ua}");
-    }
-    if cli.user.is_some() {
-        eprintln!("> Authorization: Basic ***");
-    }
-    eprintln!(">");
 }

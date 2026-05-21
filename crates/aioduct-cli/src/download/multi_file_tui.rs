@@ -16,11 +16,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use tokio_util::sync::CancellationToken;
 
-use crate::file_entry::FileStatus;
-use crate::piece_grid::{HeatMapParams, render_heat_map, render_overview_bar};
-use crate::progress::format_size;
-use crate::scheduler::{FileSnapshot, GlobalScheduler};
-use crate::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus};
+use super::file_entry::FileStatus;
+use super::piece_grid::{HeatMapParams, render_heat_map, render_overview_bar};
+use super::progress::format_size;
+use super::scheduler::{FileSnapshot, GlobalScheduler};
+use super::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus};
 
 pub struct MultiFileTui {
     cancel: CancellationToken,
@@ -575,7 +575,7 @@ fn draw_pieces_tab(
     let filename = &data.files[app.selected_file].filename;
     let completed = pieces
         .iter()
-        .filter(|p| **p == crate::piece_grid::PieceState::Complete)
+        .filter(|p| **p == super::piece_grid::PieceState::Complete)
         .count();
     let label = Line::from(vec![
         Span::styled(

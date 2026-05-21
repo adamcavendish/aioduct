@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
-use crate::disk_writer::DiskWriter;
-use crate::file_entry::{FileEntry, FileId, FileStatus};
-use crate::piece_grid::{PieceState, collect_piece_states};
-use crate::segment_man::PieceAssignment;
+use super::disk_writer::DiskWriter;
+use super::file_entry::{FileEntry, FileId, FileStatus};
+use super::piece_grid::{PieceState, collect_piece_states};
+use super::segment_man::PieceAssignment;
 
 pub struct WorkAssignment {
     pub file_id: FileId,
@@ -303,8 +303,8 @@ impl SchedulerInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::piece::storage::PieceStorage;
-    use crate::segment_man::SegmentMan;
+    use crate::download::piece::storage::PieceStorage;
+    use crate::download::segment_man::SegmentMan;
     use std::path::PathBuf;
 
     fn make_entry(id: FileId, total_size: u64, piece_length: u32) -> FileEntry {

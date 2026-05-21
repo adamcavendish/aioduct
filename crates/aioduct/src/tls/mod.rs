@@ -107,12 +107,24 @@ impl TlsVersion {
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub struct TlsInfo {
     peer_certificate: Option<Vec<u8>>,
+    tls_version: Option<String>,
+    cipher_suite: Option<String>,
 }
 
 impl TlsInfo {
     /// DER-encoded peer (server) certificate, if available.
     pub fn peer_certificate(&self) -> Option<&[u8]> {
         self.peer_certificate.as_deref()
+    }
+
+    /// Negotiated TLS protocol version (e.g. "TLSv1.3").
+    pub fn tls_version(&self) -> Option<&str> {
+        self.tls_version.as_deref()
+    }
+
+    /// Negotiated cipher suite name (e.g. "TLS13_AES_256_GCM_SHA384").
+    pub fn cipher_suite(&self) -> Option<&str> {
+        self.cipher_suite.as_deref()
     }
 }
 
@@ -123,7 +135,15 @@ impl TlsInfo {
             .peer_certificates()
             .and_then(|certs| certs.first())
             .map(|c| c.as_ref().to_vec());
-        Self { peer_certificate }
+        let tls_version = conn.protocol_version().map(|v| format!("{v:?}"));
+        let cipher_suite = conn
+            .negotiated_cipher_suite()
+            .map(|cs| format!("{:?}", cs.suite()));
+        Self {
+            peer_certificate,
+            tls_version,
+            cipher_suite,
+        }
     }
 }
 
@@ -315,22 +335,32 @@ mod tests {
     fn tls_info_no_peer_cert() {
         let info = TlsInfo {
             peer_certificate: None,
+            tls_version: None,
+            cipher_suite: None,
         };
         assert!(info.peer_certificate().is_none());
+        assert!(info.tls_version().is_none());
+        assert!(info.cipher_suite().is_none());
     }
 
     #[test]
     fn tls_info_with_peer_cert() {
         let info = TlsInfo {
             peer_certificate: Some(vec![1, 2, 3]),
+            tls_version: Some("TLSv1_3".into()),
+            cipher_suite: Some("TLS13_AES_256_GCM_SHA384".into()),
         };
         assert_eq!(info.peer_certificate(), Some(&[1, 2, 3][..]));
+        assert_eq!(info.tls_version(), Some("TLSv1_3"));
+        assert_eq!(info.cipher_suite(), Some("TLS13_AES_256_GCM_SHA384"));
     }
 
     #[test]
     fn tls_info_debug() {
         let info = TlsInfo {
             peer_certificate: None,
+            tls_version: None,
+            cipher_suite: None,
         };
         let dbg = format!("{info:?}");
         assert!(dbg.contains("TlsInfo"));

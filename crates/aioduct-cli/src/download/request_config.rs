@@ -1,7 +1,7 @@
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
-use crate::cli::Cli;
+use super::cli::Cli;
 
 pub struct ExtraRequestConfig {
     headers: Vec<(http::HeaderName, http::HeaderValue)>,

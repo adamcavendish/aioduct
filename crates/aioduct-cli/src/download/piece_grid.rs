@@ -19,9 +19,9 @@ use ratatui::widgets::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::piece::storage::PieceStorage;
-use crate::segment_man::SegmentMan;
-use crate::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus};
+use super::piece::storage::PieceStorage;
+use super::segment_man::SegmentMan;
+use super::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus};
 
 pub struct PieceGrid {
     cancel: CancellationToken,

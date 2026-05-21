@@ -82,27 +82,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aioduct-aria"
-version = "0.2.0-alpha.1"
-dependencies = [
- "aioduct",
- "clap",
- "crossterm",
- "http 1.4.0",
- "indicatif",
- "quick-xml",
- "ratatui",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "aioduct-bench"
 version = "0.2.0-alpha.1"
 dependencies = [
@@ -121,13 +100,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "aioduct-curl"
+name = "aioduct-cli"
 version = "0.2.0-alpha.1"
 dependencies = [
  "aioduct",
  "clap",
+ "crossterm",
  "http 1.4.0",
+ "indicatif",
+ "quick-xml",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

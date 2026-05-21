@@ -2,8 +2,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::piece::bitfield::BitfieldMan;
-use crate::piece::storage::PieceStorage;
+use super::piece::bitfield::BitfieldMan;
+use super::piece::storage::PieceStorage;
 
 #[derive(Serialize, Deserialize)]
 pub struct ControlFile {
