@@ -48,8 +48,8 @@ pub struct Cli {
     pub piece_size: Option<u64>,
 
     /// Disable automatic resume of partially downloaded files
-    #[arg(long = "no-continue")]
-    pub no_continue: bool,
+    #[arg(long = "no-resume")]
+    pub no_resume: bool,
 
     /// Timeout in seconds
     #[arg(short = 't', long, default_value_t = 60)]
@@ -136,7 +136,7 @@ pub struct Cli {
     pub checksum: Option<String>,
 
     /// Auto file renaming if file already exists
-    #[arg(long, default_value_t = true)]
+    #[arg(long)]
     pub auto_file_renaming: bool,
 
     /// Allow overwriting existing files

@@ -127,12 +127,22 @@ async fn download_multi_mode(
     uris: &[ExpandedUri],
 ) -> ExitCode {
     let mut tasks = Vec::new();
+    let mut skipped = 0usize;
     for eu in uris {
         match engine
             .probe(&eu.url, eu.known_size, eu.relative_path.as_deref())
             .await
         {
             Ok(task) => {
+                if task.output.exists()
+                    && !control_file::ControlFile::control_path(&task.output).exists()
+                {
+                    if !cli.quiet {
+                        eprintln!("[SKIP] {} (already complete)", task.output.display());
+                    }
+                    skipped += 1;
+                    continue;
+                }
                 if !cli.quiet {
                     let size_str = task
                         .total_size
@@ -157,6 +167,15 @@ async fn download_multi_mode(
     }
 
     if tasks.is_empty() {
+        if skipped > 0 {
+            if !cli.quiet {
+                eprintln!(
+                    "[INFO] All {} files already downloaded, nothing to do.",
+                    skipped
+                );
+            }
+            return ExitCode::SUCCESS;
+        }
         return ExitCode::from(28);
     }
 
