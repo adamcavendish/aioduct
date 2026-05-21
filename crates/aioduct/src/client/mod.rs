@@ -31,6 +31,18 @@ use http::{StatusCode, Uri};
 use http_body_util::BodyExt;
 use std::collections::HashSet;
 
+pub(crate) fn extract_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.as_str().to_owned(),
+                v.to_str().unwrap_or("<binary>").to_owned(),
+            )
+        })
+        .collect()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 use crate::body::RequestBodyLocal;
 use crate::body::RequestBodySend;

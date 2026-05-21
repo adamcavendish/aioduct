@@ -17,6 +17,8 @@ use crate::timing::TimingCollector;
 use super::dispatch::H2ConnectGuard;
 use super::{HttpEngineCore, HttpEngineSend};
 
+use super::extract_headers;
+
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
@@ -131,6 +133,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 original_uri,
                 RequestPhase::RequestSent {
                     duration: transfer_start.duration_since(pool_checkout_start),
+                    headers: extract_headers(request.headers()),
                 },
             );
             match HttpEngineCore::send_on_connection(&mut conn, request, original_uri.clone()).await
@@ -281,6 +284,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     original_uri,
                     RequestPhase::RequestSent {
                         duration: transfer_start.duration_since(pool_checkout_start),
+                        headers: extract_headers(request.headers()),
                     },
                 );
                 match HttpEngineCore::send_on_connection(&mut conn, request, original_uri.clone())
@@ -482,6 +486,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     original_uri,
                     RequestPhase::RequestSent {
                         duration: transfer_start.duration_since(pool_checkout_start),
+                        headers: extract_headers(request.headers()),
                     },
                 );
                 let mut resp =
@@ -578,6 +583,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         original_uri,
                         RequestPhase::RequestSent {
                             duration: transfer_start.duration_since(pool_checkout_start),
+                            headers: extract_headers(request.headers()),
                         },
                     );
                     let result = HttpEngineCore::send_on_connection(
@@ -1030,6 +1036,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             original_uri,
             RequestPhase::RequestSent {
                 duration: transfer_start.duration_since(pool_checkout_start),
+                headers: extract_headers(request.headers()),
             },
         );
         let mut resp =

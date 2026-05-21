@@ -1,22 +1,22 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::Args;
 
-#[derive(Parser, Debug)]
+use crate::common::parse_byte_size;
+
+#[derive(Args, Debug)]
 #[command(
-    name = "aioduct-curl",
     about = "Curl-inspired HTTP tool built on aioduct",
-    version,
     after_help = "Examples:\n  \
-        aioduct-curl https://httpbin.org/get\n  \
-        aioduct-curl -X POST -d '{\"key\":\"val\"}' -H 'Content-Type: application/json' https://httpbin.org/post\n  \
-        aioduct-curl -I https://example.com\n  \
-        aioduct-curl -o output.html https://example.com\n  \
-        aioduct-curl -u user:pass https://httpbin.org/basic-auth/user/pass\n  \
-        aioduct-curl -L https://httpbin.org/redirect/3"
+        aioduct http https://httpbin.org/get\n  \
+        aioduct http -X POST -d '{\"key\":\"val\"}' -H 'Content-Type: application/json' https://httpbin.org/post\n  \
+        aioduct http -I https://example.com\n  \
+        aioduct http -o output.html https://example.com\n  \
+        aioduct http -u user:pass https://httpbin.org/basic-auth/user/pass\n  \
+        aioduct http -L https://httpbin.org/redirect/3"
 )]
-pub struct Cli {
+pub struct HttpArgs {
     /// URL to request
     #[arg(value_name = "URL")]
     pub url: String,
@@ -130,7 +130,7 @@ pub struct Cli {
     pub http2: bool,
 
     /// Max download speed (bytes/sec, supports K/M/G suffix)
-    #[arg(long = "limit-rate", value_parser = parse_rate)]
+    #[arg(long = "limit-rate", value_parser = parse_byte_size)]
     pub limit_rate: Option<u64>,
 
     /// Disable decompression
@@ -140,9 +140,13 @@ pub struct Cli {
     /// Compressed (Accept-Encoding: gzip, deflate, br)
     #[arg(long)]
     pub compressed: bool,
+
+    /// Verbose plain text output (no TUI, colored stderr log)
+    #[arg(long = "verbose-plain")]
+    pub verbose_plain: bool,
 }
 
-impl Cli {
+impl HttpArgs {
     pub fn effective_method(&self) -> &str {
         if let Some(ref m) = self.method {
             m.as_str()
@@ -164,85 +168,60 @@ impl Cli {
     }
 }
 
-fn parse_rate(s: &str) -> Result<u64, String> {
-    let s = s.trim();
-    let (num_str, multiplier) = if s.ends_with('K') || s.ends_with('k') {
-        (&s[..s.len() - 1], 1024u64)
-    } else if s.ends_with('M') || s.ends_with('m') {
-        (&s[..s.len() - 1], 1024 * 1024)
-    } else if s.ends_with('G') || s.ends_with('g') {
-        (&s[..s.len() - 1], 1024 * 1024 * 1024)
-    } else {
-        (s, 1u64)
-    };
-    let num: f64 = num_str
-        .parse()
-        .map_err(|e| format!("invalid rate '{s}': {e}"))?;
-    Ok((num * multiplier as f64) as u64)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
-    #[test]
-    fn parse_rate_values() {
-        assert_eq!(parse_rate("100K").unwrap(), 100 * 1024);
-        assert_eq!(parse_rate("1M").unwrap(), 1024 * 1024);
-        assert_eq!(parse_rate("1024").unwrap(), 1024);
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        inner: HttpArgs,
+    }
+
+    fn parse(args: &[&str]) -> HttpArgs {
+        TestCli::parse_from(args).inner
     }
 
     #[test]
     fn effective_method_default_is_get() {
-        let cli = Cli::parse_from(["aioduct-curl", "http://example.com"]);
+        let cli = parse(&["test", "http://example.com"]);
         assert_eq!(cli.effective_method(), "GET");
     }
 
     #[test]
     fn effective_method_explicit_overrides() {
-        let cli = Cli::parse_from(["aioduct-curl", "-X", "PUT", "http://example.com"]);
+        let cli = parse(&["test", "-X", "PUT", "http://example.com"]);
         assert_eq!(cli.effective_method(), "PUT");
     }
 
     #[test]
     fn effective_method_head_flag() {
-        let cli = Cli::parse_from(["aioduct-curl", "-I", "http://example.com"]);
+        let cli = parse(&["test", "-I", "http://example.com"]);
         assert_eq!(cli.effective_method(), "HEAD");
     }
 
     #[test]
     fn effective_method_data_implies_post() {
-        let cli = Cli::parse_from(["aioduct-curl", "-d", "payload", "http://example.com"]);
+        let cli = parse(&["test", "-d", "payload", "http://example.com"]);
         assert_eq!(cli.effective_method(), "POST");
     }
 
     #[test]
     fn effective_method_explicit_plus_data() {
-        let cli = Cli::parse_from([
-            "aioduct-curl",
-            "-X",
-            "PUT",
-            "-d",
-            "payload",
-            "http://example.com",
-        ]);
+        let cli = parse(&["test", "-X", "PUT", "-d", "payload", "http://example.com"]);
         assert_eq!(cli.effective_method(), "PUT");
     }
 
     #[test]
     fn effective_method_form_implies_post() {
-        let cli = Cli::parse_from(["aioduct-curl", "-F", "file=@data.txt", "http://example.com"]);
+        let cli = parse(&["test", "-F", "file=@data.txt", "http://example.com"]);
         assert_eq!(cli.effective_method(), "POST");
     }
 
     #[test]
     fn effective_method_data_binary_implies_post() {
-        let cli = Cli::parse_from([
-            "aioduct-curl",
-            "--data-binary",
-            "@file.bin",
-            "http://example.com",
-        ]);
+        let cli = parse(&["test", "--data-binary", "@file.bin", "http://example.com"]);
         assert_eq!(cli.effective_method(), "POST");
     }
 }

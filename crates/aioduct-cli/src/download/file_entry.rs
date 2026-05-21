@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::disk_writer::DiskWriter;
-use crate::segment_man::SegmentMan;
+use super::disk_writer::DiskWriter;
+use super::segment_man::SegmentMan;
 
 pub type FileId = u32;
 

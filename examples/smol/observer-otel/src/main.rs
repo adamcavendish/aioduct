@@ -128,7 +128,7 @@ impl RequestObserver for OtelObserver {
                 span.add_event("tls.handshake", attrs);
             }
 
-            RequestPhase::RequestSent { duration } => {
+            RequestPhase::RequestSent { duration, .. } => {
                 span.add_event(
                     "http.request.sent",
                     vec![KeyValue::new(

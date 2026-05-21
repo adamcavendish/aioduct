@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod cli;
 mod control_file;
 mod disk_writer;
@@ -19,10 +17,10 @@ mod tui_state;
 mod webdav;
 mod worker;
 
+pub use cli::DownloadArgs;
+
 use std::process::ExitCode;
 use std::sync::Arc;
-
-use clap::Parser;
 
 use cli::Cli;
 use engine::DownloadEngine;
@@ -34,9 +32,8 @@ struct ExpandedUri {
     relative_path: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    let cli = Cli::parse();
+pub async fn run(args: DownloadArgs) -> ExitCode {
+    let cli = args;
 
     init_logging(&cli);
 

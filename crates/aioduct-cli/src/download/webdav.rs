@@ -2,7 +2,7 @@ use aioduct::TokioClient;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
-use crate::request_config::ExtraRequestConfig;
+use super::request_config::ExtraRequestConfig;
 
 pub struct RemoteFile {
     pub url: String,

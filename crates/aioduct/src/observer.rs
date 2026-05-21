@@ -116,6 +116,8 @@ pub enum RequestPhase {
     RequestSent {
         /// Time spent sending.
         duration: Duration,
+        /// Actual wire headers sent with the request.
+        headers: Vec<(String, String)>,
     },
 
     /// First response byte received (TTFB).
@@ -299,6 +301,7 @@ mod tests {
         };
         let _ = RequestPhase::RequestSent {
             duration: Duration::from_millis(1),
+            headers: vec![("host".into(), "example.com".into())],
         };
         let _ = RequestPhase::ResponseStarted {
             waiting_duration: Duration::from_millis(50),
@@ -402,6 +405,7 @@ mod tests {
             uri: "https://api.example.com/resource/42".parse().unwrap(),
             phase: RequestPhase::RequestSent {
                 duration: Duration::from_millis(15),
+                headers: vec![("content-type".into(), "application/json".into())],
             },
             at: Instant::now(),
         };

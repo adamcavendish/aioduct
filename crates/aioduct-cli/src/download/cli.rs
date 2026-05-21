@@ -1,20 +1,22 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::Args;
 
-#[derive(Parser, Debug)]
+use crate::common::parse_byte_size;
+
+pub type Cli = DownloadArgs;
+
+#[derive(Args, Debug)]
 #[command(
-    name = "aioduct-aria",
     about = "Aria2-inspired parallel download tool built on aioduct",
-    version,
     after_help = "Examples:\n  \
-        aioduct-aria https://example.com/file.iso\n  \
-        aioduct-aria -s 8 -o output.bin https://example.com/large.dat\n  \
-        aioduct-aria -j 3 -i urls.txt\n  \
-        aioduct-aria -c https://example.com/file.iso   # resume download"
+        aioduct download https://example.com/file.iso\n  \
+        aioduct download -s 8 -o output.bin https://example.com/large.dat\n  \
+        aioduct download -j 3 -i urls.txt\n  \
+        aioduct download https://example.com/file.iso   # resume download"
 )]
-pub struct Cli {
+pub struct DownloadArgs {
     /// Download URIs
     #[arg(value_name = "URI")]
     pub uris: Vec<String>,
@@ -40,11 +42,11 @@ pub struct Cli {
     pub max_concurrent_downloads: usize,
 
     /// Minimum split size (e.g. 1M, 20M)
-    #[arg(short = 'k', long, default_value = "1M", value_parser = parse_size)]
+    #[arg(short = 'k', long, default_value = "1M", value_parser = parse_byte_size)]
     pub min_split_size: u64,
 
     /// Piece size for download segmentation (e.g. 1M, 4M). Auto-determined if not set.
-    #[arg(long, value_parser = parse_size)]
+    #[arg(long, value_parser = parse_byte_size)]
     pub piece_size: Option<u64>,
 
     /// Disable automatic resume of partially downloaded files
@@ -68,11 +70,11 @@ pub struct Cli {
     pub retry_wait: u64,
 
     /// Overall download speed limit (e.g. 1M, 500K)
-    #[arg(long, value_parser = parse_size)]
+    #[arg(long, value_parser = parse_byte_size)]
     pub max_overall_download_limit: Option<u64>,
 
     /// Per-download speed limit
-    #[arg(long, value_parser = parse_size)]
+    #[arg(long, value_parser = parse_byte_size)]
     pub max_download_limit: Option<u64>,
 
     /// Additional HTTP headers (repeatable)
@@ -156,7 +158,7 @@ pub struct Cli {
     pub max_depth: u32,
 }
 
-impl Cli {
+impl DownloadArgs {
     pub fn timeout_duration(&self) -> Duration {
         Duration::from_secs(self.timeout)
     }
@@ -184,39 +186,20 @@ impl Cli {
     }
 }
 
-fn parse_size(s: &str) -> Result<u64, String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Err("empty size".to_string());
-    }
-
-    let (num_str, multiplier) = if s.ends_with('K') || s.ends_with('k') {
-        (&s[..s.len() - 1], 1024u64)
-    } else if s.ends_with('M') || s.ends_with('m') {
-        (&s[..s.len() - 1], 1024 * 1024)
-    } else if s.ends_with('G') || s.ends_with('g') {
-        (&s[..s.len() - 1], 1024 * 1024 * 1024)
-    } else {
-        (s, 1u64)
-    };
-
-    let num: f64 = num_str
-        .parse()
-        .map_err(|e| format!("invalid size '{s}': {e}"))?;
-    Ok((num * multiplier as f64) as u64)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::common::parse_byte_size;
 
     #[test]
     fn test_parse_size() {
-        assert_eq!(parse_size("1M").unwrap(), 1024 * 1024);
-        assert_eq!(parse_size("20M").unwrap(), 20 * 1024 * 1024);
-        assert_eq!(parse_size("500K").unwrap(), 500 * 1024);
-        assert_eq!(parse_size("1G").unwrap(), 1024 * 1024 * 1024);
-        assert_eq!(parse_size("1024").unwrap(), 1024);
-        assert_eq!(parse_size("1.5M").unwrap(), (1.5 * 1024.0 * 1024.0) as u64);
+        assert_eq!(parse_byte_size("1M").unwrap(), 1024 * 1024);
+        assert_eq!(parse_byte_size("20M").unwrap(), 20 * 1024 * 1024);
+        assert_eq!(parse_byte_size("500K").unwrap(), 500 * 1024);
+        assert_eq!(parse_byte_size("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_byte_size("1024").unwrap(), 1024);
+        assert_eq!(
+            parse_byte_size("1.5M").unwrap(),
+            (1.5 * 1024.0 * 1024.0) as u64
+        );
     }
 }
