@@ -151,7 +151,15 @@ publish:
 # ---------- CI (run everything) ----------
 
 # Run the full CI pipeline locally
-ci: fmt-check clippy-all doc-check book msrv test-all test-wasm test-wasi-p2 coverage-lcov
+ci: fmt-check clippy-all doc-check book msrv test-all test-wasm test-wasi-p2 coverage-lcov check-snippets
+
+# Cross-check the CLI for all cargo-dist targets (requires cross-compilers)
+cross-check:
+    cargo check -p aioduct-cli --target x86_64-unknown-linux-gnu
+    cargo check -p aioduct-cli --target aarch64-unknown-linux-gnu
+    cargo check -p aioduct-cli --target x86_64-apple-darwin
+    cargo check -p aioduct-cli --target aarch64-apple-darwin
+    cargo check -p aioduct-cli --target x86_64-pc-windows-msvc
 
 # ---------- Site ----------
 
