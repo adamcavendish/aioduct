@@ -17,3 +17,6 @@ wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = ["Headers", "Response"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-O', '--enable-bulk-memory']
