@@ -29,14 +29,10 @@ impl DiskWriter {
             use std::os::unix::fs::FileExt;
             self.file.write_all_at(data, offset)
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            use std::io::{Seek, SeekFrom, Write};
-            let file = &self.file;
-            // On non-unix we need to seek + write (not concurrent-safe without external lock)
-            // For Windows, consider using seek_write from std::os::windows::fs::FileExt
-            file.seek(SeekFrom::Start(offset))?;
-            file.write_all(data)
+            use std::os::windows::fs::FileExt;
+            self.file.seek_write(data, offset)
         }
     }
 
