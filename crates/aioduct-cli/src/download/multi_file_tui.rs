@@ -13,11 +13,13 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::file_entry::FileStatus;
-use super::piece_grid::{HeatMapParams, render_heat_map, render_overview_bar};
+use super::piece_grid::{HeatMapParams, render_heat_map, render_overview_bar, wrap_line};
 use super::progress::format_size;
 use super::scheduler::{FileSnapshot, GlobalScheduler};
 use super::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus};
@@ -69,10 +71,11 @@ impl MultiFileTui {
 }
 
 struct AppState {
-    active_tab: usize, // 0=Files, 1=Workers, 2=Stats
+    active_tab: usize, // 0=Files, 1=Pieces, 2=Workers, 3=Stats
     selected_file: usize,
     files_scroll: u16,
     event_scroll: u16,
+    show_help: bool,
     frame_count: u64,
     live_speed_bps: f64,
     prev_downloaded: u64,
@@ -89,6 +92,7 @@ impl AppState {
             selected_file: 0,
             files_scroll: 0,
             event_scroll: 0,
+            show_help: false,
             frame_count: 0,
             live_speed_bps: 0.0,
             prev_downloaded: 0,
@@ -181,6 +185,9 @@ async fn run_multi_tui(
                     parent_cancel.cancel();
                     break;
                 }
+                InputAction::PrevTab => {
+                    app.active_tab = (app.active_tab + 3) % 4;
+                }
                 InputAction::NextTab => {
                     app.active_tab = (app.active_tab + 1) % 4;
                 }
@@ -204,6 +211,36 @@ async fn run_multi_tui(
                     3 => app.event_scroll = app.event_scroll.saturating_add(1),
                     _ => {}
                 },
+                InputAction::ScrollPageUp => match app.active_tab {
+                    0 => app.selected_file = app.selected_file.saturating_sub(10),
+                    1 => app.files_scroll = app.files_scroll.saturating_sub(10),
+                    3 => app.event_scroll = app.event_scroll.saturating_sub(10),
+                    _ => {}
+                },
+                InputAction::ScrollPageDown => match app.active_tab {
+                    0 => {
+                        let total = scheduler.total_files();
+                        app.selected_file = (app.selected_file + 10).min(total.saturating_sub(1));
+                    }
+                    1 => app.files_scroll = app.files_scroll.saturating_add(10),
+                    3 => app.event_scroll = app.event_scroll.saturating_add(10),
+                    _ => {}
+                },
+                InputAction::ScrollTop => match app.active_tab {
+                    0 => app.selected_file = 0,
+                    1 => app.files_scroll = 0,
+                    3 => app.event_scroll = 0,
+                    _ => {}
+                },
+                InputAction::ScrollBottom => match app.active_tab {
+                    0 => app.selected_file = scheduler.total_files().saturating_sub(1),
+                    1 => app.files_scroll = u16::MAX,
+                    3 => app.event_scroll = u16::MAX,
+                    _ => {}
+                },
+                InputAction::ToggleHelp => {
+                    app.show_help = !app.show_help;
+                }
             }
         }
 
@@ -255,10 +292,16 @@ async fn run_multi_tui(
 
 enum InputAction {
     Quit,
+    PrevTab,
     NextTab,
     Tab(usize),
     ScrollUp,
     ScrollDown,
+    ScrollPageUp,
+    ScrollPageDown,
+    ScrollTop,
+    ScrollBottom,
+    ToggleHelp,
 }
 
 fn poll_input() -> Option<InputAction> {
@@ -275,12 +318,19 @@ fn poll_input() -> Option<InputAction> {
                 Some(InputAction::Quit)
             }
             KeyCode::Tab => Some(InputAction::NextTab),
+            KeyCode::Left | KeyCode::Char('h') => Some(InputAction::PrevTab),
+            KeyCode::Right | KeyCode::Char('l') => Some(InputAction::NextTab),
             KeyCode::Char('1') => Some(InputAction::Tab(0)),
             KeyCode::Char('2') => Some(InputAction::Tab(1)),
             KeyCode::Char('3') => Some(InputAction::Tab(2)),
             KeyCode::Char('4') => Some(InputAction::Tab(3)),
             KeyCode::Up | KeyCode::Char('k') => Some(InputAction::ScrollUp),
             KeyCode::Down | KeyCode::Char('j') => Some(InputAction::ScrollDown),
+            KeyCode::PageUp => Some(InputAction::ScrollPageUp),
+            KeyCode::PageDown => Some(InputAction::ScrollPageDown),
+            KeyCode::Home | KeyCode::Char('g') => Some(InputAction::ScrollTop),
+            KeyCode::End | KeyCode::Char('G') => Some(InputAction::ScrollBottom),
+            KeyCode::Char('?') => Some(InputAction::ToggleHelp),
             _ => None,
         };
     }
@@ -318,6 +368,10 @@ fn draw_multi_ui(
     }
 
     draw_footer(f, chunks[2], data);
+
+    if app.show_help {
+        draw_help_overlay(f, area);
+    }
 }
 
 fn draw_header(f: &mut Frame, area: Rect, data: &MultiFrameData, app: &AppState) {
@@ -707,24 +761,52 @@ fn draw_workers_tab(
 // ─── Stats Tab ──────────────────────────────────────────────────────────────
 
 fn draw_stats_tab(f: &mut Frame, area: Rect, app: &AppState, events: &SharedEventLog) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Event Log ")
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let events_lock = events.lock().unwrap();
-    let mut lines: Vec<Line> = events_lock.iter().map(|e| Line::raw(e.clone())).collect();
+    let raw_lines: Vec<String> = events_lock.iter().cloned().collect();
     drop(events_lock);
 
-    if lines.is_empty() {
-        lines.push(Line::styled(
+    let visible = inner.height as usize;
+    let col_w = inner.width.max(1) as usize;
+
+    let visual_rows: Vec<Line> = if raw_lines.is_empty() {
+        vec![Line::styled(
             "No events yet.",
             Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    let visible = area.height as usize;
-    let total = lines.len();
+        )]
+    } else {
+        raw_lines
+            .iter()
+            .flat_map(|s| wrap_line(s.as_str(), col_w))
+            .collect()
+    };
+    let total = visual_rows.len();
     let max_scroll = total.saturating_sub(visible);
     let scroll = (app.event_scroll as usize).min(max_scroll);
 
-    let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).take(visible).collect();
-    f.render_widget(Paragraph::new(visible_lines), area);
+    let visible_lines: Vec<Line> = visual_rows.into_iter().skip(scroll).take(visible).collect();
+    f.render_widget(Paragraph::new(visible_lines), inner);
+
+    if total > visible {
+        let scrollbar_area = Rect {
+            x: area.x + area.width - 1,
+            y: area.y,
+            width: 1,
+            height: area.height,
+        };
+        let mut state = ScrollbarState::new(total).position(scroll);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            scrollbar_area,
+            &mut state,
+        );
+    }
 }
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -740,6 +822,71 @@ fn format_speed(bps: f64) -> String {
     } else {
         format!("{:.0} B/s", bps)
     }
+}
+
+fn draw_help_overlay(f: &mut Frame, area: Rect) {
+    let width = 42u16;
+    let height = 15u16;
+    let x = area.width.saturating_sub(width) / 2;
+    let y = area.height.saturating_sub(height) / 2;
+    let popup_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
+
+    f.render_widget(Clear, popup_area);
+
+    let lines = vec![
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Tab", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("1-4", Style::default().fg(Color::Cyan)),
+            Span::raw("    Switch tabs"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ←→", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("h l", Style::default().fg(Color::Cyan)),
+            Span::raw("    Prev/Next tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ↑↓", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("j k", Style::default().fg(Color::Cyan)),
+            Span::raw("    Scroll"),
+        ]),
+        Line::from(vec![
+            Span::styled("  PgUp", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("PgDn", Style::default().fg(Color::Cyan)),
+            Span::raw("  Page scroll"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Home", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("End", Style::default().fg(Color::Cyan)),
+            Span::raw("   Top / Bottom"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ?", Style::default().fg(Color::Cyan)),
+            Span::raw("              Toggle help"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc", Style::default().fg(Color::Cyan)),
+            Span::raw("            Close help"),
+        ]),
+        Line::from(vec![
+            Span::styled("  q", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Ctrl+C", Style::default().fg(Color::Cyan)),
+            Span::raw("  Quit & cancel"),
+        ]),
+    ];
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan).bg(Color::Black))
+        .style(Style::default().bg(Color::Black))
+        .title("Help [?]");
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, popup_area);
 }
 
 fn format_eta(secs: f64) -> String {

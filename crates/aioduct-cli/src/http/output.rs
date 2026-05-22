@@ -2,6 +2,7 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 use aioduct::Response;
+use http::StatusCode;
 
 use super::cli::HttpArgs;
 
@@ -29,20 +30,14 @@ pub async fn handle(
 
     if cli.remote_name {
         let filename = filename_from_url(&cli.url);
-        write_body_to_file(resp, Path::new(&filename)).await?;
+        stream_body_to_file(resp, Path::new(&filename)).await?;
         if !cli.silent {
             eprintln!("Saved to {filename}");
         }
     } else if let Some(ref path) = cli.output {
-        write_body_to_file(resp, path).await?;
+        stream_body_to_file(resp, path).await?;
     } else if !tui_active {
-        let body = resp.bytes().await?;
-        let stdout = std::io::stdout();
-        let mut out = stdout.lock();
-        out.write_all(&body).map_err(aioduct::Error::Io)?;
-        if atty_stdout() && !body.ends_with(b"\n") {
-            let _ = out.write_all(b"\n");
-        }
+        stream_body_to_stdout(resp).await?;
     }
 
     if let Some(ref fmt) = cli.write_out
@@ -93,13 +88,65 @@ fn dump_headers(resp: &Response, path: &Path) -> Result<(), aioduct::Error> {
     Ok(())
 }
 
-async fn write_body_to_file(resp: Response, path: &Path) -> Result<(), aioduct::Error> {
-    let body = resp.bytes().await?;
-    std::fs::write(path, &body).map_err(aioduct::Error::Io)?;
+async fn stream_body_to_stdout(resp: Response) -> Result<(), aioduct::Error> {
+    use std::io::Write;
+    let mut stream = resp.into_bytes_stream();
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut last_byte = 0u8;
+    while let Some(chunk) = stream.next().await {
+        let data = chunk?;
+        out.write_all(&data).map_err(aioduct::Error::Io)?;
+        out.flush().map_err(aioduct::Error::Io)?;
+        if !data.is_empty() {
+            last_byte = data[data.len() - 1];
+        }
+    }
+    if atty_stdout() && last_byte != b'\n' {
+        let _ = out.write_all(b"\n");
+    }
     Ok(())
 }
 
-fn print_write_out(fmt: &str, status: http::StatusCode) {
+async fn stream_body_to_file(resp: Response, path: &Path) -> Result<(), aioduct::Error> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path).map_err(aioduct::Error::Io)?;
+    let mut stream = resp.into_bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let data = chunk?;
+        file.write_all(&data).map_err(aioduct::Error::Io)?;
+    }
+    Ok(())
+}
+
+pub fn dump_headers_file(
+    version: http::Version,
+    status: StatusCode,
+    headers: &[(String, String)],
+    path: &Path,
+) -> Result<(), aioduct::Error> {
+    let mut out = std::fs::File::create(path).map_err(aioduct::Error::Io)?;
+    writeln!(out, "HTTP/{} {}", version_string(version), status).map_err(aioduct::Error::Io)?;
+    for (name, value) in headers {
+        writeln!(out, "{}: {}", name, value).map_err(aioduct::Error::Io)?;
+    }
+    writeln!(out).map_err(aioduct::Error::Io)?;
+    Ok(())
+}
+
+pub fn write_headers_stdout(
+    version: http::Version,
+    status: StatusCode,
+    headers: &[(String, String)],
+) {
+    println!("HTTP/{} {}", version_string(version), status);
+    for (name, value) in headers {
+        println!("{}: {}", name, value);
+    }
+    println!();
+}
+
+pub fn print_write_out(fmt: &str, status: http::StatusCode) {
     let output = fmt
         .replace("%{http_code}", &status.as_u16().to_string())
         .replace("%{response_code}", &status.as_u16().to_string())
@@ -107,7 +154,7 @@ fn print_write_out(fmt: &str, status: http::StatusCode) {
     print!("{output}");
 }
 
-fn filename_from_url(url: &str) -> String {
+pub fn filename_from_url(url: &str) -> String {
     let path = url
         .split('?')
         .next()

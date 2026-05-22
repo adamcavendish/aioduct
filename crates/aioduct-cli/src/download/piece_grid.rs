@@ -15,7 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Sparkline, Table, Wrap,
+    Sparkline, Table,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -231,6 +231,9 @@ async fn run_tui(
                 InputAction::ToggleHelp => {
                     app.show_help = !app.show_help;
                 }
+                InputAction::PrevTab => {
+                    app.active_tab = (app.active_tab + 2) % 3;
+                }
                 InputAction::NextTab => {
                     app.active_tab = (app.active_tab + 1) % 3;
                 }
@@ -245,6 +248,26 @@ async fn run_tui(
                 InputAction::ScrollDown => match app.active_tab {
                     0 => app.scroll_offset = app.scroll_offset.saturating_add(1),
                     2 => app.event_scroll = app.event_scroll.saturating_add(1),
+                    _ => {}
+                },
+                InputAction::ScrollPageUp => match app.active_tab {
+                    0 => app.scroll_offset = app.scroll_offset.saturating_sub(10),
+                    2 => app.event_scroll = app.event_scroll.saturating_sub(10),
+                    _ => {}
+                },
+                InputAction::ScrollPageDown => match app.active_tab {
+                    0 => app.scroll_offset = app.scroll_offset.saturating_add(10),
+                    2 => app.event_scroll = app.event_scroll.saturating_add(10),
+                    _ => {}
+                },
+                InputAction::ScrollTop => match app.active_tab {
+                    0 => app.scroll_offset = 0,
+                    2 => app.event_scroll = 0,
+                    _ => {}
+                },
+                InputAction::ScrollBottom => match app.active_tab {
+                    0 => app.scroll_offset = u16::MAX,
+                    2 => app.event_scroll = u16::MAX,
                     _ => {}
                 },
             }
@@ -298,10 +321,15 @@ async fn run_tui(
 enum InputAction {
     Quit,
     ToggleHelp,
+    PrevTab,
     NextTab,
     Tab(usize),
     ScrollUp,
     ScrollDown,
+    ScrollPageUp,
+    ScrollPageDown,
+    ScrollTop,
+    ScrollBottom,
 }
 
 fn poll_input() -> Option<InputAction> {
@@ -322,11 +350,17 @@ fn poll_input() -> Option<InputAction> {
         KeyCode::Char('?') => Some(InputAction::ToggleHelp),
         KeyCode::Esc => Some(InputAction::ToggleHelp),
         KeyCode::Tab => Some(InputAction::NextTab),
+        KeyCode::Left | KeyCode::Char('h') => Some(InputAction::PrevTab),
+        KeyCode::Right | KeyCode::Char('l') => Some(InputAction::NextTab),
         KeyCode::Char('1') => Some(InputAction::Tab(0)),
         KeyCode::Char('2') => Some(InputAction::Tab(1)),
         KeyCode::Char('3') => Some(InputAction::Tab(2)),
         KeyCode::Up | KeyCode::Char('k') => Some(InputAction::ScrollUp),
         KeyCode::Down | KeyCode::Char('j') => Some(InputAction::ScrollDown),
+        KeyCode::PageUp => Some(InputAction::ScrollPageUp),
+        KeyCode::PageDown => Some(InputAction::ScrollPageDown),
+        KeyCode::Home | KeyCode::Char('g') => Some(InputAction::ScrollTop),
+        KeyCode::End | KeyCode::Char('G') => Some(InputAction::ScrollBottom),
         _ => None,
     }
 }
@@ -1170,6 +1204,26 @@ fn draw_sparkline(f: &mut Frame, area: Rect, app: &AppState) {
     f.render_widget(sparkline, inner);
 }
 
+/// Split `line` into visual rows at `col_width` char boundaries,
+/// returning borrowed `Line`s to avoid allocations.
+pub(crate) fn wrap_line(line: &str, col_width: usize) -> Vec<Line<'_>> {
+    if line.is_empty() {
+        return vec![Line::raw("")];
+    }
+    let mut result = Vec::new();
+    let mut pos = 0;
+    let bytes = line.as_bytes();
+    while pos < bytes.len() {
+        let mut end = (pos + col_width).min(bytes.len());
+        while end > pos && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        result.push(Line::raw(&line[pos..end]));
+        pos = end;
+    }
+    result
+}
+
 fn draw_event_log(f: &mut Frame, area: Rect, app: &AppState, events: &SharedEventLog) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1180,20 +1234,23 @@ fn draw_event_log(f: &mut Frame, area: Rect, app: &AppState, events: &SharedEven
     f.render_widget(block, area);
 
     let log = events.lock().unwrap();
-    let lines: Vec<Line> = log.iter().map(|s| Line::raw(s.as_str())).collect();
-    let total_lines = lines.len() as u16;
+    let visible = inner.height as usize;
+    let col_w = inner.width.max(1) as usize;
 
-    let max_scroll = total_lines.saturating_sub(inner.height);
-    let scroll = app.event_scroll.min(max_scroll);
+    // Pre-wrap all lines into visual rows so scroll maps 1:1
+    let visual_rows: Vec<Line> = log
+        .iter()
+        .flat_map(|s| wrap_line(s.as_str(), col_w))
+        .collect();
+    let total = visual_rows.len();
+    let max_scroll = total.saturating_sub(visible);
+    let scroll = (app.event_scroll as usize).min(max_scroll);
 
-    let paragraph = Paragraph::new(lines)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
-    f.render_widget(paragraph, inner);
+    let visible_lines: Vec<Line> = visual_rows.into_iter().skip(scroll).take(visible).collect();
+    f.render_widget(Paragraph::new(visible_lines), inner);
 
-    if total_lines > inner.height {
-        let mut scrollbar_state =
-            ScrollbarState::new(total_lines as usize).position(scroll as usize);
+    if total > visible {
+        let mut scrollbar_state = ScrollbarState::new(total).position(scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         f.render_stateful_widget(
             scrollbar,
@@ -1265,7 +1322,7 @@ fn draw_footer(f: &mut Frame, area: Rect, data: &FrameData) {
 
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let width = 40u16;
-    let height = 14u16;
+    let height = 15u16;
     let x = area.width.saturating_sub(width) / 2;
     let y = area.height.saturating_sub(height) / 2;
 
@@ -1282,10 +1339,28 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::raw("    Switch tabs"),
         ]),
         Line::from(vec![
+            Span::styled("  ←→", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("h l", Style::default().fg(Color::Cyan)),
+            Span::raw("    Prev/Next tab"),
+        ]),
+        Line::from(vec![
             Span::styled("  ↑↓", Style::default().fg(Color::Cyan)),
             Span::styled(" / ", Style::default().fg(Color::DarkGray)),
             Span::styled("j k", Style::default().fg(Color::Cyan)),
             Span::raw("    Scroll"),
+        ]),
+        Line::from(vec![
+            Span::styled("  PgUp", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("PgDn", Style::default().fg(Color::Cyan)),
+            Span::raw("  Page scroll"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Home", Style::default().fg(Color::Cyan)),
+            Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+            Span::styled("End", Style::default().fg(Color::Cyan)),
+            Span::raw("   Top / Bottom"),
         ]),
         Line::from(vec![
             Span::styled("  ?", Style::default().fg(Color::Cyan)),
@@ -1302,33 +1377,12 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
             Span::raw("  Quit & cancel"),
         ]),
         Line::raw(""),
-        Line::styled(
-            "  Pieces tab:",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Line::from(vec![
-            Span::styled("  ↑↓", Style::default().fg(Color::Cyan)),
-            Span::raw("             Scroll grid"),
-        ]),
-        Line::raw(""),
-        Line::styled(
-            "  Stats tab:",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Line::from(vec![
-            Span::styled("  ↑↓", Style::default().fg(Color::Cyan)),
-            Span::raw("             Scroll event log"),
-        ]),
-        Line::raw(""),
     ];
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(Color::Cyan).bg(Color::Black))
+        .style(Style::default().bg(Color::Black))
         .title(" Key Bindings ");
 
     let paragraph = Paragraph::new(lines).block(block);
