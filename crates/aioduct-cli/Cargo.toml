@@ -8,6 +8,9 @@ repository.workspace = true
 description = "Unified CLI for aioduct — parallel downloads and HTTP requests"
 publish = false
 
+[package.metadata.dist]
+dist = true
+
 [[bin]]
 name = "aioduct"
 path = "src/main.rs"
