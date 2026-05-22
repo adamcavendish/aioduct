@@ -1,14 +1,13 @@
 // features: tokio,json
 // runtime: tokio
 use aioduct::{TokioClient, CookieJar};
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let jar = Arc::new(CookieJar::new());
+    let jar = CookieJar::new();
     let client = TokioClient::builder()
         .cookie_jar(jar.clone())
-        .build();
+        .build()?;
 
     // Login: server sets session cookie
     client.post("https://httpbin.org/cookies/set/session/abc123")?

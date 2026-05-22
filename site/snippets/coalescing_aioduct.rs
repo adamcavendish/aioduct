@@ -7,7 +7,7 @@ async fn main() -> Result<(), aioduct::Error> {
     let client = TokioClient::builder()
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
         .connection_coalescing(true)
-        .build();
+        .build()?;
 
     // Both requests may share a single TLS connection
     // if the cert covers both domains and DNS resolves to the same IP
