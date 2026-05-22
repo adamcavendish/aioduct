@@ -1,17 +1,16 @@
 // features: tokio,json
 // runtime: tokio
-use aioduct::{CacheConfig, TokioClient, HttpCache, InMemoryCacheStore};
+use aioduct::{TokioClient, HttpCache, InMemoryCacheStore};
 
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    let cache = HttpCache::new(
-        InMemoryCacheStore::new(),
-        CacheConfig::default(),
+    let cache = HttpCache::with_store(
+        InMemoryCacheStore::new(256),
     );
 
     let client = TokioClient::builder()
         .cache(cache)
-        .build();
+        .build()?;
 
     // First request: fetches from server, caches response
     let r1 = client.get("https://httpbin.org/cache/60")?.send().await?;

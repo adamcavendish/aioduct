@@ -6,8 +6,8 @@ use aioduct::TokioClient;
 async fn main() -> Result<(), aioduct::Error> {
     let client = TokioClient::builder()
         .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
-        .http3(true)
-        .build();
+        .http3(true)?
+        .build()?;
 
     // Automatically upgrades to HTTP/3 via Alt-Svc
     let resp = client.get("https://cloudflare.com/")?.send().await?;

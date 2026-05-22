@@ -832,3 +832,310 @@ pub async fn fetch_anything(method: &str, url: &str) -> Result<String, String> {
         "HTTP {status}\n\nUsed custom method: {method}\n\n{pretty}"
     ))
 }
+
+#[wasm_bindgen]
+pub async fn fetch_query_params(
+    url: &str,
+    key1: &str,
+    val1: &str,
+    key2: &str,
+    val2: &str,
+) -> Result<String, String> {
+    let mut parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
+    {
+        let mut pairs = parsed.query_pairs_mut();
+        pairs.append_pair(key1, val1);
+        pairs.append_pair(key2, val2);
+    }
+
+    let final_url = parsed.to_string();
+    let client = WasmClient::new();
+    let resp = client
+        .get(&final_url)
+        .map_err(|e| format!("Request build error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+
+    let status = resp.status();
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
+    let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
+
+    Ok(format!("HTTP {status}\n\nURL: {final_url}\n\n{pretty}"))
+}
+
+#[wasm_bindgen]
+pub async fn fetch_streaming(url: &str) -> Result<String, String> {
+    let client = WasmClient::new();
+    let resp = client
+        .get(url)
+        .map_err(|e| format!("Request build error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+
+    let status = resp.status();
+    let content_length = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    let mut stream = resp.into_bytes_stream();
+    let mut total_bytes = 0usize;
+    let mut chunk_count = 0u32;
+
+    let start = js_sys::Date::now();
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("Stream read error: {e}"))?;
+        total_bytes += bytes.len();
+        chunk_count += 1;
+    }
+    let elapsed = js_sys::Date::now() - start;
+
+    let mut output = format!(
+        "HTTP {status}\n\nStreamed {total_bytes} bytes in {chunk_count} chunks over {elapsed:.0}ms\n"
+    );
+    if let Some(cl) = content_length {
+        output.push_str(&format!(
+            "Content-Length: {cl} bytes (matched: {})\n",
+            cl as usize == total_bytes
+        ));
+    }
+    let throughput = if elapsed > 0.0 {
+        (total_bytes as f64 / elapsed) * 1000.0 / 1024.0
+    } else {
+        0.0
+    };
+    output.push_str(&format!("Throughput: {throughput:.1} KB/s"));
+    if chunk_count > 0 {
+        output.push_str(&format!(
+            "\nAvg chunk size: {} bytes",
+            total_bytes / chunk_count as usize
+        ));
+    }
+
+    Ok(output)
+}
+
+#[wasm_bindgen]
+pub async fn fetch_typed_query(url: &str) -> Result<String, String> {
+    #[derive(serde::Serialize)]
+    struct SearchParams {
+        q: String,
+        page: u32,
+        per_page: u32,
+    }
+
+    let params = SearchParams {
+        q: "rust http client".into(),
+        page: 1,
+        per_page: 20,
+    };
+    let query_string =
+        serde_urlencoded::to_string(&params).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let separator = if url.contains('?') { "&" } else { "?" };
+    let final_url = format!("{url}{separator}{query_string}");
+
+    let client = WasmClient::new();
+    let resp = client
+        .get(&final_url)
+        .map_err(|e| format!("Request build error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+
+    let status = resp.status();
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
+    let pretty = serde_json::to_string_pretty(&json).unwrap_or_default();
+
+    Ok(format!(
+        "HTTP {status}\n\nTyped query → URL: {final_url}\n\n{pretty}"
+    ))
+}
+
+#[wasm_bindgen]
+pub async fn fetch_cookie_session(base_url: &str) -> Result<String, String> {
+    let client = WasmClient::new();
+    let jar = aioduct::CookieJar::new();
+    let mut output = String::new();
+
+    // Step 1: Get a Set-Cookie from the server
+    let set_cookie_url = format!("{base_url}/cookies/set/session_id/demo12345");
+    let resp1 = client
+        .get(&set_cookie_url)
+        .map_err(|e| format!("Request 1 build error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Request 1 fetch error: {e}"))?;
+
+    let status1 = resp1.status();
+
+    jar.store_from_response("httpbin.org", "/", resp1.headers());
+
+    let jar_cookies_count = jar.cookies().len();
+
+    // Drain response body
+    let _ = resp1.bytes().await;
+
+    output.push_str(&format!(
+        "── Step 1: Set-Cookie ──\nHTTP {status1}\nCookies in jar after step 1: {jar_cookies_count}\n\n"
+    ));
+
+    // Step 2: Make another request — cookies should be sent
+    let cookies_url = format!("{base_url}/cookies");
+    let mut req_headers = http::HeaderMap::new();
+    jar.apply_to_request("httpbin.org", true, "/", None, &mut req_headers);
+
+    let resp2 = client
+        .get(&cookies_url)
+        .map_err(|e| format!("Request 2 build error: {e}"))?
+        .headers(req_headers)
+        .send()
+        .await
+        .map_err(|e| format!("Request 2 fetch error: {e}"))?;
+
+    let status2 = resp2.status();
+    let json2: serde_json::Value = resp2
+        .json()
+        .await
+        .map_err(|e| format!("JSON parse error: {e}"))?;
+
+    output.push_str(&format!(
+        "── Step 2: Cookies sent ──\nHTTP {status2}\nServer sees cookies:\n{}\n\n",
+        serde_json::to_string_pretty(&json2).unwrap_or_default()
+    ));
+
+    // Step 3: Set another cookie, verify both are maintained
+    let set_cookie2_url = format!("{base_url}/cookies/set/theme/dark");
+    let resp3 = client
+        .get(&set_cookie2_url)
+        .map_err(|e| format!("Request 3 build error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Request 3 fetch error: {e}"))?;
+
+    let status3 = resp3.status();
+    jar.store_from_response("httpbin.org", "/", resp3.headers());
+    let _ = resp3.bytes().await;
+
+    let jar_count = jar.cookies().len();
+    output.push_str(&format!(
+        "── Step 3: Second cookie ──\nHTTP {status3}\nCookies in jar after step 3: {jar_count}\n\nCookieJar maintains session state across requests inside the browser!",
+    ));
+
+    Ok(output)
+}
+
+#[wasm_bindgen]
+pub async fn fetch_link_pagination(url: &str) -> Result<String, String> {
+    let client = WasmClient::new();
+    let resp = client
+        .get(url)
+        .map_err(|e| format!("Request build error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+
+    let status = resp.status();
+    let links = aioduct::link::parse_link_headers(resp.headers());
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
+
+    let mut output = format!("HTTP {status}\n\n── Parsed Link Headers (RFC 8288) ──\n");
+    if links.is_empty() {
+        output.push_str("  No Link headers found in response.\n");
+        output.push_str("  (This endpoint doesn't return Link headers — try one that does.)\n");
+    } else {
+        for link in &links {
+            output.push_str(&format!("  URI: {}\n", link.uri()));
+            if let Some(rel) = link.rel() {
+                output.push_str(&format!("  Rel: {rel}\n"));
+            }
+            if let Some(title) = link.title() {
+                output.push_str(&format!("  Title: {title}\n"));
+            }
+            if let Some(mt) = link.media_type() {
+                output.push_str(&format!("  Type: {mt}\n"));
+            }
+            output.push('\n');
+        }
+    }
+
+    output.push_str(&format!("── Response Body ──\n{body}"));
+
+    Ok(output)
+}
+
+#[wasm_bindgen]
+pub async fn fetch_problem_details(url: &str) -> Result<String, String> {
+    let client = WasmClient::new();
+    let resp = client
+        .get(url)
+        .map_err(|e| format!("Request build error: {e}"))?
+        .header(
+            http::header::ACCEPT,
+            http::HeaderValue::from_static("application/problem+json"),
+        )
+        .send()
+        .await
+        .map_err(|e| format!("Fetch error: {e}"))?;
+
+    let status = resp.status();
+    let content_type = resp
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+
+    let mut output = format!("HTTP {status}\nContent-Type: {content_type}\n\n");
+
+    let body_text = resp
+        .text()
+        .await
+        .map_err(|e| format!("Body read error: {e}"))?;
+
+    // Try to deserialize as ProblemDetails (RFC 9457)
+    match serde_json::from_str::<aioduct::ProblemDetails>(&body_text) {
+        Ok(pd) => {
+            output.push_str("── Problem Details (RFC 9457) ──\n");
+            if let Some(ref t) = pd.problem_type {
+                output.push_str(&format!("Type:     {t}\n"));
+            }
+            if let Some(ref t) = pd.title {
+                output.push_str(&format!("Title:    {t}\n"));
+            }
+            if let Some(s) = pd.status {
+                output.push_str(&format!("Status:   {s}\n"));
+            }
+            if let Some(ref d) = pd.detail {
+                output.push_str(&format!("Detail:   {d}\n"));
+            }
+            if let Some(ref i) = pd.instance {
+                output.push_str(&format!("Instance: {i}\n"));
+            }
+            if !pd.extensions.is_empty() {
+                output.push_str("Extensions:\n");
+                for (k, v) in &pd.extensions {
+                    output.push_str(&format!("  {k}: {v}\n"));
+                }
+            }
+        }
+        Err(_) => {
+            output.push_str("── Raw Body (not problem+json) ──\n");
+            output.push_str(&body_text);
+        }
+    }
+
+    Ok(output)
+}

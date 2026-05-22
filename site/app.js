@@ -357,6 +357,38 @@ for url in urls {
     let resp = client.get(url)?.send().await?;
     println!("{}: {} bytes", url, resp.bytes().len());
 }`,
+
+	fetch_cookie_session: `let client = WasmClient::new();
+	let jar = aioduct::CookieJar::new();
+
+	// Step 1: Set-Cookie from server
+	let resp = client.get("/cookies/set/session_id/demo12345")?
+	    .send().await?;
+	jar.store_from_response("httpbin.org", "/", resp.headers());
+
+	// Step 2: Apply cookies to next request
+	let mut headers = HeaderMap::new();
+	jar.apply_to_request("httpbin.org", true, "/", None, &mut headers);
+	let resp = client.get("/cookies")?
+	    .headers(headers).send().await?;
+	// Server now sees session_id cookie!`,
+
+	fetch_link_pagination: `let resp = client.get(url)?.send().await?;
+	let links = aioduct::link::parse_link_headers(resp.headers());
+	for link in &links {
+	    println!("URI: {}", link.uri());
+	    if let Some(rel) = link.rel() { println!("Rel: {rel}"); }
+	    if let Some(title) = link.title() { println!("Title: {title}"); }
+	}`,
+
+	fetch_problem_details: `let resp = client.get(url)?
+	    .header(ACCEPT, "application/problem+json")
+	    .send().await?;
+	let problem: aioduct::ProblemDetails = resp.json()?;
+	println!("Type: {:?}", problem.problem_type);
+	println!("Title: {:?}", problem.title);
+	println!("Status: {:?}", problem.status);
+	// Parses RFC 9457 error responses`,
 };
 
 async function initWasm() {
@@ -485,6 +517,24 @@ async function runDemo() {
                 break;
             case 'fetch_multiple':
                 result = await wasmModule.fetch_multiple_sequential(url);
+                break;
+            case 'fetch_query_params':
+                result = await wasmModule.fetch_query_params(url, 'search', 'rust wasm', 'limit', '10');
+                break;
+            case 'fetch_typed_query':
+                result = await wasmModule.fetch_typed_query(url);
+                break;
+            case 'fetch_streaming':
+                result = await wasmModule.fetch_streaming(url);
+                break;
+            case 'fetch_cookie_session':
+                result = await wasmModule.fetch_cookie_session(url);
+                break;
+            case 'fetch_link_pagination':
+                result = await wasmModule.fetch_link_pagination(url);
+                break;
+            case 'fetch_problem_details':
+                result = await wasmModule.fetch_problem_details(url);
                 break;
             default:
                 result = await wasmModule.fetch_json(url);

@@ -162,6 +162,10 @@ site-wasm:
         --out-dir ../../../site/wasm \
         --out-name aioduct_wasm_demo \
         --release
+
+# Check that all comparison site snippets compile
+check-snippets:
+    bash scripts/check-snippets.sh
     rm -f site/wasm/.gitignore site/wasm/package.json
 
 # Assemble the full site (landing page + mdBook docs)

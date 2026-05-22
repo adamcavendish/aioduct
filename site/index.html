@@ -43,6 +43,8 @@ let data: serde_json::Value = resp.json()?;</code></pre>
                             <option value="fetch_html" data-url="https://httpbin.org/html">GET HTML content</option>
                             <option value="fetch_utf8" data-url="https://httpbin.org/encoding/utf8">GET UTF-8 content</option>
                             <option value="fetch_large_response" data-url="https://httpbin.org/bytes/10000">Large response (10KB)</option>
+                            <option value="fetch_query_params" data-url="https://httpbin.org/get">GET with query params</option>
+                            <option value="fetch_typed_query" data-url="https://httpbin.org/get">Typed query (serde)</option>
                         </optgroup>
                         <optgroup label="Headers &amp; Auth">
                             <option value="fetch_with_headers" data-url="https://httpbin.org/headers">Custom headers</option>
@@ -50,6 +52,7 @@ let data: serde_json::Value = resp.json()?;</code></pre>
                             <option value="fetch_basic_auth" data-url="https://httpbin.org/basic-auth/demo/secret">Basic auth</option>
                             <option value="fetch_user_agent" data-url="https://httpbin.org/user-agent">Custom User-Agent</option>
                             <option value="fetch_cookies" data-url="https://httpbin.org/anything">Send cookies</option>
+                            <option value="fetch_cookie_session" data-url="https://httpbin.org">CookieJar session</option>
                             <option value="fetch_response_headers" data-url="https://httpbin.org/response-headers?X-Custom=hello&X-Powered-By=aioduct">Response headers</option>
                         </optgroup>
                         <optgroup label="Other Methods">
@@ -74,6 +77,9 @@ let data: serde_json::Value = resp.json()?;</code></pre>
                             <option value="fetch_gzip" data-url="https://httpbin.org/gzip">Gzip encoding</option>
                             <option value="fetch_content_negotiation" data-url="https://httpbin.org/anything">Content negotiation</option>
                             <option value="fetch_multiple" data-url="https://httpbin.org/ip,https://httpbin.org/get,https://httpbin.org/user-agent">Sequential requests (3x)</option>
+                            <option value="fetch_streaming" data-url="https://httpbin.org/bytes/4096">Streaming download (4KB)</option>
+                            <option value="fetch_link_pagination" data-url="https://httpbin.org/response-headers?Link=%3Chttps%3A%2F%2Fhttpbin.org%2Fget%3Fpage%3D2%3E%3B%20rel%3D%22next%22%2C%20%3Chttps%3A%2F%2Fhttpbin.org%2Fget%3Fpage%3D1%3E%3B%20rel%3D%22prev%22">Link header parsing</option>
+                            <option value="fetch_problem_details" data-url="https://httpbin.org/status/422">Problem Details (RFC 9457)</option>
                         </optgroup>
                     </select>
                 </div>
@@ -282,7 +288,6 @@ aioduct = { version = "0.1.7", features = ["tokio", "rustls", "json"] }</code></
                 <button class="tab active" data-tab="retries">Retries</button>
                 <button class="tab" data-tab="streaming">Bandwidth</button>
                 <button class="tab" data-tab="http3">HTTP/3</button>
-                <button class="tab" data-tab="timing">Timing</button>
                 <button class="tab" data-tab="cache">Cache</button>
                 <button class="tab" data-tab="multiruntime">Multi-Runtime</button>
                 <button class="tab" data-tab="otel">Observability</button>
@@ -293,8 +298,8 @@ aioduct = { version = "0.1.7", features = ["tokio", "rustls", "json"] }</code></
                 <div class="comparison-panel active" data-tab="retries">
                     <div class="panel-side">
                         <h4>aioduct</h4>
-                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
-    .retry(RetryConfig::default().max_retries(3))
+                        <pre><code>let client = TokioClient::builder()
+    .retry(aioduct::RetryConfig::default().max_retries(3))
     .build();
 
 let resp = client.get("https://httpbin.org/get")?
@@ -317,8 +322,8 @@ let data: serde_json::Value = resp.json().await?;</code></pre>
                 <div class="comparison-panel" data-tab="streaming">
                     <div class="panel-side">
                         <h4>aioduct</h4>
-                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
-    .bandwidth_limit(1_048_576) // 1 MB/s
+                        <pre><code>let client = TokioClient::builder()
+    .max_download_speed(1_048_576) // 1 MB/s  (bytes/sec)
     .build();
 
 let resp = client
@@ -348,10 +353,10 @@ while let Some(chunk) = stream.next().await {
                 <div class="comparison-panel" data-tab="http3">
                     <div class="panel-side">
                         <h4>aioduct</h4>
-                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
+                        <pre><code>let client = TokioClient::builder()
     .tls(RustlsConnector::with_webpki_roots())
-    .http3(true)
-    .build();
+    .http3(true)?
+    .build()?;
 
 // Automatically upgrades to HTTP/3 via Alt-Svc
 let resp = client.get("https://cloudflare.com/")?
@@ -374,42 +379,15 @@ let client = reqwest::Client::new();
                     </div>
                 </div>
 
-                <div class="comparison-panel" data-tab="timing">
-                    <div class="panel-side">
-                        <h4>aioduct</h4>
-                        <pre><code>let resp = client.get(url)?.send().await?;
-let timings = resp.timings();
-
-println!("DNS:   {:?}", timings.dns());
-println!("TCP:   {:?}", timings.tcp());
-println!("TLS:   {:?}", timings.tls());
-println!("TTFB:  {:?}", timings.ttfb());
-println!("Total: {:?}", timings.total());</code></pre>
-                        <span class="panel-highlight">Built-in per-request timing breakdown (DNS/TCP/TLS/TTFB)</span>
-                    </div>
-                    <div class="panel-side panel-alt">
-                        <h4>reqwest</h4>
-                        <pre><code>let start = Instant::now();
-let resp = client.get(url).send().await?;
-let elapsed = start.elapsed();
-
-// Only total time available
-// No DNS/TCP/TLS/TTFB breakdown
-println!("Total: {elapsed:?}");</code></pre>
-                        <span class="panel-note">No timing breakdown — total elapsed only</span>
-                    </div>
-                </div>
-
                 <div class="comparison-panel" data-tab="cache">
                     <div class="panel-side">
                         <h4>aioduct</h4>
-                        <pre><code>let cache = HttpCache::new(
-    InMemoryCacheStore::new(),
-    CacheConfig::default(),
+                        <pre><code>let cache = HttpCache::with_store(
+    InMemoryCacheStore::new(256),
 );
-let client = Client::&lt;TokioRuntime&gt;::builder()
+let client = TokioClient::builder()
     .cache(cache)
-    .build();
+    .build()?;
 
 // Second request served from cache
 let r1 = client.get(url)?.send().await?;
@@ -435,16 +413,16 @@ let r2 = client.get(url).send().await?;</code></pre>
                 <div class="comparison-panel" data-tab="multiruntime">
                     <div class="panel-side">
                         <h4>aioduct</h4>
-                        <pre><code>// Same API, any runtime — just change the type parameter
+                        <pre><code>// Same API, any runtime — switch the type alias
 use aioduct::runtime::{TokioRuntime, SmolRuntime};
 
 // With tokio:
-let client = Client::&lt;TokioRuntime&gt;::builder().build();
+let client = TokioClient::builder().build();
 
 // With smol (zero code changes):
-let client = Client::&lt;SmolRuntime&gt;::builder().build();
+let client = SmolClient::builder().build();
 
-// Also: CompioRuntime, WasmClient, WasiP2Client</code></pre>
+// Also: CompioRuntime, WasmClient, WasiClient</code></pre>
                         <span class="panel-highlight">tokio / smol / compio / WASM / WASI-P2</span>
                     </div>
                     <div class="panel-side panel-alt">
@@ -462,7 +440,7 @@ let client = reqwest::Client::new();
                 <div class="comparison-panel" data-tab="otel">
                     <div class="panel-side">
                         <h4>aioduct</h4>
-                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
+                        <pre><code>let client = TokioClient::builder()
     .middleware(TracingMiddleware)
     .middleware(OtelMiddleware::default())
     .build();
@@ -491,13 +469,13 @@ let resp = client.get(url).send()
                 <div class="comparison-panel" data-tab="doh">
                     <div class="panel-side">
                         <h4>aioduct</h4>
-                        <pre><code>let client = Client::&lt;TokioRuntime&gt;::builder()
+                        <pre><code>let client = TokioClient::builder()
     .tls(RustlsConnector::with_webpki_roots())
     .dns_over_https(
         "1.1.1.1".parse().unwrap(),
         "cloudflare-dns.com",
-    )
-    .build();
+    )?
+    .build()?;
 
 // All DNS queries encrypted via HTTPS
 let resp = client.get(url)?.send().await?;</code></pre>

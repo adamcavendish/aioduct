@@ -7,7 +7,7 @@ async fn main() -> Result<(), aioduct::Error> {
     let client = TokioClient::builder()
         .middleware(TracingMiddleware)
         .middleware(OtelMiddleware::default())
-        .build();
+        .build()?;
 
     // Every request automatically emits:
     // - tracing spans with method, url, status, duration
