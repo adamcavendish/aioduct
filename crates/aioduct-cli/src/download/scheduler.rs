@@ -320,7 +320,7 @@ mod tests {
             piece_length,
             segment_man,
             disk_writer,
-            control_path: PathBuf::from(format!("/tmp/file{id}.aria2")),
+            control_path: PathBuf::from(format!("/tmp/file{id}.aioduct")),
             supports_range: true,
         }
     }

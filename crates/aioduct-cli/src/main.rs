@@ -21,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Parallel segmented download (aria2-style)
+    /// Parallel segmented download
     Download(download::DownloadArgs),
     /// HTTP request tool (curl-style)
     Http(http::HttpArgs),

@@ -387,7 +387,7 @@ fn draw_header(f: &mut Frame, area: Rect, data: &MultiFrameData, app: &AppState)
     let progress_bar = format!("{}{}", "\u{2501}".repeat(filled), "\u{2500}".repeat(empty),);
 
     let line1 = Line::from(vec![
-        Span::styled(" aioduct-aria ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" aioduct ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!("[{}/{}]", data.completed_files, data.total_files),
             Style::default()

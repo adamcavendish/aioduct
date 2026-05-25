@@ -75,5 +75,35 @@ pub fn push_event(log: &SharedEventLog, msg: String) {
     if events.len() >= MAX_EVENTS {
         events.pop_front();
     }
-    events.push_back(msg);
+    events.push_back(sanitize_event(msg));
+}
+
+/// Sanitize a string for terminal display: strip newlines, ANSI escapes,
+/// and truncate long messages to avoid corrupting the TUI or table layout.
+pub(crate) fn sanitize_for_display(msg: &str) -> String {
+    let s = msg.replace('\n', " | ").replace('\r', "");
+    // Strip ANSI escape sequences (e.g. from tracing spans)
+    let mut cleaned = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            while let Some(&next) = chars.peek() {
+                chars.next();
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            cleaned.push(c);
+        }
+    }
+    if cleaned.len() > 500 {
+        cleaned.truncate(497);
+        cleaned.push_str("...");
+    }
+    cleaned
+}
+
+fn sanitize_event(msg: String) -> String {
+    sanitize_for_display(&msg)
 }

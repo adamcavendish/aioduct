@@ -160,7 +160,7 @@ impl DownloadEngine {
             Err(e) => DownloadResult {
                 output: task.output.clone(),
                 total_size: 0,
-                error: Some(e.to_string()),
+                error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
             },
         }
     }
@@ -209,7 +209,7 @@ impl DownloadEngine {
                     results[idx] = Some(DownloadResult {
                         output: task.output.clone(),
                         total_size: 0,
-                        error: Some(e.to_string()),
+                        error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
                     });
                     continue;
                 }
@@ -220,7 +220,7 @@ impl DownloadEngine {
                         results[idx] = Some(DownloadResult {
                             output: task.output.clone(),
                             total_size: 0,
-                            error: Some(e.to_string()),
+                            error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
                         });
                         continue;
                     }
@@ -266,7 +266,9 @@ impl DownloadEngine {
                                 return DownloadResult {
                                     output,
                                     total_size: 0,
-                                    error: Some(e.to_string()),
+                                    error: Some(super::tui_state::sanitize_for_display(
+                                        &e.to_string(),
+                                    )),
                                 };
                             }
                         };
@@ -280,7 +282,9 @@ impl DownloadEngine {
                                         return DownloadResult {
                                             output,
                                             total_size: 0,
-                                            error: Some(e.to_string()),
+                                            error: Some(super::tui_state::sanitize_for_display(
+                                                &e.to_string(),
+                                            )),
                                         };
                                     }
                                 };
@@ -293,7 +297,11 @@ impl DownloadEngine {
                                                 return DownloadResult {
                                                     output,
                                                     total_size: 0,
-                                                    error: Some(e.to_string()),
+                                                    error: Some(
+                                                        super::tui_state::sanitize_for_display(
+                                                            &e.to_string(),
+                                                        ),
+                                                    ),
                                                 };
                                             }
                                             downloaded += bytes.len() as u64;
@@ -302,7 +310,11 @@ impl DownloadEngine {
                                             return DownloadResult {
                                                 output,
                                                 total_size: downloaded,
-                                                error: Some(e.to_string()),
+                                                error: Some(
+                                                    super::tui_state::sanitize_for_display(
+                                                        &e.to_string(),
+                                                    ),
+                                                ),
                                             };
                                         }
                                     }
@@ -317,7 +329,7 @@ impl DownloadEngine {
                             Err(e) => DownloadResult {
                                 output,
                                 total_size: 0,
-                                error: Some(e.to_string()),
+                                error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
                             },
                         }
                     }),
@@ -334,7 +346,7 @@ impl DownloadEngine {
                         results[idx] = Some(DownloadResult {
                             output: tasks[idx].output.clone(),
                             total_size: 0,
-                            error: Some(e.to_string()),
+                            error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
                         });
                     }
                 }
@@ -479,7 +491,7 @@ impl DownloadEngine {
                     results[idx] = Some(DownloadResult {
                         output: tasks[idx].output.clone(),
                         total_size: 0,
-                        error: Some(e.to_string()),
+                        error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
                     });
                 }
             }
