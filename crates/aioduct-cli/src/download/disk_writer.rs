@@ -32,7 +32,7 @@ impl DiskWriter {
         #[cfg(windows)]
         {
             use std::os::windows::fs::FileExt;
-            self.file.seek_write(data, offset)
+            self.file.seek_write(data, offset).map(|_| ())
         }
     }
 
