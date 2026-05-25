@@ -87,6 +87,7 @@ version = "0.2.0-alpha.2"
 dependencies = [
  "aioduct",
  "bytes",
+ "compio-runtime",
  "criterion",
  "http 1.4.0",
  "http-body",
@@ -96,6 +97,7 @@ dependencies = [
  "isahc",
  "reqwest",
  "serde",
+ "smol",
  "tokio",
 ]
 
@@ -972,6 +974,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "smol",
  "tinytemplate",
  "tokio",
  "walkdir",
