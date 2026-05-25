@@ -5,9 +5,10 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["tokio", "json", "rustls", "rustls-ring", "__bench"] }
+aioduct = { workspace = true, features = ["tokio", "smol", "compio", "json", "rustls", "rustls-ring", "__bench"] }
 bytes.workspace = true
-criterion = { version = "0.8", features = ["async_tokio"] }
+compio-runtime.workspace = true
+criterion = { version = "0.8", features = ["async_tokio", "async_smol"] }
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
@@ -16,6 +17,7 @@ hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "
 isahc = "1"
 reqwest = { version = "0.13", features = ["json", "gzip", "multipart"] }
 serde = { workspace = true, features = ["derive"] }
+smol.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 [[bench]]

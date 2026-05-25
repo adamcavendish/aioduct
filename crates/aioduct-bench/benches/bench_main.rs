@@ -11,6 +11,8 @@ mod e2e_h1;
 mod e2e_h2;
 #[path = "bench_main/e2e_pooling.rs"]
 mod e2e_pooling;
+#[path = "bench_main/e2e_runtime.rs"]
+mod e2e_runtime;
 #[path = "bench_main/micro_body.rs"]
 mod micro_body;
 #[path = "bench_main/micro_cookie.rs"]
@@ -24,6 +26,7 @@ criterion::criterion_main!(
     e2e_concurrent::benches,
     e2e_features::benches,
     e2e_pooling::benches,
+    e2e_runtime::benches,
     micro_pool::benches,
     micro_cookie::benches,
     micro_body::benches,
