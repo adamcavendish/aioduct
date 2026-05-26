@@ -58,12 +58,13 @@ pub async fn run(cli: HttpArgs) -> ExitCode {
         .headers()
         .iter()
         .map(|(k, v)| {
-            (
-                k.as_str().to_owned(),
-                v.to_str().unwrap_or("<binary>").to_owned(),
-            )
+            let value = v.to_str().unwrap_or("<binary>").to_owned();
+            let display_value = redact_header_value(&value, k.as_str());
+            (k.as_str().to_owned(), display_value.to_owned())
         })
         .collect();
+
+    let is_binary = is_binary_content_type(&resp_headers);
 
     if let Some(ref tui) = tui_handle {
         tui.send_response_headers(resp_headers.clone());
@@ -96,8 +97,10 @@ pub async fn run(cli: HttpArgs) -> ExitCode {
                         match chunk {
                             Some(Ok(data)) => {
                                 body_buf.extend_from_slice(&data);
-                                let text = String::from_utf8_lossy(&data);
-                                tui.send_body_chunk(text.into_owned());
+                                if !is_binary {
+                                    let text = String::from_utf8_lossy(&data);
+                                    tui.send_body_chunk(text.into_owned());
+                                }
                             }
                             Some(Err(e)) => {
                                 if !cli.silent || cli.show_error {
@@ -110,6 +113,17 @@ pub async fn run(cli: HttpArgs) -> ExitCode {
                         }
                     }
                 }
+            }
+            if is_binary {
+                tui.send_body_chunk(format!(
+                    "[binary data — {} bytes, {}]\n",
+                    body_buf.len(),
+                    resp_headers
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                        .map(|(_, v)| v.as_str())
+                        .unwrap_or("unknown type")
+                ));
             }
             tui.send_body_done();
         }
@@ -189,4 +203,59 @@ fn exit_code_for_error(e: &aioduct::Error) -> ExitCode {
         aioduct::Error::InvalidUrl(_) => ExitCode::from(3),
         _ => ExitCode::from(1),
     }
+}
+
+fn redact_header_value<'a>(value: &'a str, name: &str) -> &'a str {
+    let lower = name.to_lowercase();
+    if lower == "authorization"
+        || lower == "proxy-authorization"
+        || lower == "cookie"
+        || lower == "set-cookie"
+    {
+        "***"
+    } else {
+        value
+    }
+}
+
+fn is_binary_content_type(headers: &[(String, String)]) -> bool {
+    let ct = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+
+    let ct_lower = ct.to_lowercase();
+
+    if ct_lower.starts_with("text/") || ct_lower == "application/json" {
+        return false;
+    }
+
+    if ct_lower.starts_with("image/")
+        || ct_lower.starts_with("audio/")
+        || ct_lower.starts_with("video/")
+        || ct_lower.starts_with("font/")
+    {
+        return true;
+    }
+
+    matches!(
+        ct_lower.as_str(),
+        "application/octet-stream"
+            | "application/pdf"
+            | "application/zip"
+            | "application/gzip"
+            | "application/x-tar"
+            | "application/x-gtar"
+            | "application/x-compressed"
+            | "application/x-bzip2"
+            | "application/x-xz"
+            | "application/zstd"
+            | "application/protobuf"
+            | "application/x-protobuf"
+            | "application/msgpack"
+            | "application/x-msgpack"
+            | "application/cbor"
+            | "application/wasm"
+    )
 }
