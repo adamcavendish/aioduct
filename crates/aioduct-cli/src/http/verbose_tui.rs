@@ -366,6 +366,28 @@ impl TuiState {
                     color: Color::Red,
                 });
             }
+            RequestPhase::Redirected { status, from, to } => {
+                let _ = (from, to);
+                self.phases.push(PhaseEntry {
+                    label: format!("REDIR {status}"),
+                    duration_ms: 0.0,
+                    cumulative_ms: self.phase_cumulative_ms,
+                    color: Color::Yellow,
+                });
+            }
+            RequestPhase::Retrying {
+                reason,
+                attempt,
+                backoff,
+                ..
+            } => {
+                self.phases.push(PhaseEntry {
+                    label: format!("RETRY #{attempt} {}", reason),
+                    duration_ms: ms(backoff),
+                    cumulative_ms: self.phase_cumulative_ms,
+                    color: Color::Yellow,
+                });
+            }
         }
     }
 
@@ -915,7 +937,7 @@ fn find_split_point(s: &str, target: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aioduct::observer::{Instant, NegotiatedProtocol};
+    use aioduct::observer::{Instant, NegotiatedProtocol, RetryKind};
     use http::{Method, StatusCode, Uri};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::time::Instant as StdInstant;
@@ -958,7 +980,7 @@ mod tests {
         let mut state = TuiState::new();
         state.apply(&make_event(RequestPhase::Failed {
             error: "timeout".into(),
-            will_retry: false,
+            retry: RetryKind::None,
             elapsed: Duration::from_millis(5000),
         }));
         assert!(state.done);

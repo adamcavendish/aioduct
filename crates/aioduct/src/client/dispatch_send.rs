@@ -7,7 +7,7 @@ use http_body_util::BodyExt;
 
 use crate::body::RequestBodySend;
 use crate::error::Error;
-use crate::observer::{self, RequestPhase};
+use crate::observer::{self, RequestPhase, RetryKind};
 use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
@@ -195,7 +195,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         original_uri,
                         RequestPhase::Failed {
                             error: e.to_string(),
-                            will_retry: true,
+                            retry: RetryKind::StaleConnection,
                             elapsed: request_start.elapsed(),
                         },
                     );
@@ -231,7 +231,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         original_uri,
                         RequestPhase::Failed {
                             error: e.to_string(),
-                            will_retry: false,
+                            retry: RetryKind::None,
                             elapsed: request_start.elapsed(),
                         },
                     );
@@ -347,7 +347,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             original_uri,
                             RequestPhase::Failed {
                                 error: e.to_string(),
-                                will_retry: true,
+                                retry: RetryKind::StaleConnection,
                                 elapsed: request_start.elapsed(),
                             },
                         );
@@ -384,7 +384,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             original_uri,
                             RequestPhase::Failed {
                                 error: e.to_string(),
-                                will_retry: false,
+                                retry: RetryKind::None,
                                 elapsed: request_start.elapsed(),
                             },
                         );
@@ -652,7 +652,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 original_uri,
                                 RequestPhase::Failed {
                                     error: e.to_string(),
-                                    will_retry: true,
+                                    retry: RetryKind::StaleConnection,
                                     elapsed: request_start.elapsed(),
                                 },
                             );

@@ -150,6 +150,8 @@ impl RequestObserver for TestObserver {
             RequestPhase::BytesTransferred { .. } => "BytesTransferred".to_string(),
             RequestPhase::TransferComplete { .. } => "TransferComplete".to_string(),
             RequestPhase::TransferAborted { .. } => "TransferAborted".to_string(),
+            RequestPhase::Redirected { .. } => "Redirected".to_string(),
+            RequestPhase::Retrying { .. } => "Retrying".to_string(),
         };
         self.phases.lock().unwrap().push(phase_name);
     }
@@ -2215,7 +2217,7 @@ async fn observer_receives_stale_retry_event() {
     let _ = resp.bytes().await.unwrap();
 
     let phases = obs.phases.lock().unwrap();
-    // Should see Failed with will_retry:true, and PoolCheckoutComplete(StaleRetry)
+    // Should see Failed with retry: StaleConnection, and PoolCheckoutComplete(StaleRetry)
     assert!(
         phases.iter().any(|p| p.contains("PoolCheckoutComplete")),
         "expected PoolCheckoutComplete phase, got: {phases:?}"

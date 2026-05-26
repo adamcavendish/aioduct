@@ -10,6 +10,7 @@ use crate::body::RequestBody;
 use crate::body::RequestBodySend;
 use crate::client::HttpEngineSend;
 use crate::error::{Error, SendError};
+use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::{ConnectorSend, RuntimePoll};
@@ -378,6 +379,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     }
 
     async fn send_with_retry(self, config: RetryConfig) -> Result<Response, Error> {
+        let retry_start = crate::clock::Instant::now();
         let effective_timeout = self.timeout.or(self.client.default_timeout());
         let mut last_error = None;
         let mut body = self.body;
@@ -436,6 +438,36 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                         }
                         retry_after_delay = crate::retry::parse_retry_after(resp.headers());
                         let err = Error::Other(format!("server error: {}", resp.status()).into());
+
+                        if let Some(ref obs) = self.client.core.observer {
+                            obs.on_event(&RequestEvent {
+                                method: self.method.clone(),
+                                uri: self.uri.clone(),
+                                phase: RequestPhase::Failed {
+                                    error: err.to_string(),
+                                    retry: RetryKind::Explicit,
+                                    elapsed: retry_start.elapsed(),
+                                },
+                                at: observer::Instant::now(),
+                            });
+                        }
+
+                        let backoff =
+                            retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt));
+                        if let Some(ref obs) = self.client.core.observer {
+                            obs.on_event(&RequestEvent {
+                                method: self.method.clone(),
+                                uri: self.uri.clone(),
+                                phase: RequestPhase::Retrying {
+                                    reason: err.to_string(),
+                                    attempt: attempt + 1,
+                                    max_retries: config.max_retries,
+                                    backoff,
+                                },
+                                at: observer::Instant::now(),
+                            });
+                        }
+
                         let mw = self.client.middleware();
                         if !mw.is_empty() {
                             mw.apply_retry(&err, &self.uri, &self.method, attempt + 1);
@@ -462,6 +494,36 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                             }
                             return Err(e);
                         }
+
+                        if let Some(ref obs) = self.client.core.observer {
+                            obs.on_event(&RequestEvent {
+                                method: self.method.clone(),
+                                uri: self.uri.clone(),
+                                phase: RequestPhase::Failed {
+                                    error: e.to_string(),
+                                    retry: RetryKind::Explicit,
+                                    elapsed: retry_start.elapsed(),
+                                },
+                                at: observer::Instant::now(),
+                            });
+                        }
+
+                        let backoff =
+                            retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt));
+                        if let Some(ref obs) = self.client.core.observer {
+                            obs.on_event(&RequestEvent {
+                                method: self.method.clone(),
+                                uri: self.uri.clone(),
+                                phase: RequestPhase::Retrying {
+                                    reason: e.to_string(),
+                                    attempt: attempt + 1,
+                                    max_retries: config.max_retries,
+                                    backoff,
+                                },
+                                at: observer::Instant::now(),
+                            });
+                        }
+
                         let mw = self.client.middleware();
                         if !mw.is_empty() {
                             mw.apply_retry(&e, &self.uri, &self.method, attempt + 1);
@@ -479,6 +541,20 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         }
 
         let err = last_error.unwrap_or(Error::Other("retry exhausted".into()));
+
+        if let Some(ref obs) = self.client.core.observer {
+            obs.on_event(&RequestEvent {
+                method: self.method.clone(),
+                uri: self.uri.clone(),
+                phase: RequestPhase::Failed {
+                    error: err.to_string(),
+                    retry: RetryKind::None,
+                    elapsed: retry_start.elapsed(),
+                },
+                at: observer::Instant::now(),
+            });
+        }
+
         let mw = self.client.middleware();
         if !mw.is_empty() {
             mw.apply_error(&err, &self.uri, &self.method);

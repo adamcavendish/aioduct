@@ -54,6 +54,8 @@ impl RecordingObserver {
                 RequestPhase::BytesTransferred { .. } => "BytesTransferred".into(),
                 RequestPhase::TransferComplete { .. } => "TransferComplete".into(),
                 RequestPhase::TransferAborted { .. } => "TransferAborted".into(),
+                RequestPhase::Redirected { .. } => "Redirected".into(),
+                RequestPhase::Retrying { .. } => "Retrying".into(),
             })
             .collect()
     }
