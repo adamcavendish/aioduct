@@ -127,6 +127,8 @@ struct TuiState {
     body_bytes_received: usize,
     transfer_start_at: Option<Instant>,
     transfer_end_at: Option<Instant>,
+    trailers: Vec<(String, String)>,
+    trailers_observable: bool,
 }
 
 struct PhaseEntry {
@@ -165,6 +167,8 @@ impl TuiState {
             body_bytes_received: 0,
             transfer_start_at: None,
             transfer_end_at: None,
+            trailers: Vec::new(),
+            trailers_observable: false,
         }
     }
 
@@ -387,6 +391,11 @@ impl TuiState {
                     cumulative_ms: self.phase_cumulative_ms,
                     color: Color::Yellow,
                 });
+            }
+
+            RequestPhase::TrailersReceived { headers } => {
+                self.trailers_observable = true;
+                self.trailers = redact_headers(headers);
             }
         }
     }

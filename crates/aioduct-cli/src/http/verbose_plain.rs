@@ -116,6 +116,13 @@ fn format_phase(phase: &RequestPhase) -> String {
                 ms(backoff)
             )
         }
+        RequestPhase::TrailersReceived { headers } => {
+            let mut s = format!("* Trailers: {} fields", headers.len());
+            for (name, value) in headers {
+                s.push_str(&format!("\n  {name}: {value}"));
+            }
+            s
+        }
     }
 }
 
