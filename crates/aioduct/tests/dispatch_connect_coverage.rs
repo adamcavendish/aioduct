@@ -691,7 +691,7 @@ async fn observer_reports_stale_retry_on_rst() {
     // Verify observer captured the stale retry
     let phases = obs.phases();
 
-    // Should have a Failed event with will_retry=true
+    // Should have a Failed event with retry: StaleConnection
     let has_failed_retry = obs.events.lock().unwrap().iter().any(|p| {
         matches!(
             p,
@@ -703,7 +703,7 @@ async fn observer_reports_stale_retry_on_rst() {
     });
     assert!(
         has_failed_retry,
-        "observer should report Failed with will_retry=true on stale connection, got: {phases:?}"
+        "observer should report Failed with retry: StaleConnection on stale connection, got: {phases:?}"
     );
 
     // Should have a PoolCheckoutComplete with StaleRetry outcome

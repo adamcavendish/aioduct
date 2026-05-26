@@ -155,15 +155,40 @@ impl RequestObserver for TracingObserver {
 
             RequestPhase::Failed {
                 error,
-                will_retry,
+                retry,
                 elapsed,
             } => {
                 tracing::warn!(
                     %method, %uri,
                     %error,
-                    will_retry,
+                    ?retry,
                     elapsed_ms = format_args!("{:.2}", elapsed.as_secs_f64() * 1000.0),
                     "✗ request.failed"
+                );
+            }
+
+            RequestPhase::Redirected { status, from, to } => {
+                tracing::info!(
+                    %method, %uri,
+                    %status,
+                    from = %from,
+                    to = %to,
+                    "↪ redirect"
+                );
+            }
+
+            RequestPhase::Retrying {
+                reason,
+                attempt,
+                max_retries,
+                backoff,
+            } => {
+                tracing::warn!(
+                    %method, %uri,
+                    %reason,
+                    attempt = format_args!("{attempt}/{max_retries}"),
+                    backoff_ms = format_args!("{:.0}", backoff.as_secs_f64() * 1000.0),
+                    "↻ retry"
                 );
             }
 
