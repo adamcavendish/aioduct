@@ -267,6 +267,14 @@ impl RequestObserver for OtelObserver {
                 );
                 span.set_status(Status::error(error.clone()));
             }
+
+            RequestPhase::TrailersReceived { headers } => {
+                let fields: Vec<KeyValue> = headers
+                    .iter()
+                    .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
+                    .collect();
+                span.add_event("http.trailers", fields);
+            }
         }
     }
 

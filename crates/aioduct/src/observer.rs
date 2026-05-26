@@ -217,6 +217,12 @@ pub enum RequestPhase {
         /// Error that caused the abort.
         error: String,
     },
+
+    /// HTTP trailers received after the body (chunked transfer encoding).
+    TrailersReceived {
+        /// Trailer header fields.
+        headers: Vec<(String, String)>,
+    },
 }
 
 /// Event fired at each phase transition during request execution.

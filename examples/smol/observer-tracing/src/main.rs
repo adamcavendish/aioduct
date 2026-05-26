@@ -239,6 +239,15 @@ impl RequestObserver for TracingObserver {
                     "✗ transfer.aborted"
                 );
             }
+
+            RequestPhase::TrailersReceived { headers } => {
+                let count = headers.len();
+                tracing::info!(
+                    %method, %uri,
+                    count,
+                    "← trailers"
+                );
+            }
         }
     }
 

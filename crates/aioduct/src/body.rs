@@ -183,8 +183,8 @@ impl BodyStreamSend {
 
         loop {
             match self.body.frame().await {
-                Some(Ok(frame)) => {
-                    if let Ok(data) = frame.into_data() {
+                Some(Ok(frame)) => match frame.into_data() {
+                    Ok(data) => {
                         #[cfg(not(target_arch = "wasm32"))]
                         {
                             let chunk_bytes = data.len() as u64;
@@ -205,7 +205,35 @@ impl BodyStreamSend {
                         }
                         return Some(Ok(data));
                     }
-                }
+                    Err(frame) => {
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            let _ = &frame;
+                        }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            if let Ok(trailers) = frame.into_trailers()
+                                && let Some(ctx) = &self.observer_ctx
+                            {
+                                let headers: Vec<(String, String)> = trailers
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        (
+                                            k.as_str().to_owned(),
+                                            v.to_str().unwrap_or("<binary>").to_owned(),
+                                        )
+                                    })
+                                    .collect();
+                                ctx.observer.on_event(&RequestEvent {
+                                    method: ctx.method.clone(),
+                                    uri: ctx.uri.clone(),
+                                    phase: RequestPhase::TrailersReceived { headers },
+                                    at: observer::Instant::now(),
+                                });
+                            }
+                        }
+                    }
+                },
                 Some(Err(e)) => {
                     self.done = true;
                     #[cfg(not(target_arch = "wasm32"))]
@@ -318,8 +346,8 @@ impl BodyStreamLocal {
 
         loop {
             match Pin::new(&mut self.body).frame().await {
-                Some(Ok(frame)) => {
-                    if let Ok(data) = frame.into_data() {
+                Some(Ok(frame)) => match frame.into_data() {
+                    Ok(data) => {
                         let chunk_bytes = data.len() as u64;
                         self.cumulative_bytes += chunk_bytes;
                         if let Some(ctx) = &self.observer_ctx {
@@ -337,7 +365,28 @@ impl BodyStreamLocal {
                         }
                         return Some(Ok(data));
                     }
-                }
+                    Err(frame) => {
+                        if let Ok(trailers) = frame.into_trailers()
+                            && let Some(ctx) = &self.observer_ctx
+                        {
+                            let headers: Vec<(String, String)> = trailers
+                                .iter()
+                                .map(|(k, v)| {
+                                    (
+                                        k.as_str().to_owned(),
+                                        v.to_str().unwrap_or("<binary>").to_owned(),
+                                    )
+                                })
+                                .collect();
+                            ctx.observer.on_event(&RequestEvent {
+                                method: ctx.method.clone(),
+                                uri: ctx.uri.clone(),
+                                phase: RequestPhase::TrailersReceived { headers },
+                                at: observer::Instant::now(),
+                            });
+                        }
+                    }
+                },
                 Some(Err(e)) => {
                     self.done = true;
                     self.fire_transfer_aborted(&e);

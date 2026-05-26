@@ -152,6 +152,7 @@ impl RequestObserver for TestObserver {
             RequestPhase::TransferAborted { .. } => "TransferAborted".to_string(),
             RequestPhase::Redirected { .. } => "Redirected".to_string(),
             RequestPhase::Retrying { .. } => "Retrying".to_string(),
+            RequestPhase::TrailersReceived { .. } => "TrailersReceived".to_string(),
         };
         self.phases.lock().unwrap().push(phase_name);
     }
