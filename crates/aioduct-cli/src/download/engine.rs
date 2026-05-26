@@ -74,7 +74,9 @@ impl DownloadEngine {
 
         if let Some(ref proxy_uri) = cli.all_proxy
             && let Ok(proxy) = aioduct::ProxyConfig::http(proxy_uri)
+                .or_else(|_| aioduct::ProxyConfig::https(proxy_uri))
                 .or_else(|_| aioduct::ProxyConfig::socks5(proxy_uri))
+                .or_else(|_| aioduct::ProxyConfig::socks5h(proxy_uri))
         {
             builder = builder.proxy(proxy);
         }

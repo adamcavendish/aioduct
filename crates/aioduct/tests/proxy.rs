@@ -170,11 +170,18 @@ async fn test_socks5_proxy() {
                 assert!(n >= 7);
                 assert_eq!(buf[0], 0x05); // SOCKS5
                 assert_eq!(buf[1], 0x01); // CONNECT
-                assert_eq!(buf[3], 0x03); // Domain
+                // socks5:// resolves DNS locally: IPv4 or IPv6
+                assert!(
+                    buf[3] == 0x01 || buf[3] == 0x04,
+                    "expected IPv4 or IPv6 ATYP, got {:#04x}",
+                    buf[3]
+                );
 
-                let domain_len = buf[4] as usize;
-                let port_offset = 5 + domain_len;
-                let port = ((buf[port_offset] as u16) << 8) | (buf[port_offset + 1] as u16);
+                let port = match buf[3] {
+                    0x01 => u16::from_be_bytes([buf[8], buf[9]]),
+                    0x04 => u16::from_be_bytes([buf[20], buf[21]]),
+                    _ => unreachable!(),
+                };
 
                 // Connect to target
                 let target = format!("127.0.0.1:{port}");
@@ -249,9 +256,16 @@ async fn test_socks5_proxy_with_auth() {
                 let n = client.read(&mut buf).await.unwrap();
                 assert!(n >= 7);
 
-                let domain_len = buf[4] as usize;
-                let port_offset = 5 + domain_len;
-                let port = ((buf[port_offset] as u16) << 8) | (buf[port_offset + 1] as u16);
+                let port = match buf[3] {
+                    0x01 => u16::from_be_bytes([buf[8], buf[9]]),
+                    0x03 => {
+                        let domain_len = buf[4] as usize;
+                        let port_offset = 5 + domain_len;
+                        u16::from_be_bytes([buf[port_offset], buf[port_offset + 1]])
+                    }
+                    0x04 => u16::from_be_bytes([buf[20], buf[21]]),
+                    _ => panic!("unexpected ATYP: {:#04x}", buf[3]),
+                };
 
                 let target = format!("127.0.0.1:{port}");
                 let mut upstream = tokio::net::TcpStream::connect(target).await.unwrap();
@@ -272,6 +286,66 @@ async fn test_socks5_proxy_with_auth() {
                 .unwrap()
                 .basic_auth("testuser", "testpass"),
         )
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://localhost:{}/", target_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_socks5h_proxy() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (target_addr, _counter) = h1_server().await;
+
+    let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socks_addr = socks_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut client, _) = socks_listener.accept().await.unwrap();
+
+            tokio::spawn(async move {
+                let mut buf = [0u8; 256];
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 3);
+                assert_eq!(buf[0], 0x05); // SOCKS5
+
+                client.write_all(&[0x05, 0x00]).await.unwrap();
+
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 7);
+                assert_eq!(buf[0], 0x05); // SOCKS5
+                assert_eq!(buf[1], 0x01); // CONNECT
+                assert_eq!(buf[3], 0x03); // Domain (socks5h:// sends hostname)
+
+                let domain_len = buf[4] as usize;
+                let port_offset = 5 + domain_len;
+                let port = ((buf[port_offset] as u16) << 8) | (buf[port_offset + 1] as u16);
+
+                let target = format!("127.0.0.1:{port}");
+                let mut upstream = tokio::net::TcpStream::connect(target).await.unwrap();
+
+                client
+                    .write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                    .await
+                    .unwrap();
+
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::socks5h(&format!("socks5h://{socks_addr}")).unwrap())
         .build()
         .unwrap();
 
@@ -583,5 +657,51 @@ async fn test_connect_tunnel_default_port() {
     assert_eq!(
         target, "hyper.rs.local",
         "CONNECT should use the raw authority from the URL"
+    );
+}
+
+#[test]
+fn test_socks5h_constructor() {
+    assert!(
+        aioduct::ProxyConfig::socks5h("socks5h://proxy.example.com:1080").is_ok(),
+        "socks5h:// should be accepted"
+    );
+}
+
+#[test]
+fn test_socks5h_constructor_rejects_wrong_scheme() {
+    assert!(aioduct::ProxyConfig::socks5h("socks5://proxy.example.com:1080").is_err());
+    assert!(aioduct::ProxyConfig::socks5h("http://proxy.example.com:1080").is_err());
+}
+
+#[test]
+fn test_https_proxy_constructor() {
+    assert!(
+        aioduct::ProxyConfig::https("https://proxy.example.com:443").is_ok(),
+        "https:// should be accepted"
+    );
+}
+
+#[test]
+fn test_https_proxy_constructor_rejects_wrong_scheme() {
+    assert!(aioduct::ProxyConfig::https("http://proxy.example.com:443").is_err());
+    assert!(aioduct::ProxyConfig::https("socks5://proxy.example.com:443").is_err());
+}
+
+#[test]
+fn test_socks5_constructor_without_port() {
+    // Should accept URI without explicit port (defaults to 1080)
+    assert!(
+        aioduct::ProxyConfig::socks5("socks5://proxy.example.com").is_ok(),
+        "socks5:// without port should be accepted"
+    );
+}
+
+#[test]
+fn test_https_proxy_constructor_without_port() {
+    // Should accept URI without explicit port (defaults to 443)
+    assert!(
+        aioduct::ProxyConfig::https("https://proxy.example.com").is_ok(),
+        "https:// without port should be accepted"
     );
 }

@@ -2985,16 +2985,13 @@ fn start_socks5_proxy_tokio() -> std::net::SocketAddr {
 
                     // Parse target address
                     let port = match buf[3] {
+                        0x01 => u16::from_be_bytes([buf[8], buf[9]]),
                         0x03 => {
-                            // Domain name
                             let domain_len = buf[4] as usize;
                             let port_offset = 5 + domain_len;
-                            ((buf[port_offset] as u16) << 8) | (buf[port_offset + 1] as u16)
+                            u16::from_be_bytes([buf[port_offset], buf[port_offset + 1]])
                         }
-                        0x01 => {
-                            // IPv4
-                            ((buf[8] as u16) << 8) | (buf[9] as u16)
-                        }
+                        0x04 => u16::from_be_bytes([buf[20], buf[21]]),
                         _ => return,
                     };
 
@@ -3068,9 +3065,16 @@ fn start_socks5_auth_proxy_tokio() -> std::net::SocketAddr {
                         return;
                     }
 
-                    let domain_len = buf[4] as usize;
-                    let port_offset = 5 + domain_len;
-                    let port = ((buf[port_offset] as u16) << 8) | (buf[port_offset + 1] as u16);
+                    let port = match buf[3] {
+                        0x01 => u16::from_be_bytes([buf[8], buf[9]]),
+                        0x03 => {
+                            let domain_len = buf[4] as usize;
+                            let port_offset = 5 + domain_len;
+                            u16::from_be_bytes([buf[port_offset], buf[port_offset + 1]])
+                        }
+                        0x04 => u16::from_be_bytes([buf[20], buf[21]]),
+                        _ => return,
+                    };
 
                     let target = format!("127.0.0.1:{port}");
                     let mut upstream = match tokio::net::TcpStream::connect(target).await {

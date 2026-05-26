@@ -50,11 +50,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let _ = tcp_stream.set_fast_open();
         }
 
-        if proxy.scheme == crate::proxy::ProxyScheme::Socks5 {
+        if proxy.scheme == crate::proxy::ProxyScheme::Socks5
+            || proxy.scheme == crate::proxy::ProxyScheme::Socks5h
+        {
             let host = target_authority.host();
             let port = target_authority
                 .port_u16()
                 .unwrap_or(if is_https { 443 } else { 80 });
+            let dns = if proxy.scheme == crate::proxy::ProxyScheme::Socks5h {
+                crate::socks5::Socks5Dns::Remote
+            } else {
+                crate::socks5::Socks5Dns::Local
+            };
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
             if let Some(timeout) = self.core.connect_timeout {
                 std_stream
@@ -64,7 +71,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     .set_write_timeout(Some(timeout))
                     .map_err(Error::Io)?;
             }
-            crate::socks5::socks5_handshake(&mut std_stream, host, port, proxy.auth.as_ref())
+            crate::socks5::socks5_handshake(&mut std_stream, host, port, proxy.auth.as_ref(), dns)
                 .map_err(Error::Io)?;
             if self.core.connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
@@ -102,6 +109,35 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             } else {
                 self.connect_h1(tcp_stream).await
             }
+        } else if proxy.scheme == crate::proxy::ProxyScheme::Https {
+            #[cfg(feature = "rustls")]
+            {
+                use crate::tls::TlsConnect;
+                let tls_connector = self
+                    .core
+                    .tls
+                    .as_ref()
+                    .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+                let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
+                    tls_connector,
+                    proxy_authority.host(),
+                    tcp_stream,
+                )
+                .await
+                .map_err(|e| Error::Tls(Box::new(e)))?;
+                if is_https {
+                    self.connect_tunnel(tls_stream, proxy, target_authority)
+                        .await
+                } else {
+                    self.connect_plaintext(tls_stream).await
+                }
+            }
+            #[cfg(not(feature = "rustls"))]
+            {
+                Err(Error::Tls(
+                    "HTTPS proxy requires the `rustls` TLS backend feature".into(),
+                ))
+            }
         } else if is_https {
             self.connect_tunnel(tcp_stream, proxy, target_authority)
                 .await
@@ -110,14 +146,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         }
     }
 
-    async fn connect_tunnel(
+    async fn connect_tunnel<S>(
         &self,
-        mut tcp_stream: C::Stream,
+        mut stream: S,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
-    ) -> Result<PooledConnection<RequestBodySend>, Error> {
-        use hyper::rt::{Read, Write};
-
+    ) -> Result<PooledConnection<RequestBodySend>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
         let target = target_authority.as_str();
 
         let mut connect_msg = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
@@ -129,11 +166,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let buf = connect_msg.into_bytes();
         let mut written = 0;
         while written < buf.len() {
-            let n = std::future::poll_fn(|cx| {
-                Pin::new(&mut tcp_stream).poll_write(cx, &buf[written..])
-            })
-            .await
-            .map_err(Error::Io)?;
+            let n =
+                std::future::poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, &buf[written..]))
+                    .await
+                    .map_err(Error::Io)?;
             if n == 0 {
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::WriteZero,
@@ -147,7 +183,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         loop {
             let mut one = [0u8; 1];
             let mut read_buf = hyper::rt::ReadBuf::new(&mut one);
-            std::future::poll_fn(|cx| Pin::new(&mut tcp_stream).poll_read(cx, read_buf.unfilled()))
+            std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, read_buf.unfilled()))
                 .await
                 .map_err(Error::Io)?;
 
@@ -178,7 +214,71 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ));
         }
 
-        self.connect_tls(tcp_stream, target_authority.host()).await
+        #[cfg(feature = "rustls")]
+        {
+            let host = target_authority.host();
+            use crate::tls::TlsConnect;
+            use std::time::Instant;
+
+            let tls_connector = self
+                .core
+                .tls
+                .as_ref()
+                .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+
+            let tls_start = Instant::now();
+            let tls_stream = <crate::tls::RustlsConnector as TlsConnect<S>>::connect(
+                tls_connector,
+                host,
+                stream,
+            )
+            .await
+            .map_err(|e| {
+                #[cfg(feature = "tracing")]
+                tracing::trace!(host = host, error = %e, "tls.handshake.error");
+                Error::Tls(Box::new(e))
+            })?;
+
+            let tls_duration = tls_start.elapsed();
+            let alpn =
+                crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
+            let tls_info = tls_stream.tls_info();
+
+            match alpn {
+                Some(crate::tls::AlpnProtocol::H2) => {
+                    let mut builder = hyper::client::conn::http2::Builder::new(
+                        crate::runtime::executor::poll_executor::<R>(),
+                    );
+                    if let Some(ref h2) = self.core.http2 {
+                        h2.apply(&mut builder);
+                    }
+                    let (sender, conn) = builder.handshake(tls_stream).await?;
+                    R::spawn_send(async move {
+                        let _ = conn.await;
+                    });
+                    let mut pooled = PooledConnection::new_h2(sender);
+                    pooled.tls_info = Some(tls_info);
+                    pooled.tls_handshake_duration = Some(tls_duration);
+                    Ok(pooled)
+                }
+                _ => {
+                    let (sender, conn) = hyper::client::conn::http1::handshake(tls_stream).await?;
+                    R::spawn_send(async move {
+                        let _ = conn.with_upgrades().await;
+                    });
+                    let mut pooled = PooledConnection::new_h1(sender);
+                    pooled.tls_info = Some(tls_info);
+                    pooled.tls_handshake_duration = Some(tls_duration);
+                    Ok(pooled)
+                }
+            }
+        }
+        #[cfg(not(feature = "rustls"))]
+        {
+            Err(Error::Tls(
+                "HTTPS CONNECT tunnel requires the `rustls` TLS backend feature".into(),
+            ))
+        }
     }
 
     pub(super) fn connect_plaintext<S>(
