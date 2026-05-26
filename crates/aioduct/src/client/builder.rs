@@ -12,7 +12,7 @@ use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
 use crate::http2::Http2Config;
 use crate::middleware::MiddlewareStack;
-use crate::proxy::ProxySettings;
+use crate::proxy::{ProxyChain, ProxySettings};
 use crate::redirect::RedirectPolicy;
 use crate::retry::RetryConfig;
 use crate::runtime::Resolve;
@@ -48,6 +48,7 @@ pub struct HttpEngineBuilder<R, C> {
     pub(super) retry: Option<RetryConfig>,
     pub(super) cookie_jar: Option<CookieJar>,
     pub(super) proxy: Option<ProxySettings>,
+    pub(super) proxy_chain: Option<ProxyChain>,
     pub(super) resolver: Option<Arc<dyn Resolve>>,
     pub(super) static_resolves:
         Option<std::collections::HashMap<String, Vec<std::net::SocketAddr>>>,
@@ -123,6 +124,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
             retry: None,
             cookie_jar: None,
             proxy: None,
+            proxy_chain: None,
             resolver: None,
             static_resolves: None,
             http2: None,

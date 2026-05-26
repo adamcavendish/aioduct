@@ -3,6 +3,7 @@ use std::sync::Arc;
 use http::Uri;
 
 use crate::error::Error;
+use crate::proxy_credential::CredentialResolver;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProxyScheme {
@@ -14,11 +15,44 @@ pub(crate) enum ProxyScheme {
 }
 
 /// Proxy configuration (HTTP or SOCKS5).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProxyConfig {
     pub(crate) uri: Uri,
     pub(crate) scheme: ProxyScheme,
     pub(crate) auth: Option<ProxyAuth>,
+}
+
+impl std::fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("scheme", &self.scheme)
+            .field("auth", &self.auth)
+            .field("uri", &ProxyUriDebug(&self.uri))
+            .finish()
+    }
+}
+
+/// Wrapper that redacts userinfo when debug-printing a URI.
+struct ProxyUriDebug<'a>(&'a Uri);
+
+impl std::fmt::Debug for ProxyUriDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let uri = self.0;
+        write!(f, "{}://", uri.scheme_str().unwrap_or("unknown"))?;
+        if let Some(authority) = uri.authority() {
+            let host = authority.host();
+            if let Some(port) = authority.port() {
+                write!(f, "<redacted>@{host}:{port}")?;
+            } else {
+                write!(f, "<redacted>@{host}")?;
+            }
+        }
+        write!(f, "{}", uri.path())?;
+        if let Some(query) = uri.query() {
+            write!(f, "?{query}")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -36,6 +70,36 @@ impl std::fmt::Debug for ProxyAuth {
     }
 }
 
+/// Extract `user:password@host` credentials from the URI authority section.
+///
+/// Returns `None` if no userinfo is present. Percent-decodes both the username
+/// and password components (e.g. `%40` → `@`).
+fn extract_uri_auth(uri: &Uri) -> Option<ProxyAuth> {
+    let authority = uri.authority()?.as_str();
+    let at_pos = authority.rfind('@')?;
+    let userinfo = &authority[..at_pos];
+    if userinfo.is_empty() {
+        return None;
+    }
+    if let Some(colon_pos) = userinfo.find(':') {
+        let username = percent_encoding::percent_decode_str(&userinfo[..colon_pos])
+            .decode_utf8_lossy()
+            .into_owned();
+        let password = percent_encoding::percent_decode_str(&userinfo[colon_pos + 1..])
+            .decode_utf8_lossy()
+            .into_owned();
+        Some(ProxyAuth { username, password })
+    } else {
+        let username = percent_encoding::percent_decode_str(userinfo)
+            .decode_utf8_lossy()
+            .into_owned();
+        Some(ProxyAuth {
+            username,
+            password: String::new(),
+        })
+    }
+}
+
 impl ProxyConfig {
     /// Create a proxy config from an `http://` URI.
     pub fn http(uri: &str) -> Result<Self, Error> {
@@ -45,10 +109,11 @@ impl ProxyConfig {
                 "proxy URI must use http:// scheme".into(),
             ));
         }
+        let auth = extract_uri_auth(&uri);
         Ok(Self {
             uri,
             scheme: ProxyScheme::Http,
-            auth: None,
+            auth,
         })
     }
 
@@ -60,10 +125,11 @@ impl ProxyConfig {
                 "SOCKS5 proxy URI must use socks5:// scheme".into(),
             ));
         }
+        let auth = extract_uri_auth(&uri);
         Ok(Self {
             uri,
             scheme: ProxyScheme::Socks5,
-            auth: None,
+            auth,
         })
     }
 
@@ -78,10 +144,11 @@ impl ProxyConfig {
                 ));
             }
         }
+        let auth = extract_uri_auth(&uri);
         Ok(Self {
             uri,
             scheme: ProxyScheme::Socks4,
-            auth: None,
+            auth,
         })
     }
 
@@ -93,10 +160,11 @@ impl ProxyConfig {
                 "SOCKS5h proxy URI must use socks5h:// scheme".into(),
             ));
         }
+        let auth = extract_uri_auth(&uri);
         Ok(Self {
             uri,
             scheme: ProxyScheme::Socks5h,
-            auth: None,
+            auth,
         })
     }
 
@@ -108,10 +176,11 @@ impl ProxyConfig {
                 "HTTPS proxy URI must use https:// scheme".into(),
             ));
         }
+        let auth = extract_uri_auth(&uri);
         Ok(Self {
             uri,
             scheme: ProxyScheme::Https,
-            auth: None,
+            auth,
         })
     }
 
@@ -150,6 +219,58 @@ impl ProxyConfig {
     }
 }
 
+/// An ordered chain of proxy configurations for multi-hop routing.
+///
+/// The first proxy is the closest to the client; each subsequent proxy is
+/// reached through the previous one. Currently supports up to 2 hops.
+///
+/// # Example
+///
+/// ```ignore
+/// let chain = ProxyChain::new(vec![
+///     ProxyConfig::socks5("socks5://internal:1080")?,
+///     ProxyConfig::http("http://corp-proxy:8080")?,
+/// ]);
+/// ```
+#[derive(Clone, Debug)]
+pub struct ProxyChain {
+    pub(crate) proxies: Vec<ProxyConfig>,
+}
+
+impl ProxyChain {
+    /// Create a chain from an ordered list of proxies.
+    pub fn new(proxies: Vec<ProxyConfig>) -> Self {
+        Self { proxies }
+    }
+
+    /// Create a single-proxy chain (equivalent to using `ProxyConfig` directly).
+    pub fn single(proxy: ProxyConfig) -> Self {
+        Self {
+            proxies: vec![proxy],
+        }
+    }
+
+    /// Number of hops in the chain.
+    pub fn len(&self) -> usize {
+        self.proxies.len()
+    }
+
+    /// Returns `true` if the chain is empty.
+    pub fn is_empty(&self) -> bool {
+        self.proxies.is_empty()
+    }
+
+    /// The first proxy in the chain.
+    pub fn first(&self) -> Option<&ProxyConfig> {
+        self.proxies.first()
+    }
+
+    /// Iterator over the proxy configurations in order.
+    pub fn iter(&self) -> impl Iterator<Item = &ProxyConfig> {
+        self.proxies.iter()
+    }
+}
+
 /// Proxy settings with separate HTTP/HTTPS proxies and bypass rules.
 #[derive(Clone, Default)]
 pub struct ProxySettings {
@@ -157,6 +278,7 @@ pub struct ProxySettings {
     pub(crate) https_proxy: Option<ProxyConfig>,
     pub(crate) no_proxy: NoProxy,
     pub(crate) custom: Option<Arc<dyn CustomProxy>>,
+    pub(crate) credential_resolver: Option<Arc<dyn CredentialResolver>>,
 }
 
 impl std::fmt::Debug for ProxySettings {
@@ -184,6 +306,7 @@ impl ProxySettings {
             https_proxy,
             no_proxy,
             custom: None,
+            credential_resolver: None,
         }
     }
 
@@ -194,6 +317,7 @@ impl ProxySettings {
             https_proxy: Some(proxy),
             no_proxy: NoProxy::default(),
             custom: None,
+            credential_resolver: None,
         }
     }
 
@@ -228,6 +352,12 @@ impl ProxySettings {
         self
     }
 
+    /// Set a credential resolver for looking up proxy authentication.
+    pub fn proxy_credential_resolver(mut self, resolver: impl CredentialResolver) -> Self {
+        self.credential_resolver = Some(Arc::new(resolver));
+        self
+    }
+
     pub(crate) fn proxy_for(&self, uri: &Uri) -> Option<ProxyConfig> {
         if let Some(host) = uri.host()
             && self.no_proxy.matches_with_port(host, uri.port_u16())
@@ -237,10 +367,21 @@ impl ProxySettings {
         if let Some(ref custom) = self.custom {
             return custom.proxy_for(uri);
         }
-        match uri.scheme_str() {
+        let mut proxy = match uri.scheme_str() {
             Some("https") => self.https_proxy.clone(),
             _ => self.http_proxy.clone(),
+        }?;
+        if proxy.auth.is_none()
+            && let Some(ref resolver) = self.credential_resolver
+            && let Ok(authority) = proxy.authority()
+            && let Some((user, pass)) = resolver.resolve(authority.as_str())
+        {
+            proxy.auth = Some(ProxyAuth {
+                username: user,
+                password: pass,
+            });
         }
+        Some(proxy)
     }
 }
 
@@ -359,6 +500,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes env var mutations to prevent flakiness under `--test-threads > 1`.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn no_proxy_wildcard_matches_everything() {
@@ -652,6 +796,7 @@ mod tests {
 
     #[test]
     fn env_proxy_socks5() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::set_var("TEST_SOCKS5_UPPER", "socks5://proxy:1080") };
         let result = env_proxy("TEST_SOCKS5_UPPER", "test_socks5_lower");
         assert!(result.is_some());
@@ -661,6 +806,7 @@ mod tests {
 
     #[test]
     fn env_proxy_socks4() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::set_var("TEST_SOCKS4_UPPER", "socks4://proxy:1080") };
         let result = env_proxy("TEST_SOCKS4_UPPER", "test_socks4_lower");
         assert!(result.is_some());
@@ -670,6 +816,7 @@ mod tests {
 
     #[test]
     fn env_proxy_socks4a() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::set_var("TEST_SOCKS4A_UPPER", "socks4a://proxy:1080") };
         let result = env_proxy("TEST_SOCKS4A_UPPER", "test_socks4a_lower");
         assert!(result.is_some());
@@ -679,6 +826,7 @@ mod tests {
 
     #[test]
     fn env_proxy_http() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::set_var("TEST_HTTP_PROXY_UPPER", "http://proxy:8080") };
         let result = env_proxy("TEST_HTTP_PROXY_UPPER", "test_http_proxy_lower");
         assert!(result.is_some());
@@ -688,6 +836,7 @@ mod tests {
 
     #[test]
     fn env_proxy_https_scheme() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::set_var("TEST_HTTPS_PROXY_VAL", "https://secure-proxy:443") };
         let result = env_proxy("TEST_HTTPS_PROXY_VAL", "test_https_proxy_val_lower");
         assert!(result.is_some());
@@ -699,6 +848,7 @@ mod tests {
 
     #[test]
     fn env_proxy_bare_hostname() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::set_var("TEST_BARE_HOST_PROXY", "proxy-host:3128") };
         let result = env_proxy("TEST_BARE_HOST_PROXY", "test_bare_host_proxy_lower");
         assert!(result.is_some());
@@ -710,6 +860,7 @@ mod tests {
 
     #[test]
     fn env_proxy_empty_value() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::set_var("TEST_EMPTY_PROXY", "") };
         let result = env_proxy("TEST_EMPTY_PROXY", "test_empty_proxy_lower");
         assert!(result.is_none());
@@ -718,6 +869,7 @@ mod tests {
 
     #[test]
     fn env_proxy_missing() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::remove_var("TEST_MISSING_UPPER") };
         unsafe { std::env::remove_var("test_missing_lower") };
         let result = env_proxy("TEST_MISSING_UPPER", "test_missing_lower");
@@ -726,6 +878,7 @@ mod tests {
 
     #[test]
     fn env_proxy_lowercase_fallback() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe { std::env::remove_var("TEST_LOWER_UPPER") };
         unsafe { std::env::set_var("test_lower_lower", "http://proxy:80") };
         let result = env_proxy("TEST_LOWER_UPPER", "test_lower_lower");
@@ -783,5 +936,191 @@ mod tests {
             settings.proxy_for(&uri).is_some(),
             "non-bypassed host should use custom proxy"
         );
+    }
+
+    // --- URI userinfo extraction tests ---
+
+    #[test]
+    fn extract_uri_auth_with_password() {
+        let cfg = ProxyConfig::http("http://user:pass@proxy:8080").unwrap();
+        let auth = cfg.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "pass");
+    }
+
+    #[test]
+    fn extract_uri_auth_username_only() {
+        let cfg = ProxyConfig::http("http://user@proxy:8080").unwrap();
+        let auth = cfg.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "");
+    }
+
+    #[test]
+    fn extract_uri_auth_no_userinfo() {
+        let cfg = ProxyConfig::http("http://proxy:8080").unwrap();
+        assert!(cfg.auth.is_none());
+    }
+
+    #[test]
+    fn extract_uri_auth_percent_encoded() {
+        let cfg = ProxyConfig::http("http://user%40dom:pass%3Aword@proxy:8080").unwrap();
+        let auth = cfg.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "user@dom");
+        assert_eq!(auth.password, "pass:word");
+    }
+
+    #[test]
+    fn extract_uri_auth_socks5() {
+        let cfg = ProxyConfig::socks5("socks5://admin:secret@proxy:1080").unwrap();
+        let auth = cfg.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "admin");
+        assert_eq!(auth.password, "secret");
+    }
+
+    #[test]
+    fn extract_uri_auth_https_proxy() {
+        let cfg = ProxyConfig::https("https://u:p@secure-proxy:443").unwrap();
+        let auth = cfg.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "u");
+        assert_eq!(auth.password, "p");
+    }
+
+    #[test]
+    fn extract_uri_auth_socks5h() {
+        let cfg = ProxyConfig::socks5h("socks5h://a:b@proxy:1080").unwrap();
+        let auth = cfg.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "a");
+        assert_eq!(auth.password, "b");
+    }
+
+    #[test]
+    fn basic_auth_overrides_uri_auth() {
+        let cfg = ProxyConfig::http("http://uri-user:uri-pass@proxy:8080")
+            .unwrap()
+            .basic_auth("override-user", "override-pass");
+        let auth = cfg.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "override-user");
+        assert_eq!(auth.password, "override-pass");
+    }
+
+    // --- ProxyChain tests ---
+
+    #[test]
+    fn proxy_chain_new_and_len() {
+        let p1 = ProxyConfig::http("http://p1:8080").unwrap();
+        let p2 = ProxyConfig::socks5("socks5://p2:1080").unwrap();
+        let chain = ProxyChain::new(vec![p1, p2]);
+        assert_eq!(chain.len(), 2);
+        assert!(!chain.is_empty());
+    }
+
+    #[test]
+    fn proxy_chain_empty() {
+        let chain = ProxyChain::new(vec![]);
+        assert!(chain.is_empty());
+        assert_eq!(chain.len(), 0);
+        assert!(chain.first().is_none());
+    }
+
+    #[test]
+    fn proxy_chain_single() {
+        let p = ProxyConfig::http("http://proxy:8080").unwrap();
+        let chain = ProxyChain::single(p.clone());
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain.first().unwrap().default_port(), p.default_port());
+    }
+
+    #[test]
+    fn proxy_chain_first() {
+        let p1 = ProxyConfig::http("http://first:8080").unwrap();
+        let p2 = ProxyConfig::socks5("socks5://second:1080").unwrap();
+        let chain = ProxyChain::new(vec![p1, p2]);
+        let first = chain.first().unwrap();
+        assert_eq!(first.default_port(), 80);
+    }
+
+    #[test]
+    fn proxy_chain_iter() {
+        let p1 = ProxyConfig::http("http://p1:8080").unwrap();
+        let p2 = ProxyConfig::socks5("socks5://p2:1080").unwrap();
+        let chain = ProxyChain::new(vec![p1, p2]);
+        let mut iter = chain.iter();
+        assert_eq!(iter.next().unwrap().default_port(), 80);
+        assert_eq!(iter.next().unwrap().default_port(), 1080);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn proxy_chain_clone() {
+        let chain = ProxyChain::new(vec![ProxyConfig::http("http://proxy:8080").unwrap()]);
+        let cloned = chain.clone();
+        assert_eq!(cloned.len(), chain.len());
+    }
+
+    // --- ProxySettings credential resolver tests ---
+
+    #[test]
+    fn proxy_for_resolves_credentials_when_missing() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        use crate::proxy_credential::EnvCredentialResolver;
+        unsafe {
+            std::env::set_var("AIODUCT_PROXY_USER", "envuser");
+            std::env::set_var("AIODUCT_PROXY_PASS", "envpass");
+        }
+        let settings = ProxySettings::all(ProxyConfig::http("http://proxy:8080").unwrap())
+            .proxy_credential_resolver(EnvCredentialResolver);
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let proxy = settings.proxy_for(&uri).unwrap();
+        let auth = proxy.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "envuser");
+        assert_eq!(auth.password, "envpass");
+        unsafe {
+            std::env::remove_var("AIODUCT_PROXY_USER");
+            std::env::remove_var("AIODUCT_PROXY_PASS");
+        }
+    }
+
+    #[test]
+    fn proxy_for_does_not_override_existing_auth() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        use crate::proxy_credential::EnvCredentialResolver;
+        unsafe {
+            std::env::set_var("AIODUCT_PROXY_USER", "envuser");
+            std::env::set_var("AIODUCT_PROXY_PASS", "envpass");
+        }
+        let settings = ProxySettings::all(
+            ProxyConfig::http("http://proxy:8080")
+                .unwrap()
+                .basic_auth("explicit", "auth"),
+        )
+        .proxy_credential_resolver(EnvCredentialResolver);
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let proxy = settings.proxy_for(&uri).unwrap();
+        let auth = proxy.auth.as_ref().unwrap();
+        assert_eq!(auth.username, "explicit");
+        assert_eq!(auth.password, "auth");
+        unsafe {
+            std::env::remove_var("AIODUCT_PROXY_USER");
+            std::env::remove_var("AIODUCT_PROXY_PASS");
+        }
+    }
+
+    #[test]
+    fn proxy_for_env_credential_resolver() {
+        struct StaticResolver(&'static str, &'static str);
+        impl crate::proxy_credential::CredentialResolver for StaticResolver {
+            fn resolve(&self, _key: &str) -> Option<(String, String)> {
+                Some((self.0.to_string(), self.1.to_string()))
+            }
+        }
+
+        let settings = ProxySettings::all(ProxyConfig::http("http://proxy:9090").unwrap())
+            .proxy_credential_resolver(StaticResolver("resolved", "creds"));
+        let uri: Uri = "http://example.com".parse().unwrap();
+        let proxy = settings.proxy_for(&uri).unwrap();
+        let auth = proxy.auth.unwrap();
+        assert_eq!(auth.username, "resolved");
+        assert_eq!(auth.password, "creds");
     }
 }

@@ -29,7 +29,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Timeouts** — per-request, client-level, connect, and read timeouts
 - **Retry** — configurable exponential backoff with retry budgets, Retry-After header support, 429 Too Many Requests retry
 - **Decompression** — automatic gzip, brotli, zstd, deflate response decompression
-- **Proxy** — HTTP CONNECT tunneling, SOCKS4/SOCKS4a, SOCKS5, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
+- **Proxy** — HTTP CONNECT tunneling, HTTPS proxy, SOCKS4/SOCKS4a, SOCKS5 (local DNS), SOCKS5h (remote DNS), proxy chaining up to 2 hops, URI-embedded credentials, credential resolver, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
 - **Middleware** — pluggable request/response interceptors via trait or closure
 - **Rate limiting** — token-bucket rate limiter for outgoing requests
 - **Caching** — in-memory HTTP cache with immutable responses, stale-while-revalidate, stale-if-error (fallback on 5xx/connection failure); pluggable `CacheStore` trait for custom backends
@@ -209,23 +209,72 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
-### SOCKS5 Proxy
+### Proxy
 
 ```rust
-use aioduct::ProxyConfig;
-use aioduct::TokioClient;
+use aioduct::{ProxyConfig, TokioClient};
 
+// HTTP CONNECT proxy
+let client = TokioClient::builder()
+    .proxy(ProxyConfig::http("http://proxy.example.com:8080").unwrap())
+    .build()?;
+
+// HTTPS proxy (TLS-wrapped CONNECT)
+let client = TokioClient::builder()
+    .proxy(ProxyConfig::https("https://proxy.example.com:443").unwrap())
+    .build()?;
+
+// SOCKS5 proxy (local DNS — client resolves hostnames)
 let client = TokioClient::builder()
     .proxy(ProxyConfig::socks5("socks5://proxy.example.com:1080").unwrap())
     .build()?;
 
-// With authentication
+// SOCKS5h proxy (remote DNS — proxy resolves hostnames)
 let client = TokioClient::builder()
-    .proxy(
-        ProxyConfig::socks5("socks5://proxy.example.com:1080")
-            .unwrap()
-            .basic_auth("user", "pass"),
+    .proxy(ProxyConfig::socks5h("socks5h://proxy.example.com:1080").unwrap())
+    .build()?;
+
+// SOCKS4/SOCKS4a proxy
+let client = TokioClient::builder()
+    .proxy(ProxyConfig::socks4("socks4a://proxy.example.com:1080").unwrap())
+    .build()?;
+```
+
+Proxy URLs can include credentials, which are automatically extracted:
+
+```rust
+// Credentials embedded in the URL are parsed automatically
+let proxy = ProxyConfig::http("http://user:pass@proxy.example.com:8080").unwrap();
+```
+
+For credentials from environment variables, use `EnvCredentialResolver`:
+
+```rust
+use aioduct::EnvCredentialResolver;
+
+// Reads AIODUCT_PROXY_USER and AIODUCT_PROXY_PASS
+let client = TokioClient::builder()
+    .proxy_settings(
+        ProxySettings::all(
+            ProxyConfig::http("http://proxy:8080").unwrap()
+        )
+        .proxy_credential_resolver(EnvCredentialResolver),
     )
+    .build()?;
+```
+
+Proxy chaining routes requests through up to 2 proxies in sequence:
+
+```rust
+use aioduct::{ProxyChain, ProxyConfig, TokioClient};
+
+let chain = ProxyChain::new(vec![
+    ProxyConfig::socks5("socks5://exit-proxy:1080").unwrap(),
+    ProxyConfig::http("http://corporate-proxy:3128").unwrap(),
+]);
+
+let client = TokioClient::builder()
+    .proxy_chain(chain)
     .build()?;
 ```
 

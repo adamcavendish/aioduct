@@ -188,6 +188,18 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Route all requests through a chain of proxies.
+    ///
+    /// Each proxy is reached through the previous one via HTTP CONNECT tunneling.
+    /// Currently supports up to 2 hops.
+    ///
+    /// When both a proxy chain and a single proxy are configured, the chain
+    /// takes priority.
+    pub fn proxy_chain(mut self, chain: crate::proxy::ProxyChain) -> Self {
+        self.proxy_chain = Some(chain);
+        self
+    }
+
     /// Use proxy settings from environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY).
     pub fn system_proxy(mut self) -> Self {
         self.proxy = Some(ProxySettings::from_env());

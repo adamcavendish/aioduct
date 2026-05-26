@@ -53,7 +53,7 @@ use crate::h2c_probe::H2cProbeCache;
 use crate::http2::Http2Config;
 use crate::middleware::MiddlewareStack;
 use crate::pool::ConnectionPool;
-use crate::proxy::ProxySettings;
+use crate::proxy::{ProxyChain, ProxySettings};
 use crate::redirect::RedirectPolicy;
 use crate::retry::RetryConfig;
 use crate::runtime::Resolve;
@@ -93,6 +93,7 @@ pub struct HttpEngineCore<B> {
     pub(crate) retry: Option<RetryConfig>,
     pub(crate) cookie_jar: Option<CookieJar>,
     pub(crate) proxy: Option<ProxySettings>,
+    pub(crate) proxy_chain: Option<ProxyChain>,
     pub(crate) resolver: Option<Arc<dyn Resolve>>,
     pub(crate) http2: Option<Http2Config>,
     pub(crate) middleware: MiddlewareStack,
@@ -144,6 +145,7 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
             retry: self.retry.clone(),
             cookie_jar: self.cookie_jar.clone(),
             proxy: self.proxy.clone(),
+            proxy_chain: self.proxy_chain.clone(),
             resolver: self.resolver.clone(),
             http2: self.http2.clone(),
             middleware: self.middleware.clone(),

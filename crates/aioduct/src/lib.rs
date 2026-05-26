@@ -57,6 +57,8 @@ pub mod netrc;
 pub mod observer;
 /// HTTP and SOCKS proxy configuration.
 pub mod proxy;
+/// Credential resolver trait and built-in implementations.
+pub mod proxy_credential;
 /// Redirect policy configuration.
 pub mod redirect;
 /// Automatic retry with exponential backoff.
@@ -168,7 +170,8 @@ pub use observer::{
     ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
     RequestObserver, RequestPhase, TransferDirection,
 };
-pub use proxy::{NoProxy, ProxyConfig, ProxySettings};
+pub use proxy::{NoProxy, ProxyChain, ProxyConfig, ProxySettings};
+pub use proxy_credential::{CompositeResolver, CredentialResolver, EnvCredentialResolver};
 pub use redirect::{RedirectAction, RedirectPolicy};
 pub use retry::{RetryBudget, RetryConfig};
 #[cfg(not(target_arch = "wasm32"))]

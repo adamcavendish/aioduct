@@ -239,6 +239,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 retry: self.retry,
                 cookie_jar: self.cookie_jar,
                 proxy: self.proxy,
+                proxy_chain: self.proxy_chain,
                 resolver: {
                     if let Some(overrides) = self.static_resolves {
                         let fallback = self.resolver.or_else(|| Self::default_resolver());
