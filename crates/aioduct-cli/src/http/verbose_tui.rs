@@ -226,7 +226,7 @@ impl TuiState {
                 });
             }
             RequestPhase::RequestSent { duration, headers } => {
-                self.request_headers = headers.clone();
+                self.request_headers = redact_headers(headers);
                 let cumulative = ms(duration);
                 let per_phase = (cumulative - self.phase_cumulative_ms).max(0.0);
                 self.phase_cumulative_ms = cumulative;
@@ -932,6 +932,25 @@ fn find_split_point(s: &str, target: usize) -> usize {
         .rev()
         .find(|&i| s.is_char_boundary(i))
         .unwrap_or(target)
+}
+
+fn redact_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            let lower = k.to_lowercase();
+            let value = if lower == "authorization"
+                || lower == "proxy-authorization"
+                || lower == "cookie"
+                || lower == "set-cookie"
+            {
+                "***".to_string()
+            } else {
+                v.clone()
+            };
+            (k.clone(), value)
+        })
+        .collect()
 }
 
 #[cfg(test)]
