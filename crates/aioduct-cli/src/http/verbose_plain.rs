@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
 use std::time::Duration;
 
-use aioduct::observer::{RequestEvent, RequestPhase};
+use aioduct::observer::{RequestEvent, RequestPhase, RetryKind};
 use crossterm::style::{Color, Stylize};
 use tokio::sync::mpsc;
 
@@ -68,11 +68,15 @@ fn format_phase(phase: &RequestPhase) -> String {
         }
         RequestPhase::Failed {
             error,
-            will_retry,
+            retry,
             elapsed,
         } => {
-            let retry = if *will_retry { " (will retry)" } else { "" };
-            format!("* FAIL: {error}{retry} ({:.1}ms)", ms(elapsed))
+            let retry_str = match retry {
+                RetryKind::None => "",
+                RetryKind::StaleConnection => " (stale retry)",
+                RetryKind::Explicit => " (will retry)",
+            };
+            format!("* FAIL: {error}{retry_str} ({:.1}ms)", ms(elapsed))
         }
         RequestPhase::BytesTransferred {
             direction,
@@ -97,6 +101,20 @@ fn format_phase(phase: &RequestPhase) -> String {
             ..
         } => {
             format!("* {direction:?} aborted after {bytes_transferred}B: {error}")
+        }
+        RequestPhase::Redirected { status, from, to } => {
+            format!("* Redirect: {status} {from} → {to}")
+        }
+        RequestPhase::Retrying {
+            reason,
+            attempt,
+            max_retries,
+            backoff,
+        } => {
+            format!(
+                "* Retry #{attempt}/{max_retries} after {:.0}ms: {reason}",
+                ms(backoff)
+            )
         }
     }
 }
@@ -162,12 +180,12 @@ mod tests {
     fn format_failed() {
         let phase = RequestPhase::Failed {
             error: "connection reset".into(),
-            will_retry: true,
+            retry: RetryKind::StaleConnection,
             elapsed: Duration::from_millis(50),
         };
         let s = format_phase(&phase);
         assert!(s.contains("connection reset"));
-        assert!(s.contains("will retry"));
+        assert!(s.contains("stale retry"));
     }
 
     #[test]

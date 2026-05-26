@@ -17,7 +17,7 @@ use tokio::net::TcpListener;
 
 use aioduct::HttpEngineSend;
 use aioduct::observer::{
-    ConnectionEvent, ConnectionPhase, RequestEvent, RequestObserver, RequestPhase,
+    ConnectionEvent, ConnectionPhase, RequestEvent, RequestObserver, RequestPhase, RetryKind,
 };
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
@@ -69,6 +69,8 @@ impl RecordingObserver {
                 RequestPhase::BytesTransferred { .. } => "BytesTransferred".into(),
                 RequestPhase::TransferComplete { .. } => "TransferComplete".into(),
                 RequestPhase::TransferAborted { .. } => "TransferAborted".into(),
+                RequestPhase::Redirected { .. } => "Redirected".into(),
+                RequestPhase::Retrying { .. } => "Retrying".into(),
             })
             .collect()
     }
@@ -694,7 +696,7 @@ async fn observer_reports_stale_retry_on_rst() {
         matches!(
             p,
             RequestPhase::Failed {
-                will_retry: true,
+                retry: RetryKind::StaleConnection,
                 ..
             }
         )

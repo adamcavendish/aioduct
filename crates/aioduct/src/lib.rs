@@ -168,7 +168,7 @@ pub use multipart::{Multipart, Part};
 pub use netrc::{Netrc, NetrcMiddleware};
 pub use observer::{
     ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
-    RequestObserver, RequestPhase, TransferDirection,
+    RequestObserver, RequestPhase, RetryKind, TransferDirection,
 };
 pub use proxy::{NoProxy, ProxyChain, ProxyConfig, ProxySettings};
 pub use proxy_credential::{CompositeResolver, CredentialResolver, EnvCredentialResolver};

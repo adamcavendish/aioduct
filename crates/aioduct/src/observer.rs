@@ -43,6 +43,18 @@ pub enum PoolOutcome {
     StaleRetry,
 }
 
+/// Why a failed request will (or won't) be retried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
+pub enum RetryKind {
+    /// No retry — the request has definitively failed.
+    None,
+    /// Transparent stale-connection retry (internal to dispatch).
+    StaleConnection,
+    /// Explicit retry via RetryConfig (server error, timeout, IO error, etc.).
+    Explicit,
+}
+
 /// The HTTP protocol negotiated on the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
@@ -137,12 +149,35 @@ pub enum RequestPhase {
         total_duration: Duration,
     },
 
+    /// A redirect was followed.
+    Redirected {
+        /// HTTP status code that triggered the redirect.
+        #[cfg_attr(feature = "json", serde(with = "serde_status_code"))]
+        status: StatusCode,
+        /// URI being redirected from.
+        from: String,
+        /// URI being redirected to.
+        to: String,
+    },
+
+    /// A retry is about to be attempted after a backoff delay.
+    Retrying {
+        /// Reason for the retry (error message or status code string).
+        reason: String,
+        /// 1-based retry attempt number (1 = first retry).
+        attempt: u32,
+        /// Maximum retries allowed.
+        max_retries: u32,
+        /// Backoff duration before this retry.
+        backoff: Duration,
+    },
+
     /// Request failed with an error.
     Failed {
         /// Error description.
         error: String,
-        /// Whether this will trigger a stale-connection retry.
-        will_retry: bool,
+        /// Whether and how this failure will be retried.
+        retry: RetryKind,
         /// Duration from start to failure.
         elapsed: Duration,
     },
@@ -313,7 +348,7 @@ mod tests {
         };
         let _ = RequestPhase::Failed {
             error: "timeout".into(),
-            will_retry: false,
+            retry: RetryKind::None,
             elapsed: Duration::from_secs(5),
         };
         let _ = RequestPhase::BytesTransferred {
@@ -490,7 +525,7 @@ mod tests {
             uri: "http://example.com/item/1".parse().unwrap(),
             phase: RequestPhase::Failed {
                 error: "connection refused".into(),
-                will_retry: true,
+                retry: RetryKind::StaleConnection,
                 elapsed: Duration::from_secs(2),
             },
             at: Instant::now(),
@@ -578,7 +613,7 @@ mod tests {
     fn request_phase_serde_roundtrip_failed() {
         let phase = RequestPhase::Failed {
             error: "timeout".into(),
-            will_retry: true,
+            retry: RetryKind::StaleConnection,
             elapsed: Duration::from_secs(30),
         };
         let json = serde_json::to_string(&phase).unwrap();
