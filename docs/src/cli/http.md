@@ -119,8 +119,17 @@ aioduct http --limit-rate 1M https://cdn.example.com/file.bin
 # HTTP proxy
 aioduct http -x http://proxy:8080 https://example.com
 
-# SOCKS5 proxy
+# HTTPS proxy (TLS-wrapped connection to proxy)
+aioduct http -x https://proxy:443 https://example.com
+
+# SOCKS5 proxy (local DNS)
 aioduct http -x socks5://127.0.0.1:1080 https://example.com
+
+# SOCKS5h proxy (remote DNS — proxy resolves hostnames)
+aioduct http -x socks5h://proxy:1080 https://internal.corp
+
+# SOCKS4/SOCKS4a proxy
+aioduct http -x socks4a://localhost:1080 https://example.com
 
 # Skip TLS verification
 aioduct http -k https://self-signed.example.com
@@ -158,7 +167,7 @@ aioduct http --connect-timeout 5 --max-time 30 https://slow-server.example.com
 | | `--connect-timeout` | Connection timeout (seconds) |
 | | `--retry` | Retry count |
 | | `--retry-max-time` | Max backoff between retries (default: 60s) |
-| `-x` | `--proxy` | Proxy URL (HTTP or SOCKS5) |
+| `-x` | `--proxy` | Proxy URL (http, https, socks4, socks4a, socks5, socks5h) |
 | `-k` | `--insecure` | Skip TLS verification |
 | | `--http2` | Force HTTP/2 prior knowledge |
 | | `--limit-rate` | Max download speed (supports K/M/G) |

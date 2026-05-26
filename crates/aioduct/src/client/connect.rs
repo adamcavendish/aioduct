@@ -146,76 +146,22 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         }
     }
 
+    /// Perform an HTTP CONNECT handshake through `stream` to `target`.
+    /// Returns the stream unchanged on success (type-preserving for chaining).
     async fn connect_tunnel<S>(
         &self,
-        mut stream: S,
+        stream: S,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
     ) -> Result<PooledConnection<RequestBodySend>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
-        let target = target_authority.as_str();
-
-        let mut connect_msg = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
-        if let Some(auth_value) = proxy.connect_header(target) {
-            connect_msg.push_str(&format!("Proxy-Authorization: {auth_value}\r\n"));
-        }
-        connect_msg.push_str("\r\n");
-
-        let buf = connect_msg.into_bytes();
-        let mut written = 0;
-        while written < buf.len() {
-            let n =
-                std::future::poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, &buf[written..]))
-                    .await
-                    .map_err(Error::Io)?;
-            if n == 0 {
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "proxy closed connection during CONNECT handshake",
-                )));
-            }
-            written += n;
-        }
-
-        let mut resp_buf = Vec::with_capacity(256);
-        loop {
-            let mut one = [0u8; 1];
-            let mut read_buf = hyper::rt::ReadBuf::new(&mut one);
-            std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, read_buf.unfilled()))
-                .await
-                .map_err(Error::Io)?;
-
-            if read_buf.filled().is_empty() {
-                return Err(Error::Other("proxy closed connection".into()));
-            }
-            resp_buf.push(one[0]);
-
-            if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == *b"\r\n\r\n" {
-                break;
-            }
-
-            if resp_buf.len() > 8192 {
-                return Err(Error::Other("CONNECT response too large".into()));
-            }
-        }
-
-        let resp_str = String::from_utf8_lossy(&resp_buf);
-        let status_line = resp_str
-            .lines()
-            .next()
-            .ok_or_else(|| Error::Other("empty CONNECT response".into()))?;
-
-        let status_code = parse_connect_status(status_line)?;
-        if status_code != 200 {
-            return Err(Error::Other(
-                format!("CONNECT tunnel failed: {status_line}").into(),
-            ));
-        }
-
+        // Suppress unused warnings when rustls is not enabled
+        let _ = (&stream, &proxy, &target_authority);
         #[cfg(feature = "rustls")]
         {
+            let stream = do_connect_handshake(stream, proxy, target_authority.as_str()).await?;
             let host = target_authority.host();
             use crate::tls::TlsConnect;
             use std::time::Instant;
@@ -278,6 +224,290 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             Err(Error::Tls(
                 "HTTPS CONNECT tunnel requires the `rustls` TLS backend feature".into(),
             ))
+        }
+    }
+
+    async fn connect_two_hop_send(
+        &self,
+        first: &ProxyConfig,
+        second: &ProxyConfig,
+        target_authority: &http::uri::Authority,
+        is_https: bool,
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
+        let second_authority = second.authority()?;
+        let second_default_port = second.default_port();
+        let second_host = second_authority.host();
+        let second_port = second_authority.port_u16().unwrap_or(second_default_port);
+
+        let first_authority = first.authority()?;
+        let first_addr = self
+            .core
+            .resolve_authority(first_authority, first.default_port())
+            .await?;
+
+        let tcp_stream = if let Some(local_addr) = self.core.local_address {
+            self.connector
+                .connect_bound(first_addr, local_addr)
+                .await
+                .map_err(Error::Io)?
+        } else {
+            self.connector
+                .connect(first_addr)
+                .await
+                .map_err(Error::Io)?
+        };
+
+        #[cfg(target_os = "linux")]
+        if let Some(ref iface) = self.core.interface {
+            tcp_stream.bind_device(iface).map_err(Error::Io)?;
+        }
+        if let Some(time) = self.core.tcp_keepalive {
+            tcp_stream
+                .set_keepalive(
+                    time,
+                    self.core.tcp_keepalive_interval,
+                    self.core.tcp_keepalive_retries,
+                )
+                .map_err(Error::Io)?;
+        }
+        if self.core.tcp_fast_open {
+            let _ = tcp_stream.set_fast_open();
+        }
+
+        if first.scheme == crate::proxy::ProxyScheme::Socks5
+            || first.scheme == crate::proxy::ProxyScheme::Socks5h
+        {
+            let dns = if first.scheme == crate::proxy::ProxyScheme::Socks5h {
+                crate::socks5::Socks5Dns::Remote
+            } else {
+                crate::socks5::Socks5Dns::Local
+            };
+            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
+            crate::socks5::socks5_handshake(
+                &mut std_stream,
+                second_host,
+                second_port,
+                first.auth.as_ref(),
+                dns,
+            )
+            .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
+            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
+            self.connect_second_hop_send(stream, second, target_authority, is_https)
+                .await
+        } else if first.scheme == crate::proxy::ProxyScheme::Socks4 {
+            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
+            crate::socks4::socks4a_handshake(
+                &mut std_stream,
+                second_host,
+                second_port,
+                first.auth.as_ref(),
+            )
+            .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
+            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
+            self.connect_second_hop_send(stream, second, target_authority, is_https)
+                .await
+        } else if first.scheme == crate::proxy::ProxyScheme::Https {
+            #[cfg(feature = "rustls")]
+            {
+                use crate::tls::TlsConnect;
+                let tls_connector = self
+                    .core
+                    .tls
+                    .as_ref()
+                    .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+                let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
+                    tls_connector,
+                    first_authority.host(),
+                    tcp_stream,
+                )
+                .await
+                .map_err(|e| Error::Tls(Box::new(e)))?;
+                let stream =
+                    do_connect_handshake(tls_stream, first, second_authority.as_str()).await?;
+                if is_https {
+                    self.connect_tunnel(stream, second, target_authority).await
+                } else {
+                    self.connect_plaintext(stream).await
+                }
+            }
+            #[cfg(not(feature = "rustls"))]
+            {
+                Err(Error::Tls(
+                    "HTTPS proxy requires the `rustls` TLS backend feature".into(),
+                ))
+            }
+        } else {
+            // HTTP proxy: CONNECT through first to reach second
+            let stream = do_connect_handshake(tcp_stream, first, second_authority.as_str()).await?;
+            self.connect_second_hop_send(stream, second, target_authority, is_https)
+                .await
+        }
+    }
+
+    /// Second-hop dispatch: the stream is already connected to `second`'s proxy.
+    /// Routes via SOCKS5/SOCKS4 handshake or HTTP CONNECT depending on the scheme.
+    async fn connect_second_hop_send(
+        &self,
+        stream: C::Stream,
+        second: &ProxyConfig,
+        target_authority: &http::uri::Authority,
+        is_https: bool,
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
+        let target_host = target_authority.host();
+        let target_port = target_authority
+            .port_u16()
+            .unwrap_or(if is_https { 443 } else { 80 });
+
+        if second.scheme == crate::proxy::ProxyScheme::Socks5
+            || second.scheme == crate::proxy::ProxyScheme::Socks5h
+        {
+            let dns = if second.scheme == crate::proxy::ProxyScheme::Socks5h {
+                crate::socks5::Socks5Dns::Remote
+            } else {
+                crate::socks5::Socks5Dns::Local
+            };
+            let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
+            crate::socks5::socks5_handshake(
+                &mut std_stream,
+                target_host,
+                target_port,
+                second.auth.as_ref(),
+                dns,
+            )
+            .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
+            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
+            if is_https {
+                self.connect_tls(stream, target_host).await
+            } else {
+                self.connect_plaintext(stream).await
+            }
+        } else if second.scheme == crate::proxy::ProxyScheme::Socks4 {
+            let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
+            crate::socks4::socks4a_handshake(
+                &mut std_stream,
+                target_host,
+                target_port,
+                second.auth.as_ref(),
+            )
+            .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
+            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
+            if is_https {
+                self.connect_tls(stream, target_host).await
+            } else {
+                self.connect_plaintext(stream).await
+            }
+        } else if second.scheme == crate::proxy::ProxyScheme::Https {
+            #[cfg(feature = "rustls")]
+            {
+                use crate::tls::TlsConnect;
+                let tls_connector = self
+                    .core
+                    .tls
+                    .as_ref()
+                    .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+                let second_authority = second.authority()?;
+                let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
+                    tls_connector,
+                    second_authority.host(),
+                    stream,
+                )
+                .await
+                .map_err(|e| Error::Tls(Box::new(e)))?;
+                if is_https {
+                    self.connect_tunnel(tls_stream, second, target_authority)
+                        .await
+                } else {
+                    self.connect_plaintext(tls_stream).await
+                }
+            }
+            #[cfg(not(feature = "rustls"))]
+            {
+                Err(Error::Tls(
+                    "HTTPS proxy requires the `rustls` TLS backend feature".into(),
+                ))
+            }
+        } else {
+            // HTTP: CONNECT through second to reach target
+            if is_https {
+                self.connect_tunnel(stream, second, target_authority).await
+            } else {
+                self.connect_plaintext(stream).await
+            }
+        }
+    }
+
+    pub(super) async fn connect_via_proxy_chain(
+        &self,
+        chain: &crate::proxy::ProxyChain,
+        target_authority: &http::uri::Authority,
+        is_https: bool,
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
+        match chain.len() {
+            0 => Err(Error::Other("empty proxy chain".into())),
+            1 => {
+                self.connect_via_proxy(&chain.proxies[0], target_authority, is_https)
+                    .await
+            }
+            2 => {
+                self.connect_two_hop_send(
+                    &chain.proxies[0],
+                    &chain.proxies[1],
+                    target_authority,
+                    is_https,
+                )
+                .await
+            }
+            n => Err(Error::Other(
+                format!("proxy chains longer than 2 hops are not yet supported (got {n})").into(),
+            )),
         }
     }
 
@@ -424,6 +654,79 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             "HTTPS requires the `rustls` TLS backend feature".into(),
         ))
     }
+}
+
+/// Perform an HTTP CONNECT handshake through `stream` to `target`.
+///
+/// Sends `CONNECT target HTTP/1.1`, reads the response, validates HTTP 200,
+/// and returns the stream unchanged on success. Type-preserving: the returned
+/// stream is the same `S` that was passed in, making it reusable for proxy
+/// chaining.
+async fn do_connect_handshake<S>(
+    mut stream: S,
+    proxy: &ProxyConfig,
+    target: &str,
+) -> Result<S, Error>
+where
+    S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+{
+    let mut connect_msg = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+    if let Some(auth_value) = proxy.connect_header(target) {
+        connect_msg.push_str(&format!("Proxy-Authorization: {auth_value}\r\n"));
+    }
+    connect_msg.push_str("\r\n");
+
+    let buf = connect_msg.into_bytes();
+    let mut written = 0;
+    while written < buf.len() {
+        let n = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, &buf[written..]))
+            .await
+            .map_err(Error::Io)?;
+        if n == 0 {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "proxy closed connection during CONNECT handshake",
+            )));
+        }
+        written += n;
+    }
+
+    let mut resp_buf = Vec::with_capacity(256);
+    loop {
+        let mut one = [0u8; 1];
+        let mut read_buf = hyper::rt::ReadBuf::new(&mut one);
+        std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, read_buf.unfilled()))
+            .await
+            .map_err(Error::Io)?;
+
+        if read_buf.filled().is_empty() {
+            return Err(Error::Other("proxy closed connection".into()));
+        }
+        resp_buf.push(one[0]);
+
+        if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == *b"\r\n\r\n" {
+            break;
+        }
+
+        if resp_buf.len() > 8192 {
+            return Err(Error::Other("CONNECT response too large".into()));
+        }
+    }
+
+    let resp_str = String::from_utf8_lossy(&resp_buf);
+    let status_line = resp_str
+        .lines()
+        .next()
+        .ok_or_else(|| Error::Other("empty CONNECT response".into()))?;
+
+    let status_code = parse_connect_status(status_line)?;
+    if status_code != 200 {
+        return Err(Error::Other(
+            format!("CONNECT tunnel failed: {status_line}").into(),
+        ));
+    }
+
+    Ok(stream)
 }
 
 pub(super) fn parse_connect_status(status_line: &str) -> Result<u16, Error> {
@@ -1053,6 +1356,228 @@ mod tokio_tests {
         assert!(
             err.contains("too large"),
             "error should mention response too large, got: {err}"
+        );
+    }
+
+    // --- do_connect_handshake tests ---
+
+    #[tokio::test]
+    async fn do_connect_handshake_succeeds_with_200() {
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+        let target = "target.example.com:443".to_string();
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let n = server_io.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req.starts_with("CONNECT target.example.com:443"),
+                "got: {req}"
+            );
+            assert!(req.contains("Host: target.example.com:443"), "got: {req}");
+            server_io
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
+        let stream = TokioIo::new(client_io);
+        let result = super::do_connect_handshake(stream, &proxy, &target).await;
+        assert!(result.is_ok(), "handshake should succeed");
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_fails_on_407() {
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+        let target = "target.example.com:443".to_string();
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let _ = server_io.read(&mut buf).await.unwrap();
+            server_io
+                .write_all(
+                    b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
+        let stream = TokioIo::new(client_io);
+        let result = super::do_connect_handshake(stream, &proxy, &target).await;
+        assert!(result.is_err());
+        let err = format!("{}", result.err().unwrap());
+        assert!(err.contains("407"), "error should contain 407, got: {err}");
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_fails_on_malformed_response() {
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+        let target = "target.example.com:443".to_string();
+
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            server_io
+                .write_all(b"garbage without status\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
+        let stream = TokioIo::new(client_io);
+        let result = super::do_connect_handshake(stream, &proxy, &target).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_includes_proxy_auth() {
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+        let target = "target.example.com:443".to_string();
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let n = server_io.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req.contains("Proxy-Authorization:"),
+                "should include auth header, got: {req}"
+            );
+            server_io
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080")
+            .unwrap()
+            .basic_auth("user", "pass");
+        let stream = TokioIo::new(client_io);
+        let result = super::do_connect_handshake(stream, &proxy, &target).await;
+        assert!(result.is_ok());
+    }
+
+    // --- connect_via_proxy_chain tests ---
+
+    #[tokio::test]
+    async fn connect_via_proxy_chain_empty_is_error() {
+        let engine = make_engine();
+        let chain = crate::proxy::ProxyChain::new(vec![]);
+        let authority: http::uri::Authority = "example.com:443".parse().unwrap();
+        let result = engine
+            .connect_via_proxy_chain(&chain, &authority, true)
+            .await;
+        assert!(result.is_err());
+        let err = format!("{}", result.err().unwrap());
+        assert!(
+            err.contains("empty"),
+            "expected empty chain error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_via_proxy_chain_three_hops_is_error() {
+        let engine = make_engine();
+        let p1 = crate::proxy::ProxyConfig::http("http://p1:8080").unwrap();
+        let p2 = crate::proxy::ProxyConfig::socks5("socks5://p2:1080").unwrap();
+        let p3 = crate::proxy::ProxyConfig::http("http://p3:3128").unwrap();
+        let chain = crate::proxy::ProxyChain::new(vec![p1, p2, p3]);
+        let authority: http::uri::Authority = "example.com:443".parse().unwrap();
+        let result = engine
+            .connect_via_proxy_chain(&chain, &authority, true)
+            .await;
+        assert!(result.is_err());
+        let err = format!("{}", result.err().unwrap());
+        assert!(
+            err.contains("longer than 2 hops"),
+            "expected chain length error, got: {err}"
+        );
+    }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn connect_two_hop_send_http_http_chain() {
+        // Two-hop HTTP CONNECT chain:
+        //   client → proxy1 (CONNECT to proxy2) → proxy2 (CONNECT to target)
+        //
+        // proxy2 returns 200 then stays open (no real TLS server behind it).
+        // The client will attempt TLS to the target after both CONNECT
+        // handshakes, and that TLS will fail. The key assertion is that the
+        // error is NOT "CONNECT tunnel failed" — both tunnels opened.
+
+        // proxy2: responds 200 to CONNECT the-target, then waits
+        let proxy2_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy2_addr = proxy2_listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = proxy2_listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req.contains("CONNECT example.com:443"),
+                "proxy2 should see CONNECT to target, got: {req}"
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        });
+
+        // proxy1: reads CONNECT to proxy2, connects to proxy2, responds 200,
+        // then relays all traffic bidirectionally
+        let proxy1_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy1_addr = proxy1_listener.local_addr().unwrap();
+        let proxy2_relay = proxy2_addr;
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut client, _) = proxy1_listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = client.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+            assert!(
+                req.starts_with("CONNECT"),
+                "proxy1 should see CONNECT, got: {req}"
+            );
+
+            // Connect to proxy2 to establish the tunnel
+            let mut upstream = match tokio::net::TcpStream::connect(proxy2_relay).await {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                    return;
+                }
+            };
+            client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+
+            // Relay client ↔ proxy2
+            let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        });
+
+        let engine = make_engine();
+        let proxy1 = crate::proxy::ProxyConfig::http(&format!("http://{proxy1_addr}")).unwrap();
+        let proxy2 = crate::proxy::ProxyConfig::http(&format!("http://{proxy2_addr}")).unwrap();
+        let chain = crate::proxy::ProxyChain::new(vec![proxy1, proxy2]);
+        let authority: http::uri::Authority = "example.com:443".parse().unwrap();
+
+        let result = engine
+            .connect_via_proxy_chain(&chain, &authority, true)
+            .await;
+        // Should open both tunnels then fail at TLS to the target
+        assert!(result.is_err());
+        let err = format!("{}", result.err().unwrap());
+        assert!(
+            !err.contains("CONNECT tunnel failed"),
+            "both tunnels should succeed, error should be TLS-related, got: {err}"
         );
     }
 }

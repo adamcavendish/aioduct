@@ -585,7 +585,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
         let mut timing = TimingCollector::default();
 
-        let mut pooled = if let Some(ref proxy) = proxy {
+        let mut pooled = if let Some(ref chain) = self.core.proxy_chain {
+            self.connect_via_proxy_chain_local(chain, authority, is_https)
+                .await?
+        } else if let Some(ref proxy) = proxy {
             self.connect_via_proxy_local(proxy, authority, is_https)
                 .await?
         } else {

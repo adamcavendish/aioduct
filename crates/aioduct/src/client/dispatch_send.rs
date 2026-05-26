@@ -745,6 +745,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
             #[cfg(not(unix))]
             unreachable!()
+        } else if let Some(ref chain) = self.core.proxy_chain {
+            self.connect_via_proxy_chain(chain, authority, is_https)
+                .await?
         } else if let Some(ref proxy) = proxy {
             self.connect_via_proxy(proxy, authority, is_https).await?
         } else {

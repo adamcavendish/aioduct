@@ -149,74 +149,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
     async fn connect_tunnel_local<S>(
         &self,
-        mut stream: S,
+        stream: S,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
-        let target = target_authority.as_str();
-
-        let mut connect_msg = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
-        if let Some(auth_value) = proxy.connect_header(target) {
-            connect_msg.push_str(&format!("Proxy-Authorization: {auth_value}\r\n"));
-        }
-        connect_msg.push_str("\r\n");
-
-        let buf = connect_msg.into_bytes();
-        let mut written = 0;
-        while written < buf.len() {
-            let n =
-                std::future::poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, &buf[written..]))
-                    .await
-                    .map_err(Error::Io)?;
-            if n == 0 {
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "proxy closed connection during CONNECT handshake",
-                )));
-            }
-            written += n;
-        }
-
-        let mut resp_buf = Vec::with_capacity(256);
-        loop {
-            let mut one = [0u8; 1];
-            let mut read_buf = hyper::rt::ReadBuf::new(&mut one);
-            std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, read_buf.unfilled()))
-                .await
-                .map_err(Error::Io)?;
-
-            if read_buf.filled().is_empty() {
-                return Err(Error::Other("proxy closed connection".into()));
-            }
-            resp_buf.push(one[0]);
-
-            if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == *b"\r\n\r\n" {
-                break;
-            }
-
-            if resp_buf.len() > 8192 {
-                return Err(Error::Other("CONNECT response too large".into()));
-            }
-        }
-
-        let resp_str = String::from_utf8_lossy(&resp_buf);
-        let status_line = resp_str
-            .lines()
-            .next()
-            .ok_or_else(|| Error::Other("empty CONNECT response".into()))?;
-
-        let status_code = super::connect::parse_connect_status(status_line)?;
-        if status_code != 200 {
-            return Err(Error::Other(
-                format!("CONNECT tunnel failed: {status_line}").into(),
-            ));
-        }
-
+        // Suppress unused warnings when compio is not enabled
+        let _ = (&stream, &proxy, &target_authority);
         #[cfg(all(feature = "rustls", feature = "compio"))]
         {
+            let stream =
+                do_connect_handshake_local(stream, proxy, target_authority.as_str()).await?;
             let host = target_authority.host();
             use crate::tls::TlsConnectLocal;
             use std::time::Instant;
@@ -294,6 +239,296 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             Err(Error::Tls(
                 "HTTPS CONNECT tunnel requires rustls + compio features".into(),
             ))
+        }
+    }
+
+    async fn connect_two_hop_local(
+        &self,
+        first: &ProxyConfig,
+        second: &ProxyConfig,
+        target_authority: &http::uri::Authority,
+        is_https: bool,
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+        let second_authority = second.authority()?;
+        let second_default_port = second.default_port();
+        let second_host = second_authority.host();
+        let second_port = second_authority.port_u16().unwrap_or(second_default_port);
+
+        let first_authority = first.authority()?;
+        let first_addr = self
+            .core
+            .resolve_authority(first_authority, first.default_port())
+            .await?;
+
+        let tcp_stream = if let Some(local_addr) = self.core.local_address {
+            self.connector
+                .connect_bound(first_addr, local_addr)
+                .await
+                .map_err(Error::Io)?
+        } else {
+            self.connector
+                .connect(first_addr)
+                .await
+                .map_err(Error::Io)?
+        };
+
+        #[cfg(target_os = "linux")]
+        if let Some(ref iface) = self.core.interface {
+            tcp_stream.bind_device(iface).map_err(Error::Io)?;
+        }
+        if let Some(time) = self.core.tcp_keepalive {
+            tcp_stream
+                .set_keepalive(
+                    time,
+                    self.core.tcp_keepalive_interval,
+                    self.core.tcp_keepalive_retries,
+                )
+                .map_err(Error::Io)?;
+        }
+        if self.core.tcp_fast_open {
+            let _ = tcp_stream.set_fast_open();
+        }
+
+        if first.scheme == crate::proxy::ProxyScheme::Socks5
+            || first.scheme == crate::proxy::ProxyScheme::Socks5h
+        {
+            let dns = if first.scheme == crate::proxy::ProxyScheme::Socks5h {
+                crate::socks5::Socks5Dns::Remote
+            } else {
+                crate::socks5::Socks5Dns::Local
+            };
+            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
+            crate::socks5::socks5_handshake(
+                &mut std_stream,
+                second_host,
+                second_port,
+                first.auth.as_ref(),
+                dns,
+            )
+            .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
+            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
+            self.connect_second_hop_local(stream, second, target_authority, is_https)
+                .await
+        } else if first.scheme == crate::proxy::ProxyScheme::Socks4 {
+            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
+            crate::socks4::socks4a_handshake(
+                &mut std_stream,
+                second_host,
+                second_port,
+                first.auth.as_ref(),
+            )
+            .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
+            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
+            self.connect_second_hop_local(stream, second, target_authority, is_https)
+                .await
+        } else if first.scheme == crate::proxy::ProxyScheme::Https {
+            #[cfg(all(feature = "rustls", feature = "compio"))]
+            {
+                use crate::tls::TlsConnectLocal;
+                let tls_connector = self
+                    .core
+                    .tls
+                    .as_ref()
+                    .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+                let tls_stream =
+                    <crate::tls::RustlsConnector as TlsConnectLocal<C::Stream>>::connect_local(
+                        tls_connector,
+                        first_authority.host(),
+                        tcp_stream,
+                    )
+                    .await
+                    .map_err(|e| Error::Tls(Box::new(e)))?;
+                let stream =
+                    do_connect_handshake_local(tls_stream, first, second_authority.as_str())
+                        .await?;
+                if is_https {
+                    self.connect_tunnel_local(stream, second, target_authority)
+                        .await
+                } else {
+                    self.connect_plaintext_local(stream).await
+                }
+            }
+            #[cfg(not(all(feature = "rustls", feature = "compio")))]
+            {
+                Err(Error::Tls(
+                    "HTTPS proxy requires rustls + compio features".into(),
+                ))
+            }
+        } else {
+            // HTTP proxy: CONNECT through first to reach second
+            let stream =
+                do_connect_handshake_local(tcp_stream, first, second_authority.as_str()).await?;
+            self.connect_second_hop_local(stream, second, target_authority, is_https)
+                .await
+        }
+    }
+
+    /// Second-hop dispatch for the local (!Send) path.
+    /// The stream is already connected to `second`'s proxy.
+    async fn connect_second_hop_local(
+        &self,
+        stream: C::Stream,
+        second: &ProxyConfig,
+        target_authority: &http::uri::Authority,
+        is_https: bool,
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+        let target_host = target_authority.host();
+        let target_port = target_authority
+            .port_u16()
+            .unwrap_or(if is_https { 443 } else { 80 });
+
+        if second.scheme == crate::proxy::ProxyScheme::Socks5
+            || second.scheme == crate::proxy::ProxyScheme::Socks5h
+        {
+            let dns = if second.scheme == crate::proxy::ProxyScheme::Socks5h {
+                crate::socks5::Socks5Dns::Remote
+            } else {
+                crate::socks5::Socks5Dns::Local
+            };
+            let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
+            crate::socks5::socks5_handshake(
+                &mut std_stream,
+                target_host,
+                target_port,
+                second.auth.as_ref(),
+                dns,
+            )
+            .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
+            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
+            if is_https {
+                self.connect_tls_local(stream, target_host).await
+            } else {
+                self.connect_plaintext_local(stream).await
+            }
+        } else if second.scheme == crate::proxy::ProxyScheme::Socks4 {
+            let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
+            if let Some(timeout) = self.core.connect_timeout {
+                std_stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+                std_stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(Error::Io)?;
+            }
+            crate::socks4::socks4a_handshake(
+                &mut std_stream,
+                target_host,
+                target_port,
+                second.auth.as_ref(),
+            )
+            .map_err(Error::Io)?;
+            if self.core.connect_timeout.is_some() {
+                std_stream.set_read_timeout(None).map_err(Error::Io)?;
+                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            }
+            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
+            if is_https {
+                self.connect_tls_local(stream, target_host).await
+            } else {
+                self.connect_plaintext_local(stream).await
+            }
+        } else if second.scheme == crate::proxy::ProxyScheme::Https {
+            #[cfg(all(feature = "rustls", feature = "compio"))]
+            {
+                use crate::tls::TlsConnectLocal;
+                let tls_connector = self
+                    .core
+                    .tls
+                    .as_ref()
+                    .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+                let second_authority = second.authority()?;
+                let tls_stream =
+                    <crate::tls::RustlsConnector as TlsConnectLocal<C::Stream>>::connect_local(
+                        tls_connector,
+                        second_authority.host(),
+                        stream,
+                    )
+                    .await
+                    .map_err(|e| Error::Tls(Box::new(e)))?;
+                if is_https {
+                    self.connect_tunnel_local(tls_stream, second, target_authority)
+                        .await
+                } else {
+                    self.connect_plaintext_local(tls_stream).await
+                }
+            }
+            #[cfg(not(all(feature = "rustls", feature = "compio")))]
+            {
+                Err(Error::Tls(
+                    "HTTPS proxy requires rustls + compio features".into(),
+                ))
+            }
+        } else {
+            // HTTP: CONNECT through second to reach target
+            if is_https {
+                self.connect_tunnel_local(stream, second, target_authority)
+                    .await
+            } else {
+                self.connect_plaintext_local(stream).await
+            }
+        }
+    }
+
+    pub(super) async fn connect_via_proxy_chain_local(
+        &self,
+        chain: &crate::proxy::ProxyChain,
+        target_authority: &http::uri::Authority,
+        is_https: bool,
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+        match chain.len() {
+            0 => Err(Error::Other("empty proxy chain".into())),
+            1 => {
+                self.connect_via_proxy_local(&chain.proxies[0], target_authority, is_https)
+                    .await
+            }
+            2 => {
+                self.connect_two_hop_local(
+                    &chain.proxies[0],
+                    &chain.proxies[1],
+                    target_authority,
+                    is_https,
+                )
+                .await
+            }
+            n => Err(Error::Other(
+                format!("proxy chains longer than 2 hops are not yet supported (got {n})").into(),
+            )),
         }
     }
 
@@ -468,6 +703,81 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             "HTTPS requires the `rustls` TLS backend feature".into(),
         ))
     }
+}
+
+/// Perform an HTTP CONNECT handshake through `stream` to `target`.
+///
+/// Sends `CONNECT target HTTP/1.1`, reads the response, validates HTTP 200,
+/// and returns the stream unchanged on success. Type-preserving: the returned
+/// stream is the same `S` that was passed in, making it reusable for proxy
+/// chaining.
+///
+/// This is the `!Send` (local/completion runtime) variant.
+async fn do_connect_handshake_local<S>(
+    mut stream: S,
+    proxy: &ProxyConfig,
+    target: &str,
+) -> Result<S, Error>
+where
+    S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+{
+    let mut connect_msg = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+    if let Some(auth_value) = proxy.connect_header(target) {
+        connect_msg.push_str(&format!("Proxy-Authorization: {auth_value}\r\n"));
+    }
+    connect_msg.push_str("\r\n");
+
+    let buf = connect_msg.into_bytes();
+    let mut written = 0;
+    while written < buf.len() {
+        let n = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, &buf[written..]))
+            .await
+            .map_err(Error::Io)?;
+        if n == 0 {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "proxy closed connection during CONNECT handshake",
+            )));
+        }
+        written += n;
+    }
+
+    let mut resp_buf = Vec::with_capacity(256);
+    loop {
+        let mut one = [0u8; 1];
+        let mut read_buf = hyper::rt::ReadBuf::new(&mut one);
+        std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, read_buf.unfilled()))
+            .await
+            .map_err(Error::Io)?;
+
+        if read_buf.filled().is_empty() {
+            return Err(Error::Other("proxy closed connection".into()));
+        }
+        resp_buf.push(one[0]);
+
+        if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == *b"\r\n\r\n" {
+            break;
+        }
+
+        if resp_buf.len() > 8192 {
+            return Err(Error::Other("CONNECT response too large".into()));
+        }
+    }
+
+    let resp_str = String::from_utf8_lossy(&resp_buf);
+    let status_line = resp_str
+        .lines()
+        .next()
+        .ok_or_else(|| Error::Other("empty CONNECT response".into()))?;
+
+    let status_code = super::connect::parse_connect_status(status_line)?;
+    if status_code != 200 {
+        return Err(Error::Other(
+            format!("CONNECT tunnel failed: {status_line}").into(),
+        ));
+    }
+
+    Ok(stream)
 }
 
 #[cfg(all(test, feature = "compio"))]

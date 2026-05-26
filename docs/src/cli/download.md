@@ -129,7 +129,7 @@ aioduct download --log download.log --log-level debug https://example.com/file.b
 | `--user-agent STRING` | `-U` | User-Agent string |
 | `--http-user USER` | | HTTP Basic auth username |
 | `--http-passwd PASS` | | HTTP Basic auth password |
-| `--all-proxy URL` | | Proxy for all protocols |
+| `--all-proxy URL` | | Proxy for all protocols (http, https, socks4, socks4a, socks5, socks5h) |
 | `--check-certificate-false` | | Disable TLS verification |
 | `--recursive` | `-r` | Recursive WebDAV download |
 | `--max-depth N` | | Max recursion depth (default: unlimited) |

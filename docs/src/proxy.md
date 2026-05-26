@@ -1,6 +1,21 @@
 # Proxy Support
 
-aioduct supports routing requests through HTTP and SOCKS5 proxies. For HTTP targets via an HTTP proxy, the request is sent directly to the proxy. For HTTPS targets, a CONNECT tunnel is established. SOCKS5 proxies tunnel all traffic regardless of scheme.
+aioduct supports routing requests through HTTP, HTTPS, SOCKS4/SOCKS4a, SOCKS5, and SOCKS5h proxies. For HTTP targets via an HTTP proxy, the request is sent directly to the proxy. For HTTPS targets, a CONNECT tunnel is established. SOCKS proxies tunnel all traffic regardless of scheme.
+
+## Proxy Schemes
+
+| Scheme | Constructor | DNS Resolution | Description |
+|--------|------------|----------------|-------------|
+| `http://` | `ProxyConfig::http()` | N/A | HTTP CONNECT proxy |
+| `https://` | `ProxyConfig::https()` | N/A | TLS-wrapped HTTP CONNECT proxy |
+| `socks4://` | `ProxyConfig::socks4()` | Local | SOCKS4 proxy |
+| `socks4a://` | `ProxyConfig::socks4()` | Remote | SOCKS4a proxy (domain sent to proxy) |
+| `socks5://` | `ProxyConfig::socks5()` | Local | SOCKS5 proxy (client resolves hostnames, sends IP) |
+| `socks5h://` | `ProxyConfig::socks5h()` | Remote | SOCKS5h proxy (proxy resolves hostnames, sends domain) |
+
+The difference between `socks5://` and `socks5h://` matters when the proxy
+is on a different network (e.g. a corporate SOCKS proxy that can resolve
+internal hostnames the client cannot).
 
 ## Basic Usage
 
@@ -12,10 +27,47 @@ let client = TokioClient::builder()
     .proxy(ProxyConfig::http("http://proxy.example.com:8080").unwrap())
     .build()?;
 
-// SOCKS5 proxy
+// HTTPS proxy (TLS-wrapped connection to the proxy)
+let client = TokioClient::builder()
+    .proxy(ProxyConfig::https("https://proxy.example.com:443").unwrap())
+    .build()?;
+
+// SOCKS5 proxy (local DNS)
 let client = TokioClient::builder()
     .proxy(ProxyConfig::socks5("socks5://socks-proxy.example.com:1080").unwrap())
     .build()?;
+
+// SOCKS5h proxy (remote DNS)
+let client = TokioClient::builder()
+    .proxy(ProxyConfig::socks5h("socks5h://socks-proxy.example.com:1080").unwrap())
+    .build()?;
+
+// SOCKS4/SOCKS4a proxy
+let client = TokioClient::builder()
+    .proxy(ProxyConfig::socks4("socks4a://socks-proxy.example.com:1080").unwrap())
+    .build()?;
+```
+
+## URI-Embedded Credentials
+
+Proxy URLs can include credentials in the standard `user:pass@host` format.
+Both the username and password are percent-decoded automatically.
+
+```rust,no_run
+use aioduct::ProxyConfig;
+
+// Credentials embedded in the URL
+let proxy = ProxyConfig::http("http://alice:s3cret@proxy.example.com:8080").unwrap();
+
+// Percent-encoded characters are decoded (e.g. %40 → @, %3A → :)
+let proxy = ProxyConfig::https(
+    "https://user%40domain:p%3Assword@proxy.example.com:443"
+).unwrap();
+
+// basic_auth() still works and overrides any URI-embedded credentials
+let proxy = ProxyConfig::http("http://ignored:ignored@proxy:8080")
+    .unwrap()
+    .basic_auth("real-user", "real-pass");
 ```
 
 ## System Proxy (Environment Variables)
@@ -35,7 +87,9 @@ This reads:
 - `HTTPS_PROXY` / `https_proxy` — proxy for HTTPS requests
 - `NO_PROXY` / `no_proxy` — comma-separated list of hosts to bypass
 
-The uppercase variant takes precedence over the lowercase variant.
+The uppercase variant takes precedence over the lowercase variant. The
+following URL schemes are recognised: `http://`, `https://`, `socks4://`,
+`socks4a://`, `socks5://`, and `socks5h://`.
 
 ### NO_PROXY Rules
 
@@ -81,6 +135,11 @@ let client = TokioClient::builder()
 
 ## Proxy Authentication
 
+Proxy authentication is supported via `basic_auth()`, URI-embedded
+credentials, or a credential resolver.
+
+### Explicit Authentication
+
 ```rust,no_run
 use aioduct::{TokioClient, ProxyConfig};
 
@@ -93,15 +152,108 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
+### Credential Resolver
+
+The `CredentialResolver` trait allows looking up proxy credentials from
+external sources. It is called when a proxy has no explicit auth set.
+
+```rust,no_run
+use aioduct::{CredentialResolver, ProxyConfig, ProxySettings, TokioClient};
+
+// Built-in: read from environment variables
+use aioduct::EnvCredentialResolver;
+
+// Reads AIODUCT_PROXY_USER and AIODUCT_PROXY_PASS globally.
+// The `key` parameter (proxy host:port) is reserved for future
+// per-proxy resolvers (e.g. platform keychains).
+let client = TokioClient::builder()
+    .proxy_settings(
+        ProxySettings::all(
+            ProxyConfig::http("http://proxy:8080").unwrap()
+        )
+        .proxy_credential_resolver(EnvCredentialResolver),
+    )
+    .build()?;
+```
+
+Composite resolvers try multiple sources in order:
+
+```rust,no_run
+use aioduct::{CompositeResolver, EnvCredentialResolver, CredentialResolver};
+
+struct KeychainResolver;
+impl CredentialResolver for KeychainResolver {
+    fn resolve(&self, key: &str) -> Option<(String, String)> {
+        // Look up credentials in the platform keychain by host:port
+        None
+    }
+}
+
+let resolver = CompositeResolver::new()
+    .push(KeychainResolver)
+    .push(EnvCredentialResolver); // fallback
+
+let client = TokioClient::builder()
+    .proxy_settings(
+        ProxySettings::all(
+            ProxyConfig::http("http://proxy:8080").unwrap()
+        )
+        .proxy_credential_resolver(resolver),
+    )
+    .build()?;
+```
+
+Priority: `basic_auth()` > URI-embedded credentials > credential resolver.
+
+## Proxy Chaining
+
+Proxy chaining routes requests through multiple proxies in sequence. Each
+proxy is reached through the previous one. Up to 2 hops are currently
+supported.
+
+```rust,no_run
+use aioduct::{ProxyChain, ProxyConfig, TokioClient};
+
+// Chain: client → SOCKS5 exit proxy → corporate HTTP proxy → target
+let chain = ProxyChain::new(vec![
+    ProxyConfig::socks5("socks5://exit-proxy:1080").unwrap(),
+    ProxyConfig::http("http://corporate-proxy:3128")
+        .unwrap()
+        .basic_auth("employee", "pass"),
+]);
+
+let client = TokioClient::builder()
+    .proxy_chain(chain)
+    .build()?;
+```
+
+Any combination of proxy schemes is supported for both hops:
+
+| First Hop | Second Hop | Supported |
+|-----------|------------|-----------|
+| HTTP | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
+| SOCKS5/SOCKS5h | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
+| SOCKS4 | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
+| HTTPS | HTTP/HTTPS | Yes |
+| HTTPS | SOCKS5/SOCKS5h/SOCKS4 | No\* |
+
+\* When the first hop is an HTTPS proxy, the stream is TLS-wrapped and
+cannot be converted back to a raw TCP stream for a SOCKS handshake.
+
+When both a proxy chain and a single proxy are configured, the chain
+takes priority.
+
 ## How It Works
 
 ### HTTP Targets
 
-For plain HTTP requests, the client connects to the proxy and sends the request with the full absolute URI in the request line. The proxy forwards the request to the target server.
+For plain HTTP requests through an HTTP proxy, the client connects to the
+proxy and sends the request with the full absolute URI in the request line.
+The proxy forwards the request to the target server.
 
 ### HTTPS Targets (CONNECT Tunnel)
 
-For HTTPS requests, the client:
+For HTTPS requests through an HTTP proxy, the client:
 
 1. Connects to the proxy via TCP
 2. Sends `CONNECT host:port HTTP/1.1` to establish a tunnel
@@ -109,7 +261,22 @@ For HTTPS requests, the client:
 4. Performs TLS handshake through the tunnel
 5. Sends the actual HTTPS request over the encrypted connection
 
-This ensures end-to-end encryption — the proxy only sees the target hostname, not the request content.
+This ensures end-to-end encryption — the proxy only sees the target
+hostname, not the request content.
+
+### HTTPS Proxy
+
+When the proxy URL itself uses `https://`, the client wraps the connection
+to the proxy in TLS before sending the CONNECT command. This encrypts the
+CONNECT handshake (including target hostname and proxy credentials) from
+any intermediary between the client and the proxy.
+
+### SOCKS Proxies
+
+SOCKS proxies operate at the TCP level. After the SOCKS handshake (which
+establishes a tunnel to the target), the TCP stream is used directly —
+for HTTP targets the client sends a normal request, for HTTPS targets TLS
+is negotiated over the tunnel.
 
 ## Example: Corporate Proxy
 
@@ -137,54 +304,31 @@ async fn main() -> Result<(), aioduct::Error> {
 }
 ```
 
-## SOCKS4/SOCKS4a Proxy
+## CLI Proxy Support
 
-SOCKS4/SOCKS4a proxies are also supported. SOCKS4a extends SOCKS4 with domain name resolution on the proxy side:
+The `aioduct http` and `aioduct download` subcommands support all proxy
+schemes via the `-x` / `--proxy` and `--all-proxy` flags:
 
-```rust,no_run
-use aioduct::{TokioClient, ProxyConfig};
+```sh
+# HTTP proxy
+aioduct http -x http://proxy:8080 https://example.com
 
-// SOCKS4a proxy (domain resolution on proxy)
-let client = TokioClient::builder()
-    .proxy(ProxyConfig::socks4("socks4a://localhost:1080").unwrap())
-    .build()?;
+# SOCKS5 proxy
+aioduct http -x socks5://127.0.0.1:1080 https://example.com
 
-// SOCKS4 proxy
-let client = TokioClient::builder()
-    .proxy(ProxyConfig::socks4("socks4://localhost:1080").unwrap())
-    .build()?;
+# SOCKS5h proxy (remote DNS)
+aioduct http -x socks5h://proxy:1080 https://internal.corp
+
+# HTTPS proxy
+aioduct http -x https://proxy:443 https://example.com
 ```
-
-SOCKS4 supports optional user ID authentication (passed via `basic_auth` — only the username is used).
-
-Environment variables with `socks4://` or `socks4a://` URLs are automatically detected by `system_proxy()`.
-
-## SOCKS5 Proxy
-
-SOCKS5 proxies tunnel TCP connections at a lower level than HTTP proxies. After the SOCKS5 handshake, the TCP stream is used directly — for HTTP targets, the client sends a normal request; for HTTPS targets, TLS is negotiated over the tunnel.
-
-```rust,no_run
-use aioduct::{TokioClient, ProxyConfig};
-
-// Without auth
-let client = TokioClient::builder()
-    .proxy(ProxyConfig::socks5("socks5://localhost:1080").unwrap())
-    .build()?;
-
-// With username/password auth
-let client = TokioClient::builder()
-    .proxy(
-        ProxyConfig::socks5("socks5://localhost:1080")
-            .unwrap()
-            .basic_auth("user", "pass"),
-    )
-    .build()?;
-```
-
-Environment variables with `socks5://` URLs are automatically detected by `system_proxy()`.
 
 ## Limitations
 
 - SOCKS5 supports no-auth and username/password authentication (RFC 1928/1929)
 - SOCKS4 supports optional user ID authentication
-- The HTTP proxy URI must use `http://` scheme; the SOCKS5 proxy URI must use `socks5://`; the SOCKS4 proxy URI must use `socks4://` or `socks4a://`
+- Proxy chaining supports up to 2 hops
+- `EnvCredentialResolver` applies the same credentials to all proxies (the
+  `key` parameter is reserved for future per-proxy resolvers)
+- The HTTP proxy URI must use `http://` or `https://` scheme; SOCKS proxies
+  must use `socks4://`, `socks4a://`, `socks5://`, or `socks5h://`

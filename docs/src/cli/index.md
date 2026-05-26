@@ -35,4 +35,4 @@ Decimal fractions are supported: `1.5M` = 1,572,864 bytes.
 
 **vs aria2c:** `aioduct download` implements segmented parallel downloads with automatic resume, similar to `aria2c`. It adds WebDAV recursive directory downloads, checksum verification, and a TUI progress display. The flag names follow aria2 conventions (`--split`, `--max-concurrent-downloads`, `--min-split-size`).
 
-**Shared advantages:** Both subcommands benefit from the aioduct library's HTTP/2 multiplexing, connection pooling, bandwidth limiting, and proxy support (HTTP + SOCKS5) without external dependencies like libcurl or OpenSSL.
+**Shared advantages:** Both subcommands benefit from the aioduct library's HTTP/2 multiplexing, connection pooling, bandwidth limiting, and proxy support (HTTP, HTTPS, SOCKS4/SOCKS4a, SOCKS5, SOCKS5h) without external dependencies like libcurl or OpenSSL.
