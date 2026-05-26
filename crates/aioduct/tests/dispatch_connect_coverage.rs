@@ -804,9 +804,16 @@ async fn socks5_proxy_with_keepalive_and_fast_open() {
                     return;
                 }
 
-                let domain_len = buf[4] as usize;
-                let port_offset = 5 + domain_len;
-                let port = ((buf[port_offset] as u16) << 8) | (buf[port_offset + 1] as u16);
+                let port = match buf[3] {
+                    0x01 => u16::from_be_bytes([buf[8], buf[9]]),
+                    0x03 => {
+                        let domain_len = buf[4] as usize;
+                        let port_offset = 5 + domain_len;
+                        u16::from_be_bytes([buf[port_offset], buf[port_offset + 1]])
+                    }
+                    0x04 => u16::from_be_bytes([buf[20], buf[21]]),
+                    _ => return,
+                };
 
                 // Connect to target
                 let target = format!("127.0.0.1:{port}");

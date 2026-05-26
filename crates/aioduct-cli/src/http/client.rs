@@ -59,7 +59,9 @@ pub fn build_client(
 
     if let Some(ref proxy_url) = cli.proxy
         && let Ok(proxy) = aioduct::ProxyConfig::http(proxy_url)
+            .or_else(|_| aioduct::ProxyConfig::https(proxy_url))
             .or_else(|_| aioduct::ProxyConfig::socks5(proxy_url))
+            .or_else(|_| aioduct::ProxyConfig::socks5h(proxy_url))
     {
         builder = builder.proxy(proxy);
     }

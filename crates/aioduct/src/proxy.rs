@@ -7,8 +7,10 @@ use crate::error::Error;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProxyScheme {
     Http,
+    Https,
     Socks4,
     Socks5,
+    Socks5h,
 }
 
 /// Proxy configuration (HTTP or SOCKS5).
@@ -83,6 +85,36 @@ impl ProxyConfig {
         })
     }
 
+    /// Create a proxy config from a `socks5h://` URI (proxy resolves DNS).
+    pub fn socks5h(uri: &str) -> Result<Self, Error> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        if uri.scheme_str() != Some("socks5h") {
+            return Err(Error::InvalidUrl(
+                "SOCKS5h proxy URI must use socks5h:// scheme".into(),
+            ));
+        }
+        Ok(Self {
+            uri,
+            scheme: ProxyScheme::Socks5h,
+            auth: None,
+        })
+    }
+
+    /// Create a proxy config from an `https://` URI (TLS connection to proxy).
+    pub fn https(uri: &str) -> Result<Self, Error> {
+        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        if uri.scheme_str() != Some("https") {
+            return Err(Error::InvalidUrl(
+                "HTTPS proxy URI must use https:// scheme".into(),
+            ));
+        }
+        Ok(Self {
+            uri,
+            scheme: ProxyScheme::Https,
+            auth: None,
+        })
+    }
+
     /// Set basic authentication credentials for the proxy.
     pub fn basic_auth(mut self, username: &str, password: &str) -> Self {
         self.auth = Some(ProxyAuth {
@@ -101,8 +133,10 @@ impl ProxyConfig {
     pub(crate) fn default_port(&self) -> u16 {
         match self.scheme {
             ProxyScheme::Http => 80,
+            ProxyScheme::Https => 443,
             ProxyScheme::Socks4 => 1080,
             ProxyScheme::Socks5 => 1080,
+            ProxyScheme::Socks5h => 1080,
         }
     }
 
@@ -289,17 +323,14 @@ fn env_proxy(upper: &str, lower: &str) -> Option<ProxyConfig> {
     if val.is_empty() {
         return None;
     }
-    if val.starts_with("socks5://") {
+    if val.starts_with("socks5h://") {
+        ProxyConfig::socks5h(&val).ok()
+    } else if val.starts_with("socks5://") {
         ProxyConfig::socks5(&val).ok()
     } else if val.starts_with("socks4://") || val.starts_with("socks4a://") {
         ProxyConfig::socks4(&val).ok()
     } else if val.starts_with("https://") {
-        let uri: Uri = val.parse().ok()?;
-        Some(ProxyConfig {
-            uri,
-            scheme: ProxyScheme::Http,
-            auth: None,
-        })
+        ProxyConfig::https(&val).ok()
     } else {
         let val = if !val.contains("://") {
             format!("http://{val}")
@@ -450,6 +481,45 @@ mod tests {
     #[test]
     fn proxy_config_socks4_wrong_scheme() {
         assert!(ProxyConfig::socks4("http://proxy").is_err());
+    }
+
+    #[test]
+    fn proxy_config_socks5h_valid() {
+        let cfg = ProxyConfig::socks5h("socks5h://proxy:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks5h);
+        assert_eq!(cfg.default_port(), 1080);
+    }
+
+    #[test]
+    fn proxy_config_socks5h_wrong_scheme() {
+        assert!(ProxyConfig::socks5h("socks5://proxy:1080").is_err());
+        assert!(ProxyConfig::socks5h("http://proxy:1080").is_err());
+    }
+
+    #[test]
+    fn proxy_config_https_valid() {
+        let cfg = ProxyConfig::https("https://proxy:443").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Https);
+        assert_eq!(cfg.default_port(), 443);
+    }
+
+    #[test]
+    fn proxy_config_https_wrong_scheme() {
+        assert!(ProxyConfig::https("http://proxy:443").is_err());
+        assert!(ProxyConfig::https("socks5://proxy:443").is_err());
+    }
+
+    #[test]
+    fn env_proxy_https_parsed_correctly() {
+        // Verify https:// proxy URLs map to ProxyScheme::Https (not Http)
+        let cfg = ProxyConfig::https("https://secure-proxy.example.com:443").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Https);
+    }
+
+    #[test]
+    fn env_proxy_socks5h_parsed_correctly() {
+        let cfg = ProxyConfig::socks5h("socks5h://dns-proxy.example.com:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks5h);
     }
 
     #[test]
@@ -622,7 +692,7 @@ mod tests {
         let result = env_proxy("TEST_HTTPS_PROXY_VAL", "test_https_proxy_val_lower");
         assert!(result.is_some());
         let cfg = result.unwrap();
-        assert_eq!(cfg.scheme, ProxyScheme::Http);
+        assert_eq!(cfg.scheme, ProxyScheme::Https);
         assert!(cfg.uri.to_string().contains("secure-proxy"));
         unsafe { std::env::remove_var("TEST_HTTPS_PROXY_VAL") };
     }

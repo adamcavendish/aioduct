@@ -1,5 +1,5 @@
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 
 use crate::proxy::ProxyAuth;
 
@@ -8,15 +8,27 @@ const AUTH_NONE: u8 = 0x00;
 const AUTH_USERNAME_PASSWORD: u8 = 0x02;
 const AUTH_NO_ACCEPTABLE: u8 = 0xFF;
 const CMD_CONNECT: u8 = 0x01;
+const ATYP_IPV4: u8 = 0x01;
 const ATYP_DOMAIN: u8 = 0x03;
+const ATYP_IPV6: u8 = 0x04;
 const REPLY_SUCCESS: u8 = 0x00;
 const USERNAME_PASSWORD_VERSION: u8 = 0x01;
+
+/// Whether the SOCKS5 proxy or the client resolves the target hostname.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Socks5Dns {
+    /// Client resolves DNS locally and sends the IP address to the proxy.
+    Local,
+    /// Proxy resolves DNS (SOCKS5h behavior) — client sends the hostname.
+    Remote,
+}
 
 pub(crate) fn socks5_handshake(
     stream: &mut TcpStream,
     host: &str,
     port: u16,
     auth: Option<&ProxyAuth>,
+    dns: Socks5Dns,
 ) -> io::Result<()> {
     let methods: Vec<u8> = if auth.is_some() {
         vec![SOCKS5_VERSION, 2, AUTH_NONE, AUTH_USERNAME_PASSWORD]
@@ -81,20 +93,38 @@ pub(crate) fn socks5_handshake(
         }
     }
 
-    let host_bytes = host.as_bytes();
-    if host_bytes.len() > 255 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "SOCKS5: hostname too long",
-        ));
-    }
-    let mut connect_msg = Vec::with_capacity(7 + host_bytes.len());
+    let mut connect_msg = Vec::with_capacity(32);
     connect_msg.push(SOCKS5_VERSION);
     connect_msg.push(CMD_CONNECT);
     connect_msg.push(0x00); // reserved
-    connect_msg.push(ATYP_DOMAIN);
-    connect_msg.push(host_bytes.len() as u8);
-    connect_msg.extend_from_slice(host_bytes);
+
+    match dns {
+        Socks5Dns::Local => {
+            let addr = resolve_host(host, port)?;
+            match addr {
+                IpAddr::V4(v4) => {
+                    connect_msg.push(ATYP_IPV4);
+                    connect_msg.extend_from_slice(&v4.octets());
+                }
+                IpAddr::V6(v6) => {
+                    connect_msg.push(ATYP_IPV6);
+                    connect_msg.extend_from_slice(&v6.octets());
+                }
+            }
+        }
+        Socks5Dns::Remote => {
+            let host_bytes = host.as_bytes();
+            if host_bytes.len() > 255 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "SOCKS5: hostname too long",
+                ));
+            }
+            connect_msg.push(ATYP_DOMAIN);
+            connect_msg.push(host_bytes.len() as u8);
+            connect_msg.extend_from_slice(host_bytes);
+        }
+    }
     connect_msg.push((port >> 8) as u8);
     connect_msg.push(port as u8);
     stream.write_all(&connect_msg)?;
@@ -155,6 +185,14 @@ pub(crate) fn socks5_handshake(
     }
 
     Ok(())
+}
+
+fn resolve_host(host: &str, port: u16) -> io::Result<IpAddr> {
+    let addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "failed to resolve host"))?;
+    Ok(addr.ip())
 }
 
 #[cfg(test)]
@@ -221,7 +259,7 @@ mod tests {
                 server.write_all(&ipv4_reply()).unwrap();
             },
             |client| {
-                let result = socks5_handshake(client, "example.com", 80, None);
+                let result = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote);
                 assert!(result.is_ok());
             },
         );
@@ -260,7 +298,8 @@ mod tests {
                     username: "user".into(),
                     password: "pass".into(),
                 };
-                let result = socks5_handshake(client, "example.com", 80, Some(&auth));
+                let result =
+                    socks5_handshake(client, "example.com", 80, Some(&auth), Socks5Dns::Remote);
                 assert!(result.is_ok());
             },
         );
@@ -284,7 +323,9 @@ mod tests {
                     username: "user".into(),
                     password: "wrong".into(),
                 };
-                let err = socks5_handshake(client, "example.com", 80, Some(&auth)).unwrap_err();
+                let err =
+                    socks5_handshake(client, "example.com", 80, Some(&auth), Socks5Dns::Remote)
+                        .unwrap_err();
                 assert!(err.to_string().contains("authentication failed"));
             },
         );
@@ -301,7 +342,8 @@ mod tests {
                     .unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(
                     err.to_string()
                         .contains("no acceptable authentication method")
@@ -319,7 +361,8 @@ mod tests {
                 server.write_all(&[SOCKS5_VERSION, 0x03]).unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(err.to_string().contains("unsupported auth method"));
             },
         );
@@ -334,7 +377,8 @@ mod tests {
                 server.write_all(&[0x04, AUTH_NONE]).unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(err.to_string().contains("unexpected version"));
             },
         );
@@ -356,7 +400,8 @@ mod tests {
                 server.write_all(&[127, 0, 0, 1, 0x00, 0x50]).unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(err.to_string().contains("unexpected reply version"));
             },
         );
@@ -377,7 +422,8 @@ mod tests {
                 server.write_all(&[0, 0, 0, 0, 0, 0]).unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(err.to_string().contains("general failure"));
             },
         );
@@ -398,7 +444,8 @@ mod tests {
                 server.write_all(&[0, 0, 0, 0, 0, 0]).unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(err.to_string().contains("connection refused"));
             },
         );
@@ -419,7 +466,8 @@ mod tests {
                 server.write_all(&[0, 0, 0, 0, 0, 0]).unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(err.to_string().contains("unknown error"));
             },
         );
@@ -437,7 +485,7 @@ mod tests {
                 server.write_all(&domain_reply("bound.host")).unwrap();
             },
             |client| {
-                let result = socks5_handshake(client, "example.com", 80, None);
+                let result = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote);
                 assert!(result.is_ok());
             },
         );
@@ -455,7 +503,7 @@ mod tests {
                 server.write_all(&ipv6_reply()).unwrap();
             },
             |client| {
-                let result = socks5_handshake(client, "example.com", 80, None);
+                let result = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote);
                 assert!(result.is_ok());
             },
         );
@@ -475,7 +523,8 @@ mod tests {
                     .unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(err.to_string().contains("unknown address type"));
             },
         );
@@ -491,7 +540,8 @@ mod tests {
                 server.write_all(&[SOCKS5_VERSION, AUTH_NONE]).unwrap();
             },
             move |client| {
-                let err = socks5_handshake(client, &long_host, 80, None).unwrap_err();
+                let err =
+                    socks5_handshake(client, &long_host, 80, None, Socks5Dns::Remote).unwrap_err();
                 assert!(err.to_string().contains("hostname too long"));
             },
         );
@@ -508,7 +558,8 @@ mod tests {
                     .unwrap();
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert!(err.to_string().contains("server requires auth"));
             },
         );
@@ -540,7 +591,51 @@ mod tests {
                 server.write_all(&ipv4_reply()).unwrap();
             },
             |client| {
-                let result = socks5_handshake(client, "test.io", 8080, None);
+                let result = socks5_handshake(client, "test.io", 8080, None, Socks5Dns::Remote);
+                assert!(result.is_ok());
+            },
+        );
+    }
+
+    #[test]
+    fn handshake_connect_message_format_local_dns() {
+        run_test(
+            |server| {
+                // Read greeting
+                let mut greeting = [0u8; 3];
+                server.read_exact(&mut greeting).unwrap();
+                server.write_all(&[SOCKS5_VERSION, AUTH_NONE]).unwrap();
+
+                // Read and verify CONNECT message with local DNS resolution
+                let mut connect = [0u8; 256];
+                let n = server.read(&mut connect).unwrap();
+                let msg = &connect[..n];
+                assert_eq!(msg[0], SOCKS5_VERSION);
+                assert_eq!(msg[1], CMD_CONNECT);
+                assert_eq!(msg[2], 0x00); // reserved
+
+                match msg[3] {
+                    ATYP_IPV4 => {
+                        assert_eq!(&msg[4..8], &[127, 0, 0, 1]); // localhost IPv4
+                        assert_eq!(msg[8], 0x1F);
+                        assert_eq!(msg[9], 0x90); // port 8080
+                    }
+                    ATYP_IPV6 => {
+                        // ::1
+                        assert_eq!(
+                            &msg[4..20],
+                            &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+                        );
+                        assert_eq!(msg[20], 0x1F);
+                        assert_eq!(msg[21], 0x90); // port 8080
+                    }
+                    other => panic!("unexpected ATYP: 0x{other:02x}"),
+                }
+
+                server.write_all(&ipv4_reply()).unwrap();
+            },
+            |client| {
+                let result = socks5_handshake(client, "localhost", 8080, None, Socks5Dns::Local);
                 assert!(result.is_ok());
             },
         );
@@ -583,7 +678,8 @@ mod tests {
                     username: "admin".into(),
                     password: "secret".into(),
                 };
-                let result = socks5_handshake(client, "target.com", 443, Some(&auth));
+                let result =
+                    socks5_handshake(client, "target.com", 443, Some(&auth), Socks5Dns::Remote);
                 assert!(result.is_ok());
             },
         );
@@ -613,7 +709,8 @@ mod tests {
                     server.write_all(&[0, 0, 0, 0, 0, 0]).unwrap();
                 },
                 move |client| {
-                    let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                    let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                        .unwrap_err();
                     assert!(
                         err.to_string().contains(expected_msg),
                         "code 0x{code:02x}: expected '{expected_msg}', got '{}'",
@@ -633,7 +730,8 @@ mod tests {
                 // connection closes when closure returns
             },
             |client| {
-                let err = socks5_handshake(client, "example.com", 80, None).unwrap_err();
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
                 assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
             },
         );
@@ -661,7 +759,8 @@ mod tests {
             .unwrap();
 
         let start = Instant::now();
-        let err = socks5_handshake(&mut client, "example.com", 80, None).unwrap_err();
+        let err =
+            socks5_handshake(&mut client, "example.com", 80, None, Socks5Dns::Remote).unwrap_err();
         let elapsed = start.elapsed();
 
         assert!(
@@ -672,5 +771,22 @@ mod tests {
             err.kind() == io::ErrorKind::WouldBlock || err.kind() == io::ErrorKind::TimedOut,
             "expected timeout error, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn resolve_host_localhost() {
+        // localhost resolution should always work and return loopback
+        let ip = resolve_host("localhost", 80).unwrap();
+        assert!(
+            ip.is_loopback(),
+            "localhost should resolve to loopback, got {ip}"
+        );
+    }
+
+    #[test]
+    fn resolve_host_unknown_fails() {
+        // A clearly invalid hostname should fail
+        let result = resolve_host("invalid.invalid.invalid.test", 80);
+        assert!(result.is_err(), "invalid hostname should fail to resolve");
     }
 }
