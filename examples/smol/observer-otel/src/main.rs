@@ -168,18 +168,46 @@ impl RequestObserver for OtelObserver {
 
             RequestPhase::Failed {
                 error,
-                will_retry,
+                retry,
                 elapsed,
             } => {
                 span.add_event(
                     "http.request.error",
                     vec![
                         KeyValue::new("error.type", error.clone()),
-                        KeyValue::new("http.will_retry", *will_retry),
+                        KeyValue::new("http.retry", format!("{retry:?}")),
                         KeyValue::new("http.elapsed_ms", elapsed.as_secs_f64() * 1000.0),
                     ],
                 );
                 span.set_status(Status::error(error.clone()));
+            }
+
+            RequestPhase::Redirected { status, from, to } => {
+                span.add_event(
+                    "http.redirect",
+                    vec![
+                        KeyValue::new("http.status_code", status.as_u16() as i64),
+                        KeyValue::new("http.redirect.from", from.clone()),
+                        KeyValue::new("http.redirect.to", to.clone()),
+                    ],
+                );
+            }
+
+            RequestPhase::Retrying {
+                reason,
+                attempt,
+                max_retries,
+                backoff,
+            } => {
+                span.add_event(
+                    "http.retry",
+                    vec![
+                        KeyValue::new("http.retry.reason", reason.clone()),
+                        KeyValue::new("http.retry.attempt", *attempt as i64),
+                        KeyValue::new("http.retry.max_retries", *max_retries as i64),
+                        KeyValue::new("http.retry.backoff_ms", backoff.as_secs_f64() * 1000.0),
+                    ],
+                );
             }
 
             RequestPhase::BytesTransferred {
