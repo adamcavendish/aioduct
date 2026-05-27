@@ -30,7 +30,7 @@ jobs:
           path: ~/.cargo/bin/dist
       - id: plan
         run: |
-          dist host --steps=create --tag=nightly --output-format=json > plan-dist-manifest.json
+          dist plan --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -81,7 +81,7 @@ jobs:
           ${{ matrix.packages_install }}
       - name: Build artifacts
         run: |
-          dist build --tag=nightly --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          dist build --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
       - id: cargo-dist
         name: Post-build
@@ -127,7 +127,7 @@ jobs:
       - id: cargo-dist
         shell: bash
         run: |
-          dist build --tag=nightly --output-format=json "--artifacts=global" > dist-manifest.json
+          dist build --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
           jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
@@ -155,54 +155,25 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Install cached dist
-        uses: actions/download-artifact@v8
-        with:
-          name: cargo-dist-cache
-          path: ~/.cargo/bin/
-      - run: chmod +x ~/.cargo/bin/dist
       - name: Fetch artifacts
-        uses: actions/download-artifact@v8
-        with:
-          pattern: artifacts-*
-          path: target/distrib/
-          merge-multiple: true
-      - name: Delete old nightly release and tag
-        shell: bash
-        run: |
-          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
-      - id: host
-        shell: bash
-        run: |
-          dist host --tag=nightly --steps=upload --steps=release --output-format=json > dist-manifest.json
-          echo "artifacts uploaded and released successfully"
-          cat dist-manifest.json
-          echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
-      - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v7
-        with:
-          name: artifacts-dist-manifest
-          path: dist-manifest.json
-      - name: "Download GitHub Artifacts"
         uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
-      - name: Cleanup
+      - name: Cleanup manifests
         run: |
           rm -f artifacts/*-dist-manifest.json
+      - name: Delete old nightly release
+        run: |
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
       - name: Create GitHub Release
         env:
           RELEASE_COMMIT: "${{ github.sha }}"
         run: |
-          cat > $RUNNER_TEMP/notes.md << 'EONOTES'
-          ${{ github.event.head_commit.message }}
-          EONOTES
-
           gh release create "nightly" \
             --target "$RELEASE_COMMIT" \
             --prerelease \
             --title "Nightly build" \
-            --notes "Nightly build from commit ${{ github.sha }}. See [CHANGELOG.md](https://github.com/adamcavendish/aioduct/blob/master/CHANGELOG.md) for stable releases." \
+            --notes "Nightly build from commit ${RELEASE_COMMIT}. See [CHANGELOG.md](https://github.com/adamcavendish/aioduct/blob/master/CHANGELOG.md) for stable releases." \
             artifacts/*
