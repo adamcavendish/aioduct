@@ -17,6 +17,28 @@ The difference between `socks5://` and `socks5h://` matters when the proxy
 is on a different network (e.g. a corporate SOCKS proxy that can resolve
 internal hostnames the client cannot).
 
+### Auto-Detection from URL
+
+`ProxyConfig::detect_from_url()` detects the proxy scheme from a URL string and
+returns the appropriate `ProxyConfig`:
+
+```rust,no_run
+use aioduct::ProxyConfig;
+
+// Recognised schemes
+let http  = ProxyConfig::detect_from_url("http://proxy:8080");    // ProxyScheme::Http
+let https = ProxyConfig::detect_from_url("https://proxy:443");    // ProxyScheme::Https
+let s5    = ProxyConfig::detect_from_url("socks5://proxy:1080");  // ProxyScheme::Socks5
+let s5h   = ProxyConfig::detect_from_url("socks5h://proxy:1080"); // ProxyScheme::Socks5h
+let s4    = ProxyConfig::detect_from_url("socks4a://proxy:1080"); // ProxyScheme::Socks4
+
+// Bare hostname:port — defaults to http://
+let bare  = ProxyConfig::detect_from_url("proxy:3128");           // ProxyScheme::Http
+```
+
+This is used internally by `ProxySettings::from_env()` for environment variable
+parsing and by the CLI's `-x` / `--proxy` flag.
+
 ## Basic Usage
 
 ```rust,no_run
@@ -321,6 +343,19 @@ aioduct http -x socks5h://proxy:1080 https://internal.corp
 
 # HTTPS proxy
 aioduct http -x https://proxy:443 https://example.com
+
+# Multi-hop proxy chaining (repeated -x)
+aioduct http -x socks5://gateway:1080 -x http://corp:3128 https://example.com
+
+# Proxy with auth
+aioduct http -x http://proxy:8080 --proxy-user admin:secret https://example.com
+
+# System proxy from environment variables
+aioduct http --system-proxy https://example.com
+
+# Proxy with bypass rules
+aioduct http -x http://proxy:8080 --noproxy localhost,127.0.0.1,.internal \
+  https://example.com
 ```
 
 ## Limitations

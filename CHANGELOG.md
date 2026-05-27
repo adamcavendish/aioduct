@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.3] - 2026-05-27
+
+### Added
+- SOCKS5h proxy scheme (remote DNS)
+- HTTPS proxy scheme (TLS-wrapped CONNECT tunnel to proxy)
+- Proxy chaining (up to 2 hops) via `ProxyChain` — route requests through multiple proxies in sequence
+- `ProxyConfig::detect_from_url()` — auto-detect proxy scheme from URL string
+- `CredentialResolver` trait with `EnvCredentialResolver` and `CompositeResolver` for external credential lookup
+- `--proxy-user`, `--noproxy`, `--system-proxy`, and repeated `-x` CLI flags for proxy configuration
+- HTTP trailer support end-to-end (library + CLI)
+- HTTP trailers surfaced in verbose TUI response headers and summary pages
+- Error state rendering in TUI trace page
+- Observer events: `RetryKind` enum (None/StaleConnection/Explicit), `Redirected` and `Retrying` phases
+- Binary body detection and header redaction in HTTP TUI
+- Event log sanitization (strips ANSI escapes, collapses newlines, replaces control chars)
+- Clipboard copy support for visible TUI pages
+- Cross-runtime e2e benchmarks (tokio, smol, compio)
+- Consolidated shared utilities in `util.rs` (human_bytes, human_speed, duration_ms, redact_headers, is_binary_content_type, truncate helpers, find_split_point)
+
+### Changed
+- HTTP CLI architecture refactored: `build_client` → `HttpArgs::to_client`, `client.rs` deleted
+- HTTP output unified via `ResponseOutput` trait with `TuiOutput` / `PlainOutput` adapters
+- Download module utilities consolidated in `tui_common.rs`
+- `VerboseTui::wait()` and `stop()` now take `&mut self`
+- HTTP TUI expanded to 6-tab navigation (Overview/Trace/Headers/Body/Events/Summary) with timeline waterfall chart, SSE event tracking, redirect/retry panels, and per-page filtering
+
+## [0.2.0-alpha.2] - 2026-05-22
+
+### Added
+- Unified `aioduct` CLI binary with `http` and `download` subcommands
+- `aioduct http`: curl-inspired HTTP client with familiar flags (-X, -d, -H, -o, -L, -u, etc.)
+- Verbose HTTP TUI with phase timeline, request/response headers, and status bar
+- `aioduct download`: aria2-inspired multi-file parallel downloader with segmented Range requests, heat-map TUI, file-level progress bars, piece worker panel, recovery queue visualization, adaptive piece grid (Small/Medium/Large), and WebDAV recursive directory download
+- cargo-dist binary release pipeline
+- SHA-256 checksum verification for downloads
+- WASM demos for CookieJar, Link header parsing, and ProblemDetails
+- `copy_to_clipboard` and `parse_byte_size` helpers in `common.rs`
+
+### Changed
+- `aioduct-aria` and `aioduct-curl` packages merged into single `aioduct-cli` crate
+
+### Fixed
+- H1 connection pool now returns connections immediately for HEAD/204/304 responses
+- TUI scroll accuracy and live SSE rendering
+- Multi-file download: skip already-complete files, rename `--no-continue` to `--no-resume`
+
 ## [0.2.0-alpha.1] - 2026-05-19
 
 ### Breaking Changes

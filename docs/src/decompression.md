@@ -13,7 +13,7 @@ aioduct can automatically decompress response bodies based on the `Content-Encod
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.0-alpha.1", features = ["tokio", "rustls", "rustls-ring", "gzip", "brotli"] }
+aioduct = { version = "0.2.0-alpha.3", features = ["tokio", "rustls", "rustls-ring", "gzip", "brotli"] }
 ```
 
 ## How It Works

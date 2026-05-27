@@ -131,6 +131,21 @@ aioduct http -x socks5h://proxy:1080 https://internal.corp
 # SOCKS4/SOCKS4a proxy
 aioduct http -x socks4a://localhost:1080 https://example.com
 
+# Multi-hop proxy chaining (repeated -x)
+aioduct http -x socks5://internal-gateway:1080 -x http://corp-proxy:3128 \
+  https://example.com
+
+# Proxy with explicit authentication
+aioduct http -x http://proxy:8080 --proxy-user admin:secret \
+  https://example.com
+
+# Proxy bypass for specific hosts
+aioduct http -x http://proxy:8080 --noproxy localhost,127.0.0.1,.internal \
+  https://example.com
+
+# Use system proxy settings (HTTP_PROXY / HTTPS_PROXY / NO_PROXY)
+aioduct http --system-proxy https://example.com
+
 # Skip TLS verification
 aioduct http -k https://self-signed.example.com
 
@@ -167,7 +182,10 @@ aioduct http --connect-timeout 5 --max-time 30 https://slow-server.example.com
 | | `--connect-timeout` | Connection timeout (seconds) |
 | | `--retry` | Retry count |
 | | `--retry-max-time` | Max backoff between retries (default: 60s) |
-| `-x` | `--proxy` | Proxy URL (http, https, socks4, socks4a, socks5, socks5h) |
+| `-x` | `--proxy` | Proxy URL (repeatable for multi-hop chaining) |
+| | `--proxy-user` | Proxy auth (`user:password`) |
+| | `--noproxy` | Bypass proxy for listed hosts (comma-separated) |
+| | `--system-proxy` | Use proxy from env vars (HTTP_PROXY, HTTPS_PROXY, NO_PROXY) |
 | `-k` | `--insecure` | Skip TLS verification |
 | | `--http2` | Force HTTP/2 prior knowledge |
 | | `--limit-rate` | Max download speed (supports K/M/G) |
