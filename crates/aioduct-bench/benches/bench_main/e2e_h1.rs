@@ -49,6 +49,7 @@ fn bench_h1_get(c: &mut Criterion) {
             }
         });
     });
+    #[cfg(not(target_env = "musl"))]
     group.bench_function("isahc", |b| {
         b.to_async(&*RT).iter(|| {
             let c = ISAHC.clone();
@@ -131,6 +132,7 @@ fn bench_h1_post_4k(c: &mut Criterion) {
             }
         });
     });
+    #[cfg(not(target_env = "musl"))]
     group.bench_function("isahc", |b| {
         b.to_async(&*RT).iter(|| {
             let c = ISAHC.clone();

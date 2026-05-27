@@ -70,6 +70,7 @@ pub static HYPER_UTIL_H2: LazyLock<HyperUtilH2Client> = LazyLock::new(|| {
         .build_http::<Full<Bytes>>()
 });
 
+#[cfg(not(target_env = "musl"))]
 pub static ISAHC: LazyLock<isahc::HttpClient> = LazyLock::new(|| isahc::HttpClient::new().unwrap());
 
 // ── Shared servers ──────────────────────────────────────────────────────────

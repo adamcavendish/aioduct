@@ -14,11 +14,13 @@ http-body.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
-isahc = "1"
-reqwest = { version = "0.13", features = ["json", "gzip", "multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "gzip", "multipart"] }
 serde = { workspace = true, features = ["derive"] }
 smol.workspace = true
 tokio = { workspace = true, features = ["full"] }
+
+[target.'cfg(not(target_env = "musl"))'.dependencies]
+isahc = "1"
 
 [[bench]]
 name = "bench_main"
