@@ -98,3 +98,4 @@ lto = "thin"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+opt-level = "s"
