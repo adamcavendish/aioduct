@@ -101,6 +101,44 @@ fn extract_uri_auth(uri: &Uri) -> Option<ProxyAuth> {
 }
 
 impl ProxyConfig {
+    /// Detect proxy type from a URL string, trying each supported scheme.
+    ///
+    /// If the URL has no scheme, `http://` is prepended. Returns `None` if
+    /// the URL cannot be parsed as any supported proxy scheme.
+    pub fn detect_from_url(url: &str) -> Option<Self> {
+        if url.is_empty() {
+            return None;
+        }
+        // Known scheme prefixes
+        if url.starts_with("socks5h://") {
+            return Self::socks5h(url).ok();
+        }
+        if url.starts_with("socks5://") {
+            return Self::socks5(url).ok();
+        }
+        if url.starts_with("socks4://") || url.starts_with("socks4a://") {
+            return Self::socks4(url).ok();
+        }
+        if url.starts_with("https://") {
+            return Self::https(url).ok();
+        }
+        if url.starts_with("http://") {
+            return Self::http(url).ok();
+        }
+        // Bare hostname: try http://
+        if !url.contains("://") {
+            let with_scheme = format!("http://{url}");
+            return Self::http(&with_scheme).ok();
+        }
+        // Unknown scheme: try each constructor as fallback
+        Self::http(url)
+            .or_else(|_| Self::https(url))
+            .or_else(|_| Self::socks4(url))
+            .or_else(|_| Self::socks5(url))
+            .or_else(|_| Self::socks5h(url))
+            .ok()
+    }
+
     /// Create a proxy config from an `http://` URI.
     pub fn http(uri: &str) -> Result<Self, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
@@ -461,25 +499,7 @@ fn env_proxy(upper: &str, lower: &str) -> Option<ProxyConfig> {
     let val = std::env::var(upper)
         .or_else(|_| std::env::var(lower))
         .ok()?;
-    if val.is_empty() {
-        return None;
-    }
-    if val.starts_with("socks5h://") {
-        ProxyConfig::socks5h(&val).ok()
-    } else if val.starts_with("socks5://") {
-        ProxyConfig::socks5(&val).ok()
-    } else if val.starts_with("socks4://") || val.starts_with("socks4a://") {
-        ProxyConfig::socks4(&val).ok()
-    } else if val.starts_with("https://") {
-        ProxyConfig::https(&val).ok()
-    } else {
-        let val = if !val.contains("://") {
-            format!("http://{val}")
-        } else {
-            val
-        };
-        ProxyConfig::http(&val).ok()
-    }
+    ProxyConfig::detect_from_url(&val)
 }
 
 /// Trait for custom proxy selection logic.
@@ -1122,5 +1142,99 @@ mod tests {
         let auth = proxy.auth.unwrap();
         assert_eq!(auth.username, "resolved");
         assert_eq!(auth.password, "creds");
+    }
+
+    // --- detect_from_url tests ---
+
+    #[test]
+    fn detect_from_url_empty_returns_none() {
+        assert!(ProxyConfig::detect_from_url("").is_none());
+    }
+
+    #[test]
+    fn detect_from_url_http() {
+        let cfg = ProxyConfig::detect_from_url("http://proxy:8080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Http);
+    }
+
+    #[test]
+    fn detect_from_url_https() {
+        let cfg = ProxyConfig::detect_from_url("https://secure-proxy:443").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Https);
+    }
+
+    #[test]
+    fn detect_from_url_socks5() {
+        let cfg = ProxyConfig::detect_from_url("socks5://proxy:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks5);
+    }
+
+    #[test]
+    fn detect_from_url_socks5h() {
+        let cfg = ProxyConfig::detect_from_url("socks5h://proxy:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks5h);
+    }
+
+    #[test]
+    fn detect_from_url_socks4() {
+        let cfg = ProxyConfig::detect_from_url("socks4://proxy:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks4);
+    }
+
+    #[test]
+    fn detect_from_url_socks4a() {
+        let cfg = ProxyConfig::detect_from_url("socks4a://proxy:1080").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Socks4);
+    }
+
+    #[test]
+    fn detect_from_url_bare_hostname() {
+        let cfg = ProxyConfig::detect_from_url("proxy-host:3128").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Http);
+        assert!(cfg.uri.to_string().contains("proxy-host:3128"));
+    }
+
+    #[test]
+    fn detect_from_url_bare_ip() {
+        let cfg = ProxyConfig::detect_from_url("127.0.0.1:8888").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Http);
+    }
+
+    #[test]
+    fn detect_from_url_bare_hostname_no_port() {
+        let cfg = ProxyConfig::detect_from_url("proxy").unwrap();
+        assert_eq!(cfg.scheme, ProxyScheme::Http);
+    }
+
+    #[test]
+    fn detect_from_url_extracts_auth() {
+        let cfg = ProxyConfig::detect_from_url("http://user:pass@proxy:8080").unwrap();
+        let auth = cfg.auth.unwrap();
+        assert_eq!(auth.username, "user");
+        assert_eq!(auth.password, "pass");
+    }
+
+    #[test]
+    fn detect_from_url_extracts_auth_socks5() {
+        let cfg = ProxyConfig::detect_from_url("socks5://admin:secret@proxy:1080").unwrap();
+        let auth = cfg.auth.unwrap();
+        assert_eq!(auth.username, "admin");
+        assert_eq!(auth.password, "secret");
+    }
+
+    #[test]
+    fn detect_from_url_extracts_auth_https() {
+        let cfg = ProxyConfig::detect_from_url("https://u:p@secure-proxy:443").unwrap();
+        let auth = cfg.auth.unwrap();
+        assert_eq!(auth.username, "u");
+        assert_eq!(auth.password, "p");
+    }
+
+    #[test]
+    fn detect_from_url_extracts_auth_socks5h() {
+        let cfg = ProxyConfig::detect_from_url("socks5h://a:b@proxy:1080").unwrap();
+        let auth = cfg.auth.unwrap();
+        assert_eq!(auth.username, "a");
+        assert_eq!(auth.password, "b");
     }
 }

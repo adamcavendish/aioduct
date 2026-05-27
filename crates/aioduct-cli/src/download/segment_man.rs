@@ -74,6 +74,16 @@ impl SegmentMan {
         storage.release(index);
     }
 
+    pub fn record_piece_retry(&self, index: u32, error: impl Into<String>) {
+        let mut storage = self.storage.lock().unwrap();
+        storage.record_retry(index, error);
+    }
+
+    pub fn mark_piece_failed(&self, index: u32, error: impl Into<String>) {
+        let mut storage = self.storage.lock().unwrap();
+        storage.mark_failed(index, error);
+    }
+
     pub fn is_complete(&self) -> bool {
         self.storage.lock().unwrap().all_complete()
     }

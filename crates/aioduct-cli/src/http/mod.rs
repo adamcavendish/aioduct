@@ -1,36 +1,24 @@
 mod cli;
-mod client;
 mod observer;
 mod output;
 mod request;
+mod response_output;
 mod verbose_plain;
 mod verbose_tui;
 
 pub use cli::HttpArgs;
 
-use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
+use crate::util::{is_binary_content_type, redact_header_value};
+use response_output::{PlainOutput, ResponseOutput, TuiOutput};
+
 pub async fn run(cli: HttpArgs) -> ExitCode {
-    let use_verbose = cli.verbose || cli.verbose_plain;
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let (obs, tui_handle) = setup_observer(&cli, cancel_tx);
 
-    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
-
-    let (obs, tui_handle) = if use_verbose {
-        let (obs, rx) = observer::CliObserver::new();
-        let handle = if cli.verbose_plain || !std::io::stdout().is_terminal() {
-            tokio::spawn(verbose_plain::run(rx));
-            None
-        } else {
-            Some(verbose_tui::VerboseTui::start(rx, cancel_tx))
-        };
-        (Some(obs), handle)
-    } else {
-        (None, None)
-    };
-
-    let http_client = match client::build_client(&cli, obs) {
+    let http_client = match cli.to_client(obs) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("aioduct http: {e}");
@@ -44,155 +32,109 @@ pub async fn run(cli: HttpArgs) -> ExitCode {
             if !cli.silent || cli.show_error {
                 eprintln!("aioduct http: {e}");
             }
-            if let Some(tui) = tui_handle {
+            if let Some(mut tui) = tui_handle {
                 tui.stop().await;
             }
             return exit_code_for_error(&e);
         }
     };
 
-    let status = resp.status();
-    let resp_version = resp.version();
+    let info = ResponseInfo::from_response(&resp);
 
-    let resp_headers: Vec<(String, String)> = resp
-        .headers()
-        .iter()
-        .map(|(k, v)| {
-            let value = v.to_str().unwrap_or("<binary>").to_owned();
-            let display_value = redact_header_value(&value, k.as_str());
-            (k.as_str().to_owned(), display_value.to_owned())
-        })
-        .collect();
-
-    let is_binary = is_binary_content_type(&resp_headers);
-
-    if let Some(ref tui) = tui_handle {
-        tui.send_response_headers(resp_headers.clone());
-    }
-
-    if let Some(tui) = tui_handle {
-        // --- TUI output path ---
-
-        if let Some(ref path) = cli.dump_header
-            && let Err(e) = output::dump_headers_file(resp_version, status, &resp_headers, path)
-        {
-            if !cli.silent || cli.show_error {
-                eprintln!("aioduct http: {e}");
-            }
+    // Dump headers to file
+    if let Some(ref path) = cli.dump_header
+        && let Err(e) = output::dump_headers_file(info.version, info.status, &info.headers, path)
+    {
+        if !cli.silent || cli.show_error {
+            eprintln!("aioduct http: {e}");
+        }
+        if let Some(mut tui) = tui_handle {
             tui.stop().await;
-            return ExitCode::from(23);
         }
-
-        let mut body_buf: Vec<u8> = Vec::new();
-
-        if !cli.head {
-            let mut stream = resp.into_bytes_stream();
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = cancel_rx.changed() => {
-                        break;
-                    }
-                    chunk = stream.next() => {
-                        match chunk {
-                            Some(Ok(data)) => {
-                                body_buf.extend_from_slice(&data);
-                                if !is_binary {
-                                    let text = String::from_utf8_lossy(&data);
-                                    tui.send_body_chunk(text.into_owned());
-                                }
-                            }
-                            Some(Err(e)) => {
-                                if !cli.silent || cli.show_error {
-                                    eprintln!("aioduct http: {e}");
-                                }
-                                tui.stop().await;
-                                return ExitCode::from(23);
-                            }
-                            None => break,
-                        }
-                    }
-                }
-            }
-            if is_binary {
-                tui.send_body_chunk(format!(
-                    "[binary data — {} bytes, {}]\n",
-                    body_buf.len(),
-                    resp_headers
-                        .iter()
-                        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-                        .map(|(_, v)| v.as_str())
-                        .unwrap_or("unknown type")
-                ));
-            }
-            tui.send_body_done();
-        }
-
-        // Handle --remote-name / --output
-        if cli.remote_name {
-            let filename = output::filename_from_url(&cli.url);
-            if let Err(e) = std::fs::write(Path::new(&filename), &body_buf) {
-                if !cli.silent || cli.show_error {
-                    eprintln!("aioduct http: failed to write {filename}: {e}");
-                }
-                tui.stop().await;
-                return ExitCode::from(23);
-            }
-            if !cli.silent {
-                eprintln!("Saved to {filename}");
-            }
-        } else if let Some(ref path) = cli.output
-            && let Err(e) = std::fs::write(path, &body_buf)
-        {
-            if !cli.silent || cli.show_error {
-                eprintln!("aioduct http: failed to write {}: {e}", path.display());
-            }
-            tui.stop().await;
-            return ExitCode::from(23);
-        }
-
-        // Wait for user to press 'q'
-        tui.wait().await;
-
-        // Flush to stdout after TUI exits
-        let write_body = !cli.head && !cli.remote_name && cli.output.is_none();
-
-        if cli.head || cli.include {
-            output::write_headers_stdout(resp_version, status, &resp_headers);
-        }
-
-        if write_body {
-            let stdout = std::io::stdout();
-            let mut out = stdout.lock();
-            if let Err(e) = out.write_all(&body_buf) {
-                if !cli.silent || cli.show_error {
-                    eprintln!("aioduct http: {e}");
-                }
-                return ExitCode::from(23);
-            }
-            if std::io::stdout().is_terminal() && !body_buf.ends_with(b"\n") {
-                let _ = out.write_all(b"\n");
-            }
-        }
-
-        if let Some(ref fmt) = cli.write_out {
-            output::print_write_out(fmt, status);
-        }
-    } else {
-        // --- Non-TUI output path ---
-        if let Err(e) = output::handle(&cli, resp, false).await {
-            if !cli.silent || cli.show_error {
-                eprintln!("aioduct http: {e}");
-            }
-            return ExitCode::from(23);
-        }
+        return ExitCode::from(23);
     }
 
-    if status.is_client_error() || status.is_server_error() {
-        ExitCode::from(22)
+    // Create unified output adapter
+    let mut output: Box<dyn ResponseOutput> = if let Some(tui) = tui_handle {
+        tui.send_response_headers(info.headers.clone());
+        Box::new(TuiOutput::new(
+            tui,
+            &cli,
+            info.version,
+            info.status,
+            info.headers,
+            info.is_binary,
+            cancel_rx,
+        ))
     } else {
-        ExitCode::SUCCESS
+        Box::new(PlainOutput::new(
+            &cli,
+            info.version,
+            info.status,
+            info.headers,
+        ))
+    };
+
+    // Consume body
+    if !cli.head
+        && let Err(e) = output.consume_body(resp).await
+    {
+        if !cli.silent || cli.show_error {
+            eprintln!("aioduct http: {e}");
+        }
+        output.abort().await;
+        return ExitCode::from(23);
     }
+
+    output.finish().await
+}
+
+struct ResponseInfo {
+    status: http::StatusCode,
+    version: http::Version,
+    headers: Vec<(String, String)>,
+    is_binary: bool,
+}
+
+impl ResponseInfo {
+    fn from_response(resp: &aioduct::Response) -> Self {
+        let headers: Vec<(String, String)> = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| {
+                let value = v.to_str().unwrap_or("<binary>").to_owned();
+                let display_value = redact_header_value(&value, k.as_str());
+                (k.as_str().to_owned(), display_value.to_owned())
+            })
+            .collect();
+        let is_binary = is_binary_content_type(&headers);
+        Self {
+            status: resp.status(),
+            version: resp.version(),
+            headers,
+            is_binary,
+        }
+    }
+}
+
+fn setup_observer(
+    cli: &HttpArgs,
+    cancel_tx: tokio::sync::watch::Sender<bool>,
+) -> (
+    Option<observer::CliObserver>,
+    Option<verbose_tui::VerboseTui>,
+) {
+    if !cli.verbose && !cli.verbose_plain {
+        return (None, None);
+    }
+    let (obs, rx) = observer::CliObserver::new();
+    let handle = if cli.verbose_plain || !std::io::stdout().is_terminal() {
+        tokio::spawn(verbose_plain::run(rx));
+        None
+    } else {
+        Some(verbose_tui::VerboseTui::start(rx, cancel_tx))
+    };
+    (Some(obs), handle)
 }
 
 fn exit_code_for_error(e: &aioduct::Error) -> ExitCode {
@@ -203,59 +145,4 @@ fn exit_code_for_error(e: &aioduct::Error) -> ExitCode {
         aioduct::Error::InvalidUrl(_) => ExitCode::from(3),
         _ => ExitCode::from(1),
     }
-}
-
-fn redact_header_value<'a>(value: &'a str, name: &str) -> &'a str {
-    let lower = name.to_lowercase();
-    if lower == "authorization"
-        || lower == "proxy-authorization"
-        || lower == "cookie"
-        || lower == "set-cookie"
-    {
-        "***"
-    } else {
-        value
-    }
-}
-
-fn is_binary_content_type(headers: &[(String, String)]) -> bool {
-    let ct = headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-        .map(|(_, v)| v.as_str())
-        .unwrap_or("");
-
-    let ct_lower = ct.to_lowercase();
-
-    if ct_lower.starts_with("text/") || ct_lower == "application/json" {
-        return false;
-    }
-
-    if ct_lower.starts_with("image/")
-        || ct_lower.starts_with("audio/")
-        || ct_lower.starts_with("video/")
-        || ct_lower.starts_with("font/")
-    {
-        return true;
-    }
-
-    matches!(
-        ct_lower.as_str(),
-        "application/octet-stream"
-            | "application/pdf"
-            | "application/zip"
-            | "application/gzip"
-            | "application/x-tar"
-            | "application/x-gtar"
-            | "application/x-compressed"
-            | "application/x-bzip2"
-            | "application/x-xz"
-            | "application/zstd"
-            | "application/protobuf"
-            | "application/x-protobuf"
-            | "application/msgpack"
-            | "application/x-msgpack"
-            | "application/cbor"
-            | "application/wasm"
-    )
 }

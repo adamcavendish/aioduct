@@ -4,51 +4,6 @@ use std::path::Path;
 use aioduct::Response;
 use http::StatusCode;
 
-use super::cli::HttpArgs;
-
-pub async fn handle(
-    cli: &HttpArgs,
-    resp: Response,
-    tui_active: bool,
-) -> Result<(), aioduct::Error> {
-    if let Some(ref path) = cli.dump_header {
-        dump_headers(&resp, path)?;
-    }
-
-    if cli.head {
-        if !tui_active {
-            print_headers(&resp);
-        }
-        return Ok(());
-    }
-
-    if cli.include && !tui_active {
-        print_headers(&resp);
-    }
-
-    let status = resp.status();
-
-    if cli.remote_name {
-        let filename = filename_from_url(&cli.url);
-        stream_body_to_file(resp, Path::new(&filename)).await?;
-        if !cli.silent {
-            eprintln!("Saved to {filename}");
-        }
-    } else if let Some(ref path) = cli.output {
-        stream_body_to_file(resp, path).await?;
-    } else if !tui_active {
-        stream_body_to_stdout(resp).await?;
-    }
-
-    if let Some(ref fmt) = cli.write_out
-        && !tui_active
-    {
-        print_write_out(fmt, status);
-    }
-
-    Ok(())
-}
-
 fn version_string(v: http::Version) -> &'static str {
     match v {
         http::Version::HTTP_09 => "0.9",
@@ -60,55 +15,27 @@ fn version_string(v: http::Version) -> &'static str {
     }
 }
 
-fn print_headers(resp: &Response) {
-    println!("HTTP/{} {}", version_string(resp.version()), resp.status());
-    for (name, value) in resp.headers() {
-        if let Ok(v) = value.to_str() {
-            println!("{}: {}", name.as_str(), v);
-        }
-    }
-    println!();
-}
-
-fn dump_headers(resp: &Response, path: &Path) -> Result<(), aioduct::Error> {
-    let mut out = std::fs::File::create(path).map_err(aioduct::Error::Io)?;
-    writeln!(
-        out,
-        "HTTP/{} {}",
-        version_string(resp.version()),
-        resp.status()
-    )
-    .map_err(aioduct::Error::Io)?;
-    for (name, value) in resp.headers() {
-        if let Ok(v) = value.to_str() {
-            writeln!(out, "{}: {}", name.as_str(), v).map_err(aioduct::Error::Io)?;
-        }
-    }
-    writeln!(out).map_err(aioduct::Error::Io)?;
-    Ok(())
-}
-
-async fn stream_body_to_stdout(resp: Response) -> Result<(), aioduct::Error> {
-    use std::io::Write;
+pub(crate) async fn stream_body_to_stdout(resp: Response) -> Result<(), aioduct::Error> {
     let mut stream = resp.into_bytes_stream();
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
     let mut last_byte = 0u8;
     while let Some(chunk) = stream.next().await {
         let data = chunk?;
+        let mut out = std::io::stdout().lock();
         out.write_all(&data).map_err(aioduct::Error::Io)?;
         out.flush().map_err(aioduct::Error::Io)?;
+        drop(out);
         if !data.is_empty() {
             last_byte = data[data.len() - 1];
         }
     }
     if atty_stdout() && last_byte != b'\n' {
+        let mut out = std::io::stdout().lock();
         let _ = out.write_all(b"\n");
     }
     Ok(())
 }
 
-async fn stream_body_to_file(resp: Response, path: &Path) -> Result<(), aioduct::Error> {
+pub(crate) async fn stream_body_to_file(resp: Response, path: &Path) -> Result<(), aioduct::Error> {
     use std::io::Write;
     let mut file = std::fs::File::create(path).map_err(aioduct::Error::Io)?;
     let mut stream = resp.into_bytes_stream();

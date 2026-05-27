@@ -1,9 +1,10 @@
 use std::io::IsTerminal;
-use std::time::Duration;
 
 use aioduct::observer::{RequestEvent, RequestPhase, RetryKind};
 use crossterm::style::{Color, Stylize};
 use tokio::sync::mpsc;
+
+use crate::util::duration_ms;
 
 pub async fn run(mut rx: mpsc::UnboundedReceiver<RequestEvent>) {
     let use_color = std::io::stderr().is_terminal();
@@ -25,18 +26,24 @@ fn format_phase(phase: &RequestPhase) -> String {
             outcome,
             blocked_duration,
         } => {
-            format!("* Pool: {outcome:?} ({:.1}ms)", ms(blocked_duration))
+            format!(
+                "* Pool: {outcome:?} ({:.1}ms)",
+                duration_ms(blocked_duration)
+            )
         }
         RequestPhase::DnsResolved { addrs, duration } => {
             let first = addrs.first().map(|a| a.to_string()).unwrap_or_default();
-            format!("* DNS: {first} ({:.1}ms)", ms(duration))
+            format!("* DNS: {first} ({:.1}ms)", duration_ms(duration))
         }
         RequestPhase::TcpConnected {
             remote_addr,
             duration,
             protocol,
         } => {
-            format!("* TCP: {remote_addr} {protocol:?} ({:.1}ms)", ms(duration))
+            format!(
+                "* TCP: {remote_addr} {protocol:?} ({:.1}ms)",
+                duration_ms(duration)
+            )
         }
         RequestPhase::TlsHandshakeComplete {
             duration,
@@ -44,17 +51,21 @@ fn format_phase(phase: &RequestPhase) -> String {
             ..
         } => {
             let alpn = alpn_protocol.as_deref().unwrap_or("none");
-            format!("* TLS: ALPN={alpn} ({:.1}ms)", ms(duration))
+            format!("* TLS: ALPN={alpn} ({:.1}ms)", duration_ms(duration))
         }
         RequestPhase::RequestSent { duration, headers } => {
-            let mut s = format!("* Sent: {} headers ({:.1}ms)", headers.len(), ms(duration));
+            let mut s = format!(
+                "* Sent: {} headers ({:.1}ms)",
+                headers.len(),
+                duration_ms(duration)
+            );
             for (name, value) in headers {
                 s.push_str(&format!("\n> {name}: {value}"));
             }
             s
         }
         RequestPhase::ResponseStarted { waiting_duration } => {
-            format!("* TTFB: {:.1}ms", ms(waiting_duration))
+            format!("* TTFB: {:.1}ms", duration_ms(waiting_duration))
         }
         RequestPhase::ResponseComplete {
             status,
@@ -63,7 +74,7 @@ fn format_phase(phase: &RequestPhase) -> String {
         } => {
             format!(
                 "* Done: {status} {protocol:?} ({:.1}ms total)",
-                ms(total_duration)
+                duration_ms(total_duration)
             )
         }
         RequestPhase::Failed {
@@ -76,7 +87,7 @@ fn format_phase(phase: &RequestPhase) -> String {
                 RetryKind::StaleConnection => " (stale retry)",
                 RetryKind::Explicit => " (will retry)",
             };
-            format!("* FAIL: {error}{retry_str} ({:.1}ms)", ms(elapsed))
+            format!("* FAIL: {error}{retry_str} ({:.1}ms)", duration_ms(elapsed))
         }
         RequestPhase::BytesTransferred {
             direction,
@@ -113,7 +124,7 @@ fn format_phase(phase: &RequestPhase) -> String {
         } => {
             format!(
                 "* Retry #{attempt}/{max_retries} after {:.0}ms: {reason}",
-                ms(backoff)
+                duration_ms(backoff)
             )
         }
         RequestPhase::TrailersReceived { headers } => {
@@ -145,14 +156,11 @@ fn colorize(phase: &RequestPhase, text: &str) -> String {
     format!("{}", text.with(color))
 }
 
-fn ms(d: &Duration) -> f64 {
-    d.as_secs_f64() * 1000.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::time::Duration;
 
     use aioduct::observer::NegotiatedProtocol;
     use http::StatusCode;

@@ -2,23 +2,36 @@ use std::collections::HashSet;
 
 use super::bitfield::BitfieldMan;
 
+#[derive(Debug, Clone, Default)]
+pub struct PieceMetadata {
+    pub retry_count: u32,
+    pub failed: bool,
+    pub last_error: Option<String>,
+}
+
 pub struct PieceStorage {
     bitfield: BitfieldMan,
     in_flight: HashSet<u32>,
+    metadata: Vec<PieceMetadata>,
 }
 
 impl PieceStorage {
     pub fn new(total_length: u64, piece_length: u32) -> Self {
+        let bitfield = BitfieldMan::new(total_length, piece_length);
+        let metadata = vec![PieceMetadata::default(); bitfield.total_pieces() as usize];
         Self {
-            bitfield: BitfieldMan::new(total_length, piece_length),
+            bitfield,
             in_flight: HashSet::new(),
+            metadata,
         }
     }
 
     pub fn from_bitfield(bitfield: BitfieldMan) -> Self {
+        let metadata = vec![PieceMetadata::default(); bitfield.total_pieces() as usize];
         Self {
             bitfield,
             in_flight: HashSet::new(),
+            metadata,
         }
     }
 
@@ -37,6 +50,10 @@ impl PieceStorage {
     pub fn mark_complete(&mut self, index: u32) {
         self.bitfield.set_bit(index);
         self.in_flight.remove(&index);
+        if let Some(meta) = self.metadata.get_mut(index as usize) {
+            meta.failed = false;
+            meta.last_error = None;
+        }
     }
 
     pub fn mark_in_flight(&mut self, index: u32) {
@@ -45,6 +62,23 @@ impl PieceStorage {
 
     pub fn release(&mut self, index: u32) {
         self.in_flight.remove(&index);
+    }
+
+    pub fn record_retry(&mut self, index: u32, error: impl Into<String>) {
+        if let Some(meta) = self.metadata.get_mut(index as usize) {
+            meta.retry_count = meta.retry_count.saturating_add(1);
+            meta.last_error = Some(error.into());
+            meta.failed = false;
+        }
+    }
+
+    pub fn mark_failed(&mut self, index: u32, error: impl Into<String>) {
+        self.in_flight.remove(&index);
+        if let Some(meta) = self.metadata.get_mut(index as usize) {
+            meta.retry_count = meta.retry_count.saturating_add(1);
+            meta.last_error = Some(error.into());
+            meta.failed = true;
+        }
     }
 
     pub fn is_complete(&self, index: u32) -> bool {
@@ -78,6 +112,10 @@ impl PieceStorage {
     pub fn bitfield(&self) -> &BitfieldMan {
         &self.bitfield
     }
+
+    pub fn metadata(&self, index: u32) -> Option<&PieceMetadata> {
+        self.metadata.get(index as usize)
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +147,22 @@ mod tests {
         assert!(!s.is_available(2));
         s.release(2);
         assert!(s.is_available(2));
+    }
+
+    #[test]
+    fn records_retry_and_failure_metadata() {
+        let mut s = PieceStorage::new(1024, 256);
+        s.record_retry(1, "timeout");
+        let meta = s.metadata(1).unwrap();
+        assert_eq!(meta.retry_count, 1);
+        assert_eq!(meta.last_error.as_deref(), Some("timeout"));
+        assert!(!meta.failed);
+
+        s.mark_failed(1, "exhausted");
+        let meta = s.metadata(1).unwrap();
+        assert_eq!(meta.retry_count, 2);
+        assert_eq!(meta.last_error.as_deref(), Some("exhausted"));
+        assert!(meta.failed);
     }
 
     #[test]

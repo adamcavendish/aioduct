@@ -2,7 +2,12 @@ use std::collections::VecDeque;
 use std::io::{self, IsTerminal, stdout};
 use std::time::{Duration, Instant};
 
-use aioduct::observer::{RequestEvent, RequestPhase, TransferDirection};
+use aioduct::observer::{RequestEvent, RequestPhase, RetryKind, TransferDirection};
+
+use crate::common::copy_to_clipboard;
+use crate::util::{
+    duration_ms, find_split_point, human_bytes, human_speed, redact_headers, truncate_chars,
+};
 
 pub enum TuiMessage {
     ResponseHeaders(Vec<(String, String)>),
@@ -18,7 +23,7 @@ use crossterm::terminal::{
 use ratatui::Frame;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use tokio::sync::mpsc;
@@ -54,8 +59,8 @@ impl VerboseTui {
     }
 
     /// Wait for the user to press 'q'. Used on the success path.
-    pub async fn wait(self) {
-        if let Some(handle) = self.handle {
+    pub async fn wait(&mut self) {
+        if let Some(handle) = self.handle.take() {
             let _ = handle.await;
         }
     }
@@ -73,41 +78,76 @@ impl VerboseTui {
     }
 
     /// Force-quit the TUI immediately. Used on error paths.
-    pub async fn stop(self) {
-        if let Some(tx) = &self.tx {
+    pub async fn stop(&mut self) {
+        if let Some(tx) = self.tx.take() {
             let _ = tx.send(TuiMessage::Quit);
         }
-        if let Some(handle) = self.handle {
+        if let Some(handle) = self.handle.take() {
             let _ = handle.await;
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum RightPanel {
-    RequestHeaders,
-    ResponseHeaders,
-    Metrics,
-}
+const HTTP_TABS: [&str; 6] = ["Overview", "Trace", "Headers", "Body", "Events", "Summary"];
+const MAX_EVENT_LINES: usize = 240;
 
-impl RightPanel {
-    fn next(self) -> Self {
-        match self {
-            RightPanel::RequestHeaders => RightPanel::ResponseHeaders,
-            RightPanel::ResponseHeaders => RightPanel::Metrics,
-            RightPanel::Metrics => RightPanel::RequestHeaders,
+/// Sanitize text for single-line display: collapse newlines, strip ANSI escapes,
+/// and replace control characters so they can't corrupt the TUI layout.
+fn sanitize_event_text(mut text: String) -> String {
+    // Strip ANSI escape sequences (ESC [ ... m, etc.)
+    while let Some(start) = text.find('\x1b') {
+        let slice = &text[start..];
+        let end = slice
+            .find(|c: char| c.is_ascii_alphabetic() || c == '~')
+            .map(|i| start + i + 1)
+            .unwrap_or(start + 1);
+        text.replace_range(start..end, "");
+    }
+    // Collapse newlines and control characters to a single space
+    let mut result = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\n' | '\r' => {
+                if !result.ends_with(' ') {
+                    result.push(' ');
+                }
+            }
+            c if c.is_control() && c != '\t' => {
+                if !result.ends_with(' ') {
+                    result.push(' ');
+                }
+            }
+            _ => result.push(c),
         }
     }
+    result
 }
 
 struct TuiState {
+    active_page: usize,
+    focus_index: usize,
     phases: Vec<PhaseEntry>,
+    event_lines: VecDeque<EventLine>,
+    redirects: Vec<(String, String, String)>,
+    retries: Vec<String>,
     request_headers: Vec<(String, String)>,
     response_headers: Vec<(String, String)>,
+    trailers: Vec<(String, String)>,
+    trailers_observable: bool,
+    content_type_label: String,
     status_line: String,
+    method_label: String,
+    target_label: String,
+    status_label: String,
+    protocol_label: String,
+    remote_label: String,
+    final_status_is_error: bool,
     body_lines: Vec<String>,
     body_cap_bytes: usize,
     body_scroll: usize,
+    request_header_scroll: usize,
+    response_header_scroll: usize,
+    event_scroll: usize,
     body_is_sse: bool,
     body_done: bool,
     body_auto_scroll: bool,
@@ -115,10 +155,12 @@ struct TuiState {
     body_col_width: usize,
     body_visible_rows: usize,
     transfer_idx: Option<usize>,
-    right_panel: RightPanel,
     show_help: bool,
+    editing_filter: bool,
+    filter_query: String,
     done: bool,
     phase_cumulative_ms: f64,
+    total_duration_ms: Option<f64>,
     request_start_at: Instant,
     sse_event_count: usize,
     sse_first_event_at: Option<Instant>,
@@ -127,8 +169,6 @@ struct TuiState {
     body_bytes_received: usize,
     transfer_start_at: Option<Instant>,
     transfer_end_at: Option<Instant>,
-    trailers: Vec<(String, String)>,
-    trailers_observable: bool,
 }
 
 struct PhaseEntry {
@@ -138,16 +178,39 @@ struct PhaseEntry {
     color: Color,
 }
 
+#[derive(Clone)]
+struct EventLine {
+    text: String,
+    color: Color,
+}
+
 impl TuiState {
     fn new() -> Self {
         Self {
+            active_page: 0,
+            focus_index: 0,
             phases: Vec::new(),
+            event_lines: VecDeque::with_capacity(MAX_EVENT_LINES),
+            redirects: Vec::new(),
+            retries: Vec::new(),
             request_headers: Vec::new(),
             response_headers: Vec::new(),
+            trailers: Vec::new(),
+            trailers_observable: false,
+            content_type_label: String::new(),
             status_line: String::new(),
+            method_label: "HTTP".into(),
+            target_label: String::new(),
+            status_label: "connecting".into(),
+            protocol_label: String::new(),
+            remote_label: String::new(),
+            final_status_is_error: false,
             body_lines: Vec::new(),
             body_cap_bytes: 0,
             body_scroll: 0,
+            request_header_scroll: 0,
+            response_header_scroll: 0,
+            event_scroll: 0,
             body_is_sse: false,
             body_done: false,
             body_auto_scroll: true,
@@ -155,10 +218,12 @@ impl TuiState {
             body_col_width: 40,
             body_visible_rows: 20,
             transfer_idx: None,
-            right_panel: RightPanel::RequestHeaders,
             show_help: false,
+            editing_filter: false,
+            filter_query: String::new(),
             done: false,
             phase_cumulative_ms: 0.0,
+            total_duration_ms: None,
             request_start_at: Instant::now(),
             sse_event_count: 0,
             sse_first_event_at: None,
@@ -167,14 +232,15 @@ impl TuiState {
             body_bytes_received: 0,
             transfer_start_at: None,
             transfer_end_at: None,
-            trailers: Vec::new(),
-            trailers_observable: false,
         }
     }
 
     fn apply(&mut self, event: &RequestEvent) {
+        self.method_label = event.method.to_string();
+        self.target_label = event.uri.to_string();
         match &event.phase {
             RequestPhase::Started => {
+                self.log_event("start request", Color::DarkGray);
                 self.phases.push(PhaseEntry {
                     label: "START".into(),
                     duration_ms: 0.0,
@@ -183,12 +249,13 @@ impl TuiState {
                 });
             }
             RequestPhase::DnsResolved { duration, addrs } => {
-                let d = ms(duration);
+                let d = duration_ms(duration);
                 self.phase_cumulative_ms += d;
                 let addr = addrs
                     .first()
                     .map(|a| a.ip().to_string())
                     .unwrap_or_default();
+                self.log_event(format!("dns resolved {addr} in {d:.1}ms"), Color::Blue);
                 self.phases.push(PhaseEntry {
                     label: format!("DNS  {addr}"),
                     duration_ms: d,
@@ -201,9 +268,15 @@ impl TuiState {
                 remote_addr,
                 protocol,
             } => {
-                let d = ms(duration);
+                let d = duration_ms(duration);
                 self.phase_cumulative_ms += d;
+                self.remote_label = remote_addr.to_string();
+                self.protocol_label = format!("{protocol:?}");
                 self.status_line = format!("{remote_addr} | {protocol:?}");
+                self.log_event(
+                    format!("tcp connected {remote_addr} via {protocol:?} in {d:.1}ms"),
+                    Color::Blue,
+                );
                 self.phases.push(PhaseEntry {
                     label: "TCP".into(),
                     duration_ms: d,
@@ -216,12 +289,13 @@ impl TuiState {
                 alpn_protocol,
                 ..
             } => {
-                let d = ms(duration);
+                let d = duration_ms(duration);
                 self.phase_cumulative_ms += d;
                 let alpn = alpn_protocol.as_deref().unwrap_or("");
                 if !alpn.is_empty() {
                     self.status_line.push_str(&format!(" | ALPN={alpn}"));
                 }
+                self.log_event(format!("tls handshake {alpn} in {d:.1}ms"), Color::Cyan);
                 self.phases.push(PhaseEntry {
                     label: "TLS".into(),
                     duration_ms: d,
@@ -231,9 +305,13 @@ impl TuiState {
             }
             RequestPhase::RequestSent { duration, headers } => {
                 self.request_headers = redact_headers(headers);
-                let cumulative = ms(duration);
+                let cumulative = duration_ms(duration);
                 let per_phase = (cumulative - self.phase_cumulative_ms).max(0.0);
                 self.phase_cumulative_ms = cumulative;
+                self.log_event(
+                    format!("request sent, {} headers, {per_phase:.1}ms", headers.len()),
+                    Color::Yellow,
+                );
                 self.phases.push(PhaseEntry {
                     label: "REQ".into(),
                     duration_ms: per_phase,
@@ -242,8 +320,12 @@ impl TuiState {
                 });
             }
             RequestPhase::ResponseStarted { waiting_duration } => {
-                let d = ms(waiting_duration);
+                let d = duration_ms(waiting_duration);
                 self.phase_cumulative_ms += d;
+                self.log_event(
+                    format!("first response byte after {d:.1}ms"),
+                    Color::Magenta,
+                );
                 self.phases.push(PhaseEntry {
                     label: "WAIT".into(),
                     duration_ms: d,
@@ -256,9 +338,13 @@ impl TuiState {
                 protocol,
                 total_duration,
             } => {
-                let total = ms(total_duration);
+                let total = duration_ms(total_duration);
                 let per_phase = (total - self.phase_cumulative_ms).max(0.0);
                 self.phase_cumulative_ms = total;
+                self.total_duration_ms = Some(total);
+                self.status_label = status.to_string();
+                self.protocol_label = format!("{protocol:?}");
+                self.final_status_is_error = status.is_client_error() || status.is_server_error();
                 let color = if status.is_success() {
                     Color::Green
                 } else if status.is_redirection() {
@@ -276,11 +362,25 @@ impl TuiState {
                     "{status} | {protocol:?} | {:.0}ms | {}",
                     total, self.status_line
                 );
+                self.log_event(
+                    format!("response {status} {protocol:?} in {total:.1}ms"),
+                    color,
+                );
                 self.done = true;
             }
-            RequestPhase::Failed { error, elapsed, .. } => {
-                let total = ms(elapsed);
+            RequestPhase::Failed {
+                error,
+                elapsed,
+                retry,
+            } => {
+                let total = duration_ms(elapsed);
                 let per_phase = (total - self.phase_cumulative_ms).max(0.0);
+                let retry_label = match retry {
+                    RetryKind::None => "final",
+                    RetryKind::StaleConnection => "stale retry",
+                    RetryKind::Explicit => "will retry",
+                };
+                self.log_event(format!("failure ({retry_label}): {error}"), Color::Red);
                 self.phases.push(PhaseEntry {
                     label: format!("FAIL {error}"),
                     duration_ms: per_phase,
@@ -288,14 +388,20 @@ impl TuiState {
                     color: Color::Red,
                 });
                 self.status_line = format!("FAILED: {error}");
-                self.done = true;
+                self.status_label = "failed".into();
+                self.final_status_is_error = true;
+                self.done = matches!(retry, RetryKind::None);
             }
             RequestPhase::PoolCheckoutComplete {
                 outcome,
                 blocked_duration,
             } => {
-                let d = ms(blocked_duration);
+                let d = duration_ms(blocked_duration);
                 self.phase_cumulative_ms += d;
+                self.log_event(
+                    format!("pool checkout {outcome:?} in {d:.1}ms"),
+                    Color::DarkGray,
+                );
                 self.phases.push(PhaseEntry {
                     label: format!("POOL {outcome:?}"),
                     duration_ms: d,
@@ -313,17 +419,17 @@ impl TuiState {
                     TransferDirection::Download => "DOWN",
                     TransferDirection::Upload => "UP",
                 };
-                let label = format!("{dir}  {}", format_bytes(*cumulative_bytes));
+                let label = format!("{dir}  {}", human_bytes(*cumulative_bytes));
                 let color = Color::Blue;
                 if let Some(idx) = self.transfer_idx {
                     self.phases[idx].label = label;
-                    self.phases[idx].duration_ms = ms(elapsed);
+                    self.phases[idx].duration_ms = duration_ms(elapsed);
                 } else {
                     self.transfer_start_at = Some(Instant::now());
                     self.transfer_idx = Some(self.phases.len());
                     self.phases.push(PhaseEntry {
                         label,
-                        duration_ms: ms(elapsed),
+                        duration_ms: duration_ms(elapsed),
                         cumulative_ms: 0.0,
                         color,
                     });
@@ -336,18 +442,28 @@ impl TuiState {
                 throughput_bytes_per_sec,
             } => {
                 self.transfer_idx = None;
+                self.transfer_end_at = Some(Instant::now());
                 let dir = match direction {
                     TransferDirection::Download => "DOWN",
                     TransferDirection::Upload => "UP",
                 };
                 let label = format!(
                     "{dir}  {}  {:.0}B/s",
-                    format_bytes(*total_bytes),
+                    human_bytes(*total_bytes),
                     throughput_bytes_per_sec
+                );
+                self.log_event(
+                    format!(
+                        "{dir} complete: {} in {:.1}ms at {}",
+                        human_bytes(*total_bytes),
+                        duration_ms(transfer_duration),
+                        human_speed(*throughput_bytes_per_sec as f64)
+                    ),
+                    Color::Green,
                 );
                 self.phases.push(PhaseEntry {
                     label,
-                    duration_ms: ms(transfer_duration),
+                    duration_ms: duration_ms(transfer_duration),
                     cumulative_ms: 0.0,
                     color: Color::Green,
                 });
@@ -364,33 +480,50 @@ impl TuiState {
                     TransferDirection::Upload => "UP",
                 };
                 self.phases.push(PhaseEntry {
-                    label: format!("{dir}  {}  ERR {error}", format_bytes(*bytes_transferred)),
-                    duration_ms: ms(elapsed),
+                    label: format!("{dir}  {}  ERR {error}", human_bytes(*bytes_transferred)),
+                    duration_ms: duration_ms(elapsed),
                     cumulative_ms: 0.0,
                     color: Color::Red,
                 });
+                self.log_event(
+                    format!(
+                        "{dir} aborted after {}: {error}",
+                        human_bytes(*bytes_transferred)
+                    ),
+                    Color::Red,
+                );
             }
             RequestPhase::Redirected { status, from, to } => {
-                let _ = (from, to);
+                self.redirects
+                    .push((status.to_string(), from.clone(), to.clone()));
+                self.log_event(format!("redirect {status}: {from} -> {to}"), Color::Yellow);
                 self.phases.push(PhaseEntry {
                     label: format!("REDIR {status}"),
                     duration_ms: 0.0,
                     cumulative_ms: self.phase_cumulative_ms,
                     color: Color::Yellow,
                 });
+                self.done = false;
             }
             RequestPhase::Retrying {
                 reason,
                 attempt,
+                max_retries,
                 backoff,
-                ..
             } => {
+                let retry = format!(
+                    "retry #{attempt}/{max_retries} after {:.0}ms: {reason}",
+                    duration_ms(backoff)
+                );
+                self.retries.push(retry.clone());
+                self.log_event(retry, Color::Yellow);
                 self.phases.push(PhaseEntry {
                     label: format!("RETRY #{attempt} {}", reason),
-                    duration_ms: ms(backoff),
+                    duration_ms: duration_ms(backoff),
                     cumulative_ms: self.phase_cumulative_ms,
                     color: Color::Yellow,
                 });
+                self.done = false;
             }
 
             RequestPhase::TrailersReceived { headers } => {
@@ -398,6 +531,16 @@ impl TuiState {
                 self.trailers = redact_headers(headers);
             }
         }
+    }
+
+    fn log_event(&mut self, text: impl Into<String>, color: Color) {
+        if self.event_lines.len() >= MAX_EVENT_LINES {
+            self.event_lines.pop_front();
+        }
+        self.event_lines.push_back(EventLine {
+            text: sanitize_event_text(text.into()),
+            color,
+        });
     }
 
     fn apply_body_chunk(&mut self, text: &str, now: Instant) {
@@ -468,23 +611,114 @@ impl TuiState {
     }
 
     fn scroll_down(&mut self, lines: usize) {
-        self.body_scroll = self.body_scroll.saturating_add(lines);
-        self.body_auto_scroll = false;
+        match self.active_page {
+            2 if self.focus_index == 1 => {
+                self.response_header_scroll = self.response_header_scroll.saturating_add(lines)
+            }
+            2 => self.request_header_scroll = self.request_header_scroll.saturating_add(lines),
+            4 => self.event_scroll = self.event_scroll.saturating_add(lines),
+            1 => {
+                self.focus_index =
+                    (self.focus_index + lines).min(self.focus_count().saturating_sub(1))
+            }
+            _ => {
+                self.body_scroll = self.body_scroll.saturating_add(lines);
+                self.body_auto_scroll = false;
+            }
+        }
     }
 
     fn scroll_up(&mut self, lines: usize) {
-        self.body_scroll = self.body_scroll.saturating_sub(lines);
-        self.body_auto_scroll = false;
+        match self.active_page {
+            2 if self.focus_index == 1 => {
+                self.response_header_scroll = self.response_header_scroll.saturating_sub(lines)
+            }
+            2 => self.request_header_scroll = self.request_header_scroll.saturating_sub(lines),
+            4 => self.event_scroll = self.event_scroll.saturating_sub(lines),
+            1 => self.focus_index = self.focus_index.saturating_sub(lines),
+            _ => {
+                self.body_scroll = self.body_scroll.saturating_sub(lines);
+                self.body_auto_scroll = false;
+            }
+        }
     }
 
     fn scroll_to_bottom(&mut self) {
-        self.body_auto_scroll = true;
-        self.body_scroll = usize::MAX; // prevent stale jump when user presses j after G
+        match self.active_page {
+            2 if self.focus_index == 1 => self.response_header_scroll = usize::MAX,
+            2 => self.request_header_scroll = usize::MAX,
+            4 => self.event_scroll = usize::MAX,
+            1 => self.focus_index = self.focus_count().saturating_sub(1),
+            _ => {
+                self.body_auto_scroll = true;
+                self.body_scroll = usize::MAX; // prevent stale jump when user presses j after G
+            }
+        }
     }
 
     fn scroll_to_top(&mut self) {
-        self.body_scroll = 0;
-        self.body_auto_scroll = false;
+        match self.active_page {
+            2 if self.focus_index == 1 => self.response_header_scroll = 0,
+            2 => self.request_header_scroll = 0,
+            4 => self.event_scroll = 0,
+            1 => self.focus_index = 0,
+            _ => {
+                self.body_scroll = 0;
+                self.body_auto_scroll = false;
+            }
+        }
+    }
+
+    fn next_page(&mut self) {
+        self.active_page = (self.active_page + 1) % HTTP_TABS.len();
+        self.focus_index = 0;
+    }
+
+    fn prev_page(&mut self) {
+        self.active_page = (self.active_page + HTTP_TABS.len() - 1) % HTTP_TABS.len();
+        self.focus_index = 0;
+    }
+
+    fn set_page(&mut self, page: usize) {
+        self.active_page = page.min(HTTP_TABS.len() - 1);
+        self.focus_index = 0;
+    }
+
+    fn next_focus(&mut self) {
+        self.focus_index = (self.focus_index + 1) % self.focus_count();
+    }
+
+    fn prev_focus(&mut self) {
+        let count = self.focus_count();
+        self.focus_index = (self.focus_index + count - 1) % count;
+    }
+
+    fn focus_count(&self) -> usize {
+        match self.active_page {
+            0 | 3 => 2,
+            1 => self.phases.len().max(1),
+            2 if self.headers_show_trailers() => 3,
+            2 => 2,
+            _ => 1,
+        }
+    }
+
+    fn headers_show_trailers(&self) -> bool {
+        self.trailers_observable
+            || !self.trailers.is_empty()
+            || self
+                .response_headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("trailer"))
+    }
+
+    fn toggle_body_autoscroll(&mut self) {
+        if self.active_page == 3 {
+            self.body_auto_scroll = !self.body_auto_scroll;
+            if self.body_auto_scroll {
+                self.body_scroll = usize::MAX;
+            }
+        }
     }
 }
 
@@ -522,6 +756,11 @@ async fn run_tui_inner(
                     state.body_is_sse = h.iter().any(|(k, v)| {
                         k.eq_ignore_ascii_case("content-type") && v.starts_with("text/event-stream")
                     });
+                    state.content_type_label = h
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                        .map(|(_, v)| v.clone())
+                        .unwrap_or_default();
                     state.response_headers = h;
                 }
                 TuiMessage::BodyChunk(text) => state.apply_body_chunk(&text, tick_time),
@@ -562,17 +801,43 @@ fn handle_key_event(key: crossterm::event::KeyEvent, state: &mut TuiState) -> bo
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return true;
     }
+    if state.editing_filter {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => state.editing_filter = false,
+            KeyCode::Backspace => {
+                state.filter_query.pop();
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.filter_query.push(ch);
+            }
+            _ => {}
+        }
+        return false;
+    }
     match key.code {
         KeyCode::Char('q') => return true,
-        KeyCode::Tab => {
-            state.right_panel = state.right_panel.next();
-        }
+        KeyCode::Esc if state.show_help => state.show_help = false,
+        KeyCode::Tab => state.next_focus(),
+        KeyCode::BackTab => state.prev_focus(),
+        KeyCode::Right => state.next_focus(),
+        KeyCode::Left => state.prev_focus(),
+        KeyCode::Char('l') => state.next_page(),
+        KeyCode::Char('h') => state.prev_page(),
+        KeyCode::Char('1') => state.set_page(0),
+        KeyCode::Char('2') => state.set_page(1),
+        KeyCode::Char('3') => state.set_page(2),
+        KeyCode::Char('4') => state.set_page(3),
+        KeyCode::Char('5') => state.set_page(4),
+        KeyCode::Char('6') => state.set_page(5),
         KeyCode::Char('j') | KeyCode::Down => state.scroll_down(1),
         KeyCode::Char('k') | KeyCode::Up => state.scroll_up(1),
         KeyCode::PageDown => state.scroll_down(state.body_visible_rows),
         KeyCode::PageUp => state.scroll_up(state.body_visible_rows),
         KeyCode::Char('g') | KeyCode::Home => state.scroll_to_top(),
         KeyCode::Char('G') | KeyCode::End => state.scroll_to_bottom(),
+        KeyCode::Char(' ') => state.toggle_body_autoscroll(),
+        KeyCode::Char('/') => state.editing_filter = true,
+        KeyCode::Char('y') => copy_visible_text(state),
         KeyCode::Char('?') => state.show_help = !state.show_help,
         _ => {}
     }
@@ -581,47 +846,150 @@ fn handle_key_event(key: crossterm::event::KeyEvent, state: &mut TuiState) -> bo
 
 fn render(f: &mut Frame, state: &mut TuiState) {
     let size = f.area();
-    if size.width < 40 || size.height < 10 {
-        let msg = Paragraph::new("Terminal too small");
+    if size.width < 60 || size.height < 16 {
+        let msg = Paragraph::new(vec![
+            Line::styled(
+                "aioduct http is still running",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::raw(""),
+            fact_line("Status", &state.status_label, Color::Yellow),
+            fact_line(
+                "Body",
+                human_bytes(state.body_bytes_received as u64),
+                Color::Cyan,
+            ),
+            fact_line("Need", "terminal >= 60x16", Color::DarkGray),
+        ]);
         f.render_widget(msg, size);
         return;
     }
 
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(6),
+            Constraint::Length(1),
+        ])
         .split(size);
 
-    let body_area = main_layout[0];
-    let status_area = main_layout[1];
+    render_http_header(f, main_layout[0], state);
 
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(46), Constraint::Min(30)])
-        .split(body_area);
+    match state.active_page {
+        0 => render_overview_page(f, main_layout[1], state),
+        1 => render_trace_page(f, main_layout[1], state),
+        2 => render_headers_page(f, main_layout[1], state),
+        3 => render_body_page(f, main_layout[1], state),
+        4 => render_events_page(f, main_layout[1], state),
+        5 => render_summary_page(f, main_layout[1], state),
+        _ => {}
+    }
 
-    let timeline_area = columns[0];
-    let right_area = columns[1];
-
-    let right_split = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(right_area);
-
-    let headers_area = right_split[0];
-    let body_pane_area = right_split[1];
-
-    render_timeline(f, timeline_area, state);
-    render_right_panel(f, headers_area, state);
-    render_body(f, body_pane_area, state);
-    render_status_bar(f, status_area, state);
+    render_footer(f, main_layout[2], state);
 
     if state.show_help {
         render_help(f, size);
     }
 }
 
-fn render_timeline(f: &mut Frame, area: Rect, state: &TuiState) {
+fn render_http_header(f: &mut Frame, area: Rect, state: &TuiState) {
+    let status_color = if state.final_status_is_error {
+        Color::Red
+    } else if state.done {
+        Color::Green
+    } else {
+        Color::Yellow
+    };
+    let timing = state
+        .total_duration_ms
+        .map(|ms| format!(" {ms:.1}ms"))
+        .unwrap_or_default();
+    let protocol = if state.protocol_label.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", state.protocol_label)
+    };
+    let remote = if state.remote_label.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", state.remote_label)
+    };
+    let reserve = 28usize + protocol.len() + remote.len();
+    let target = truncate_chars(
+        &state.target_label,
+        area.width.saturating_sub(reserve as u16) as usize,
+    );
+    let line1 = Line::from(vec![
+        Span::styled(" aioduct http ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{} ", state.method_label),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(target, Style::default().fg(Color::Cyan)),
+        Span::raw("  "),
+        Span::styled(&state.status_label, Style::default().fg(status_color)),
+        Span::styled(protocol, Style::default().fg(Color::Blue)),
+        Span::styled(remote, Style::default().fg(Color::DarkGray)),
+        Span::styled(timing, Style::default().fg(Color::Yellow)),
+    ]);
+
+    let mut tab_spans = Vec::new();
+    for (idx, name) in HTTP_TABS.iter().enumerate() {
+        if idx > 0 {
+            tab_spans.push(Span::raw("  "));
+        }
+        let style = if idx == state.active_page {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        tab_spans.push(Span::styled(format!("{} {}", idx + 1, name), style));
+    }
+
+    f.render_widget(Paragraph::new(vec![line1, Line::from(tab_spans)]), area);
+}
+
+fn render_overview_page(f: &mut Frame, area: Rect, state: &TuiState) {
+    if area.width >= 92 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(68), Constraint::Length(4)])
+            .split(area);
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(rows[0]);
+        render_timeline_panel(f, columns[0], state, "Lifecycle");
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(columns[1]);
+        render_facts_panel(f, right[0], state);
+        render_body_preview_panel(f, right[1], state);
+        render_metrics_strip(f, rows[1], state);
+    } else {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(42),
+                Constraint::Percentage(32),
+                Constraint::Percentage(26),
+            ])
+            .split(area);
+        render_timeline_panel(f, rows[0], state, "Lifecycle");
+        render_facts_panel(f, rows[1], state);
+        render_body_preview_panel(f, rows[2], state);
+    }
+}
+
+fn render_timeline_panel(f: &mut Frame, area: Rect, state: &TuiState, title: &str) {
     let lines: Vec<Line> = state
         .phases
         .iter()
@@ -648,26 +1016,491 @@ fn render_timeline(f: &mut Frame, area: Rect, state: &TuiState) {
         })
         .collect();
 
-    let block = Block::default().borders(Borders::ALL).title("Timeline");
+    let title = if state.filter_query.trim().is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} [filter: {}]", state.filter_query)
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, area);
 }
 
-fn render_right_panel(f: &mut Frame, area: Rect, state: &TuiState) {
-    match state.right_panel {
-        RightPanel::RequestHeaders => {
-            render_headers_panel(f, area, "Request Headers [Tab]", &state.request_headers)
+fn render_facts_panel(f: &mut Frame, area: Rect, state: &TuiState) {
+    let mut lines = vec![
+        fact_line(
+            "Status",
+            &state.status_label,
+            if state.final_status_is_error {
+                Color::Red
+            } else {
+                Color::Green
+            },
+        ),
+        fact_line(
+            "Protocol",
+            value_or_dash(&state.protocol_label),
+            Color::Blue,
+        ),
+        fact_line(
+            "Remote",
+            value_or_dash(&state.remote_label),
+            Color::DarkGray,
+        ),
+        fact_line(
+            "Duration",
+            state
+                .total_duration_ms
+                .map(|ms| format!("{ms:.1}ms"))
+                .unwrap_or_else(|| "running".into()),
+            Color::Yellow,
+        ),
+        fact_line(
+            "Body",
+            human_bytes(state.body_bytes_received as u64),
+            Color::Cyan,
+        ),
+        fact_line(
+            "Redirects",
+            state.redirects.len().to_string(),
+            Color::Yellow,
+        ),
+        fact_line("Retries", state.retries.len().to_string(), Color::Yellow),
+    ];
+
+    if state.body_is_sse {
+        lines.push(Line::raw(""));
+        lines.push(fact_line(
+            "SSE events",
+            state.sse_event_count.to_string(),
+            Color::Cyan,
+        ));
+    }
+
+    if let Some(last) = state.event_lines.back() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("Latest", Style::default().fg(Color::DarkGray)));
+        lines.push(Line::styled(
+            last.text.clone(),
+            Style::default().fg(last.color),
+        ));
+    }
+
+    let block = Block::default().borders(Borders::ALL).title("Overview");
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_body_preview_panel(f: &mut Frame, area: Rect, state: &TuiState) {
+    let title = if state.body_is_sse {
+        "SSE tail"
+    } else {
+        "Body preview"
+    };
+    let visible = area.height.saturating_sub(2) as usize;
+    let width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = state
+        .body_lines
+        .iter()
+        .rev()
+        .filter(|line| text_matches_filter(line, &state.filter_query))
+        .take(visible.max(1))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|line| Line::raw(truncate_chars(line, width.max(1))))
+        .collect();
+    if lines.is_empty() {
+        lines.push(Line::styled(
+            if state.response_headers.is_empty() {
+                "waiting for response body"
+            } else if state.body_done {
+                "empty body"
+            } else {
+                "body stream open"
+            },
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let block = Block::default().borders(Borders::ALL).title(title);
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_metrics_strip(f: &mut Frame, area: Rect, state: &TuiState) {
+    let mut spans = vec![
+        Span::styled(" body ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            human_bytes(state.body_bytes_received as u64),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled("  duration ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            state
+                .total_duration_ms
+                .map(|ms| format!("{ms:.1}ms"))
+                .unwrap_or_else(|| "running".to_string()),
+            Style::default().fg(Color::Yellow),
+        ),
+    ];
+    if let Some(transfer_start) = state.transfer_start_at {
+        let elapsed = state
+            .transfer_end_at
+            .map(|end| end.duration_since(transfer_start).as_secs_f64())
+            .unwrap_or_else(|| transfer_start.elapsed().as_secs_f64());
+        if elapsed > 0.0 && state.body_bytes_received > 0 {
+            spans.extend([
+                Span::styled("  speed ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    human_speed(state.body_bytes_received as f64 / elapsed),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]);
         }
-        RightPanel::ResponseHeaders => {
-            render_headers_panel(f, area, "Response Headers [Tab]", &state.response_headers)
-        }
-        RightPanel::Metrics => render_metrics(f, area, state),
+    }
+    if state.body_is_sse {
+        spans.extend([
+            Span::styled("  SSE ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{} events", state.sse_event_count),
+                Style::default().fg(Color::Green),
+            ),
+        ]);
+    }
+    let block = Block::default().borders(Borders::ALL).title("Metrics");
+    f.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
+}
+
+fn render_trace_page(f: &mut Frame, area: Rect, state: &TuiState) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(6),
+            Constraint::Length(6),
+            Constraint::Length(3),
+        ])
+        .split(area);
+    let columns = if rows[1].width >= 92 {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+            .split(rows[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(rows[1])
+    };
+
+    render_trace_waterfall(f, rows[0], state);
+    render_selected_span_panel(f, columns[0], state);
+    render_redirect_chain_panel(f, columns[1], state);
+    render_trace_totals_panel(f, rows[2], state);
+}
+
+fn render_trace_waterfall(f: &mut Frame, area: Rect, state: &TuiState) {
+    let max_ms = state
+        .phases
+        .iter()
+        .map(|p| p.duration_ms)
+        .fold(1.0, f64::max);
+    let bar_width = area.width.saturating_sub(38).max(8) as usize;
+    let lines: Vec<Line> = state
+        .phases
+        .iter()
+        .enumerate()
+        .map(|(idx, p)| {
+            let filled = ((p.duration_ms / max_ms) * bar_width as f64).round() as usize;
+            let filled = filled
+                .min(bar_width)
+                .max(if p.duration_ms > 0.0 { 1 } else { 0 });
+            let selected = idx == state.focus_index.min(state.phases.len().saturating_sub(1));
+            Line::from(vec![
+                Span::styled(
+                    if selected { "› " } else { "  " },
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    format!("{:<18}", truncate_chars(&p.label, 18)),
+                    Style::default().fg(if selected { Color::Cyan } else { p.color }),
+                ),
+                Span::styled(
+                    " ".to_string() + &"━".repeat(filled),
+                    Style::default().fg(p.color),
+                ),
+                Span::styled(
+                    format!(" {:>8.1}ms", p.duration_ms),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    format!(" +{:>8.1}ms", p.cumulative_ms),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])
+        })
+        .collect();
+    let block = Block::default().borders(Borders::ALL).title("Trace");
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_selected_span_panel(f: &mut Frame, area: Rect, state: &TuiState) {
+    let selected = state
+        .phases
+        .get(state.focus_index.min(state.phases.len().saturating_sub(1)));
+    let lines = if let Some(phase) = selected {
+        vec![
+            fact_line("Selected", truncate_chars(&phase.label, 32), phase.color),
+            fact_line(
+                "Duration",
+                format!("{:.1}ms", phase.duration_ms),
+                Color::Yellow,
+            ),
+            fact_line(
+                "Cumulative",
+                format!("{:.1}ms", phase.cumulative_ms),
+                Color::DarkGray,
+            ),
+            fact_line("Note", phase_note(&phase.label), Color::DarkGray),
+        ]
+    } else {
+        vec![Line::styled(
+            "waiting for spans",
+            Style::default().fg(Color::DarkGray),
+        )]
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Selected span");
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_redirect_chain_panel(f: &mut Frame, area: Rect, state: &TuiState) {
+    let mut lines: Vec<Line> = state
+        .redirects
+        .iter()
+        .map(|(status, from, to)| {
+            Line::from(vec![
+                Span::styled(format!("{status} "), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    truncate_chars(from, 22),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::raw(" -> "),
+                Span::styled(
+                    truncate_chars(to, area.width.saturating_sub(30) as usize),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ])
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push(Line::styled(
+            "no redirects observed",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Redirect chain");
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_trace_totals_panel(f: &mut Frame, area: Rect, state: &TuiState) {
+    let slowest = state
+        .phases
+        .iter()
+        .max_by(|a, b| {
+            a.duration_ms
+                .partial_cmp(&b.duration_ms)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|phase| {
+            format!(
+                "{} {:.1}ms",
+                truncate_chars(&phase.label, 18),
+                phase.duration_ms
+            )
+        })
+        .unwrap_or_else(|| "-".into());
+    let setup_ms: f64 = state
+        .phases
+        .iter()
+        .filter(|phase| {
+            phase.label.starts_with("DNS")
+                || phase.label.starts_with("TCP")
+                || phase.label.starts_with("TLS")
+                || phase.label.starts_with("POOL")
+        })
+        .map(|phase| phase.duration_ms)
+        .sum();
+    let transfer_ms: f64 = state
+        .phases
+        .iter()
+        .filter(|phase| phase.label.starts_with("DOWN") || phase.label.starts_with("UP"))
+        .map(|phase| phase.duration_ms)
+        .sum();
+    let line = Line::from(vec![
+        Span::styled("slowest ", Style::default().fg(Color::DarkGray)),
+        Span::styled(slowest, Style::default().fg(Color::Magenta)),
+        Span::styled("   setup ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{setup_ms:.1}ms"), Style::default().fg(Color::Blue)),
+        Span::styled("   transfer ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{transfer_ms:.1}ms"),
+            Style::default().fg(Color::Green),
+        ),
+    ]);
+    let block = Block::default().borders(Borders::ALL).title("Totals");
+    f.render_widget(Paragraph::new(line).block(block), area);
+}
+
+fn render_headers_page(f: &mut Frame, area: Rect, state: &mut TuiState) {
+    let show_trailers = state.trailers_observable
+        || !state.trailers.is_empty()
+        || state
+            .response_headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("trailer"));
+    if area.width >= 120 && show_trailers {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(34),
+                Constraint::Percentage(34),
+                Constraint::Percentage(32),
+            ])
+            .split(area);
+        render_headers_panel(
+            f,
+            columns[0],
+            focused_title(
+                "Request Headers",
+                state.active_page == 2 && state.focus_index == 0,
+            ),
+            &state.request_headers,
+            state.request_header_scroll,
+            &state.filter_query,
+        );
+        render_headers_panel(
+            f,
+            columns[1],
+            focused_title(
+                "Response Headers",
+                state.active_page == 2 && state.focus_index == 1,
+            ),
+            &state.response_headers,
+            state.response_header_scroll,
+            &state.filter_query,
+        );
+        render_trailers_panel(
+            f,
+            columns[2],
+            focused_title("Trailers", state.active_page == 2 && state.focus_index == 2),
+            state,
+        );
+    } else if show_trailers {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(34),
+                Constraint::Percentage(34),
+                Constraint::Percentage(32),
+            ])
+            .split(area);
+        render_headers_panel(
+            f,
+            rows[0],
+            focused_title(
+                "Request Headers",
+                state.active_page == 2 && state.focus_index == 0,
+            ),
+            &state.request_headers,
+            state.request_header_scroll,
+            &state.filter_query,
+        );
+        render_headers_panel(
+            f,
+            rows[1],
+            focused_title(
+                "Response Headers",
+                state.active_page == 2 && state.focus_index == 1,
+            ),
+            &state.response_headers,
+            state.response_header_scroll,
+            &state.filter_query,
+        );
+        render_trailers_panel(
+            f,
+            rows[2],
+            focused_title("Trailers", state.active_page == 2 && state.focus_index == 2),
+            state,
+        );
+    } else if area.width >= 96 {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+        render_headers_panel(
+            f,
+            columns[0],
+            focused_title(
+                "Request Headers",
+                state.active_page == 2 && state.focus_index == 0,
+            ),
+            &state.request_headers,
+            state.request_header_scroll,
+            &state.filter_query,
+        );
+        render_headers_panel(
+            f,
+            columns[1],
+            focused_title(
+                "Response Headers",
+                state.active_page == 2 && state.focus_index == 1,
+            ),
+            &state.response_headers,
+            state.response_header_scroll,
+            &state.filter_query,
+        );
+    } else {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area);
+        render_headers_panel(
+            f,
+            rows[0],
+            focused_title(
+                "Request Headers",
+                state.active_page == 2 && state.focus_index == 0,
+            ),
+            &state.request_headers,
+            state.request_header_scroll,
+            &state.filter_query,
+        );
+        render_headers_panel(
+            f,
+            rows[1],
+            focused_title(
+                "Response Headers",
+                state.active_page == 2 && state.focus_index == 1,
+            ),
+            &state.response_headers,
+            state.response_header_scroll,
+            &state.filter_query,
+        );
     }
 }
 
-fn render_headers_panel(f: &mut Frame, area: Rect, title: &str, headers: &[(String, String)]) {
+fn render_headers_panel(
+    f: &mut Frame,
+    area: Rect,
+    title: String,
+    headers: &[(String, String)],
+    scroll: usize,
+    filter_query: &str,
+) {
     let lines: Vec<Line> = headers
         .iter()
+        .filter(|(k, v)| header_matches_filter(k, v, filter_query))
         .map(|(k, v)| {
             Line::from(vec![
                 Span::styled(format!("{k}: "), Style::default().fg(Color::Cyan)),
@@ -677,11 +1510,221 @@ fn render_headers_panel(f: &mut Frame, area: Rect, title: &str, headers: &[(Stri
         .collect();
 
     let block = Block::default().borders(Borders::ALL).title(title);
-    let paragraph = Paragraph::new(lines).block(block);
+    let max_scroll = lines
+        .len()
+        .saturating_sub(area.height.saturating_sub(2) as usize);
+    let scroll = scroll.min(max_scroll).min(u16::MAX as usize) as u16;
+    let paragraph = Paragraph::new(lines).block(block).scroll((scroll, 0));
     f.render_widget(paragraph, area);
 }
 
-fn render_metrics(f: &mut Frame, area: Rect, state: &TuiState) {
+fn render_trailers_panel(f: &mut Frame, area: Rect, title: String, state: &TuiState) {
+    let mut lines: Vec<Line> = state
+        .trailers
+        .iter()
+        .filter(|(k, v)| header_matches_filter(k, v, &state.filter_query))
+        .map(|(k, v)| {
+            Line::from(vec![
+                Span::styled(format!("{k}: "), Style::default().fg(Color::Cyan)),
+                Span::raw(v.as_str()),
+            ])
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push(Line::styled(
+            if state.trailers_observable {
+                "none received"
+            } else {
+                "not exposed by client yet"
+            },
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let block = Block::default().borders(Borders::ALL).title(title);
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_body_page(f: &mut Frame, area: Rect, state: &mut TuiState) {
+    if area.width >= 100 && area.height >= 18 {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+            .split(area);
+        render_body(f, columns[0], state);
+        render_metrics_panel(f, columns[1], state);
+    } else {
+        render_body(f, area, state);
+    }
+}
+
+fn render_events_page(f: &mut Frame, area: Rect, state: &mut TuiState) {
+    let title = if state.filter_query.trim().is_empty() {
+        "Events".to_string()
+    } else {
+        format!("Events [filter: {}]", state.filter_query)
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let visible = inner.height as usize;
+    let filtered_events: Vec<&EventLine> = state
+        .event_lines
+        .iter()
+        .filter(|line| text_matches_filter(&line.text, &state.filter_query))
+        .collect();
+    let max_scroll = filtered_events.len().saturating_sub(visible);
+    let scroll = state.event_scroll.min(max_scroll);
+    state.event_scroll = scroll;
+    let lines: Vec<Line> = filtered_events
+        .into_iter()
+        .skip(scroll)
+        .take(visible)
+        .map(|line| Line::styled(line.text.clone(), Style::default().fg(line.color)))
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_summary_page(f: &mut Frame, area: Rect, state: &TuiState) {
+    let mut lines = vec![
+        Line::styled(
+            if state.final_status_is_error {
+                "failure"
+            } else if state.done {
+                "success"
+            } else {
+                "running"
+            },
+            Style::default()
+                .fg(if state.final_status_is_error {
+                    Color::Red
+                } else {
+                    Color::Green
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        fact_line(
+            "Request",
+            format!("{} {}", state.method_label, state.target_label),
+            Color::Cyan,
+        ),
+        fact_line("Status", &state.status_label, Color::White),
+        fact_line(
+            "Protocol",
+            value_or_dash(&state.protocol_label),
+            Color::Blue,
+        ),
+        fact_line(
+            "Remote",
+            value_or_dash(&state.remote_label),
+            Color::DarkGray,
+        ),
+        fact_line(
+            "Total",
+            state
+                .total_duration_ms
+                .map(|ms| format!("{ms:.1}ms"))
+                .unwrap_or_else(|| "-".into()),
+            Color::Yellow,
+        ),
+        fact_line(
+            "Body",
+            human_bytes(state.body_bytes_received as u64),
+            Color::Cyan,
+        ),
+        fact_line(
+            "Request headers",
+            state.request_headers.len().to_string(),
+            Color::White,
+        ),
+        fact_line(
+            "Response headers",
+            state.response_headers.len().to_string(),
+            Color::White,
+        ),
+        fact_line(
+            "Trailers",
+            trailer_summary(state),
+            if state.trailers.is_empty() {
+                Color::DarkGray
+            } else {
+                Color::Cyan
+            },
+        ),
+        fact_line("Body handling", body_mode_label(state), Color::DarkGray),
+    ];
+
+    if state.final_status_is_error {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("Failure", Style::default().fg(Color::Red)));
+        lines.push(fact_line("Phase/error", &state.status_line, Color::Red));
+        lines.push(fact_line(
+            "Retries",
+            if state.retries.is_empty() {
+                "none".to_string()
+            } else {
+                format!("{} attempts", state.retries.len())
+            },
+            Color::Yellow,
+        ));
+        lines.push(fact_line(
+            "Output",
+            if state.body_bytes_received == 0 {
+                "no body received"
+            } else {
+                "partial body received"
+            },
+            Color::DarkGray,
+        ));
+    }
+
+    if !state.redirects.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "Redirect Chain",
+            Style::default().fg(Color::Yellow),
+        ));
+        for (idx, (status, from, to)) in state.redirects.iter().enumerate() {
+            lines.push(Line::raw(format!(
+                "  {}. {status} {} -> {}",
+                idx + 1,
+                truncate_chars(from, 34),
+                truncate_chars(to, 44)
+            )));
+        }
+    }
+
+    if !state.retries.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("Retries", Style::default().fg(Color::Yellow)));
+        for retry in &state.retries {
+            lines.push(Line::raw(format!("  {retry}")));
+        }
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("Trailers", Style::default().fg(Color::Cyan)));
+    if state.trailers.is_empty() {
+        lines.push(Line::styled(
+            if state.trailers_observable {
+                "  none received"
+            } else {
+                "  not exposed by client yet"
+            },
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        for (name, value) in &state.trailers {
+            lines.push(Line::raw(format!("  {name}: {value}")));
+        }
+    }
+
+    let block = Block::default().borders(Borders::ALL).title("Summary");
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_metrics_panel(f: &mut Frame, area: Rect, state: &TuiState) {
     let mut lines: Vec<Line> = Vec::new();
 
     // ── Transfer stats ──
@@ -692,7 +1735,7 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::from(vec![
         Span::raw("  Body: "),
         Span::styled(
-            format_bytes(state.body_bytes_received as u64),
+            human_bytes(state.body_bytes_received as u64),
             Style::default().fg(Color::Yellow),
         ),
     ]));
@@ -707,7 +1750,7 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &TuiState) {
             let bps = state.body_bytes_received as f64 / elapsed;
             lines.push(Line::from(vec![
                 Span::raw("  Speed: "),
-                Span::styled(format_speed(bps), Style::default().fg(Color::Yellow)),
+                Span::styled(human_speed(bps), Style::default().fg(Color::Yellow)),
             ]));
             lines.push(Line::from(vec![
                 Span::raw("  Duration: "),
@@ -763,25 +1806,245 @@ fn render_metrics(f: &mut Frame, area: Rect, state: &TuiState) {
         }
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Metrics [Tab]");
+    let block = Block::default().borders(Borders::ALL).title("Body Metrics");
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, area);
 }
 
-fn format_speed(bps: f64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-
-    if bps >= MIB {
-        format!("{:.1} MiB/s", bps / MIB)
-    } else if bps >= KIB {
-        format!("{:.1} KiB/s", bps / KIB)
+fn phase_note(label: &str) -> &'static str {
+    if label.starts_with("WAIT") {
+        "time-to-first-byte"
+    } else if label.starts_with("DNS") || label.starts_with("TCP") || label.starts_with("TLS") {
+        "transport setup"
+    } else if label.starts_with("DOWN") || label.starts_with("UP") {
+        "body transfer"
+    } else if label.starts_with("FAIL") {
+        "terminal error"
     } else {
-        format!("{:.0} B/s", bps)
+        "-"
     }
 }
+
+fn trailer_summary(state: &TuiState) -> String {
+    if !state.trailers.is_empty() {
+        format!("{} received", state.trailers.len())
+    } else if state.trailers_observable {
+        "none received".to_string()
+    } else {
+        "not exposed".to_string()
+    }
+}
+
+fn body_mode_label(state: &TuiState) -> String {
+    let mode = if state.body_is_sse {
+        "SSE"
+    } else if state
+        .body_lines
+        .iter()
+        .any(|line| line.trim_start().starts_with('{'))
+    {
+        "JSON/text"
+    } else if state.content_type_label.is_empty()
+        || state.content_type_label.starts_with("text/")
+        || state.content_type_label.contains("json")
+        || state.content_type_label.contains("xml")
+    {
+        "text"
+    } else {
+        "binary or mixed"
+    };
+    let state_label = if state.body_done { "done" } else { "streaming" };
+    let cap = if state.body_cap_bytes > 64 * 1024 {
+        ", truncated"
+    } else {
+        ""
+    };
+    format!("{mode}, {state_label}{cap}")
+}
+
+fn fact_line(label: &str, value: impl Into<String>, color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<16}"), Style::default().fg(Color::DarkGray)),
+        Span::styled(value.into(), Style::default().fg(color)),
+    ])
+}
+
+fn value_or_dash(value: &str) -> &str {
+    if value.is_empty() { "-" } else { value }
+}
+
+fn focused_title(title: &str, focused: bool) -> String {
+    if focused {
+        format!("{title} [focus]")
+    } else {
+        title.to_string()
+    }
+}
+
+fn http_focus_label(state: &TuiState) -> &'static str {
+    match state.active_page {
+        0 => {
+            if state.focus_index == 1 {
+                "facts"
+            } else {
+                "timeline"
+            }
+        }
+        2 => {
+            if state.focus_index == 1 {
+                "response"
+            } else {
+                "request"
+            }
+        }
+        3 => {
+            if state.focus_index == 1 {
+                "metrics"
+            } else {
+                "body"
+            }
+        }
+        _ => "main",
+    }
+}
+
+fn text_matches_filter(text: &str, filter_query: &str) -> bool {
+    let query = filter_query.trim().to_ascii_lowercase();
+    query.is_empty() || text.to_ascii_lowercase().contains(&query)
+}
+
+fn header_matches_filter(name: &str, value: &str, filter_query: &str) -> bool {
+    let query = filter_query.trim().to_ascii_lowercase();
+    query.is_empty()
+        || name.to_ascii_lowercase().contains(&query)
+        || value.to_ascii_lowercase().contains(&query)
+}
+
+fn copy_visible_text(state: &mut TuiState) {
+    let text = visible_page_text(state);
+    match copy_to_clipboard(&text) {
+        Ok(()) => state.log_event("copied visible page to clipboard", Color::Green),
+        Err(err) => state.log_event(format!("copy failed: {err}"), Color::Red),
+    }
+}
+
+fn visible_page_text(state: &TuiState) -> String {
+    match state.active_page {
+        0 => [
+            format!("status: {}", state.status_label),
+            format!("protocol: {}", value_or_dash(&state.protocol_label)),
+            format!("remote: {}", value_or_dash(&state.remote_label)),
+            format!(
+                "duration: {}",
+                state
+                    .total_duration_ms
+                    .map(|ms| format!("{ms:.1}ms"))
+                    .unwrap_or_else(|| "running".into())
+            ),
+            format!("body: {}", human_bytes(state.body_bytes_received as u64)),
+            format!("redirects: {}", state.redirects.len()),
+            format!("retries: {}", state.retries.len()),
+        ]
+        .join("\n"),
+        1 => state
+            .phases
+            .iter()
+            .map(|p| {
+                format!(
+                    "{} {:.1}ms +{:.1}ms",
+                    p.label, p.duration_ms, p.cumulative_ms
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        2 => {
+            let mut lines = Vec::new();
+            lines.push("[request headers]".to_string());
+            lines.extend(headers_as_text(&state.request_headers, &state.filter_query));
+            lines.push(String::new());
+            lines.push("[response headers]".to_string());
+            lines.extend(headers_as_text(
+                &state.response_headers,
+                &state.filter_query,
+            ));
+            lines.push(String::new());
+            lines.push("[trailers]".to_string());
+            if state.trailers.is_empty() {
+                lines.push(if state.trailers_observable {
+                    "none received".to_string()
+                } else {
+                    "not exposed by client yet".to_string()
+                });
+            } else {
+                lines.extend(headers_as_text(&state.trailers, &state.filter_query));
+            }
+            lines.join("\n")
+        }
+        3 => state
+            .body_lines
+            .iter()
+            .filter(|line| text_matches_filter(line, &state.filter_query))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n"),
+        4 => state
+            .event_lines
+            .iter()
+            .filter(|line| text_matches_filter(&line.text, &state.filter_query))
+            .map(|line| line.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        5 => {
+            let mut lines = vec![
+                format!(
+                    "result: {}",
+                    if state.final_status_is_error {
+                        "failure"
+                    } else if state.done {
+                        "success"
+                    } else {
+                        "running"
+                    }
+                ),
+                format!("request: {} {}", state.method_label, state.target_label),
+                format!("status: {}", state.status_label),
+                format!("protocol: {}", value_or_dash(&state.protocol_label)),
+                format!("remote: {}", value_or_dash(&state.remote_label)),
+                format!(
+                    "total: {}",
+                    state
+                        .total_duration_ms
+                        .map(|ms| format!("{ms:.1}ms"))
+                        .unwrap_or_else(|| "-".into())
+                ),
+                format!("body: {}", human_bytes(state.body_bytes_received as u64)),
+                format!("trailers: {}", trailer_summary(state)),
+            ];
+            if !state.redirects.is_empty() {
+                lines.push("redirects:".to_string());
+                for (status, from, to) in &state.redirects {
+                    lines.push(format!("  {status} {from} -> {to}"));
+                }
+            }
+            if !state.retries.is_empty() {
+                lines.push("retries:".to_string());
+                lines.extend(state.retries.iter().map(|retry| format!("  {retry}")));
+            }
+            lines.join("\n")
+        }
+        _ => String::new(),
+    }
+}
+
+fn headers_as_text(headers: &[(String, String)], filter_query: &str) -> Vec<String> {
+    headers
+        .iter()
+        .filter(|(name, value)| header_matches_filter(name, value, filter_query))
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect()
+}
+
+// human_speed imported from crate::util
 
 /// Split `line` into visual rows at `col_width` char boundaries.
 /// Returns borrowed `Line`s to avoid allocations.
@@ -829,6 +2092,7 @@ fn render_body(f: &mut Frame, area: Rect, state: &mut TuiState) {
     let visual_lines: Vec<Line> = state
         .body_lines
         .iter()
+        .filter(|logical| text_matches_filter(logical, &state.filter_query))
         .flat_map(|logical| wrap_line(logical, col_width))
         .collect();
 
@@ -850,20 +2114,35 @@ fn render_body(f: &mut Frame, area: Rect, state: &mut TuiState) {
     f.render_widget(paragraph, area);
 }
 
-fn render_status_bar(f: &mut Frame, area: Rect, state: &TuiState) {
-    let style = if state.status_line.contains("FAIL") {
-        Style::default().fg(Color::Red)
-    } else if state.done {
-        Style::default().fg(Color::Green)
+fn render_footer(f: &mut Frame, area: Rect, state: &TuiState) {
+    let quit_hint = if state.done { "q close" } else { "q cancel" };
+    let hint = if state.editing_filter {
+        format!("filter: {}_   Enter apply   Esc close", state.filter_query)
     } else {
-        Style::default().fg(Color::DarkGray)
+        match state.active_page {
+            0 => format!(
+                "1-6 pages   Tab focus:{}   j/k scroll   / filter   y copy   {quit_hint}   ? help",
+                http_focus_label(state)
+            ),
+            1 => format!(
+                "1-6 pages   ←/→ span focus   h/l pages   j/k span   / filter   y copy   {quit_hint}   ? help"
+            ),
+            2 => format!(
+                "1-6 pages   Tab column:{}   / filter   y copy   {quit_hint}   ? help",
+                http_focus_label(state)
+            ),
+            3 => format!(
+                "1-6 pages   j/k scroll body   Space autoscroll:{}   / filter   y copy   {quit_hint}   ? help",
+                if state.body_auto_scroll { "on" } else { "off" }
+            ),
+            4 => format!(
+                "1-6 pages   j/k scroll   g/G top/bottom   / filter   y copy visible   {quit_hint}   ? help"
+            ),
+            5 => format!("1-6 pages   y copy summary   {quit_hint}   ? help"),
+            _ => format!("1-6 pages   {quit_hint}   ? help"),
+        }
     };
-    let line = if state.status_line.is_empty() {
-        "Connecting..."
-    } else {
-        &state.status_line
-    };
-    let paragraph = Paragraph::new(Line::styled(line, style));
+    let paragraph = Paragraph::new(Line::styled(hint, Style::default().fg(Color::DarkGray)));
     f.render_widget(paragraph, area);
 }
 
@@ -874,13 +2153,20 @@ fn render_help(f: &mut Frame, area: Rect) {
             Style::default().fg(Color::Yellow),
         )),
         Line::raw(""),
-        Line::raw("  q/Ctrl+C Quit"),
-        Line::raw("  Tab      Cycle: Headers / Metrics"),
+        Line::raw("  q        Quit"),
+        Line::raw("  Ctrl+C   Quit"),
+        Line::raw("  Tab/←→   Move focus or selection"),
+        Line::raw("  h/l      Previous / next page"),
+        Line::raw("  1-6      Jump to page"),
+        Line::raw("  /        Filter visible text"),
+        Line::raw("  y        Copy visible page"),
+        Line::raw("  Space    Toggle body autoscroll"),
         Line::raw("  ?        Toggle this help"),
-        Line::raw("  j/↓      Scroll body down one line"),
-        Line::raw("  k/↑      Scroll body up one line"),
-        Line::raw("  PgDn     Scroll body down one page"),
-        Line::raw("  PgUp     Scroll body up one page"),
+        Line::raw("  Esc      Close help"),
+        Line::raw("  j/↓      Scroll active page down"),
+        Line::raw("  k/↑      Scroll active page up"),
+        Line::raw("  PgDn     Scroll active page down"),
+        Line::raw("  PgUp     Scroll active page up"),
         Line::raw("  g/Home   Scroll to top"),
         Line::raw("  G/End    Scroll to bottom"),
     ];
@@ -916,51 +2202,15 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes}B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.2}GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
-}
+// human_bytes imported from crate::util
 
-fn ms(d: &Duration) -> f64 {
-    d.as_secs_f64() * 1000.0
-}
+// duration_ms imported from crate::util
 
-fn find_split_point(s: &str, target: usize) -> usize {
-    if s.is_char_boundary(target) {
-        return target;
-    }
-    // Walk back to nearest char boundary
-    (0..target)
-        .rev()
-        .find(|&i| s.is_char_boundary(i))
-        .unwrap_or(target)
-}
+// find_split_point imported from crate::util
 
-fn redact_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
-    headers
-        .iter()
-        .map(|(k, v)| {
-            let lower = k.to_lowercase();
-            let value = if lower == "authorization"
-                || lower == "proxy-authorization"
-                || lower == "cookie"
-                || lower == "set-cookie"
-            {
-                "***".to_string()
-            } else {
-                v.clone()
-            };
-            (k.clone(), value)
-        })
-        .collect()
-}
+// truncate_chars imported from crate::util
+
+// redact_headers imported from crate::util
 
 #[cfg(test)]
 mod tests {
@@ -977,6 +2227,14 @@ mod tests {
             phase,
             at: Instant::now(),
         }
+    }
+
+    fn key(code: KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl_key(code: KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
     #[test]
@@ -1135,11 +2393,165 @@ mod tests {
     }
 
     #[test]
+    fn esc_closes_help_without_quitting() {
+        let mut state = TuiState::new();
+        state.show_help = true;
+        assert!(!handle_key_event(key(KeyCode::Esc), &mut state));
+        assert!(!state.show_help);
+    }
+
+    #[test]
+    fn esc_without_overlay_does_not_quit() {
+        let mut state = TuiState::new();
+        assert!(!handle_key_event(key(KeyCode::Esc), &mut state));
+        assert!(!state.show_help);
+    }
+
+    #[test]
+    fn q_quits_even_when_help_is_open() {
+        let mut state = TuiState::new();
+        state.show_help = true;
+        assert!(handle_key_event(key(KeyCode::Char('q')), &mut state));
+    }
+
+    #[test]
+    fn ctrl_c_quits() {
+        let mut state = TuiState::new();
+        assert!(handle_key_event(ctrl_key(KeyCode::Char('c')), &mut state));
+    }
+
+    #[test]
+    fn tab_moves_focus_without_changing_page() {
+        let mut state = TuiState::new();
+        assert_eq!(state.active_page, 0);
+        assert_eq!(state.focus_index, 0);
+        assert!(!handle_key_event(key(KeyCode::Tab), &mut state));
+        assert_eq!(state.active_page, 0);
+        assert_eq!(state.focus_index, 1);
+    }
+
+    #[test]
+    fn number_keys_jump_pages_and_reset_focus() {
+        let mut state = TuiState::new();
+        state.focus_index = 1;
+        assert!(!handle_key_event(key(KeyCode::Char('4')), &mut state));
+        assert_eq!(state.active_page, 3);
+        assert_eq!(state.focus_index, 0);
+    }
+
+    #[test]
+    fn slash_filter_captures_text_until_escape() {
+        let mut state = TuiState::new();
+        assert!(!handle_key_event(key(KeyCode::Char('/')), &mut state));
+        assert!(state.editing_filter);
+        assert!(!handle_key_event(key(KeyCode::Char('x')), &mut state));
+        assert_eq!(state.filter_query, "x");
+        assert!(!handle_key_event(key(KeyCode::Esc), &mut state));
+        assert!(!state.editing_filter);
+        assert_eq!(state.filter_query, "x");
+    }
+
+    #[test]
+    fn space_toggles_body_autoscroll_on_body_page() {
+        let mut state = TuiState::new();
+        state.active_page = 3;
+        assert!(state.body_auto_scroll);
+        assert!(!handle_key_event(key(KeyCode::Char(' ')), &mut state));
+        assert!(!state.body_auto_scroll);
+    }
+
+    #[test]
     fn multiple_body_chunks_accumulate() {
         let mut state = TuiState::new();
         state.apply_body_chunk("a\nb\nc\n", StdInstant::now());
         state.apply_body_chunk("d\ne\n", StdInstant::now());
         state.apply_body_done();
         assert_eq!(state.body_lines, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    // ── sanitize_event_text tests ──
+
+    #[test]
+    fn sanitize_passes_plain_text() {
+        assert_eq!(
+            super::sanitize_event_text("hello world".into()),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn sanitize_collapses_newlines() {
+        assert_eq!(
+            super::sanitize_event_text("line1\nline2\r\nline3".into()),
+            "line1 line2 line3"
+        );
+    }
+
+    #[test]
+    fn sanitize_collapses_multiple_newlines() {
+        assert_eq!(super::sanitize_event_text("a\n\nb".into()), "a b");
+    }
+
+    #[test]
+    fn sanitize_removes_ansi_escapes() {
+        assert_eq!(
+            super::sanitize_event_text("ok \x1b[31mred\x1b[0m text".into()),
+            "ok red text"
+        );
+    }
+
+    #[test]
+    fn sanitize_removes_ansi_escapes_with_sgr() {
+        assert_eq!(
+            super::sanitize_event_text("prefix \x1b[1;32mbold green\x1b[m suffix".into()),
+            "prefix bold green suffix"
+        );
+    }
+
+    #[test]
+    fn sanitize_replaces_control_chars() {
+        assert_eq!(
+            super::sanitize_event_text("text\x00null\x08bs".into()),
+            "text null bs"
+        );
+    }
+
+    #[test]
+    fn sanitize_preserves_tabs() {
+        assert_eq!(
+            super::sanitize_event_text("col1\tcol2".into()),
+            "col1\tcol2"
+        );
+    }
+
+    #[test]
+    fn sanitize_empty_string() {
+        assert_eq!(super::sanitize_event_text("".into()), "");
+    }
+
+    #[test]
+    fn sanitize_error_message_with_newlines() {
+        let text = "connection error:\n  caused by timeout\n  request id: abc123";
+        let result = super::sanitize_event_text(text.into());
+        assert!(!result.contains('\n'));
+        assert!(result.contains("connection error:"));
+    }
+
+    #[test]
+    fn log_event_sanitizes_text() {
+        let mut state = TuiState::new();
+        state.log_event("error\nwith\nnewlines", Color::Red);
+        let last = state.event_lines.back().unwrap();
+        assert!(!last.text.contains('\n'));
+        assert_eq!(last.text, "error with newlines");
+    }
+
+    #[test]
+    fn log_event_removes_ansi_from_error() {
+        let mut state = TuiState::new();
+        state.log_event("failed: \x1b[31mtimeout\x1b[0m after 5s", Color::Red);
+        let last = state.event_lines.back().unwrap();
+        assert!(!last.text.contains('\x1b'));
+        assert_eq!(last.text, "failed: timeout after 5s");
     }
 }

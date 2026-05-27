@@ -10,6 +10,7 @@ pub struct DownloadResult {
     pub output: PathBuf,
     pub total_size: u64,
     pub error: Option<String>,
+    pub checksum: Option<String>,
 }
 
 pub struct ProgressTracker {
@@ -58,7 +59,7 @@ impl ProgressTracker {
                     .unwrap()
                     .progress_chars("━╸─"),
             );
-            bar.set_message(truncate_str(filename, 30).to_string());
+            bar.set_message(crate::util::truncate_str(filename, 30).to_string());
             bar.enable_steady_tick(std::time::Duration::from_millis(100));
             bar
         } else {
@@ -69,7 +70,7 @@ impl ProgressTracker {
                     .template("[{elapsed_precise}] {bytes}/{total_bytes} ({percent}%) {binary_bytes_per_sec} | {msg}")
                     .unwrap(),
             );
-            bar.set_message(truncate_str(filename, 40).to_string());
+            bar.set_message(crate::util::truncate_str(filename, 40).to_string());
             bar.enable_steady_tick(std::time::Duration::from_secs(1));
             bar
         };
@@ -122,7 +123,7 @@ impl ProgressTracker {
                 ("OK", "\x1b[1;32m")
             };
             let speed = if elapsed.as_secs() > 0 && r.error.is_none() {
-                format_speed(r.total_size as f64 / elapsed.as_secs_f64())
+                crate::util::human_speed(r.total_size as f64 / elapsed.as_secs_f64())
             } else {
                 "-".to_string()
             };
@@ -132,6 +133,9 @@ impl ProgressTracker {
             );
             if let Some(ref err) = r.error {
                 println!("      |     |            |  \x1b[31mError: {err}\x1b[0m");
+            }
+            if let Some(ref checksum) = r.checksum {
+                println!("      |     |            |  \x1b[36mIntegrity: {checksum}\x1b[0m");
             }
         }
 
@@ -166,7 +170,7 @@ impl ProgressTracker {
             let gid = format!("{:04x}", i);
             let stat = if r.error.is_some() { "ERR" } else { "OK" };
             let speed = if elapsed.as_secs() > 0 && r.error.is_none() {
-                format_speed(r.total_size as f64 / elapsed.as_secs_f64())
+                crate::util::human_speed(r.total_size as f64 / elapsed.as_secs_f64())
             } else {
                 "-".to_string()
             };
@@ -174,6 +178,9 @@ impl ProgressTracker {
             println!(" {gid:>4}| {stat:>3}|{speed:>11} | {path}");
             if let Some(ref err) = r.error {
                 println!("      |     |            |  Error: {err}");
+            }
+            if let Some(ref checksum) = r.checksum {
+                println!("      |     |            |  Integrity: {checksum}");
             }
         }
 
@@ -218,117 +225,43 @@ impl ProgressHandle {
 
     pub fn finish_err(&self, msg: &str) {
         self.bar
-            .finish_with_message(format!("✗ {}", truncate_str(msg, 40)));
+            .finish_with_message(format!("✗ {}", crate::util::truncate_str(msg, 40)));
     }
 }
 
 pub fn format_size(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-
-    let b = bytes as f64;
-    if b >= GIB {
-        format!("{:.1}GiB", b / GIB)
-    } else if b >= MIB {
-        format!("{:.1}MiB", b / MIB)
-    } else if b >= KIB {
-        format!("{:.1}KiB", b / KIB)
-    } else {
-        format!("{bytes}B")
-    }
-}
-
-fn format_speed(bytes_per_sec: f64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-
-    if bytes_per_sec >= MIB {
-        format!("{:.1}MiB/s", bytes_per_sec / MIB)
-    } else if bytes_per_sec >= KIB {
-        format!("{:.1}KiB/s", bytes_per_sec / KIB)
-    } else {
-        format!("{:.0}B/s", bytes_per_sec)
-    }
-}
-
-fn truncate_str(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    crate::util::human_bytes(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // -- format_size --
-
     #[test]
     fn format_size_bytes() {
-        assert_eq!(format_size(0), "0B");
-        assert_eq!(format_size(512), "512B");
-        assert_eq!(format_size(1023), "1023B");
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1023), "1023 B");
     }
 
     #[test]
     fn format_size_kib() {
-        assert_eq!(format_size(1024), "1.0KiB");
-        assert_eq!(format_size(1024 + 512), "1.5KiB");
+        assert_eq!(format_size(1024), "1 KiB");
+        assert_eq!(format_size(1024 + 512), "1.5 KiB");
     }
 
     #[test]
     fn format_size_mib() {
-        assert_eq!(format_size(1024 * 1024), "1.0MiB");
-        assert_eq!(format_size(5 * 1024 * 1024 + 512 * 1024), "5.5MiB");
+        assert_eq!(format_size(1024 * 1024), "1 MiB");
+        assert_eq!(format_size(5 * 1024 * 1024 + 512 * 1024), "5.5 MiB");
     }
 
     #[test]
     fn format_size_gib() {
-        assert_eq!(format_size(1024 * 1024 * 1024), "1.0GiB");
+        assert_eq!(format_size(1024 * 1024 * 1024), "1 GiB");
         assert_eq!(
             format_size(2 * 1024 * 1024 * 1024 + 512 * 1024 * 1024),
-            "2.5GiB"
+            "2.5 GiB"
         );
-    }
-
-    // -- format_speed --
-
-    #[test]
-    fn format_speed_bytes_per_sec() {
-        assert_eq!(format_speed(100.0), "100B/s");
-        assert_eq!(format_speed(0.0), "0B/s");
-    }
-
-    #[test]
-    fn format_speed_kib_per_sec() {
-        assert_eq!(format_speed(1024.0), "1.0KiB/s");
-        assert_eq!(format_speed(1536.0), "1.5KiB/s");
-    }
-
-    #[test]
-    fn format_speed_mib_per_sec() {
-        assert_eq!(format_speed(1024.0 * 1024.0), "1.0MiB/s");
-        assert_eq!(format_speed(10.0 * 1024.0 * 1024.0), "10.0MiB/s");
-    }
-
-    // -- truncate_str --
-
-    #[test]
-    fn truncate_str_short() {
-        assert_eq!(truncate_str("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_str_exact() {
-        assert_eq!(truncate_str("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_str_long() {
-        assert_eq!(truncate_str("hello world", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_str_empty() {
-        assert_eq!(truncate_str("", 5), "");
     }
 }
