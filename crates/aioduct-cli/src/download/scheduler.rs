@@ -1,22 +1,26 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
 use super::disk_writer::DiskWriter;
 use super::file_entry::{FileEntry, FileId, FileStatus};
-use super::piece_grid::{PieceState, collect_piece_states};
+use super::piece_grid::{PieceSnapshot, collect_piece_snapshots};
 use super::segment_man::PieceAssignment;
 
 pub struct WorkAssignment {
     pub file_id: FileId,
     pub piece: PieceAssignment,
     pub url: String,
+    pub file_name: String,
     pub disk_writer: Arc<DiskWriter>,
 }
 
 #[derive(Clone)]
 pub struct FileSnapshot {
     pub id: FileId,
+    pub url: String,
+    pub output: PathBuf,
     pub filename: String,
     pub total_size: u64,
     pub piece_length: u32,
@@ -25,6 +29,15 @@ pub struct FileSnapshot {
     pub remaining_pieces: u32,
     pub active_workers: u32,
     pub status: FileStatus,
+    pub control_path: PathBuf,
+    pub supports_range: bool,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub created_at: String,
+    pub resume_skipped_pieces: u32,
+    pub allocation: &'static str,
+    pub checksum_status: String,
+    pub last_error: Option<String>,
 }
 
 pub struct GlobalScheduler {
@@ -37,6 +50,8 @@ struct SchedulerInner {
     file_status: Vec<FileStatus>,
     worker_file: Vec<Option<FileId>>,
     file_worker_count: Vec<u32>,
+    resume_skipped_pieces: Vec<u32>,
+    file_last_error: Vec<Option<String>>,
     total_workers: usize,
 }
 
@@ -51,6 +66,8 @@ impl GlobalScheduler {
                 file_status: Vec::new(),
                 worker_file: vec![None; total_workers],
                 file_worker_count: Vec::new(),
+                resume_skipped_pieces: Vec::new(),
+                file_last_error: Vec::new(),
                 total_workers,
             }),
             work_available: Notify::new(),
@@ -63,9 +80,13 @@ impl GlobalScheduler {
         while inner.file_status.len() <= id {
             inner.file_status.push(FileStatus::Pending);
             inner.file_worker_count.push(0);
+            inner.resume_skipped_pieces.push(0);
+            inner.file_last_error.push(None);
         }
         inner.file_status[id] = FileStatus::Active;
         inner.file_worker_count[id] = 0;
+        inner.resume_skipped_pieces[id] = entry.resume_skipped_pieces;
+        inner.file_last_error[id] = None;
         inner.files.push(entry);
         drop(inner);
         self.work_available.notify_waiters();
@@ -142,6 +163,7 @@ impl GlobalScheduler {
 
         let piece = file.segment_man.next_piece(worker_id)?;
         let url = file.url.clone();
+        let file_name = file.filename.clone();
         let disk_writer = Arc::clone(&file.disk_writer);
 
         inner.worker_file[worker_id] = Some(fid);
@@ -156,6 +178,7 @@ impl GlobalScheduler {
             file_id: fid,
             piece,
             url,
+            file_name,
             disk_writer,
         })
     }
@@ -175,6 +198,35 @@ impl GlobalScheduler {
         let inner = self.inner.lock().unwrap();
         if let Some(file) = inner.files.iter().find(|f| f.id == file_id) {
             file.segment_man.fail_piece(piece_index);
+        }
+        drop(inner);
+        self.work_available.notify_waiters();
+    }
+
+    pub fn record_piece_retry(&self, file_id: FileId, piece_index: u32, error: impl Into<String>) {
+        let error = error.into();
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(file) = inner.files.iter().find(|f| f.id == file_id) {
+            file.segment_man
+                .record_piece_retry(piece_index, error.clone());
+        }
+        if let Some(slot) = inner.file_last_error.get_mut(file_id as usize) {
+            *slot = Some(error);
+        }
+    }
+
+    pub fn mark_piece_failed(&self, file_id: FileId, piece_index: u32, error: impl Into<String>) {
+        let error = error.into();
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(file) = inner.files.iter().find(|f| f.id == file_id) {
+            file.segment_man
+                .mark_piece_failed(piece_index, error.clone());
+        }
+        if let Some(slot) = inner.file_last_error.get_mut(file_id as usize) {
+            *slot = Some(error);
+        }
+        if let Some(status) = inner.file_status.get_mut(file_id as usize) {
+            *status = FileStatus::Failed;
         }
         drop(inner);
         self.work_available.notify_waiters();
@@ -235,6 +287,8 @@ impl GlobalScheduler {
                     });
                 FileSnapshot {
                     id: file.id,
+                    url: file.url.clone(),
+                    output: file.output.clone(),
                     filename: file.filename.clone(),
                     total_size: file.total_size,
                     piece_length: file.piece_length,
@@ -247,6 +301,15 @@ impl GlobalScheduler {
                         .get(fid)
                         .copied()
                         .unwrap_or(FileStatus::Pending),
+                    control_path: file.control_path.clone(),
+                    supports_range: file.supports_range,
+                    etag: file.etag.clone(),
+                    last_modified: file.last_modified.clone(),
+                    created_at: file.created_at.clone(),
+                    resume_skipped_pieces: file.resume_skipped_pieces,
+                    allocation: "preallocated",
+                    checksum_status: super::checksum::read_status(&file.checksum_status),
+                    last_error: inner.file_last_error.get(fid).cloned().flatten(),
                 }
             })
             .collect()
@@ -256,12 +319,12 @@ impl GlobalScheduler {
         self.inner.lock().unwrap().files.len()
     }
 
-    pub fn snapshot_file_pieces(&self, file_id: FileId) -> Option<(Vec<PieceState>, u32)> {
+    pub fn snapshot_file_pieces(&self, file_id: FileId) -> Option<(Vec<PieceSnapshot>, u32)> {
         let inner = self.inner.lock().unwrap();
         let file = inner.files.iter().find(|f| f.id == file_id)?;
         let (pieces, piece_length) = file
             .segment_man
-            .snapshot_storage(|s| (collect_piece_states(s), s.piece_length()));
+            .snapshot_storage(|s| (collect_piece_snapshots(s), s.piece_length()));
         Some((pieces, piece_length))
     }
 
@@ -322,6 +385,11 @@ mod tests {
             disk_writer,
             control_path: PathBuf::from(format!("/tmp/file{id}.aioduct")),
             supports_range: true,
+            etag: None,
+            last_modified: None,
+            created_at: "test".into(),
+            resume_skipped_pieces: 0,
+            checksum_status: crate::download::checksum::shared_status(None),
         }
     }
 

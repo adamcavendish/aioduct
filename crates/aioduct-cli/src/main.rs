@@ -3,6 +3,7 @@
 mod common;
 mod download;
 mod http;
+mod util;
 
 use std::process::ExitCode;
 

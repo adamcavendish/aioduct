@@ -1,3 +1,4 @@
+mod checksum;
 mod cli;
 mod control_file;
 mod disk_writer;
@@ -13,6 +14,7 @@ mod request_config;
 mod scheduler;
 mod segment_man;
 mod speed_monitor;
+mod tui_common;
 mod tui_state;
 mod webdav;
 mod worker;
@@ -60,8 +62,16 @@ pub async fn run(args: DownloadArgs) -> ExitCode {
         return ExitCode::from(15);
     }
 
+    let checksum = match cli.checksum.as_deref().map(checksum::parse).transpose() {
+        Ok(checksum) => checksum,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            return ExitCode::from(28);
+        }
+    };
+
     let cli = Arc::new(cli);
-    let engine = DownloadEngine::new(Arc::clone(&cli));
+    let engine = DownloadEngine::new(Arc::clone(&cli), checksum);
 
     // WebDAV recursive expansion
     let uris: Vec<ExpandedUri> = if cli.recursive {
@@ -134,11 +144,35 @@ async fn download_multi_mode(
                 if task.output.exists()
                     && !control_file::ControlFile::control_path(&task.output).exists()
                 {
-                    if !cli.quiet {
-                        eprintln!("[SKIP] {} (already complete)", task.output.display());
+                    if engine.has_checksum() {
+                        let existing = engine.verify_existing_output(&task.output).await;
+                        if existing.error.is_none() {
+                            if !cli.quiet {
+                                eprintln!(
+                                    "[SKIP] {} (already complete, checksum verified)",
+                                    task.output.display()
+                                );
+                            }
+                            skipped += 1;
+                            continue;
+                        }
+                        if !cli.quiet {
+                            let reason = existing
+                                .error
+                                .as_deref()
+                                .unwrap_or("checksum verification failed");
+                            eprintln!(
+                                "[INFO] {} exists but failed checksum ({reason}); redownloading",
+                                task.output.display()
+                            );
+                        }
+                    } else {
+                        if !cli.quiet {
+                            eprintln!("[SKIP] {} (already complete)", task.output.display());
+                        }
+                        skipped += 1;
+                        continue;
                     }
-                    skipped += 1;
-                    continue;
                 }
                 if !cli.quiet {
                     let size_str = task
@@ -161,6 +195,13 @@ async fn download_multi_mode(
                 }
             }
         }
+    }
+
+    if engine.has_checksum() && tasks.len() > 1 {
+        if !cli.quiet {
+            eprintln!("Error: --checksum supports one downloadable output at a time");
+        }
+        return ExitCode::from(28);
     }
 
     if tasks.is_empty() {

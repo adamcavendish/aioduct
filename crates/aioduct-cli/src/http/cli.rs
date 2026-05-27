@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use aioduct::observer::RequestObserver;
+use aioduct::{NoProxy, ProxyChain, ProxySettings, RedirectPolicy, RetryConfig, TokioClient};
 use clap::Args;
 
 use crate::common::parse_byte_size;
+use crate::util::parse_proxy_url;
 
 #[derive(Args, Debug)]
 #[command(
@@ -117,9 +120,21 @@ pub struct HttpArgs {
     #[arg(long = "retry-max-time", default_value_t = 60)]
     pub retry_max_time: u64,
 
-    /// Proxy URL
-    #[arg(short = 'x', long = "proxy")]
-    pub proxy: Option<String>,
+    /// Proxy URL (repeatable for multi-hop chaining)
+    #[arg(short = 'x', long = "proxy", action = clap::ArgAction::Append)]
+    pub proxy: Vec<String>,
+
+    /// Proxy authentication (user:password)
+    #[arg(long = "proxy-user")]
+    pub proxy_user: Option<String>,
+
+    /// Hosts to bypass proxy for (comma-separated)
+    #[arg(long = "noproxy")]
+    pub noproxy: Option<String>,
+
+    /// Use proxy settings from environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
+    #[arg(long = "system-proxy")]
+    pub system_proxy: bool,
 
     /// Disable certificate verification
     #[arg(short = 'k', long = "insecure")]
@@ -165,6 +180,93 @@ impl HttpArgs {
 
     pub fn max_time_duration(&self) -> Option<Duration> {
         self.max_time.map(Duration::from_secs_f64)
+    }
+
+    pub fn to_client(
+        &self,
+        observer: Option<impl RequestObserver>,
+    ) -> Result<TokioClient, aioduct::Error> {
+        let mut builder = TokioClient::builder();
+
+        if let Some(obs) = observer {
+            builder = builder.request_observer(obs);
+        }
+
+        if let Some(ref ua) = self.user_agent {
+            builder = builder.user_agent(ua);
+        }
+
+        if self.location {
+            builder = builder.max_redirects(self.max_redirs);
+        } else {
+            builder = builder.redirect_policy(RedirectPolicy::none());
+        }
+
+        if let Some(timeout) = self.connect_timeout_duration() {
+            builder = builder.connect_timeout(timeout);
+        }
+
+        if let Some(timeout) = self.max_time_duration() {
+            builder = builder.timeout(timeout);
+        }
+
+        if let Some(count) = self.retry {
+            builder = builder.retry(
+                RetryConfig::default()
+                    .max_retries(count)
+                    .max_backoff(Duration::from_secs(self.retry_max_time)),
+            );
+        }
+
+        if self.insecure {
+            builder = builder.danger_accept_invalid_certs();
+        }
+
+        if self.http2 {
+            builder = builder.http2_prior_knowledge();
+        }
+
+        if let Some(rate) = self.limit_rate {
+            builder = builder.max_download_speed(rate);
+        }
+
+        if self.raw {
+            builder = builder.no_decompression();
+        }
+
+        if !self.proxy.is_empty() {
+            let configs: Vec<_> = self
+                .proxy
+                .iter()
+                .filter_map(|url| {
+                    let mut cfg = parse_proxy_url(url)?;
+                    if let Some(ref user) = self.proxy_user
+                        && let Some((u, p)) = user.split_once(':')
+                    {
+                        cfg = cfg.basic_auth(u, p);
+                    }
+                    Some(cfg)
+                })
+                .collect();
+            if configs.len() > 1 {
+                builder = builder.proxy_chain(ProxyChain::new(configs));
+            } else if let Some(cfg) = configs.into_iter().next() {
+                if let Some(ref noproxy) = self.noproxy {
+                    builder = builder
+                        .proxy_settings(ProxySettings::all(cfg).no_proxy(NoProxy::new(noproxy)));
+                } else {
+                    builder = builder.proxy(cfg);
+                }
+            }
+        } else if self.system_proxy {
+            let mut settings = ProxySettings::from_env();
+            if let Some(ref noproxy) = self.noproxy {
+                settings = settings.no_proxy(NoProxy::new(noproxy));
+            }
+            builder = builder.proxy_settings(settings);
+        }
+
+        builder.build()
     }
 }
 
@@ -223,5 +325,207 @@ mod tests {
     fn effective_method_data_binary_implies_post() {
         let cli = parse(&["test", "--data-binary", "@file.bin", "http://example.com"]);
         assert_eq!(cli.effective_method(), "POST");
+    }
+
+    // ── Proxy CLI flag tests ──
+
+    #[test]
+    fn proxy_single_flag() {
+        let cli = parse(&["test", "-x", "http://proxy:8080", "http://example.com"]);
+        assert_eq!(cli.proxy.len(), 1);
+        assert_eq!(cli.proxy[0], "http://proxy:8080");
+    }
+
+    #[test]
+    fn proxy_long_flag() {
+        let cli = parse(&[
+            "test",
+            "--proxy",
+            "socks5://proxy:1080",
+            "http://example.com",
+        ]);
+        assert_eq!(cli.proxy.len(), 1);
+        assert_eq!(cli.proxy[0], "socks5://proxy:1080");
+    }
+
+    #[test]
+    fn proxy_repeated_flags() {
+        let cli = parse(&[
+            "test",
+            "-x",
+            "http://p1:8080",
+            "-x",
+            "socks5://p2:1080",
+            "http://example.com",
+        ]);
+        assert_eq!(cli.proxy.len(), 2);
+        assert_eq!(cli.proxy[0], "http://p1:8080");
+        assert_eq!(cli.proxy[1], "socks5://p2:1080");
+    }
+
+    #[test]
+    fn proxy_no_proxy_default() {
+        let cli = parse(&["test", "http://example.com"]);
+        assert!(cli.proxy.is_empty());
+        assert!(cli.proxy_user.is_none());
+        assert!(cli.noproxy.is_none());
+        assert!(!cli.system_proxy);
+    }
+
+    #[test]
+    fn proxy_user_flag() {
+        let cli = parse(&[
+            "test",
+            "-x",
+            "http://proxy:8080",
+            "--proxy-user",
+            "admin:secret",
+            "http://example.com",
+        ]);
+        assert_eq!(cli.proxy_user.as_deref(), Some("admin:secret"));
+    }
+
+    #[test]
+    fn noproxy_flag() {
+        let cli = parse(&[
+            "test",
+            "--noproxy",
+            "localhost,127.0.0.1,.internal",
+            "http://example.com",
+        ]);
+        assert_eq!(
+            cli.noproxy.as_deref(),
+            Some("localhost,127.0.0.1,.internal")
+        );
+    }
+
+    #[test]
+    fn system_proxy_flag() {
+        let cli = parse(&["test", "--system-proxy", "http://example.com"]);
+        assert!(cli.system_proxy);
+    }
+
+    #[test]
+    fn proxy_user_without_proxy_does_not_crash() {
+        let cli = parse(&["test", "--proxy-user", "u:p", "http://example.com"]);
+        assert!(cli.proxy.is_empty());
+        assert_eq!(cli.proxy_user.as_deref(), Some("u:p"));
+    }
+
+    // ── to_client proxy tests ──
+
+    use aioduct::observer::RequestObserver;
+
+    struct NoopObserver;
+    impl RequestObserver for NoopObserver {
+        fn on_event(&self, _event: &aioduct::observer::RequestEvent) {}
+        fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
+    }
+
+    #[test]
+    fn to_client_single_proxy() {
+        let cli = parse(&["test", "-x", "http://proxy:8080", "http://example.com"]);
+        let client = cli.to_client(Some(NoopObserver));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn to_client_proxy_chain_two_hops() {
+        let cli = parse(&[
+            "test",
+            "-x",
+            "http://p1:8080",
+            "-x",
+            "socks5://p2:1080",
+            "http://example.com",
+        ]);
+        let client = cli.to_client(Some(NoopObserver));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn to_client_proxy_with_user() {
+        let cli = parse(&[
+            "test",
+            "-x",
+            "http://proxy:8080",
+            "--proxy-user",
+            "admin:secret",
+            "http://example.com",
+        ]);
+        let client = cli.to_client(Some(NoopObserver));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn to_client_proxy_with_noproxy() {
+        let cli = parse(&[
+            "test",
+            "-x",
+            "http://proxy:8080",
+            "--noproxy",
+            "localhost,127.0.0.1",
+            "http://example.com",
+        ]);
+        let client = cli.to_client(Some(NoopObserver));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn to_client_system_proxy() {
+        let cli = parse(&["test", "--system-proxy", "http://example.com"]);
+        let client = cli.to_client(Some(NoopObserver));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn to_client_system_proxy_with_noproxy() {
+        let cli = parse(&[
+            "test",
+            "--system-proxy",
+            "--noproxy",
+            "localhost",
+            "http://example.com",
+        ]);
+        let client = cli.to_client(Some(NoopObserver));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn to_client_explicit_proxy_overrides_system() {
+        let cli = parse(&[
+            "test",
+            "-x",
+            "http://explicit:8080",
+            "--system-proxy",
+            "http://example.com",
+        ]);
+        // -x takes priority over --system-proxy, so proxy should have 1 entry
+        assert_eq!(cli.proxy.len(), 1);
+        let client = cli.to_client(Some(NoopObserver));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn to_client_proxy_user_applied_to_all_chain_hops() {
+        let cli = parse(&[
+            "test",
+            "-x",
+            "http://p1:8080",
+            "-x",
+            "socks5://p2:1080",
+            "--proxy-user",
+            "user:pass",
+            "http://example.com",
+        ]);
+        let client = cli.to_client(Some(NoopObserver));
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn to_client_no_observer() {
+        let cli = parse(&["test", "http://example.com"]);
+        let client = cli.to_client(None::<NoopObserver>);
+        assert!(client.is_ok());
     }
 }

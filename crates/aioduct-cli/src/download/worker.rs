@@ -12,7 +12,10 @@ use super::request_config::ExtraRequestConfig;
 use super::scheduler::GlobalScheduler;
 use super::segment_man::SegmentMan;
 use super::speed_monitor::SpeedMonitor;
-use super::tui_state::{SharedEventLog, SharedWorkerStates, WorkerStatus, push_event};
+use super::tui_state::{
+    DownloadEvent, EventCategory, EventSeverity, SharedEventLog, SharedWorkerStates, WorkerStatus,
+    push_typed_event,
+};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const STALL_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -69,10 +72,13 @@ async fn worker_loop(
             let mut states = ctx.worker_states.lock().unwrap();
             if let Some(ws) = states.get_mut(worker_id) {
                 ws.current_piece = Some(assignment.index);
+                ws.assignment_started_at = Some(Instant::now());
+                ws.status_changed_at = Instant::now();
                 ws.piece_length = assignment.length;
                 ws.piece_downloaded.store(0, Ordering::Relaxed);
                 ws.status = WorkerStatus::Downloading;
                 ws.retries = 0;
+                ws.last_error = None;
                 Arc::clone(&ws.piece_downloaded)
             } else {
                 Arc::new(std::sync::atomic::AtomicU64::new(0))
@@ -80,9 +86,15 @@ async fn worker_loop(
         };
 
         let piece_cancel = if ctx.segment_man.is_endgame() {
-            push_event(
+            push_typed_event(
                 &ctx.events,
-                format!("W{worker_id}: endgame piece #{}", assignment.index),
+                DownloadEvent::new(
+                    EventSeverity::Info,
+                    EventCategory::Assignment,
+                    format!("endgame piece #{}", assignment.index),
+                )
+                .worker(worker_id)
+                .piece(assignment.index),
             );
             ctx.segment_man.register_endgame_worker(assignment.index)
         } else {
@@ -132,13 +144,15 @@ async fn worker_loop(
                         bytes = data.len(),
                         "piece complete"
                     );
-                    push_event(
+                    push_typed_event(
                         &ctx.events,
-                        format!(
-                            "W{worker_id}: piece #{} complete ({} bytes)",
-                            assignment.index,
-                            data.len()
-                        ),
+                        DownloadEvent::new(
+                            EventSeverity::Info,
+                            EventCategory::Piece,
+                            format!("complete ({} bytes)", data.len()),
+                        )
+                        .worker(worker_id)
+                        .piece(assignment.index),
                     );
                     break;
                 }
@@ -157,6 +171,9 @@ async fn worker_loop(
                 }
                 Err(e) => {
                     retries += 1;
+                    let error_msg = super::tui_state::sanitize_for_display(&e.to_string());
+                    ctx.segment_man
+                        .record_piece_retry(assignment.index, error_msg.clone());
                     warn!(
                         worker_id,
                         piece = assignment.index,
@@ -165,30 +182,39 @@ async fn worker_loop(
                         error = %e,
                         "piece download failed, retrying"
                     );
-                    push_event(
+                    push_typed_event(
                         &ctx.events,
-                        format!(
-                            "W{worker_id}: piece #{} retry {}/{} — {}",
-                            assignment.index, retries, ctx.max_retries, e
-                        ),
+                        DownloadEvent::new(
+                            EventSeverity::Retry,
+                            EventCategory::Retry,
+                            format!("retry {retries}/{} - {error_msg}", ctx.max_retries),
+                        )
+                        .worker(worker_id)
+                        .piece(assignment.index),
                     );
 
                     {
                         let mut states = ctx.worker_states.lock().unwrap();
                         if let Some(ws) = states.get_mut(worker_id) {
                             ws.status = WorkerStatus::Retrying;
+                            ws.status_changed_at = Instant::now();
                             ws.retries = retries;
+                            ws.last_error = Some(error_msg.clone());
                         }
                     }
 
                     if retries >= ctx.max_retries {
-                        ctx.segment_man.fail_piece(assignment.index);
-                        push_event(
+                        ctx.segment_man
+                            .mark_piece_failed(assignment.index, error_msg.clone());
+                        push_typed_event(
                             &ctx.events,
-                            format!(
-                                "W{worker_id}: piece #{} FAILED after {} attempts",
-                                assignment.index, ctx.max_retries
-                            ),
+                            DownloadEvent::new(
+                                EventSeverity::Error,
+                                EventCategory::Failure,
+                                format!("failed after {} attempts - {error_msg}", ctx.max_retries),
+                            )
+                            .worker(worker_id)
+                            .piece(assignment.index),
                         );
                         update_worker_status(&ctx.worker_states, worker_id, WorkerStatus::Done);
                         return Err(e);
@@ -199,6 +225,7 @@ async fn worker_loop(
                         let mut states = ctx.worker_states.lock().unwrap();
                         if let Some(ws) = states.get_mut(worker_id) {
                             ws.status = WorkerStatus::Downloading;
+                            ws.status_changed_at = Instant::now();
                         }
                     }
                 }
@@ -226,7 +253,9 @@ fn update_worker_status(
     let mut states = worker_states.lock().unwrap();
     if let Some(ws) = states.get_mut(worker_id) {
         ws.status = status;
+        ws.status_changed_at = Instant::now();
         ws.current_piece = None;
+        ws.assignment_started_at = None;
     }
 }
 
@@ -355,12 +384,15 @@ async fn pool_worker_loop(ctx: &PoolWorkerContext, worker_id: usize) -> Result<(
             let mut states = ctx.worker_states.lock().unwrap();
             if let Some(ws) = states.get_mut(worker_id) {
                 ws.file_id = Some(assignment.file_id);
-                ws.file_name = assignment.url.rsplit('/').next().unwrap_or("").to_string();
+                ws.file_name = assignment.file_name.clone();
                 ws.current_piece = Some(assignment.piece.index);
+                ws.assignment_started_at = Some(Instant::now());
+                ws.status_changed_at = Instant::now();
                 ws.piece_length = assignment.piece.length;
                 ws.piece_downloaded.store(0, Ordering::Relaxed);
                 ws.status = WorkerStatus::Downloading;
                 ws.retries = 0;
+                ws.last_error = None;
                 Arc::clone(&ws.piece_downloaded)
             } else {
                 Arc::new(std::sync::atomic::AtomicU64::new(0))
@@ -398,14 +430,16 @@ async fn pool_worker_loop(ctx: &PoolWorkerContext, worker_id: usize) -> Result<(
                         bytes = data.len(),
                         "pool piece complete"
                     );
-                    push_event(
+                    push_typed_event(
                         &ctx.events,
-                        format!(
-                            "W{worker_id}: file#{} piece #{} complete ({} bytes)",
-                            assignment.file_id,
-                            assignment.piece.index,
-                            data.len()
-                        ),
+                        DownloadEvent::new(
+                            EventSeverity::Info,
+                            EventCategory::Piece,
+                            format!("complete ({} bytes)", data.len()),
+                        )
+                        .file(assignment.file_id, assignment.file_name.clone())
+                        .worker(worker_id)
+                        .piece(assignment.piece.index),
                     );
                     break;
                 }
@@ -417,6 +451,12 @@ async fn pool_worker_loop(ctx: &PoolWorkerContext, worker_id: usize) -> Result<(
                 }
                 Err(e) => {
                     retries += 1;
+                    let error_msg = super::tui_state::sanitize_for_display(&e.to_string());
+                    ctx.scheduler.record_piece_retry(
+                        assignment.file_id,
+                        assignment.piece.index,
+                        error_msg.clone(),
+                    );
                     warn!(
                         worker_id,
                         file_id = assignment.file_id,
@@ -426,31 +466,44 @@ async fn pool_worker_loop(ctx: &PoolWorkerContext, worker_id: usize) -> Result<(
                         error = %e,
                         "pool piece download failed, retrying"
                     );
-                    push_event(
+                    push_typed_event(
                         &ctx.events,
-                        format!(
-                            "W{worker_id}: file#{} piece #{} retry {}/{} — {}",
-                            assignment.file_id, assignment.piece.index, retries, ctx.max_retries, e
-                        ),
+                        DownloadEvent::new(
+                            EventSeverity::Retry,
+                            EventCategory::Retry,
+                            format!("retry {retries}/{} - {error_msg}", ctx.max_retries),
+                        )
+                        .file(assignment.file_id, assignment.file_name.clone())
+                        .worker(worker_id)
+                        .piece(assignment.piece.index),
                     );
 
                     {
                         let mut states = ctx.worker_states.lock().unwrap();
                         if let Some(ws) = states.get_mut(worker_id) {
                             ws.status = WorkerStatus::Retrying;
+                            ws.status_changed_at = Instant::now();
                             ws.retries = retries;
+                            ws.last_error = Some(error_msg.clone());
                         }
                     }
 
                     if retries >= ctx.max_retries {
-                        ctx.scheduler
-                            .fail_piece(assignment.file_id, assignment.piece.index);
-                        push_event(
+                        ctx.scheduler.mark_piece_failed(
+                            assignment.file_id,
+                            assignment.piece.index,
+                            error_msg.clone(),
+                        );
+                        push_typed_event(
                             &ctx.events,
-                            format!(
-                                "W{worker_id}: file#{} piece #{} FAILED after {} attempts",
-                                assignment.file_id, assignment.piece.index, ctx.max_retries
-                            ),
+                            DownloadEvent::new(
+                                EventSeverity::Error,
+                                EventCategory::Failure,
+                                format!("failed after {} attempts - {error_msg}", ctx.max_retries),
+                            )
+                            .file(assignment.file_id, assignment.file_name.clone())
+                            .worker(worker_id)
+                            .piece(assignment.piece.index),
                         );
                         break;
                     }
@@ -460,6 +513,7 @@ async fn pool_worker_loop(ctx: &PoolWorkerContext, worker_id: usize) -> Result<(
                         let mut states = ctx.worker_states.lock().unwrap();
                         if let Some(ws) = states.get_mut(worker_id) {
                             ws.status = WorkerStatus::Downloading;
+                            ws.status_changed_at = Instant::now();
                         }
                     }
                 }

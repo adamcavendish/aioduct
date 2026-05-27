@@ -8,6 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use super::checksum::{self, ChecksumSpec, SharedChecksumStatus};
 use super::cli::Cli;
 use super::control_file::ControlFile;
 use super::disk_writer::DiskWriter;
@@ -15,7 +16,7 @@ use super::file_entry::{FileEntry, FileId};
 use super::filename;
 use super::multi_file_tui::MultiFileTui;
 use super::piece::storage::PieceStorage;
-use super::piece_grid::PieceGrid;
+use super::piece_grid::{PieceGrid, PieceGridTarget};
 use super::progress::DownloadResult;
 use super::progress::ProgressHandle;
 use super::request_config::ExtraRequestConfig;
@@ -30,6 +31,7 @@ pub struct DownloadEngine {
     client: TokioClient,
     cli: Arc<Cli>,
     extra: Arc<ExtraRequestConfig>,
+    checksum: Option<ChecksumSpec>,
 }
 
 pub struct DownloadTask {
@@ -46,7 +48,19 @@ impl DownloadEngine {
         &self.client
     }
 
-    pub fn new(cli: Arc<Cli>) -> Self {
+    pub fn has_checksum(&self) -> bool {
+        self.checksum.is_some()
+    }
+
+    pub async fn verify_existing_output(&self, output: &std::path::Path) -> DownloadResult {
+        let total_size = std::fs::metadata(output)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        self.verify_output_path(output, total_size, None, None, None)
+            .await
+    }
+
+    pub fn new(cli: Arc<Cli>, checksum: Option<ChecksumSpec>) -> Self {
         let mut builder = TokioClient::builder()
             .timeout(cli.timeout_duration())
             .connect_timeout(cli.connect_timeout_duration());
@@ -73,17 +87,19 @@ impl DownloadEngine {
         }
 
         if let Some(ref proxy_uri) = cli.all_proxy
-            && let Ok(proxy) = aioduct::ProxyConfig::http(proxy_uri)
-                .or_else(|_| aioduct::ProxyConfig::https(proxy_uri))
-                .or_else(|_| aioduct::ProxyConfig::socks5(proxy_uri))
-                .or_else(|_| aioduct::ProxyConfig::socks5h(proxy_uri))
+            && let Some(proxy) = crate::util::parse_proxy_url(proxy_uri)
         {
             builder = builder.proxy(proxy);
         }
 
         let extra = Arc::new(ExtraRequestConfig::from_cli(&cli));
         let client = builder.build().unwrap();
-        Self { client, cli, extra }
+        Self {
+            client,
+            cli,
+            extra,
+            checksum,
+        }
     }
 
     pub async fn probe(
@@ -154,15 +170,15 @@ impl DownloadEngine {
         };
 
         match result {
-            Ok(size) => DownloadResult {
-                output: task.output.clone(),
-                total_size: size,
-                error: None,
-            },
+            Ok(size) => {
+                self.verify_completed_download(task, size, None, None, None)
+                    .await
+            }
             Err(e) => DownloadResult {
                 output: task.output.clone(),
                 total_size: 0,
                 error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
+                checksum: None,
             },
         }
     }
@@ -186,7 +202,8 @@ impl DownloadEngine {
                 let piece_length =
                     compute_piece_length(total_size, self.cli.split as u32, self.cli.piece_size);
                 let control_path = ControlFile::control_path(&task.output);
-                let (storage, created_at) = resume_or_new_storage(
+                let checksum_status = checksum::shared_status(self.checksum.as_ref());
+                let (storage, created_at, resume_skipped_pieces) = resume_or_new_storage(
                     task,
                     &control_path,
                     total_size,
@@ -196,12 +213,19 @@ impl DownloadEngine {
                 );
 
                 if storage.all_complete() {
-                    results[idx] = Some(DownloadResult {
-                        output: task.output.clone(),
-                        total_size,
-                        error: None,
-                    });
-                    let _ = std::fs::remove_file(&control_path);
+                    let result = self
+                        .verify_completed_download(
+                            task,
+                            total_size,
+                            Some(&checksum_status),
+                            Some(&events),
+                            Some(idx as FileId),
+                        )
+                        .await;
+                    if result.error.is_none() {
+                        let _ = std::fs::remove_file(&control_path);
+                    }
+                    results[idx] = Some(result);
                     continue;
                 }
 
@@ -212,6 +236,7 @@ impl DownloadEngine {
                         output: task.output.clone(),
                         total_size: 0,
                         error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
+                        checksum: None,
                     });
                     continue;
                 }
@@ -223,6 +248,7 @@ impl DownloadEngine {
                             output: task.output.clone(),
                             total_size: 0,
                             error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
+                            checksum: None,
                         });
                         continue;
                     }
@@ -248,6 +274,11 @@ impl DownloadEngine {
                     disk_writer,
                     control_path,
                     supports_range: true,
+                    etag: task.etag.clone(),
+                    last_modified: task.last_modified.clone(),
+                    created_at: created_at.clone(),
+                    resume_skipped_pieces,
+                    checksum_status,
                 };
 
                 scheduler.add_file(entry);
@@ -271,6 +302,7 @@ impl DownloadEngine {
                                     error: Some(super::tui_state::sanitize_for_display(
                                         &e.to_string(),
                                     )),
+                                    checksum: None,
                                 };
                             }
                         };
@@ -287,6 +319,7 @@ impl DownloadEngine {
                                             error: Some(super::tui_state::sanitize_for_display(
                                                 &e.to_string(),
                                             )),
+                                            checksum: None,
                                         };
                                     }
                                 };
@@ -304,6 +337,7 @@ impl DownloadEngine {
                                                             &e.to_string(),
                                                         ),
                                                     ),
+                                                    checksum: None,
                                                 };
                                             }
                                             downloaded += bytes.len() as u64;
@@ -317,21 +351,21 @@ impl DownloadEngine {
                                                         &e.to_string(),
                                                     ),
                                                 ),
+                                                checksum: None,
                                             };
                                         }
                                     }
                                 }
                                 let _ = file.flush().await;
-                                DownloadResult {
-                                    output,
-                                    total_size: downloaded,
-                                    error: None,
-                                }
+                                engine
+                                    .verify_output_path(&output, downloaded, None, None, None)
+                                    .await
                             }
                             Err(e) => DownloadResult {
                                 output,
                                 total_size: 0,
                                 error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
+                                checksum: None,
                             },
                         }
                     }),
@@ -349,6 +383,7 @@ impl DownloadEngine {
                             output: tasks[idx].output.clone(),
                             total_size: 0,
                             error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
+                            checksum: None,
                         });
                     }
                 }
@@ -461,6 +496,7 @@ impl DownloadEngine {
                 .cloned();
             if let Some(snap) = snap
                 && snap.remaining_pieces == 0
+                && self.checksum.is_none()
             {
                 let _ = std::fs::remove_file(&control_path);
             }
@@ -477,11 +513,31 @@ impl DownloadEngine {
                 } else {
                     None
                 };
-                results[idx] = Some(DownloadResult {
-                    output: task.output.clone(),
-                    total_size: snap.total_size,
-                    error,
-                });
+                results[idx] = if error.is_some() {
+                    Some(DownloadResult {
+                        output: task.output.clone(),
+                        total_size: snap.total_size,
+                        error,
+                        checksum: None,
+                    })
+                } else {
+                    Some(
+                        self.verify_completed_download(
+                            task,
+                            snap.total_size,
+                            None,
+                            Some(&events),
+                            Some(*file_id),
+                        )
+                        .await,
+                    )
+                };
+                if let Some(result) = &results[idx]
+                    && result.error.is_none()
+                {
+                    let control_path = ControlFile::control_path(&task.output);
+                    let _ = std::fs::remove_file(&control_path);
+                }
             }
         }
 
@@ -494,12 +550,123 @@ impl DownloadEngine {
                         output: tasks[idx].output.clone(),
                         total_size: 0,
                         error: Some(super::tui_state::sanitize_for_display(&e.to_string())),
+                        checksum: None,
                     });
                 }
             }
         }
 
         results.into_iter().flatten().collect()
+    }
+
+    async fn verify_completed_download(
+        &self,
+        task: &DownloadTask,
+        total_size: u64,
+        checksum_status: Option<&SharedChecksumStatus>,
+        events: Option<&tui_state::SharedEventLog>,
+        file_id: Option<FileId>,
+    ) -> DownloadResult {
+        self.verify_output_path(&task.output, total_size, checksum_status, events, file_id)
+            .await
+    }
+
+    async fn verify_output_path(
+        &self,
+        output: &std::path::Path,
+        total_size: u64,
+        checksum_status: Option<&SharedChecksumStatus>,
+        events: Option<&tui_state::SharedEventLog>,
+        file_id: Option<FileId>,
+    ) -> DownloadResult {
+        let Some(spec) = self.checksum.as_ref() else {
+            return DownloadResult {
+                output: output.to_path_buf(),
+                total_size,
+                error: None,
+                checksum: None,
+            };
+        };
+
+        let file_name = output
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        if let Some(status) = checksum_status {
+            checksum::set_status(status, format!("{} verifying", spec.algorithm_label()));
+        }
+        push_checksum_event(
+            events,
+            tui_state::EventSeverity::Info,
+            file_id,
+            &file_name,
+            format!("verifying {}", spec.algorithm_label()),
+        );
+
+        match checksum::verify_file(output, spec).await {
+            Ok(report) => {
+                let status = report.status_label();
+                if let Some(checksum_status) = checksum_status {
+                    checksum::set_status(checksum_status, status.clone());
+                }
+                push_checksum_event(
+                    events,
+                    tui_state::EventSeverity::Info,
+                    file_id,
+                    &file_name,
+                    status.clone(),
+                );
+                DownloadResult {
+                    output: output.to_path_buf(),
+                    total_size,
+                    error: None,
+                    checksum: Some(status),
+                }
+            }
+            Err(checksum::ChecksumError::Mismatch(report)) => {
+                let status = report.status_label();
+                let message = super::tui_state::sanitize_for_display(&report.summary());
+                if let Some(checksum_status) = checksum_status {
+                    checksum::set_status(checksum_status, status.clone());
+                }
+                push_checksum_event(
+                    events,
+                    tui_state::EventSeverity::Error,
+                    file_id,
+                    &file_name,
+                    message.clone(),
+                );
+                DownloadResult {
+                    output: output.to_path_buf(),
+                    total_size,
+                    error: Some(message),
+                    checksum: Some(status),
+                }
+            }
+            Err(e) => {
+                let message = super::tui_state::sanitize_for_display(&e.to_string());
+                if let Some(checksum_status) = checksum_status {
+                    checksum::set_status(
+                        checksum_status,
+                        format!("{} failed", spec.algorithm_label()),
+                    );
+                }
+                push_checksum_event(
+                    events,
+                    tui_state::EventSeverity::Error,
+                    file_id,
+                    &file_name,
+                    message.clone(),
+                );
+                DownloadResult {
+                    output: output.to_path_buf(),
+                    total_size,
+                    error: Some(message),
+                    checksum: None,
+                }
+            }
+        }
     }
 
     async fn download_single(
@@ -561,7 +728,7 @@ impl DownloadEngine {
             "starting segmented download"
         );
 
-        let (storage, created_at) = resume_or_new_storage(
+        let (storage, created_at, _resume_skipped_pieces) = resume_or_new_storage(
             task,
             &control_path,
             total_size,
@@ -572,7 +739,9 @@ impl DownloadEngine {
 
         if storage.all_complete() {
             progress.set_downloaded(total_size);
-            let _ = std::fs::remove_file(&control_path);
+            if self.checksum.is_none() {
+                let _ = std::fs::remove_file(&control_path);
+            }
             return Ok(total_size);
         }
 
@@ -595,16 +764,31 @@ impl DownloadEngine {
 
         let worker_states = tui_state::new_worker_states(num_workers);
         let events = tui_state::new_event_log();
+        let checksum_status = checksum::shared_status(self.checksum.as_ref());
 
         let piece_grid = if !self.cli.plain {
+            let filename = task
+                .output
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             Some(PieceGrid::start(
                 Arc::clone(&segment_man),
                 total_size,
-                task.output
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
+                PieceGridTarget {
+                    url: task.url.clone(),
+                    output: task.output.clone(),
+                    filename,
+                    control_path: control_path.clone(),
+                    supports_range: task.supports_range,
+                    etag: task.etag.clone(),
+                    last_modified: task.last_modified.clone(),
+                    created_at: created_at.clone(),
+                    resume_skipped_pieces: _resume_skipped_pieces,
+                    allocation: "preallocated",
+                    checksum_status: Arc::clone(&checksum_status),
+                },
                 num_workers,
                 Arc::clone(&worker_states),
                 Arc::clone(&events),
@@ -730,6 +914,24 @@ impl DownloadEngine {
     }
 }
 
+fn push_checksum_event(
+    events: Option<&tui_state::SharedEventLog>,
+    severity: tui_state::EventSeverity,
+    file_id: Option<FileId>,
+    file_name: &str,
+    message: String,
+) {
+    let Some(events) = events else {
+        return;
+    };
+    let mut event =
+        tui_state::DownloadEvent::new(severity, tui_state::EventCategory::Checksum, message);
+    if let Some(file_id) = file_id {
+        event = event.file(file_id, file_name.to_string());
+    }
+    tui_state::push_typed_event(events, event);
+}
+
 fn now_string() -> String {
     use std::time::SystemTime;
     let d = SystemTime::now()
@@ -745,9 +947,9 @@ fn resume_or_new_storage(
     piece_length: u32,
     cli: &Cli,
     progress: &ProgressHandle,
-) -> (PieceStorage, String) {
+) -> (PieceStorage, String, u32) {
     if cli.no_resume {
-        return (PieceStorage::new(total_size, piece_length), now_string());
+        return (PieceStorage::new(total_size, piece_length), now_string(), 0);
     }
 
     match ControlFile::load(control_path) {
@@ -758,19 +960,19 @@ fn resume_or_new_storage(
             };
             if !etag_matches {
                 warn!("etag mismatch, starting fresh");
-                return (PieceStorage::new(total_size, piece_length), now_string());
+                return (PieceStorage::new(total_size, piece_length), now_string(), 0);
             }
             if let Some(storage) = cf.to_storage() {
                 let completed = storage.completed_count();
                 let already = completed as u64 * piece_length as u64;
                 progress.set_downloaded(already.min(total_size));
                 info!(completed, "resuming from control file");
-                (storage, cf.created_at)
+                (storage, cf.created_at, completed)
             } else {
-                (PieceStorage::new(total_size, piece_length), now_string())
+                (PieceStorage::new(total_size, piece_length), now_string(), 0)
             }
         }
-        _ => (PieceStorage::new(total_size, piece_length), now_string()),
+        _ => (PieceStorage::new(total_size, piece_length), now_string(), 0),
     }
 }
 
@@ -852,15 +1054,17 @@ fn save_control_file(
 }
 
 fn compute_piece_length(total_length: u64, split_count: u32, user_override: Option<u64>) -> u32 {
-    const MIN_PIECE: u32 = 256 * 1024;
-    const MAX_PIECE: u32 = 16 * 1024 * 1024;
+    const MIN_PIECE: u32 = 64 * 1024;
+    const MAX_PIECE: u32 = 4 * 1024 * 1024;
+    const TARGET_PIECES_PER_SPLIT: u32 = 4;
 
     if let Some(size) = user_override {
-        return (size as u32).max(MIN_PIECE);
+        return size.clamp(MIN_PIECE as u64, u32::MAX as u64) as u32;
     }
 
-    let raw = total_length / split_count.max(1) as u64;
-    (raw as u32).clamp(MIN_PIECE, MAX_PIECE)
+    let target_pieces = split_count.max(1).saturating_mul(TARGET_PIECES_PER_SPLIT) as u64;
+    let raw = total_length.div_ceil(target_pieces);
+    raw.clamp(MIN_PIECE as u64, MAX_PIECE as u64) as u32
 }
 
 #[cfg(test)]
@@ -869,12 +1073,13 @@ mod tests {
 
     #[test]
     fn compute_piece_length_basic() {
+        assert_eq!(compute_piece_length(100 * 1024 * 1024, 8, None), 3_276_800);
+        assert_eq!(compute_piece_length(10 * 1024 * 1024, 8, None), 327_680);
         assert_eq!(
-            compute_piece_length(100 * 1024 * 1024, 4, None),
-            16 * 1024 * 1024
+            compute_piece_length(1024 * 1024 * 1024, 8, None),
+            4 * 1024 * 1024
         );
-        assert_eq!(compute_piece_length(4 * 1024 * 1024, 4, None), 1024 * 1024);
-        assert_eq!(compute_piece_length(512 * 1024, 4, None), 256 * 1024);
+        assert_eq!(compute_piece_length(512 * 1024, 8, None), 64 * 1024);
     }
 
     #[test]
@@ -882,6 +1087,14 @@ mod tests {
         assert_eq!(
             compute_piece_length(100 * 1024 * 1024, 4, Some(2 * 1024 * 1024)),
             2 * 1024 * 1024
+        );
+        assert_eq!(
+            compute_piece_length(100 * 1024 * 1024, 4, Some(32 * 1024)),
+            64 * 1024
+        );
+        assert_eq!(
+            compute_piece_length(100 * 1024 * 1024, 4, Some(16 * 1024 * 1024)),
+            16 * 1024 * 1024
         );
     }
 }
