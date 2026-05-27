@@ -13,6 +13,7 @@ jobs:
     runs-on: "ubuntu-24.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
+      version: ${{ steps.version.outputs.version }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -20,6 +21,11 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "aioduct-cli") | .version')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Install dist
         shell: bash
         run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh"
@@ -30,7 +36,7 @@ jobs:
           path: ~/.cargo/bin/dist
       - id: plan
         run: |
-          dist plan --output-format=json > plan-dist-manifest.json
+          dist host --steps=create --tag=${{ steps.version.outputs.version }} --output-format=json > plan-dist-manifest.json
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
@@ -81,7 +87,7 @@ jobs:
           ${{ matrix.packages_install }}
       - name: Build artifacts
         run: |
-          dist build --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          dist build --tag=${{ needs.plan.outputs.version }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
       - id: cargo-dist
         name: Post-build
@@ -127,7 +133,7 @@ jobs:
       - id: cargo-dist
         shell: bash
         run: |
-          dist build --output-format=json "--artifacts=global" > dist-manifest.json
+          dist build --tag=${{ needs.plan.outputs.version }} --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
           jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
