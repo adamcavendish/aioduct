@@ -29,11 +29,11 @@ pub async fn run(cli: HttpArgs) -> ExitCode {
     let resp = match request::execute(&cli, &http_client).await {
         Ok(r) => r,
         Err(e) => {
-            if !cli.silent || cli.show_error {
-                eprintln!("aioduct http: {e}");
-            }
             if let Some(mut tui) = tui_handle {
-                tui.stop().await;
+                tui.send_fatal_error(e.to_string());
+                tui.wait().await;
+            } else if !cli.silent || cli.show_error {
+                eprintln!("aioduct http: {e}");
             }
             return exit_code_for_error(&e);
         }
@@ -45,11 +45,11 @@ pub async fn run(cli: HttpArgs) -> ExitCode {
     if let Some(ref path) = cli.dump_header
         && let Err(e) = output::dump_headers_file(info.version, info.status, &info.headers, path)
     {
-        if !cli.silent || cli.show_error {
-            eprintln!("aioduct http: {e}");
-        }
         if let Some(mut tui) = tui_handle {
-            tui.stop().await;
+            tui.send_fatal_error(e.to_string());
+            tui.wait().await;
+        } else if !cli.silent || cli.show_error {
+            eprintln!("aioduct http: {e}");
         }
         return ExitCode::from(23);
     }

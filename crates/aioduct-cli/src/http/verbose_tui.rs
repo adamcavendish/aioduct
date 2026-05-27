@@ -13,6 +13,7 @@ pub enum TuiMessage {
     ResponseHeaders(Vec<(String, String)>),
     BodyChunk(String),
     BodyDone,
+    FatalError(String),
     Quit,
 }
 use crossterm::ExecutableCommand;
@@ -26,6 +27,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use time::{OffsetDateTime, Time};
 use tokio::sync::mpsc;
 
 pub struct VerboseTui {
@@ -74,6 +76,12 @@ impl VerboseTui {
     pub fn send_body_done(&self) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(TuiMessage::BodyDone);
+        }
+    }
+
+    pub fn send_fatal_error(&self, error: String) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(TuiMessage::FatalError(error));
         }
     }
 
@@ -142,11 +150,13 @@ struct TuiState {
     protocol_label: String,
     remote_label: String,
     final_status_is_error: bool,
+    fatal_error: Option<String>,
     body_lines: Vec<String>,
     body_cap_bytes: usize,
     body_scroll: usize,
     request_header_scroll: usize,
     response_header_scroll: usize,
+    trailer_scroll: usize,
     event_scroll: usize,
     body_is_sse: bool,
     body_done: bool,
@@ -180,6 +190,7 @@ struct PhaseEntry {
 
 #[derive(Clone)]
 struct EventLine {
+    timestamp: String,
     text: String,
     color: Color,
 }
@@ -205,11 +216,13 @@ impl TuiState {
             protocol_label: String::new(),
             remote_label: String::new(),
             final_status_is_error: false,
+            fatal_error: None,
             body_lines: Vec::new(),
             body_cap_bytes: 0,
             body_scroll: 0,
             request_header_scroll: 0,
             response_header_scroll: 0,
+            trailer_scroll: 0,
             event_scroll: 0,
             body_is_sse: false,
             body_done: false,
@@ -527,8 +540,18 @@ impl TuiState {
             }
 
             RequestPhase::TrailersReceived { headers } => {
+                let trailers = redact_headers(headers);
+                let trailer_count = trailers.len();
+                let event_text = trailers_event_text(&trailers);
                 self.trailers_observable = true;
-                self.trailers = redact_headers(headers);
+                self.trailers = trailers;
+                self.log_event(event_text, Color::Cyan);
+                self.phases.push(PhaseEntry {
+                    label: format!("TRAILERS {trailer_count}"),
+                    duration_ms: 0.0,
+                    cumulative_ms: self.phase_cumulative_ms,
+                    color: Color::Cyan,
+                });
             }
         }
     }
@@ -538,6 +561,7 @@ impl TuiState {
             self.event_lines.pop_front();
         }
         self.event_lines.push_back(EventLine {
+            timestamp: event_timestamp(),
             text: sanitize_event_text(text.into()),
             color,
         });
@@ -597,6 +621,15 @@ impl TuiState {
         self.transfer_end_at = Some(Instant::now());
     }
 
+    fn apply_fatal_error(&mut self, error: String) {
+        self.fatal_error = Some(error.clone());
+        self.final_status_is_error = true;
+        self.status_label = "failed".into();
+        self.status_line = format!("FAILED: {error}");
+        self.done = true;
+        self.log_event(format!("request failed: {error}"), Color::Red);
+    }
+
     fn add_body_line(&mut self, line: String) {
         let line_bytes = line.len();
         self.body_lines.push(line);
@@ -614,6 +647,9 @@ impl TuiState {
         match self.active_page {
             2 if self.focus_index == 1 => {
                 self.response_header_scroll = self.response_header_scroll.saturating_add(lines)
+            }
+            2 if self.focus_index == 2 && self.headers_show_trailers() => {
+                self.trailer_scroll = self.trailer_scroll.saturating_add(lines)
             }
             2 => self.request_header_scroll = self.request_header_scroll.saturating_add(lines),
             4 => self.event_scroll = self.event_scroll.saturating_add(lines),
@@ -633,6 +669,9 @@ impl TuiState {
             2 if self.focus_index == 1 => {
                 self.response_header_scroll = self.response_header_scroll.saturating_sub(lines)
             }
+            2 if self.focus_index == 2 && self.headers_show_trailers() => {
+                self.trailer_scroll = self.trailer_scroll.saturating_sub(lines)
+            }
             2 => self.request_header_scroll = self.request_header_scroll.saturating_sub(lines),
             4 => self.event_scroll = self.event_scroll.saturating_sub(lines),
             1 => self.focus_index = self.focus_index.saturating_sub(lines),
@@ -646,6 +685,9 @@ impl TuiState {
     fn scroll_to_bottom(&mut self) {
         match self.active_page {
             2 if self.focus_index == 1 => self.response_header_scroll = usize::MAX,
+            2 if self.focus_index == 2 && self.headers_show_trailers() => {
+                self.trailer_scroll = usize::MAX
+            }
             2 => self.request_header_scroll = usize::MAX,
             4 => self.event_scroll = usize::MAX,
             1 => self.focus_index = self.focus_count().saturating_sub(1),
@@ -659,6 +701,7 @@ impl TuiState {
     fn scroll_to_top(&mut self) {
         match self.active_page {
             2 if self.focus_index == 1 => self.response_header_scroll = 0,
+            2 if self.focus_index == 2 && self.headers_show_trailers() => self.trailer_scroll = 0,
             2 => self.request_header_scroll = 0,
             4 => self.event_scroll = 0,
             1 => self.focus_index = 0,
@@ -697,19 +740,13 @@ impl TuiState {
         match self.active_page {
             0 | 3 => 2,
             1 => self.phases.len().max(1),
-            2 if self.headers_show_trailers() => 3,
-            2 => 2,
+            2 => 3,
             _ => 1,
         }
     }
 
     fn headers_show_trailers(&self) -> bool {
-        self.trailers_observable
-            || !self.trailers.is_empty()
-            || self
-                .response_headers
-                .iter()
-                .any(|(name, _)| name.eq_ignore_ascii_case("trailer"))
+        true
     }
 
     fn toggle_body_autoscroll(&mut self) {
@@ -762,9 +799,20 @@ async fn run_tui_inner(
                         .map(|(_, v)| v.clone())
                         .unwrap_or_default();
                     state.response_headers = h;
+                    let declared = declared_trailer_names(&state);
+                    if !declared.is_empty() {
+                        state.log_event(
+                            format!(
+                                "trailers declared: {}",
+                                truncate_chars(&declared.join(", "), 96)
+                            ),
+                            Color::Yellow,
+                        );
+                    }
                 }
                 TuiMessage::BodyChunk(text) => state.apply_body_chunk(&text, tick_time),
                 TuiMessage::BodyDone => state.apply_body_done(),
+                TuiMessage::FatalError(error) => state.apply_fatal_error(error),
                 TuiMessage::Quit => {
                     force_quit = true;
                     break;
@@ -878,14 +926,18 @@ fn render(f: &mut Frame, state: &mut TuiState) {
 
     render_http_header(f, main_layout[0], state);
 
-    match state.active_page {
-        0 => render_overview_page(f, main_layout[1], state),
-        1 => render_trace_page(f, main_layout[1], state),
-        2 => render_headers_page(f, main_layout[1], state),
-        3 => render_body_page(f, main_layout[1], state),
-        4 => render_events_page(f, main_layout[1], state),
-        5 => render_summary_page(f, main_layout[1], state),
-        _ => {}
+    if let Some(error) = &state.fatal_error {
+        render_error_page(f, main_layout[1], error);
+    } else {
+        match state.active_page {
+            0 => render_overview_page(f, main_layout[1], state),
+            1 => render_trace_page(f, main_layout[1], state),
+            2 => render_headers_page(f, main_layout[1], state),
+            3 => render_body_page(f, main_layout[1], state),
+            4 => render_events_page(f, main_layout[1], state),
+            5 => render_summary_page(f, main_layout[1], state),
+            _ => {}
+        }
     }
 
     render_footer(f, main_layout[2], state);
@@ -1081,7 +1133,7 @@ fn render_facts_panel(f: &mut Frame, area: Rect, state: &TuiState) {
         lines.push(Line::raw(""));
         lines.push(Line::styled("Latest", Style::default().fg(Color::DarkGray)));
         lines.push(Line::styled(
-            last.text.clone(),
+            display_event_line(last),
             Style::default().fg(last.color),
         ));
     }
@@ -1353,12 +1405,7 @@ fn render_trace_totals_panel(f: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 fn render_headers_page(f: &mut Frame, area: Rect, state: &mut TuiState) {
-    let show_trailers = state.trailers_observable
-        || !state.trailers.is_empty()
-        || state
-            .response_headers
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("trailer"));
+    let show_trailers = state.headers_show_trailers();
     if area.width >= 120 && show_trailers {
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -1518,7 +1565,7 @@ fn render_headers_panel(
     f.render_widget(paragraph, area);
 }
 
-fn render_trailers_panel(f: &mut Frame, area: Rect, title: String, state: &TuiState) {
+fn render_trailers_panel(f: &mut Frame, area: Rect, title: String, state: &mut TuiState) {
     let mut lines: Vec<Line> = state
         .trailers
         .iter()
@@ -1531,17 +1578,20 @@ fn render_trailers_panel(f: &mut Frame, area: Rect, title: String, state: &TuiSt
         })
         .collect();
     if lines.is_empty() {
-        lines.push(Line::styled(
-            if state.trailers_observable {
-                "none received"
-            } else {
-                "not exposed by client yet"
-            },
-            Style::default().fg(Color::DarkGray),
-        ));
+        lines.extend(trailer_placeholder_lines(state));
     }
     let block = Block::default().borders(Borders::ALL).title(title);
-    f.render_widget(Paragraph::new(lines).block(block), area);
+    let max_scroll = lines
+        .len()
+        .saturating_sub(area.height.saturating_sub(2) as usize);
+    let scroll = state.trailer_scroll.min(max_scroll);
+    state.trailer_scroll = scroll;
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .scroll((scroll.min(u16::MAX as usize) as u16, 0)),
+        area,
+    );
 }
 
 fn render_body_page(f: &mut Frame, area: Rect, state: &mut TuiState) {
@@ -1580,7 +1630,7 @@ fn render_events_page(f: &mut Frame, area: Rect, state: &mut TuiState) {
         .into_iter()
         .skip(scroll)
         .take(visible)
-        .map(|line| Line::styled(line.text.clone(), Style::default().fg(line.color)))
+        .map(|line| Line::styled(display_event_line(line), Style::default().fg(line.color)))
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -1706,14 +1756,17 @@ fn render_summary_page(f: &mut Frame, area: Rect, state: &TuiState) {
     lines.push(Line::raw(""));
     lines.push(Line::styled("Trailers", Style::default().fg(Color::Cyan)));
     if state.trailers.is_empty() {
-        lines.push(Line::styled(
-            if state.trailers_observable {
-                "  none received"
-            } else {
-                "  not exposed by client yet"
-            },
-            Style::default().fg(Color::DarkGray),
-        ));
+        let color = if declared_trailer_names(state).is_empty() {
+            Color::DarkGray
+        } else {
+            Color::Yellow
+        };
+        for line in trailer_text_lines(state) {
+            lines.push(Line::styled(
+                format!("  {line}"),
+                Style::default().fg(color),
+            ));
+        }
     } else {
         for (name, value) in &state.trailers {
             lines.push(Line::raw(format!("  {name}: {value}")));
@@ -1721,6 +1774,27 @@ fn render_summary_page(f: &mut Frame, area: Rect, state: &TuiState) {
     }
 
     let block = Block::default().borders(Borders::ALL).title("Summary");
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn render_error_page(f: &mut Frame, area: Rect, error: &str) {
+    let lines = vec![
+        Line::styled(
+            "request failed",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "The request did not complete. Press q to close.",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Line::raw(""),
+        Line::styled(
+            truncate_chars(error, area.width.saturating_sub(4) as usize),
+            Style::default().fg(Color::Yellow),
+        ),
+    ];
+    let block = Block::default().borders(Borders::ALL).title("Error");
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -1818,6 +1892,8 @@ fn phase_note(label: &str) -> &'static str {
         "transport setup"
     } else if label.starts_with("DOWN") || label.starts_with("UP") {
         "body transfer"
+    } else if label.starts_with("TRAILERS") {
+        "after-body metadata"
     } else if label.starts_with("FAIL") {
         "terminal error"
     } else {
@@ -1825,13 +1901,91 @@ fn phase_note(label: &str) -> &'static str {
     }
 }
 
+fn format_event_timestamp(time: Time) -> String {
+    format!(
+        "{:02}:{:02}:{:02}.{:03}",
+        time.hour(),
+        time.minute(),
+        time.second(),
+        time.millisecond()
+    )
+}
+
+fn event_timestamp() -> String {
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    format_event_timestamp(now.time())
+}
+
+fn display_event_line(line: &EventLine) -> String {
+    format!("{} {}", line.timestamp, line.text)
+}
+
+fn declared_trailer_names(state: &TuiState) -> Vec<String> {
+    state
+        .response_headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("trailer"))
+        .flat_map(|(_, value)| value.split(','))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn trailers_event_text(trailers: &[(String, String)]) -> String {
+    if trailers.is_empty() {
+        return "trailers received: none".to_string();
+    }
+
+    let mut preview = trailers
+        .iter()
+        .take(2)
+        .map(|(name, value)| format!("{name}: {}", truncate_chars(value, 48)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if trailers.len() > 2 {
+        preview.push_str(&format!(" (+{} more)", trailers.len() - 2));
+    }
+    format!("trailers received: {preview}")
+}
+
+fn trailer_placeholder_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let declared = declared_trailer_names(state);
+    let color = if state.trailers_observable || state.body_done || declared.is_empty() {
+        Color::DarkGray
+    } else {
+        Color::Yellow
+    };
+    trailer_text_lines(state)
+        .into_iter()
+        .map(|line| Line::styled(line, Style::default().fg(color)))
+        .collect()
+}
+
+fn trailer_text_lines(state: &TuiState) -> Vec<String> {
+    if state.trailers_observable || state.body_done {
+        return vec!["none received".to_string()];
+    }
+    let declared = declared_trailer_names(state);
+    if declared.is_empty() {
+        vec!["no trailers declared".to_string()]
+    } else {
+        vec![
+            "declared, waiting after body".to_string(),
+            format!("expected: {}", declared.join(", ")),
+        ]
+    }
+}
+
 fn trailer_summary(state: &TuiState) -> String {
     if !state.trailers.is_empty() {
         format!("{} received", state.trailers.len())
-    } else if state.trailers_observable {
+    } else if state.trailers_observable || state.body_done {
         "none received".to_string()
+    } else if !declared_trailer_names(state).is_empty() {
+        "declared, waiting".to_string()
     } else {
-        "not exposed".to_string()
+        "no trailers declared".to_string()
     }
 }
 
@@ -1890,13 +2044,11 @@ fn http_focus_label(state: &TuiState) -> &'static str {
                 "timeline"
             }
         }
-        2 => {
-            if state.focus_index == 1 {
-                "response"
-            } else {
-                "request"
-            }
-        }
+        2 => match state.focus_index {
+            1 => "response",
+            2 if state.headers_show_trailers() => "trailers",
+            _ => "request",
+        },
         3 => {
             if state.focus_index == 1 {
                 "metrics"
@@ -1970,11 +2122,7 @@ fn visible_page_text(state: &TuiState) -> String {
             lines.push(String::new());
             lines.push("[trailers]".to_string());
             if state.trailers.is_empty() {
-                lines.push(if state.trailers_observable {
-                    "none received".to_string()
-                } else {
-                    "not exposed by client yet".to_string()
-                });
+                lines.extend(trailer_text_lines(state));
             } else {
                 lines.extend(headers_as_text(&state.trailers, &state.filter_query));
             }
@@ -1991,7 +2139,7 @@ fn visible_page_text(state: &TuiState) -> String {
             .event_lines
             .iter()
             .filter(|line| text_matches_filter(&line.text, &state.filter_query))
-            .map(|line| line.text.clone())
+            .map(display_event_line)
             .collect::<Vec<_>>()
             .join("\n"),
         5 => {
@@ -2284,6 +2432,88 @@ mod tests {
             ],
         }));
         assert_eq!(state.request_headers.len(), 2);
+    }
+
+    #[test]
+    fn trailers_received_updates_headers_trace_and_events() {
+        let mut state = TuiState::new();
+        state.apply(&make_event(RequestPhase::TrailersReceived {
+            headers: vec![
+                ("grpc-status".into(), "0".into()),
+                ("server-timing".into(), "app;dur=12".into()),
+            ],
+        }));
+
+        assert!(state.trailers_observable);
+        assert_eq!(state.trailers.len(), 2);
+        assert_eq!(trailer_summary(&state), "2 received");
+        assert!(
+            state
+                .event_lines
+                .back()
+                .unwrap()
+                .text
+                .contains("trailers received")
+        );
+        assert_eq!(state.phases.last().unwrap().label, "TRAILERS 2");
+    }
+
+    #[test]
+    fn empty_trailers_are_observable_and_report_none() {
+        let mut state = TuiState::new();
+        state.apply(&make_event(RequestPhase::TrailersReceived {
+            headers: vec![],
+        }));
+
+        assert!(state.trailers_observable);
+        assert!(state.trailers.is_empty());
+        assert_eq!(trailer_summary(&state), "none received");
+        assert_eq!(
+            state.event_lines.back().unwrap().text,
+            "trailers received: none"
+        );
+    }
+
+    #[test]
+    fn declared_trailers_show_waiting_state() {
+        let mut state = TuiState::new();
+        state.active_page = 2;
+        state.response_headers = vec![
+            ("Trailer".into(), "grpc-status, grpc-message".into()),
+            ("trailer".into(), "server-timing".into()),
+        ];
+
+        assert_eq!(
+            declared_trailer_names(&state),
+            vec!["grpc-status", "grpc-message", "server-timing"]
+        );
+        assert!(state.headers_show_trailers());
+        assert_eq!(state.focus_count(), 3);
+        assert_eq!(trailer_summary(&state), "declared, waiting");
+        assert_eq!(
+            trailer_text_lines(&state),
+            vec![
+                "declared, waiting after body",
+                "expected: grpc-status, grpc-message, server-timing"
+            ]
+        );
+    }
+
+    #[test]
+    fn trailer_focus_has_dedicated_label() {
+        let mut state = TuiState::new();
+        state.active_page = 2;
+        state.focus_index = 2;
+        state.response_headers = vec![("Trailer".into(), "grpc-status".into())];
+
+        assert_eq!(http_focus_label(&state), "trailers");
+    }
+
+    #[test]
+    fn event_timestamp_uses_wall_clock_shape() {
+        let time = Time::from_hms_milli(8, 14, 12, 531).unwrap();
+
+        assert_eq!(format_event_timestamp(time), "08:14:12.531");
     }
 
     #[test]
