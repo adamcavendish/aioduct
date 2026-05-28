@@ -160,8 +160,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         let _ = (&stream, &proxy, &target_authority);
         #[cfg(all(feature = "rustls", feature = "compio"))]
         {
-            let stream =
-                do_connect_handshake_local(stream, proxy, target_authority.as_str()).await?;
+            let port = target_authority.port_u16().unwrap_or(443);
+            let target = format!("{}:{port}", target_authority.host());
+            let stream = do_connect_handshake_local(stream, proxy, &target).await?;
             let host = target_authority.host();
             use crate::tls::TlsConnectLocal;
             use std::time::Instant;
@@ -362,9 +363,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     )
                     .await
                     .map_err(|e| Error::Tls(Box::new(e)))?;
-                let stream =
-                    do_connect_handshake_local(tls_stream, first, second_authority.as_str())
-                        .await?;
+                let second_target = format!(
+                    "{}:{}",
+                    second_authority.host(),
+                    second_authority.port_u16().unwrap_or(second.default_port())
+                );
+                let stream = do_connect_handshake_local(tls_stream, first, &second_target).await?;
                 if is_https {
                     self.connect_tunnel_local(stream, second, target_authority)
                         .await
@@ -380,8 +384,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             }
         } else {
             // HTTP proxy: CONNECT through first to reach second
-            let stream =
-                do_connect_handshake_local(tcp_stream, first, second_authority.as_str()).await?;
+            let second_target = format!(
+                "{}:{}",
+                second_authority.host(),
+                second_authority.port_u16().unwrap_or(second.default_port())
+            );
+            let stream = do_connect_handshake_local(tcp_stream, first, &second_target).await?;
             self.connect_second_hop_local(stream, second, target_authority, is_https)
                 .await
         }
