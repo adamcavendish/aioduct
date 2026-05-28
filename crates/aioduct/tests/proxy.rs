@@ -622,9 +622,7 @@ async fn test_connect_tunnel_target_authority() {
 
 #[tokio::test]
 async fn test_connect_tunnel_default_port() {
-    // Verify CONNECT uses the authority as-is when no explicit port is given.
-    // Note: aioduct passes the raw URI authority to CONNECT (e.g. "hyper.rs.local"
-    // without appending ":443"). This is valid -- the proxy infers port 443 for HTTPS.
+    // When no explicit port is given, CONNECT should include :443 for HTTPS.
     let connect_target = Arc::new(std::sync::Mutex::new(String::new()));
     let connect_target_clone = connect_target.clone();
 
@@ -655,8 +653,8 @@ async fn test_connect_tunnel_default_port() {
 
     let target = connect_target.lock().unwrap().clone();
     assert_eq!(
-        target, "hyper.rs.local",
-        "CONNECT should use the raw authority from the URL"
+        target, "hyper.rs.local:443",
+        "CONNECT should include port 443 for HTTPS when not explicit in the URL"
     );
 }
 
