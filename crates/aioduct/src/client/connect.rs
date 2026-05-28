@@ -161,7 +161,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let _ = (&stream, &proxy, &target_authority);
         #[cfg(feature = "rustls")]
         {
-            let stream = do_connect_handshake(stream, proxy, target_authority.as_str()).await?;
+            let port = target_authority.port_u16().unwrap_or(443);
+            let target = format!("{}:{port}", target_authority.host());
+            let stream = do_connect_handshake(stream, proxy, &target).await?;
             let host = target_authority.host();
             use crate::tls::TlsConnect;
             use std::time::Instant;
@@ -346,8 +348,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 )
                 .await
                 .map_err(|e| Error::Tls(Box::new(e)))?;
-                let stream =
-                    do_connect_handshake(tls_stream, first, second_authority.as_str()).await?;
+                let second_target = format!(
+                    "{}:{}",
+                    second_authority.host(),
+                    second_authority.port_u16().unwrap_or(second.default_port())
+                );
+                let stream = do_connect_handshake(tls_stream, first, &second_target).await?;
                 if is_https {
                     self.connect_tunnel(stream, second, target_authority).await
                 } else {
@@ -362,7 +368,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         } else {
             // HTTP proxy: CONNECT through first to reach second
-            let stream = do_connect_handshake(tcp_stream, first, second_authority.as_str()).await?;
+            let second_target = format!(
+                "{}:{}",
+                second_authority.host(),
+                second_authority.port_u16().unwrap_or(second.default_port())
+            );
+            let stream = do_connect_handshake(tcp_stream, first, &second_target).await?;
             self.connect_second_hop_send(stream, second, target_authority, is_https)
                 .await
         }
@@ -1115,6 +1126,177 @@ mod tokio_tests {
         assert!(
             result.is_err(),
             "should fail because no TLS connector configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_defaults_port_443_when_authority_has_no_port() {
+        // When the URL has no explicit port (e.g. https://example.com/),
+        // the authority is "example.com" without ":443".
+        // connect_tunnel must add the port so CONNECT targets the right port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        let (captured_tx, mut captured_rx) = tokio::sync::oneshot::channel::<String>();
+
+        tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let req_str = String::from_utf8_lossy(&request).to_string();
+            let _ = captured_tx.send(req_str);
+
+            server_io
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            drop(server_io);
+        });
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080").unwrap();
+        // Authority WITHOUT explicit port — connect_tunnel must add :443
+        let target_authority: http::uri::Authority = "target.example.com".parse().unwrap();
+
+        // TLS will fail (no TLS connector in make_engine), but the CONNECT
+        // handshake should succeed and the capture should show the target
+        // includes :443.
+        let _result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+
+        let captured = captured_rx.try_recv().unwrap();
+        assert!(
+            captured.contains("CONNECT target.example.com:443"),
+            "CONNECT target must include port 443 when authority lacks explicit port, got: {captured}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_defaults_port_443_for_ipv6_without_port() {
+        // IPv6 authorities like "[::1]" must still get ":443" appended.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        let (captured_tx, mut captured_rx) = tokio::sync::oneshot::channel::<String>();
+
+        tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let req_str = String::from_utf8_lossy(&request).to_string();
+            let _ = captured_tx.send(req_str);
+
+            server_io
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            drop(server_io);
+        });
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080").unwrap();
+        let target_authority: http::uri::Authority = "[::1]".parse().unwrap();
+
+        let _result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+
+        let captured = captured_rx.try_recv().unwrap();
+        assert!(
+            captured.contains("CONNECT [::1]:443"),
+            "IPv6 CONNECT target must include port 443, got: {captured}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_tunnel_preserves_explicit_port() {
+        // When the authority already has an explicit port, it must be kept.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        let (captured_tx, mut captured_rx) = tokio::sync::oneshot::channel::<String>();
+
+        tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let req_str = String::from_utf8_lossy(&request).to_string();
+            let _ = captured_tx.send(req_str);
+
+            server_io
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            drop(server_io);
+        });
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080").unwrap();
+        let target_authority: http::uri::Authority = "example.com:8443".parse().unwrap();
+
+        let _result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+
+        let captured = captured_rx.try_recv().unwrap();
+        assert!(
+            captured.contains("CONNECT example.com:8443"),
+            "CONNECT target must preserve explicit port 8443, got: {captured}"
         );
     }
 
