@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.4] - 2026-05-28
+
+### Fixed
+- HTTP CONNECT proxy: include `:443` port in CONNECT target when authority lacks explicit port, fixing TLS `InvalidContentType` errors with HTTPS upstreams through HTTP proxies
+- Remove `openssl-sys` from musl build dependency chain (`aioduct-bench` → `isahc` → `curl` and `reqwest` → `native-tls`)
+
+### Changed
+- Nightly CI: use `dist plan` instead of `dist host`, scope musl targets, switch to `ubuntu-24.04` runner
+
 ## [0.2.0-alpha.3] - 2026-05-27
 
 ### Added
