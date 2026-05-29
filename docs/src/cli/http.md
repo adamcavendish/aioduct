@@ -29,27 +29,49 @@ aioduct http -I https://example.com
 
 The `-v` flag activates verbose output showing the full request lifecycle.
 
-When stdout is a terminal, verbose mode launches a ratatui TUI with a phase timeline, request/response headers, and a status bar:
+When stdout is a terminal, verbose mode launches a ratatui TUI with a
+6-tab interface navigated via `Tab` / `Shift+Tab`:
 
-```
-┌─────────────────────────────┬──────────────────────────────────┐
-│  TIMELINE                   │  REQUEST HEADERS                 │
-│                             │  > host: api.example.com         │
-│  ● DNS  1.2.3.4    12.3ms  │  > content-type: application/json│
-│  ● TCP             23.1ms  │  > authorization: Bearer ***     │
-│  ● TLS             45.7ms  │                                  │
-│  ● REQ              1.8ms  ├──────────────────────────────────┤
-│  ● WAIT           187.2ms  │  BODY                            │
-│  ● RESP 200       270.1ms  │                                  │
-│                             │                                  │
-├─────────────────────────────┴──────────────────────────────────┤
-│  200 OK | HTTP/2 | 93.184.216.34 | 270ms                      │
-└────────────────────────────────────────────────────────────────┘
-```
+### Tabs
 
-Press `Tab` to toggle between request and response headers. Press `q` to quit.
+| Tab | Content |
+|-----|---------|
+| **Overview** | Phase timeline waterfall chart with per-phase durations |
+| **Trace** | DNS resolution, TCP connect, TLS handshake, request/response headers, timing |
+| **Headers** | Full request and response headers with filter |
+| **Body** | Response body preview (binary detection with hex dump fallback, SSE streaming) |
+| **Events** | Chronological event log of every phase transition, redirect, retry, and error |
+| **Summary** | Transfer metrics, redirect/retry history, trailers, timings |
 
-When stdout is not a terminal (piped), verbose output falls back to colored stderr text:
+### Controls
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` | Next / previous tab |
+| `↑` `↓` | Scroll |
+| `c` | Copy visible content to clipboard |
+| `/` | Filter / search within current tab |
+| `h` | Toggle help overlay |
+| `q` | Quit |
+
+### Features
+
+- **Binary body detection**: Binary content types (images, gzip, protobuf, etc.)
+  are auto-detected; headers are redacted and body shown as hex dump instead of
+  garbled text.
+- **Trailer display**: HTTP trailers received after the body appear in the
+  Headers and Summary tabs.
+- **SSE tracking**: Server-Sent Events are parsed; event count, first/last
+  timestamps, and gaps are tracked.
+- **Error state rendering**: Failed phases show the error reason inline in the
+  Timeline and Trace tabs.
+- **Redirect & retry panels**: The Summary tab shows redirect chains and retry
+  attempts with backoff durations and reasons.
+- **Event log sanitization**: ANSI escapes are stripped, newlines collapsed,
+  control characters replaced for safe TUI rendering.
+
+When stdout is not a terminal (piped), verbose output falls back to colored
+stderr text:
 
 ```sh
 # TUI mode (terminal)

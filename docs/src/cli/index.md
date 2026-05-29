@@ -4,36 +4,22 @@ The `aioduct` binary is a unified HTTP toolkit providing two subcommands: a curl
 
 ## Installation
 
+**Shell installer (no Rust toolchain needed):**
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adamcavendish/aioduct/releases/download/0.2.0-alpha.4/aioduct-cli-installer.sh | sh
+```
+
+**Nightly build (latest master):**
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adamcavendish/aioduct/releases/download/nightly/aioduct-cli-installer.sh | sh
+```
+
 **Build from source:**
 
 ```sh
 cargo install --git https://github.com/adamcavendish/aioduct aioduct-cli
-```
-
-**Prebuilt binaries (faster):**
-
-```sh
-cargo binstall --git https://github.com/adamcavendish/aioduct aioduct-cli
-```
-
-**Shell installer (no Rust toolchain needed):**
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adamcavendish/aioduct/releases/download/0.2.0-alpha.3/aioduct-cli-installer.sh | sh
-```
-
-Replace `0.2.0-alpha.3` with the desired version or `nightly` for the latest master build.
-
-To install a specific version, add `@version`:
-
-```sh
-cargo binstall --git https://github.com/adamcavendish/aioduct aioduct-cli@0.2.0-alpha.3
-```
-
-Nightly builds (latest master):
-
-```sh
-cargo binstall --git https://github.com/adamcavendish/aioduct aioduct-cli@nightly
 ```
 
 ## Subcommands

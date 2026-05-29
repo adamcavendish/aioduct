@@ -263,6 +263,93 @@ Sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are automat
 
 Disable with `.max_redirects(0)` on the builder.
 
+## Request Lifecycle Observer
+
+The `RequestObserver` trait provides real-time callbacks at every connection
+phase transition with monotonic timestamps and diagnostic data. Use it for
+per-request tracing, load testing metrics, or custom instrumentation.
+
+```rust,no_run
+use aioduct::{TokioClient, RequestObserver, RequestEvent, ConnectionEvent};
+
+#[derive(Clone)]
+struct MetricsObserver { /* atomic counters, channels, etc. */ }
+
+impl RequestObserver for MetricsObserver {
+    fn on_event(&self, event: &RequestEvent) {
+        match &event.phase {
+            RequestPhase::DnsResolved { addrs, duration } => { /* ... */ }
+            RequestPhase::TlsHandshakeComplete { duration, alpn_protocol, .. } => { /* ... */ }
+            RequestPhase::ResponseComplete { status, total_duration, .. } => { /* ... */ }
+            _ => {}
+        }
+    }
+
+    fn on_connection_event(&self, event: &ConnectionEvent) {
+        // Connection-level lifecycle (pool checkin / close)
+    }
+}
+
+let client = TokioClient::builder()
+    .observer(MetricsObserver { /* ... */ })
+    .build()?;
+```
+
+### RequestPhase Variants
+
+| Phase | Key Fields | Fires When |
+|-------|-----------|------------|
+| `Started` | — | Request execution begins |
+| `PoolCheckoutComplete` | `outcome`, `blocked_duration` | Pool lookup finishes |
+| `DnsResolved` | `addrs`, `duration` | DNS resolution completes |
+| `TcpConnected` | `remote_addr`, `duration`, `protocol` | TCP connection established |
+| `TlsHandshakeComplete` | `duration`, `alpn_protocol`, `peer_certificate_der` | TLS negotiation done |
+| `RequestSent` | `duration`, `headers` | Request fully sent to server |
+| `ResponseStarted` | `waiting_duration` | TTFB — first response byte received |
+| `ResponseComplete` | `status`, `protocol`, `total_duration` | Response headers complete |
+| `Redirected` | `status`, `from`, `to` | A redirect was followed |
+| `Retrying` | `reason`, `attempt`, `max_retries`, `backoff` | A retry is about to be attempted |
+| `Failed` | `error`, `retry`, `elapsed` | Request failed with an error |
+| `BytesTransferred` | `direction`, `chunk_bytes`, `cumulative_bytes` | Per-chunk (body streaming) |
+| `TransferComplete` | `direction`, `total_bytes`, `throughput_bytes_per_sec` | Transfer in one direction finished |
+| `TransferAborted` | `direction`, `bytes_transferred`, `error` | Transfer aborted mid-stream |
+| `TrailersReceived` | `headers` | HTTP trailers received after body |
+
+`RetryKind` (`None` / `StaleConnection` / `Explicit`) indicates whether and
+how a failed request will be retried.
+
+Phases that are skipped (DNS for pool hits, TLS for plain HTTP) simply don't fire.
+
+## Trailers
+
+HTTP trailers are optional header fields sent after the body in chunked
+transfer encoding. They are exposed as body frames and via the observer:
+
+```rust,no_run
+use aioduct::TokioClient;
+use http_body_util::BodyExt;
+
+let resp = client
+    .get("https://example.com/api")?
+    .send()
+    .await?;
+
+// Trailers are available through the body frame stream
+let mut body = resp.into_body();
+while let Some(frame) = body.frame().await {
+    let frame = frame?;
+    if frame.is_trailers() {
+        let trailers = frame.into_trailers().unwrap();
+        for (name, value) in trailers.iter() {
+            println!("{name}: {value:?}");
+        }
+    }
+}
+```
+
+The `RequestObserver` also fires a `TrailersReceived` phase when trailers
+arrive, with all trailer header fields.
+
 ## Error Types
 
 ```rust,no_run
