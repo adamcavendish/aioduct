@@ -225,12 +225,15 @@ impl<R, C> HttpEngineBuilder<R, C> {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
+    /// # #[cfg(feature = "tokio")]
+    /// # {
     /// # use aioduct::{HttpEngineSend, runtime::TokioRuntime};
     /// # use aioduct::runtime::tokio_rt::TcpConnector;
     /// let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
     ///     .resolve("example.com", "127.0.0.1:8080".parse().unwrap())
     ///     .build().unwrap();
+    /// # }
     /// ```
     pub fn resolve(self, domain: &str, addr: std::net::SocketAddr) -> Self {
         self.resolve_to_addrs(domain, &[addr])

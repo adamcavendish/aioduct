@@ -1064,6 +1064,7 @@ mod tokio_tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "rustls")]
     #[tokio::test]
     async fn connect_tunnel_success_200() {
         // Simulate a CONNECT proxy that responds with 200 OK then drops
@@ -1129,6 +1130,37 @@ mod tokio_tests {
         );
     }
 
+    #[cfg(not(feature = "rustls"))]
+    #[tokio::test]
+    async fn connect_tunnel_requires_rustls_feature() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+
+        let connector = TcpConnector;
+        let tcp_stream =
+            <TcpConnector as crate::runtime::ConnectorSend>::connect(&connector, proxy_addr)
+                .await
+                .unwrap();
+        let engine = make_engine();
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example.com:8080").unwrap();
+        let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
+
+        let result = engine
+            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .await;
+        match result {
+            Err(crate::Error::Tls(err)) => {
+                assert!(
+                    err.to_string()
+                        .contains("requires the `rustls` TLS backend feature")
+                );
+            }
+            Ok(_) => panic!("CONNECT tunnel unexpectedly succeeded without rustls"),
+            Err(err) => panic!("expected TLS feature error, got {err}"),
+        }
+    }
+
+    #[cfg(feature = "rustls")]
     #[tokio::test]
     async fn connect_tunnel_defaults_port_443_when_authority_has_no_port() {
         // When the URL has no explicit port (e.g. https://example.com/),
@@ -1190,6 +1222,7 @@ mod tokio_tests {
         );
     }
 
+    #[cfg(feature = "rustls")]
     #[tokio::test]
     async fn connect_tunnel_defaults_port_443_for_ipv6_without_port() {
         // IPv6 authorities like "[::1]" must still get ":443" appended.
@@ -1245,6 +1278,7 @@ mod tokio_tests {
         );
     }
 
+    #[cfg(feature = "rustls")]
     #[tokio::test]
     async fn connect_tunnel_preserves_explicit_port() {
         // When the authority already has an explicit port, it must be kept.
@@ -1300,6 +1334,7 @@ mod tokio_tests {
         );
     }
 
+    #[cfg(feature = "rustls")]
     #[tokio::test]
     async fn connect_tunnel_proxy_returns_403() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1353,6 +1388,7 @@ mod tokio_tests {
         );
     }
 
+    #[cfg(feature = "rustls")]
     #[tokio::test]
     async fn connect_tunnel_proxy_closes_connection() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1427,6 +1463,7 @@ mod tokio_tests {
         );
     }
 
+    #[cfg(feature = "rustls")]
     #[tokio::test]
     async fn connect_tunnel_sends_proxy_auth_header() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1493,6 +1530,7 @@ mod tokio_tests {
         );
     }
 
+    #[cfg(feature = "rustls")]
     #[tokio::test]
     async fn connect_tunnel_response_too_large() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
