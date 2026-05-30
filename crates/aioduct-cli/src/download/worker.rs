@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use aioduct::TokioClient;
+use http::{HeaderValue, StatusCode};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
@@ -24,6 +25,8 @@ const STALL_THRESHOLD_BYTES_PER_SEC: u64 = 1024;
 pub struct WorkerContext {
     pub client: TokioClient,
     pub url: String,
+    pub expected_total_size: u64,
+    pub if_range: Option<HeaderValue>,
     pub extra: Arc<ExtraRequestConfig>,
     pub disk_writer: Arc<DiskWriter>,
     pub segment_man: Arc<SegmentMan>,
@@ -112,15 +115,17 @@ async fn worker_loop(
 
             piece_counter.store(0, Ordering::Relaxed);
 
-            let result = download_piece(
-                &ctx.client,
-                &ctx.url,
-                assignment.offset,
-                assignment.length,
-                &ctx.extra,
-                &piece_cancel,
-                &piece_counter,
-            )
+            let result = download_piece(PieceDownloadRequest {
+                client: &ctx.client,
+                url: &ctx.url,
+                offset: assignment.offset,
+                length: assignment.length,
+                expected_total_size: ctx.expected_total_size,
+                if_range: ctx.if_range.as_ref(),
+                extra: &ctx.extra,
+                cancel: &piece_cancel,
+                progress_counter: &piece_counter,
+            })
             .await;
 
             match result {
@@ -259,37 +264,53 @@ fn update_worker_status(
     }
 }
 
-async fn download_piece(
-    client: &TokioClient,
-    url: &str,
+struct PieceDownloadRequest<'a> {
+    client: &'a TokioClient,
+    url: &'a str,
     offset: u64,
     length: u64,
-    extra: &ExtraRequestConfig,
-    cancel: &CancellationToken,
-    progress_counter: &Arc<std::sync::atomic::AtomicU64>,
-) -> Result<Vec<u8>, aioduct::Error> {
-    let end = offset + length - 1;
-    let range = format!("bytes={offset}-{end}");
+    expected_total_size: u64,
+    if_range: Option<&'a HeaderValue>,
+    extra: &'a ExtraRequestConfig,
+    cancel: &'a CancellationToken,
+    progress_counter: &'a Arc<std::sync::atomic::AtomicU64>,
+}
 
-    let mut req = client.get(url)?;
-    if let Ok(v) = range.parse::<http::HeaderValue>() {
-        req = req.header(http::header::RANGE, v);
+async fn download_piece(req: PieceDownloadRequest<'_>) -> Result<Vec<u8>, aioduct::Error> {
+    let end = checked_range_end(req.offset, req.length)?;
+    let range = format!("bytes={}-{}", req.offset, end);
+
+    let mut http_req = req.client.get(req.url)?;
+    http_req = req.extra.apply_to(http_req);
+    let range = range
+        .parse::<HeaderValue>()
+        .map_err(|e| aioduct::Error::Other(Box::new(e)))?;
+    http_req = http_req.header(http::header::RANGE, range);
+    if let Some(if_range) = req.if_range {
+        http_req = http_req.header(http::header::IF_RANGE, if_range.clone());
     }
-    req = extra.apply_to(req);
 
     let resp = tokio::select! {
-        r = req.send() => r?,
-        _ = cancel.cancelled() => {
+        r = http_req.send() => r?,
+        _ = req.cancel.cancelled() => {
             return Err(aioduct::Error::Other("cancelled".into()));
         }
     };
 
     let status = resp.status();
-    if !status.is_success() && status.as_u16() != 206 {
-        return Err(aioduct::Error::Status(status));
+    if status != StatusCode::PARTIAL_CONTENT {
+        return Err(aioduct::Error::Other(
+            format!("range request returned {status}; expected 206 Partial Content").into(),
+        ));
     }
+    validate_content_range(
+        resp.headers(),
+        req.offset,
+        req.length,
+        req.expected_total_size,
+    )?;
 
-    let mut data = Vec::with_capacity(length as usize);
+    let mut data = Vec::with_capacity(req.length as usize);
     let mut stream = resp.into_bytes_stream();
     let mut stall_check_start = Instant::now();
     let mut stall_check_bytes = 0u64;
@@ -301,9 +322,9 @@ async fn download_piece(
                     Some(Ok(bytes)) => {
                         stall_check_bytes += bytes.len() as u64;
                         data.extend_from_slice(&bytes);
-                        progress_counter.store(data.len() as u64, Ordering::Relaxed);
-                        if data.len() >= length as usize {
-                            data.truncate(length as usize);
+                        req.progress_counter.store(data.len() as u64, Ordering::Relaxed);
+                        if data.len() >= req.length as usize {
+                            data.truncate(req.length as usize);
                             break;
                         }
                         let elapsed = stall_check_start.elapsed();
@@ -322,7 +343,7 @@ async fn download_piece(
                     None => break,
                 }
             }
-            _ = cancel.cancelled() => {
+            _ = req.cancel.cancelled() => {
                 return Err(aioduct::Error::Other("cancelled".into()));
             }
             _ = tokio::time::sleep(READ_TIMEOUT) => {
@@ -331,7 +352,115 @@ async fn download_piece(
         }
     }
 
+    if data.len() != req.length as usize {
+        return Err(aioduct::Error::Other(
+            format!(
+                "range response ended early: expected {} bytes, got {}",
+                req.length,
+                data.len()
+            )
+            .into(),
+        ));
+    }
+
     Ok(data)
+}
+
+fn validate_content_range(
+    headers: &http::HeaderMap,
+    offset: u64,
+    length: u64,
+    expected_total_size: u64,
+) -> Result<(), aioduct::Error> {
+    let expected_end = checked_range_end(offset, length)?;
+    let value = headers
+        .get(http::header::CONTENT_RANGE)
+        .ok_or_else(|| aioduct::Error::Other("missing Content-Range header".into()))?
+        .to_str()
+        .map_err(|e| aioduct::Error::Other(Box::new(e)))?;
+    let Some((start, end, total)) = parse_content_range(value) else {
+        return Err(aioduct::Error::Other(
+            format!("invalid Content-Range header: {value}").into(),
+        ));
+    };
+
+    if start != offset || end != expected_end {
+        return Err(aioduct::Error::Other(
+            format!(
+                "Content-Range mismatch: expected bytes {offset}-{expected_end}, got {start}-{end}"
+            )
+            .into(),
+        ));
+    }
+    let total =
+        total.ok_or_else(|| aioduct::Error::Other("Content-Range missing total length".into()))?;
+    if total != expected_total_size {
+        return Err(aioduct::Error::Other(
+            format!("Content-Range total mismatch: expected {expected_total_size}, got {total}")
+                .into(),
+        ));
+    }
+    if end >= total {
+        return Err(aioduct::Error::Other(
+            format!("Content-Range end {end} exceeds total length {total}").into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn checked_range_end(offset: u64, length: u64) -> Result<u64, aioduct::Error> {
+    if length == 0 {
+        return Err(aioduct::Error::Other("invalid empty range request".into()));
+    }
+    offset
+        .checked_add(length)
+        .and_then(|n| n.checked_sub(1))
+        .ok_or_else(|| aioduct::Error::Other("invalid range request".into()))
+}
+
+fn parse_content_range(value: &str) -> Option<(u64, u64, Option<u64>)> {
+    let rest = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = rest.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let start = start.trim().parse::<u64>().ok()?;
+    let end = end.trim().parse::<u64>().ok()?;
+    if end < start {
+        return None;
+    }
+    let total = match total.trim() {
+        "*" => None,
+        value => Some(value.parse::<u64>().ok()?),
+    };
+    Some((start, end, total))
+}
+
+pub(crate) fn if_range_header_value(
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Option<HeaderValue> {
+    etag.and_then(|value| {
+        let value = value.trim();
+        is_strong_etag(value)
+            .then(|| HeaderValue::from_str(value).ok())
+            .flatten()
+    })
+    .or_else(|| {
+        last_modified.and_then(|value| {
+            let value = value.trim();
+            (!value.is_empty())
+                .then(|| HeaderValue::from_str(value).ok())
+                .flatten()
+        })
+    })
+}
+
+pub(crate) fn is_strong_etag(etag: &str) -> bool {
+    let etag = etag.trim();
+    etag.starts_with('"')
+        && !etag
+            .get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("W/"))
 }
 
 // ─── Pool Worker (multi-file mode) ─────────────────────────────────────────
@@ -403,15 +532,17 @@ async fn pool_worker_loop(ctx: &PoolWorkerContext, worker_id: usize) -> Result<(
         loop {
             piece_counter.store(0, Ordering::Relaxed);
 
-            let result = download_piece(
-                &ctx.client,
-                &assignment.url,
-                assignment.piece.offset,
-                assignment.piece.length,
-                &ctx.extra,
-                &ctx.cancel,
-                &piece_counter,
-            )
+            let result = download_piece(PieceDownloadRequest {
+                client: &ctx.client,
+                url: &assignment.url,
+                offset: assignment.piece.offset,
+                length: assignment.piece.length,
+                expected_total_size: assignment.total_size,
+                if_range: assignment.if_range.as_ref(),
+                extra: &ctx.extra,
+                cancel: &ctx.cancel,
+                progress_counter: &piece_counter,
+            })
             .await;
 
             match result {
@@ -523,4 +654,62 @@ async fn pool_worker_loop(ctx: &PoolWorkerContext, worker_id: usize) -> Result<(
 
     update_worker_status(&ctx.worker_states, worker_id, WorkerStatus::Done);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_content_range() {
+        assert_eq!(
+            parse_content_range("bytes 10-19/100"),
+            Some((10, 19, Some(100)))
+        );
+        assert_eq!(parse_content_range("bytes 10-19/*"), Some((10, 19, None)));
+        assert_eq!(parse_content_range("items 10-19/100"), None);
+        assert_eq!(parse_content_range("bytes 19-10/100"), None);
+    }
+
+    #[test]
+    fn validates_expected_content_range() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_RANGE,
+            http::HeaderValue::from_static("bytes 20-29/100"),
+        );
+
+        assert!(validate_content_range(&headers, 20, 10, 100).is_ok());
+        assert!(validate_content_range(&headers, 30, 10, 100).is_err());
+        assert!(validate_content_range(&headers, 20, 10, 101).is_err());
+        assert!(validate_content_range(&headers, 20, 0, 100).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_content_range_total() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_RANGE,
+            http::HeaderValue::from_static("bytes 20-29/*"),
+        );
+
+        assert!(validate_content_range(&headers, 20, 10, 100).is_err());
+    }
+
+    #[test]
+    fn selects_if_range_validator() {
+        assert_eq!(
+            if_range_header_value(Some("\"strong\""), Some("Mon, 01 Jan 2024 00:00:00 GMT")),
+            Some(HeaderValue::from_static("\"strong\""))
+        );
+        assert_eq!(
+            if_range_header_value(Some("W/\"weak\""), Some("Mon, 01 Jan 2024 00:00:00 GMT")),
+            Some(HeaderValue::from_static("Mon, 01 Jan 2024 00:00:00 GMT"))
+        );
+        assert_eq!(
+            if_range_header_value(Some("unquoted"), Some("Mon, 01 Jan 2024 00:00:00 GMT")),
+            Some(HeaderValue::from_static("Mon, 01 Jan 2024 00:00:00 GMT"))
+        );
+        assert_eq!(if_range_header_value(Some("W/\"weak\""), None), None);
+    }
 }

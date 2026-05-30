@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -30,16 +31,16 @@ pub struct DownloadArgs {
     pub out: Option<String>,
 
     /// Number of parallel connections per download
-    #[arg(short = 's', long, default_value_t = 8)]
-    pub split: usize,
+    #[arg(short = 's', long, default_value = "8")]
+    pub split: NonZeroUsize,
 
     /// Maximum connections per server
-    #[arg(short = 'x', long, default_value_t = 8)]
-    pub max_connection_per_server: usize,
+    #[arg(short = 'x', long, default_value = "8")]
+    pub max_connection_per_server: NonZeroUsize,
 
     /// Maximum concurrent downloads
-    #[arg(short = 'j', long, default_value_t = 5)]
-    pub max_concurrent_downloads: usize,
+    #[arg(short = 'j', long, default_value = "5")]
+    pub max_concurrent_downloads: NonZeroUsize,
 
     /// Minimum split size (e.g. 1M, 20M)
     #[arg(short = 'k', long, default_value = "1M", value_parser = parse_byte_size)]
