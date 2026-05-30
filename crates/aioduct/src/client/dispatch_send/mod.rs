@@ -3,7 +3,6 @@ use crate::clock::Instant;
 use bytes::Bytes;
 use http::Uri;
 use http::header::HeaderMap;
-use http_body_util::BodyExt;
 
 use crate::body::RequestBodySend;
 use crate::error::Error;
@@ -18,6 +17,10 @@ use super::dispatch::H2ConnectGuard;
 use super::{HttpEngineCore, HttpEngineSend};
 
 use super::extract_headers;
+
+mod retry;
+
+use retry::retry_request_from_parts;
 
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
 
@@ -211,19 +214,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         return Err(e);
                     };
                     let headers = stale_retry_headers.cloned().unwrap_or_default();
-                    let retry_body_bytes = replay_body
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or_else(bytes::Bytes::new);
-                    let body: RequestBodySend = http_body_util::Full::new(retry_body_bytes)
-                        .map_err(|never| match never {})
-                        .boxed_unsync();
-                    let mut retry_req = http::Request::new(body);
-                    *retry_req.method_mut() = method;
-                    *retry_req.uri_mut() = uri;
-                    *retry_req.headers_mut() = headers;
-                    *retry_req.version_mut() = version;
-                    request = retry_req;
+                    request = retry_request_from_parts(method, uri, version, headers, &replay_body);
                 }
                 Err(e) => {
                     self.core.notify(
@@ -364,19 +355,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             return Err(e);
                         };
                         let headers = stale_retry_headers.cloned().unwrap_or_default();
-                        let retry_body_bytes = replay_body
-                            .as_ref()
-                            .cloned()
-                            .unwrap_or_else(bytes::Bytes::new);
-                        let body: RequestBodySend = http_body_util::Full::new(retry_body_bytes)
-                            .map_err(|never| match never {})
-                            .boxed_unsync();
-                        let mut retry_req = http::Request::new(body);
-                        *retry_req.method_mut() = method;
-                        *retry_req.uri_mut() = uri;
-                        *retry_req.headers_mut() = headers;
-                        *retry_req.version_mut() = version;
-                        request = retry_req;
+                        request =
+                            retry_request_from_parts(method, uri, version, headers, &replay_body);
                     }
                     Err(e) => {
                         self.core.notify(
@@ -660,19 +640,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 return Err(e);
                             };
                             let headers = stale_retry_headers.cloned().unwrap_or_default();
-                            let retry_body_bytes = replay_body
-                                .as_ref()
-                                .cloned()
-                                .unwrap_or_else(bytes::Bytes::new);
-                            let body: RequestBodySend = http_body_util::Full::new(retry_body_bytes)
-                                .map_err(|never| match never {})
-                                .boxed_unsync();
-                            let mut retry_req = http::Request::new(body);
-                            *retry_req.method_mut() = method;
-                            *retry_req.uri_mut() = uri;
-                            *retry_req.headers_mut() = headers;
-                            *retry_req.version_mut() = version;
-                            request = retry_req;
+                            request = retry_request_from_parts(
+                                method,
+                                uri,
+                                version,
+                                headers,
+                                &replay_body,
+                            );
                             break;
                         }
                         Err(e) => return Err(e),
