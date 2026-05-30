@@ -184,7 +184,11 @@ impl DownloadEngine {
     }
 
     pub async fn download_multi(&self, tasks: Vec<DownloadTask>) -> Vec<DownloadResult> {
-        let num_workers = self.cli.split.min(self.cli.max_connection_per_server);
+        let num_workers = self
+            .cli
+            .split
+            .get()
+            .min(self.cli.max_connection_per_server.get());
         let scheduler = Arc::new(GlobalScheduler::new(num_workers));
         let cancel = CancellationToken::new();
         let worker_states = tui_state::new_worker_states(num_workers);
@@ -199,8 +203,13 @@ impl DownloadEngine {
         for (idx, task) in tasks.iter().enumerate() {
             if task.supports_range && task.total_size.is_some_and(|s| s > 0) {
                 let total_size = task.total_size.unwrap();
+                let split_count = self.cli.split.get();
+                let if_range = worker::if_range_header_value(
+                    task.etag.as_deref(),
+                    task.last_modified.as_deref(),
+                );
                 let piece_length =
-                    compute_piece_length(total_size, self.cli.split as u32, self.cli.piece_size);
+                    compute_piece_length(total_size, split_count as u32, self.cli.piece_size);
                 let control_path = ControlFile::control_path(&task.output);
                 let checksum_status = checksum::shared_status(self.checksum.as_ref());
                 let (storage, created_at, resume_skipped_pieces) = resume_or_new_storage(
@@ -255,7 +264,7 @@ impl DownloadEngine {
                 };
 
                 let file_id = idx as FileId;
-                let segment_man = Arc::new(SegmentMan::new(storage, self.cli.split as u32));
+                let segment_man = Arc::new(SegmentMan::new(storage, split_count as u32));
                 let filename = task
                     .output
                     .file_name()
@@ -274,6 +283,7 @@ impl DownloadEngine {
                     disk_writer,
                     control_path,
                     supports_range: true,
+                    if_range,
                     etag: task.etag.clone(),
                     last_modified: task.last_modified.clone(),
                     created_at: created_at.clone(),
@@ -579,6 +589,15 @@ impl DownloadEngine {
         events: Option<&tui_state::SharedEventLog>,
         file_id: Option<FileId>,
     ) -> DownloadResult {
+        if let Err(message) = validate_output_metadata(output, total_size) {
+            return DownloadResult {
+                output: output.to_path_buf(),
+                total_size,
+                error: Some(super::tui_state::sanitize_for_display(&message)),
+                checksum: None,
+            };
+        }
+
         let Some(spec) = self.checksum.as_ref() else {
             return DownloadResult {
                 output: output.to_path_buf(),
@@ -716,10 +735,13 @@ impl DownloadEngine {
             .total_size
             .ok_or_else(|| aioduct::Error::Other("server did not report content length".into()))?;
         progress.set_total(total_size);
+        let if_range =
+            worker::if_range_header_value(task.etag.as_deref(), task.last_modified.as_deref());
 
         let control_path = ControlFile::control_path(&task.output);
+        let split_count = self.cli.split.get();
         let piece_length =
-            compute_piece_length(total_size, self.cli.split as u32, self.cli.piece_size);
+            compute_piece_length(total_size, split_count as u32, self.cli.piece_size);
 
         info!(
             total_size,
@@ -739,6 +761,8 @@ impl DownloadEngine {
 
         if storage.all_complete() {
             progress.set_downloaded(total_size);
+            validate_output_metadata(&task.output, total_size)
+                .map_err(|e| aioduct::Error::Other(e.into()))?;
             if self.checksum.is_none() {
                 let _ = std::fs::remove_file(&control_path);
             }
@@ -753,13 +777,13 @@ impl DownloadEngine {
             DiskWriter::open_or_create(&task.output, total_size).map_err(aioduct::Error::Io)?,
         );
 
-        let segment_man = Arc::new(SegmentMan::new(storage, self.cli.split as u32));
+        let segment_man = Arc::new(SegmentMan::new(storage, split_count as u32));
         let speed = Arc::new(std::sync::Mutex::new(SpeedMonitor::new(
             Duration::from_secs(5),
         )));
         let cancel = CancellationToken::new();
 
-        let num_workers = self.cli.split.min(self.cli.max_connection_per_server);
+        let num_workers = split_count.min(self.cli.max_connection_per_server.get());
         debug!(num_workers, "spawning workers");
 
         let worker_states = tui_state::new_worker_states(num_workers);
@@ -801,6 +825,8 @@ impl DownloadEngine {
         let worker_ctx = Arc::new(worker::WorkerContext {
             client: self.client.clone(),
             url: task.url.clone(),
+            expected_total_size: total_size,
+            if_range,
             extra: Arc::clone(&self.extra),
             disk_writer: Arc::clone(&disk_writer),
             segment_man: Arc::clone(&segment_man),
@@ -890,6 +916,7 @@ impl DownloadEngine {
                 &created_at,
                 &control_path,
             );
+            return Err(aioduct::Error::Other("download incomplete".into()));
         }
 
         Ok(total_size)
@@ -900,8 +927,8 @@ impl DownloadEngine {
             self.cli.dir.join(out)
         } else {
             let path = match relative_path {
-                Some(rel) => self.cli.dir.join(rel),
-                None => self.cli.dir.join(name),
+                Some(rel) => self.cli.dir.join(filename::sanitize_relative_path(rel)),
+                None => self.cli.dir.join(filename::sanitize_file_name(name)),
             };
             if !self.cli.no_resume && ControlFile::control_path(&path).exists() {
                 path
@@ -940,6 +967,28 @@ fn now_string() -> String {
     format!("{}", d.as_secs())
 }
 
+fn validate_output_metadata(output: &std::path::Path, expected_size: u64) -> Result<(), String> {
+    let meta = std::fs::metadata(output).map_err(|e| {
+        format!(
+            "download output is not accessible: {} ({e})",
+            output.display()
+        )
+    })?;
+    if !meta.is_file() {
+        return Err(format!(
+            "download output is not a file: {}",
+            output.display()
+        ));
+    }
+    let actual_size = meta.len();
+    if actual_size != expected_size {
+        return Err(format!(
+            "download output size mismatch: expected {expected_size} bytes, got {actual_size}"
+        ));
+    }
+    Ok(())
+}
+
 fn resume_or_new_storage(
     task: &DownloadTask,
     control_path: &std::path::Path,
@@ -954,12 +1003,8 @@ fn resume_or_new_storage(
 
     match ControlFile::load(control_path) {
         Ok(cf) if cf.total_length == total_size && cf.piece_length == piece_length => {
-            let etag_matches = match (&cf.etag, &task.etag) {
-                (Some(a), Some(b)) => a == b,
-                _ => true,
-            };
-            if !etag_matches {
-                warn!("etag mismatch, starting fresh");
+            if !resume_metadata_matches(&cf, task) {
+                warn!("resume metadata mismatch, starting fresh");
                 return (PieceStorage::new(total_size, piece_length), now_string(), 0);
             }
             if let Some(storage) = cf.to_storage() {
@@ -974,6 +1019,39 @@ fn resume_or_new_storage(
         }
         _ => (PieceStorage::new(total_size, piece_length), now_string(), 0),
     }
+}
+
+fn resume_metadata_matches(cf: &ControlFile, task: &DownloadTask) -> bool {
+    if cf.url != task.url {
+        return false;
+    }
+
+    let control_validator =
+        effective_resume_validator(cf.etag.as_deref(), cf.last_modified.as_deref());
+    control_validator.is_some()
+        && control_validator
+            == effective_resume_validator(task.etag.as_deref(), task.last_modified.as_deref())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ResumeValidator<'a> {
+    StrongEtag(&'a str),
+    LastModified(&'a str),
+}
+
+fn effective_resume_validator<'a>(
+    etag: Option<&'a str>,
+    last_modified: Option<&'a str>,
+) -> Option<ResumeValidator<'a>> {
+    etag.map(str::trim)
+        .filter(|value| worker::is_strong_etag(value))
+        .map(ResumeValidator::StrongEtag)
+        .or_else(|| {
+            last_modified
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ResumeValidator::LastModified)
+        })
 }
 
 fn spawn_checkpoint_task(
@@ -1096,5 +1174,64 @@ mod tests {
             compute_piece_length(100 * 1024 * 1024, 4, Some(16 * 1024 * 1024)),
             16 * 1024 * 1024
         );
+    }
+
+    #[test]
+    fn resume_requires_url_and_validator_match() {
+        let task = DownloadTask {
+            url: "https://example.com/file.bin".to_string(),
+            output: PathBuf::from("file.bin"),
+            total_size: Some(1024),
+            supports_range: true,
+            etag: None,
+            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+        };
+        let mut cf = ControlFile::new(&task.url, 1024, 256);
+        cf.last_modified = task.last_modified.clone();
+
+        assert!(resume_metadata_matches(&cf, &task));
+
+        cf.url = "https://example.com/other.bin".to_string();
+        assert!(!resume_metadata_matches(&cf, &task));
+
+        cf.url = task.url.clone();
+        cf.last_modified = None;
+        assert!(!resume_metadata_matches(&cf, &task));
+    }
+
+    #[test]
+    fn resume_uses_effective_strong_or_last_modified_validator() {
+        let mut task = DownloadTask {
+            url: "https://example.com/file.bin".to_string(),
+            output: PathBuf::from("file.bin"),
+            total_size: Some(1024),
+            supports_range: true,
+            etag: Some("\"strong\"".to_string()),
+            last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
+        };
+        let mut cf = ControlFile::new(&task.url, 1024, 256);
+        cf.etag = task.etag.clone();
+        cf.last_modified = task.last_modified.clone();
+        assert!(resume_metadata_matches(&cf, &task));
+
+        task.etag = Some("W/\"weak\"".to_string());
+        cf.etag = task.etag.clone();
+        assert!(resume_metadata_matches(&cf, &task));
+
+        task.last_modified = None;
+        cf.last_modified = None;
+        assert!(!resume_metadata_matches(&cf, &task));
+    }
+
+    #[test]
+    fn validates_output_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("file.bin");
+        std::fs::write(&output, b"abcd").unwrap();
+
+        assert!(validate_output_metadata(&output, 4).is_ok());
+        assert!(validate_output_metadata(&output, 3).is_err());
+        assert!(validate_output_metadata(&dir.path().join("missing.bin"), 0).is_err());
+        assert!(validate_output_metadata(dir.path(), 4).is_err());
     }
 }

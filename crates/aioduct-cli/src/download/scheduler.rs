@@ -13,6 +13,8 @@ pub struct WorkAssignment {
     pub piece: PieceAssignment,
     pub url: String,
     pub file_name: String,
+    pub total_size: u64,
+    pub if_range: Option<http::HeaderValue>,
     pub disk_writer: Arc<DiskWriter>,
 }
 
@@ -164,6 +166,8 @@ impl GlobalScheduler {
         let piece = file.segment_man.next_piece(worker_id)?;
         let url = file.url.clone();
         let file_name = file.filename.clone();
+        let total_size = file.total_size;
+        let if_range = file.if_range.clone();
         let disk_writer = Arc::clone(&file.disk_writer);
 
         inner.worker_file[worker_id] = Some(fid);
@@ -179,6 +183,8 @@ impl GlobalScheduler {
             piece,
             url,
             file_name,
+            total_size,
+            if_range,
             disk_writer,
         })
     }
@@ -385,6 +391,7 @@ mod tests {
             disk_writer,
             control_path: PathBuf::from(format!("/tmp/file{id}.aioduct")),
             supports_range: true,
+            if_range: None,
             etag: None,
             last_modified: None,
             created_at: "test".into(),

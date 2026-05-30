@@ -26,6 +26,7 @@ pub struct FileEntry {
     pub disk_writer: Arc<DiskWriter>,
     pub control_path: PathBuf,
     pub supports_range: bool,
+    pub if_range: Option<http::HeaderValue>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub created_at: String,
