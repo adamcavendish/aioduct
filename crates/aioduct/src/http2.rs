@@ -196,6 +196,20 @@ mod tests {
         assert_eq!(config.max_concurrent_reset_streams, Some(100));
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn apply_sets_hyper_max_concurrent_reset_streams() {
+        #[derive(Clone, Debug)]
+        struct TestExec;
+
+        let config = Http2Config::new().max_concurrent_reset_streams(7);
+        let mut builder = hyper::client::conn::http2::Builder::new(TestExec);
+        config.apply(&mut builder);
+
+        let dbg = format!("{builder:?}");
+        assert!(dbg.contains("max_concurrent_reset_streams: Some(7)"));
+    }
+
     #[test]
     fn debug_format() {
         let config = Http2Config::new().max_frame_size(16384);
