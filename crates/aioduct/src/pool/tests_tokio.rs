@@ -420,6 +420,85 @@ async fn checkout_h2_clone_for_multiplex() {
 }
 
 #[tokio::test]
+async fn checkout_h2_respects_max_active_streams_per_connection() {
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+        .with_max_active_streams_per_connection(std::num::NonZeroUsize::new(1).unwrap());
+    let k = key_https("example.com:443");
+
+    let conn = make_h2_conn().await;
+    pool.checkin(k.clone(), conn);
+
+    let out1 = pool.checkout(&k).expect("first active stream");
+    assert!(
+        pool.checkout(&k).is_none(),
+        "second checkout should hit this connection's active stream limit"
+    );
+
+    drop(out1);
+    assert!(
+        pool.checkout(&k).is_some(),
+        "dropping the active clone should release stream capacity"
+    );
+}
+
+#[tokio::test]
+async fn checkout_h2_active_stream_limit_is_per_connection() {
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+        .with_max_active_streams_per_connection(std::num::NonZeroUsize::new(1).unwrap());
+    let k = key_https("example.com:443");
+
+    pool.checkin(k.clone(), make_h2_conn().await);
+    pool.checkin(k.clone(), make_h2_conn().await);
+
+    let _out1 = pool.checkout(&k).expect("first connection stream");
+    let _out2 = pool.checkout(&k).expect("second connection stream");
+}
+
+#[tokio::test]
+async fn max_active_streams_per_connection_does_not_change_h1_checkout() {
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+        .with_max_active_streams_per_connection(std::num::NonZeroUsize::new(1).unwrap());
+    let k = key("example.com:80");
+
+    pool.checkin(k.clone(), make_h1_conn().await);
+    pool.checkin(k.clone(), make_h1_conn().await);
+
+    tokio::task::yield_now().await;
+
+    assert!(pool.checkout(&k).is_some(), "first h1 checkout");
+    assert!(pool.checkout(&k).is_some(), "second h1 checkout");
+}
+
+#[tokio::test]
+async fn checkout_coalesced_respects_max_active_streams_per_connection() {
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+        .with_max_active_streams_per_connection(std::num::NonZeroUsize::new(1).unwrap());
+    let k = key_https("origin.example.com:443");
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
+    conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
+    pool.checkin(k, conn);
+
+    let ip: IpAddr = [10, 0, 0, 1].into();
+    let out1 = pool
+        .checkout_coalesced("cdn.example.com", Some(ip))
+        .expect("first coalesced stream");
+    assert!(
+        pool.checkout_coalesced("cdn.example.com", Some(ip))
+            .is_none(),
+        "second coalesced checkout should hit this connection's active stream limit"
+    );
+
+    drop(out1);
+    assert!(
+        pool.checkout_coalesced("cdn.example.com", Some(ip))
+            .is_some(),
+        "dropping the active clone should release coalesced stream capacity"
+    );
+}
+
+#[tokio::test]
 async fn checkout_coalesced_without_ip_check() {
     let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
@@ -561,6 +640,18 @@ async fn clone_for_multiplex_returns_some_for_h2() {
     assert_eq!(cloned.bytes_sent, 0);
     assert_eq!(cloned.bytes_received, 0);
     assert!(cloned.is_h2_or_h3());
+}
+
+#[tokio::test]
+async fn multiplex_clone_releases_active_stream_count_on_drop() {
+    let conn = make_h2_conn().await;
+    assert_eq!(conn.active_multiplex_streams(), Some(0));
+
+    let cloned = conn.clone_for_multiplex().expect("h2 should clone");
+    assert_eq!(conn.active_multiplex_streams(), Some(1));
+
+    drop(cloned);
+    assert_eq!(conn.active_multiplex_streams(), Some(0));
 }
 
 // --- PoolKey Debug tests ---

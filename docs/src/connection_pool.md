@@ -25,6 +25,8 @@ Connections are evicted in three ways:
 
 HTTP/2 connections support multiplexing — multiple concurrent requests share a single connection. The pool tracks the hyper `SendRequest` handle, which naturally supports this. When an h2 connection is checked out, it remains usable by other requests concurrently.
 
+By default, aioduct does not cap active multiplexed streams per connection. Use `pool_max_active_streams_per_connection(n)` to limit how many active HTTP/2 or HTTP/3 stream handles may be cloned from one pooled connection at a time. The value must be greater than 0. HTTP/1.1 connections are not affected.
+
 ### HTTP/3 (QUIC) Pooling
 
 When the `http3` feature is enabled with the rustls backend and one rustls provider, QUIC connections are pooled alongside TCP connections. Like HTTP/2, HTTP/3 multiplexes streams over a single connection, so a pooled QUIC connection can serve multiple sequential requests to the same origin without re-establishing the handshake. The pool uses the same `(scheme, authority)` key for both TCP and QUIC connections.
@@ -39,16 +41,18 @@ let client = TokioClient::builder()
     .pool_idle_timeout(Duration::from_secs(90))  // default: 90s
     .pool_max_lifetime(Duration::from_secs(600)) // default: none
     .pool_max_idle_per_host(10)                   // default: 10
+    .pool_max_active_streams_per_connection(100)  // default: unlimited
     .build()?;
 ```
 
 ### Options
 
-| Option                  | Default | Description                                        |
-|-------------------------|---------|----------------------------------------------------|
-| `pool_idle_timeout`     | 90s     | How long an idle connection is kept before eviction |
-| `pool_max_lifetime`     | none    | Maximum connection age before it stops being reused |
-| `pool_max_idle_per_host`| 10      | Maximum idle connections per (scheme, authority)    |
+| Option                                    | Default   | Description                                          |
+|-------------------------------------------|-----------|------------------------------------------------------|
+| `pool_idle_timeout`                       | 90s       | How long an idle connection is kept before eviction   |
+| `pool_max_lifetime`                       | none      | Maximum connection age before it stops being reused   |
+| `pool_max_idle_per_host`                  | 10        | Maximum idle connections per (scheme, authority)      |
+| `pool_max_active_streams_per_connection`  | unlimited | Maximum active HTTP/2 or HTTP/3 streams per connection |
 
 ## Connection Health
 

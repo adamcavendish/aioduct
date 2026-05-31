@@ -5,6 +5,7 @@ pub(crate) use connection::{HttpConnection, PooledConnection};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -69,6 +70,7 @@ struct PoolInner<B> {
     /// Pool keys with an in-progress H2/H3 connection attempt.
     connecting_h2: HashSet<PoolKey>,
     max_idle_per_host: usize,
+    max_active_streams_per_connection: Option<NonZeroUsize>,
     idle_timeout: Duration,
     max_lifetime: Option<Duration>,
 }
@@ -106,6 +108,7 @@ impl<B: 'static> ConnectionPool<B> {
                 san_index: HashMap::new(),
                 connecting_h2: HashSet::new(),
                 max_idle_per_host,
+                max_active_streams_per_connection: None,
                 idle_timeout,
                 max_lifetime,
             })),
@@ -119,6 +122,22 @@ impl<B: 'static> ConnectionPool<B> {
             inner.max_lifetime = Some(max_lifetime);
         }
         self
+    }
+
+    /// Set the maximum active H2/H3 streams allowed per pooled connection.
+    pub(crate) fn with_max_active_streams_per_connection(self, max_active: NonZeroUsize) -> Self {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.max_active_streams_per_connection = Some(max_active);
+        }
+        self
+    }
+
+    /// Returns the configured active H2/H3 stream limit per pooled connection.
+    pub(crate) fn max_active_streams_per_connection(&self) -> Option<NonZeroUsize> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .max_active_streams_per_connection
     }
 
     /// Create a pool without spawning the background reaper task.
@@ -165,8 +184,10 @@ impl<B: 'static> ConnectionPool<B> {
         let mut inner = self.inner.lock().ok()?;
         let idle_timeout = inner.idle_timeout;
         let max_lifetime = inner.max_lifetime;
+        let max_active = inner.max_active_streams_per_connection;
         let queue = inner.idle.get_mut(key)?;
         let now = Instant::now();
+        let mut retained_unavailable = Vec::new();
 
         while let Some(entry) = queue.pop_back() {
             if now.duration_since(entry.idle_since) >= idle_timeout {
@@ -176,13 +197,24 @@ impl<B: 'static> ConnectionPool<B> {
                 continue;
             }
             if entry.connection.is_ready() {
-                if entry.connection.is_h2_or_h3()
-                    && let Some(cloned) = entry.connection.clone_for_multiplex()
-                {
+                if entry.connection.is_h2_or_h3() {
                     let mut entry = entry;
+                    if let Some(cloned) =
+                        entry.connection.clone_for_multiplex_with_limit(max_active)
+                    {
+                        entry.idle_since = now;
+                        for retained in retained_unavailable.into_iter().rev() {
+                            queue.push_back(retained);
+                        }
+                        queue.push_back(entry);
+                        return Some(cloned);
+                    }
                     entry.idle_since = now;
-                    queue.push_back(entry);
-                    return Some(cloned);
+                    retained_unavailable.push(entry);
+                    continue;
+                }
+                for retained in retained_unavailable.into_iter().rev() {
+                    queue.push_back(retained);
                 }
                 if queue.is_empty() {
                     inner.idle.remove(key);
@@ -191,7 +223,12 @@ impl<B: 'static> ConnectionPool<B> {
             }
         }
 
-        inner.idle.remove(key);
+        for retained in retained_unavailable.into_iter().rev() {
+            queue.push_back(retained);
+        }
+        if queue.is_empty() {
+            inner.idle.remove(key);
+        }
         None
     }
 
@@ -278,6 +315,7 @@ impl<B: 'static> ConnectionPool<B> {
         let now = Instant::now();
         let idle_timeout = inner.idle_timeout;
         let max_lifetime = inner.max_lifetime;
+        let max_active = inner.max_active_streams_per_connection;
 
         let candidate_keys: Vec<PoolKey> = match inner.san_index.get(target_host) {
             Some(keys) => keys.iter().cloned().collect(),
@@ -317,15 +355,19 @@ impl<B: 'static> ConnectionPool<B> {
                     continue;
                 }
 
-                if queue[i].connection.is_ready()
-                    && let Some(cloned) = queue[i].connection.clone_for_multiplex()
-                {
-                    queue[i].idle_since = now;
-                    found_conn = Some(cloned);
-                    break;
+                if !queue[i].connection.is_ready() {
+                    continue;
                 }
 
-                if !queue[i].connection.is_ready() {
+                if queue[i].connection.is_h2_or_h3() {
+                    if let Some(cloned) = queue[i]
+                        .connection
+                        .clone_for_multiplex_with_limit(max_active)
+                    {
+                        queue[i].idle_since = now;
+                        found_conn = Some(cloned);
+                        break;
+                    }
                     continue;
                 }
 

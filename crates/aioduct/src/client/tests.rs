@@ -304,6 +304,37 @@ mod builder_tests {
     }
 
     #[tokio::test]
+    async fn builder_pool_max_active_streams_per_connection() {
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+            .pool_max_active_streams_per_connection(4)
+            .build()
+            .unwrap();
+        assert_eq!(
+            client
+                .core
+                .pool
+                .max_active_streams_per_connection()
+                .map(|max| max.get()),
+            Some(4)
+        );
+    }
+
+    #[tokio::test]
+    async fn builder_pool_max_active_streams_per_connection_default_unlimited() {
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+            .build()
+            .unwrap();
+        assert_eq!(client.core.pool.max_active_streams_per_connection(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "pool_max_active_streams_per_connection must be greater than 0")]
+    fn builder_pool_max_active_streams_per_connection_rejects_zero() {
+        let _ = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+            .pool_max_active_streams_per_connection(0);
+    }
+
+    #[tokio::test]
     async fn builder_proxy_shorthand() {
         use crate::proxy::ProxyConfig;
         let config = ProxyConfig::http("http://proxy:8080").unwrap();

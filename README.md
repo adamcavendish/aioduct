@@ -205,6 +205,7 @@ let client = TokioClient::builder()
     .pool_idle_timeout(Duration::from_secs(90))
     .pool_max_lifetime(Duration::from_secs(600))
     .pool_max_idle_per_host(10)
+    .pool_max_active_streams_per_connection(100)
     .tcp_keepalive(Duration::from_secs(60))
     .local_address("192.168.1.100".parse().unwrap())
     .build()?;

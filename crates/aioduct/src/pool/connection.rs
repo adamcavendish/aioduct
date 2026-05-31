@@ -1,5 +1,7 @@
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -34,8 +36,22 @@ pub(crate) struct PooledConnection<B> {
     pub(crate) bytes_received: u64,
     /// True when this is a cloned handle for H2/H3 multiplexing.
     pub(crate) is_multiplex_clone: bool,
+    /// Shared active stream count for H2/H3 multiplex clones.
+    active_streams: Option<Arc<AtomicUsize>>,
+    /// Permit held by an active H2/H3 multiplex clone.
+    _active_stream_permit: Option<ActiveStreamPermit>,
     /// Upgrade handle for Local path (!Send) HTTP/1.1 upgrades.
     pub(crate) upgrade_handle_local: Option<crate::upgrade::UpgradeHandleLocal>,
+}
+
+struct ActiveStreamPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ActiveStreamPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl<B> PooledConnection<B> {
@@ -52,6 +68,8 @@ impl<B> PooledConnection<B> {
             bytes_sent: 0,
             bytes_received: 0,
             is_multiplex_clone: false,
+            active_streams: None,
+            _active_stream_permit: None,
             upgrade_handle_local: None,
         }
     }
@@ -69,6 +87,8 @@ impl<B> PooledConnection<B> {
             bytes_sent: 0,
             bytes_received: 0,
             is_multiplex_clone: false,
+            active_streams: Some(Arc::new(AtomicUsize::new(0))),
+            _active_stream_permit: None,
             upgrade_handle_local: None,
         }
     }
@@ -89,6 +109,8 @@ impl<B> PooledConnection<B> {
             bytes_sent: 0,
             bytes_received: 0,
             is_multiplex_clone: false,
+            active_streams: Some(Arc::new(AtomicUsize::new(0))),
+            _active_stream_permit: None,
             upgrade_handle_local: None,
         }
     }
@@ -140,13 +162,64 @@ impl<B> PooledConnection<B> {
             HttpConnection::H3(_) => Poll::Ready(true),
         }
     }
+
+    fn acquire_multiplex_permit(
+        &self,
+        max_active: Option<NonZeroUsize>,
+    ) -> Option<ActiveStreamPermit> {
+        let active = self.active_streams.as_ref()?.clone();
+
+        if let Some(max_active) = max_active {
+            let max = max_active.get();
+            let mut current = active.load(Ordering::Acquire);
+            loop {
+                if current >= max {
+                    return None;
+                }
+                match active.compare_exchange_weak(
+                    current,
+                    current + 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => return Some(ActiveStreamPermit { active }),
+                    Err(observed) => current = observed,
+                }
+            }
+        }
+
+        active.fetch_add(1, Ordering::AcqRel);
+        Some(ActiveStreamPermit { active })
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn active_multiplex_streams(&self) -> Option<usize> {
+        self.active_streams
+            .as_ref()
+            .map(|active| active.load(Ordering::Acquire))
+    }
 }
 
 impl<B: 'static> PooledConnection<B> {
     /// Clone the underlying send handle for H2/H3 multiplexing.
     ///
     /// Returns `None` for H1 connections (no multiplexing).
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn clone_for_multiplex(&self) -> Option<Self> {
+        self.clone_for_multiplex_with_limit(None)
+    }
+
+    /// Clone the underlying send handle for H2/H3 multiplexing if capacity allows.
+    ///
+    /// Returns `None` for H1 connections or when the configured active stream
+    /// limit for this connection has already been reached.
+    pub(crate) fn clone_for_multiplex_with_limit(
+        &self,
+        max_active: Option<NonZeroUsize>,
+    ) -> Option<Self> {
+        let active_stream_permit = self.acquire_multiplex_permit(max_active)?;
         let conn = match &self.conn {
             HttpConnection::H1(_) => return None,
             HttpConnection::H2(s) => HttpConnection::H2(s.clone()),
@@ -164,6 +237,8 @@ impl<B: 'static> PooledConnection<B> {
             bytes_sent: 0,
             bytes_received: 0,
             is_multiplex_clone: true,
+            active_streams: self.active_streams.clone(),
+            _active_stream_permit: Some(active_stream_permit),
             upgrade_handle_local: None,
         })
     }

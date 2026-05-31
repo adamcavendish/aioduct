@@ -118,7 +118,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         let pool = if self.no_connection_reuse {
             ConnectionPool::new(0, Duration::from_secs(0))
         } else {
-            let pool = ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout);
+            let mut pool = ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout);
+            if let Some(max_active) = self.pool_max_active_streams_per_connection {
+                pool = pool.with_max_active_streams_per_connection(max_active);
+            }
             if let Some(max_lifetime) = self.pool_max_lifetime {
                 pool.with_max_lifetime(max_lifetime)
             } else {
