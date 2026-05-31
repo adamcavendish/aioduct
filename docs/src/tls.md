@@ -90,6 +90,51 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
+### Encrypted ClientHello
+
+Encrypted ClientHello (ECH) is available through rustls custom client
+configuration. Because ECH configuration is domain-specific and rustls forces
+TLS 1.3 when ECH is enabled, build the `rustls::ClientConfig` yourself and pass
+it to `RustlsConnector::new`.
+
+This example uses rustls and webpki-roots APIs directly, so applications should
+declare those crates explicitly when building custom ECH configurations.
+
+```rust,no_run
+use std::sync::Arc;
+
+use aioduct::TokioClient;
+use aioduct::tls::RustlsConnector;
+use rustls::client::{EchConfig, EchMode};
+use rustls::pki_types::EchConfigListBytes;
+
+# fn build_client(ech_config_list_bytes: Vec<u8>) -> Result<TokioClient, Box<dyn std::error::Error>> {
+let hpke_suites = rustls::crypto::aws_lc_rs::hpke::ALL_SUPPORTED_SUITES;
+let ech_config = EchConfig::new(
+    EchConfigListBytes::from(ech_config_list_bytes),
+    hpke_suites,
+)?;
+let root_store =
+    rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+let mut config = rustls::ClientConfig::builder_with_provider(provider)
+    .with_ech(EchMode::Enable(ech_config))?
+    .with_root_certificates(root_store)
+    .with_no_client_auth();
+
+config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+let client = TokioClient::builder()
+    .tls(RustlsConnector::new(Arc::new(config)))
+    .build()?;
+# Ok(client)
+# }
+```
+
+The `ech_config_list_bytes` value comes from the `ech` parameter of the
+server's DNS HTTPS record after base64 decoding. Use this path for Tokio, smol,
+compio, and blocking clients; they all share the same rustls connector.
+
 ## Accepting Invalid Certificates
 
 For development and testing, you can disable certificate verification:
