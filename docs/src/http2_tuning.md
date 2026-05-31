@@ -18,7 +18,8 @@ let client = TokioClient::builder()
             .adaptive_window(true)
             .keep_alive_interval(Duration::from_secs(20))
             .keep_alive_timeout(Duration::from_secs(10))
-            .keep_alive_while_idle(true),
+            .keep_alive_while_idle(true)
+            .max_concurrent_reset_streams(128),
     )
     .build()?;
 ```
@@ -52,7 +53,7 @@ let client = BlockingTokioClient::new(async_client);
 | `keep_alive_while_idle(bool)` | Send PINGs even when no active streams |
 | `max_header_list_size(u32)` | Max size of received header list (bytes) |
 | `max_send_buf_size(usize)` | Max write buffer size per stream (bytes) |
-| `max_concurrent_reset_streams(usize)` | Max locally-reset streams tracked |
+| `max_concurrent_reset_streams(usize)` | Max locally-reset streams Hyper keeps in reset state |
 
 ## Flow Control Window Sizing
 
@@ -79,6 +80,18 @@ let config = Http2Config::new()
     .keep_alive_while_idle(true);
 ```
 
+## Reset Stream State
+
+Hyper keeps recently locally-reset HTTP/2 streams in memory for a short period so
+late frames on those streams can be ignored as required by the protocol. Use
+`max_concurrent_reset_streams` to bound that per-connection state:
+
+```rust,no_run
+# use aioduct::Http2Config;
+let config = Http2Config::new()
+    .max_concurrent_reset_streams(128);
+```
+
 ## When to Use
 
 - **Default (no config)**: Fine for most use cases
@@ -86,3 +99,4 @@ let config = Http2Config::new()
 - **High-latency links**: Enable adaptive window
 - **Long-lived connections**: Enable keep-alive PINGs
 - **Behind aggressive LBs/proxies**: Short keep-alive intervals
+- **Reset-heavy workloads**: Bound locally-reset stream state

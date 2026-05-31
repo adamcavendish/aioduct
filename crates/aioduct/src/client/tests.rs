@@ -181,6 +181,16 @@ mod builder_tests {
     }
 
     #[tokio::test]
+    async fn builder_http2_max_concurrent_reset_streams() {
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+            .http2_max_concurrent_reset_streams(17)
+            .build()
+            .unwrap();
+        let config = client.core.http2.as_ref().expect("http2 config");
+        assert_eq!(config.max_concurrent_reset_streams, Some(17));
+    }
+
+    #[tokio::test]
     async fn builder_hsts() {
         let store = crate::hsts::HstsStore::new();
         let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
