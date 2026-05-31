@@ -757,7 +757,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             if let Some(existing) = self.core.pool.checkout(&pool_key) {
                 drop(pooled);
                 pooled = existing;
-            } else if let Some(cloned) = pooled.clone_for_multiplex() {
+            } else if let Some(cloned) = pooled
+                .clone_for_multiplex_with_limit(self.core.pool.max_active_streams_per_connection())
+            {
                 self.core.checkin_connection(pool_key.clone(), pooled);
                 pooled = cloned;
             }

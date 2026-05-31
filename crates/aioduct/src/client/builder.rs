@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ pub struct HttpEngineBuilder<R, C> {
     pub(super) pool_idle_timeout: Duration,
     pub(super) pool_max_lifetime: Option<Duration>,
     pub(super) pool_max_idle_per_host: usize,
+    pub(super) pool_max_active_streams_per_connection: Option<NonZeroUsize>,
     pub(super) no_connection_reuse: bool,
     pub(super) tcp_fast_open: bool,
     pub(super) http2_prior_knowledge: bool,
@@ -104,6 +106,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_lifetime: None,
             pool_max_idle_per_host: 10,
+            pool_max_active_streams_per_connection: None,
             no_connection_reuse: false,
             tcp_fast_open: false,
             http2_prior_knowledge: false,

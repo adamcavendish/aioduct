@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +37,22 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// Set the max idle connections per host (default: 10).
     pub fn pool_max_idle_per_host(mut self, max: usize) -> Self {
         self.pool_max_idle_per_host = max;
+        self
+    }
+
+    /// Set the maximum active multiplexed streams per HTTP/2 or HTTP/3 connection.
+    ///
+    /// The default is unlimited. This does not affect HTTP/1.1 connections.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max` is 0.
+    pub fn pool_max_active_streams_per_connection(mut self, max: usize) -> Self {
+        assert!(
+            max > 0,
+            "pool_max_active_streams_per_connection must be greater than 0"
+        );
+        self.pool_max_active_streams_per_connection = NonZeroUsize::new(max);
         self
     }
 
