@@ -43,13 +43,19 @@ fn key(host: &str) -> PoolKey {
 
 #[test]
 fn checkout_returns_none_on_empty_pool() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     assert!(pool.checkout(&key("example.com:80")).is_none());
 }
 
 #[tokio::test]
 async fn checkin_then_checkout_returns_connection() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
 
     let conn = make_h1_conn().await;
@@ -66,7 +72,10 @@ async fn checkin_then_checkout_returns_connection() {
 
 #[tokio::test]
 async fn checkout_with_different_key_returns_none() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
 
     let conn = make_h1_conn().await;
     pool.checkin(key("a.example.com:80"), conn);
@@ -82,7 +91,10 @@ async fn checkout_with_different_key_returns_none() {
 #[tokio::test]
 async fn pool_respects_max_idle_per_host() {
     let max_idle = 2;
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(max_idle, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(max_idle)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
 
     for _ in 0..3 {
@@ -102,7 +114,10 @@ async fn pool_respects_max_idle_per_host() {
 
 #[tokio::test]
 async fn checkin_checkout_is_lifo() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
 
     let conn1 = make_h1_conn().await;
@@ -129,7 +144,10 @@ async fn checkin_checkout_is_lifo() {
 
 #[tokio::test]
 async fn checkout_expired_connection_returns_none() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_millis(50));
     let k = key("example.com:80");
 
     let conn = make_h1_conn().await;
@@ -145,7 +163,10 @@ async fn checkout_expired_connection_returns_none() {
 
 #[tokio::test]
 async fn checkout_connection_past_max_lifetime_returns_none() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
         .with_max_lifetime(Duration::from_millis(50));
     let k = key("example.com:80");
 
@@ -162,7 +183,10 @@ async fn checkout_connection_past_max_lifetime_returns_none() {
 
 #[tokio::test]
 async fn checkin_connection_past_max_lifetime_drops_it() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
         .with_max_lifetime(Duration::ZERO);
     let k = key("example.com:80");
 
@@ -179,7 +203,9 @@ async fn checkin_connection_past_max_lifetime_drops_it() {
 
 #[tokio::test]
 async fn reaper_removes_expired_connections() {
-    let pool = ConnectionPool::<RequestBodySend>::new(1, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .with_max_idle_per_host(1)
+        .with_idle_timeout(Duration::from_millis(50));
     pool.ensure_reaper::<TokioRuntime>();
     let k = key("example.com:80");
 
@@ -196,7 +222,9 @@ async fn reaper_removes_expired_connections() {
 
 #[tokio::test]
 async fn reaper_removes_connections_past_max_lifetime() {
-    let pool = ConnectionPool::<RequestBodySend>::new(1, Duration::from_secs(30))
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .with_max_idle_per_host(1)
+        .with_idle_timeout(Duration::from_secs(30))
         .with_max_lifetime(Duration::from_millis(50));
     pool.ensure_reaper::<TokioRuntime>();
     let k = key("example.com:80");
@@ -261,7 +289,10 @@ fn key_https(host: &str) -> PoolKey {
 
 #[tokio::test]
 async fn checkout_coalesced_finds_by_san() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -282,7 +313,10 @@ async fn checkout_coalesced_finds_by_san() {
 
 #[tokio::test]
 async fn checkout_coalesced_rejects_h1() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h1_conn().await;
@@ -299,7 +333,10 @@ async fn checkout_coalesced_rejects_h1() {
 
 #[tokio::test]
 async fn checkout_coalesced_rejects_different_ip() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -316,7 +353,10 @@ async fn checkout_coalesced_rejects_different_ip() {
 
 #[tokio::test]
 async fn checkout_coalesced_skips_expired() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_millis(50));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -336,7 +376,10 @@ async fn checkout_coalesced_skips_expired() {
 
 #[test]
 fn checkout_coalesced_empty_pool_returns_none() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let ip: IpAddr = [10, 0, 0, 1].into();
     let result = pool.checkout_coalesced("cdn.example.com", Some(ip));
     assert!(result.is_none(), "empty pool should return None");
@@ -344,14 +387,20 @@ fn checkout_coalesced_empty_pool_returns_none() {
 
 #[test]
 fn mark_connecting_h2_returns_false_first_time() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
     assert!(!pool.mark_connecting_h2(&k));
 }
 
 #[test]
 fn mark_connecting_h2_returns_true_when_already_present() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
     assert!(!pool.mark_connecting_h2(&k));
     assert!(pool.mark_connecting_h2(&k));
@@ -359,7 +408,10 @@ fn mark_connecting_h2_returns_true_when_already_present() {
 
 #[test]
 fn unmark_connecting_h2_allows_re_mark() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
     assert!(!pool.mark_connecting_h2(&k));
     pool.unmark_connecting_h2(&k);
@@ -401,7 +453,10 @@ fn protocol_hint_debug() {
 
 #[tokio::test]
 async fn checkout_h2_clone_for_multiplex() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("example.com:443");
 
     let conn = make_h2_conn().await;
@@ -421,7 +476,10 @@ async fn checkout_h2_clone_for_multiplex() {
 
 #[tokio::test]
 async fn checkout_h2_respects_max_active_streams_per_connection() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
         .with_max_active_streams_per_connection(std::num::NonZeroUsize::new(1).unwrap());
     let k = key_https("example.com:443");
 
@@ -443,7 +501,10 @@ async fn checkout_h2_respects_max_active_streams_per_connection() {
 
 #[tokio::test]
 async fn checkout_h2_active_stream_limit_is_per_connection() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
         .with_max_active_streams_per_connection(std::num::NonZeroUsize::new(1).unwrap());
     let k = key_https("example.com:443");
 
@@ -456,7 +517,10 @@ async fn checkout_h2_active_stream_limit_is_per_connection() {
 
 #[tokio::test]
 async fn max_active_streams_per_connection_does_not_change_h1_checkout() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
         .with_max_active_streams_per_connection(std::num::NonZeroUsize::new(1).unwrap());
     let k = key("example.com:80");
 
@@ -471,7 +535,10 @@ async fn max_active_streams_per_connection_does_not_change_h1_checkout() {
 
 #[tokio::test]
 async fn checkout_coalesced_respects_max_active_streams_per_connection() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
         .with_max_active_streams_per_connection(std::num::NonZeroUsize::new(1).unwrap());
     let k = key_https("origin.example.com:443");
 
@@ -500,7 +567,10 @@ async fn checkout_coalesced_respects_max_active_streams_per_connection() {
 
 #[tokio::test]
 async fn checkout_coalesced_without_ip_check() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -519,7 +589,10 @@ async fn checkout_coalesced_without_ip_check() {
 
 #[tokio::test]
 async fn checkout_coalesced_san_not_found() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -538,7 +611,9 @@ async fn checkout_coalesced_san_not_found() {
 
 #[tokio::test]
 async fn reaper_cleans_san_index_for_expired_connections() {
-    let pool = ConnectionPool::<RequestBodySend>::new(1, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .with_max_idle_per_host(1)
+        .with_idle_timeout(Duration::from_millis(50));
     pool.ensure_reaper::<TokioRuntime>();
     let k = key_https("origin.example.com:443");
 
@@ -561,7 +636,9 @@ async fn reaper_cleans_san_index_for_expired_connections() {
 
 #[tokio::test]
 async fn reaper_retains_live_connections() {
-    let pool = ConnectionPool::<RequestBodySend>::new(4, Duration::from_secs(10));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .with_max_idle_per_host(4)
+        .with_idle_timeout(Duration::from_secs(10));
     pool.ensure_reaper::<TokioRuntime>();
     let k = key("example.com:80");
 
@@ -690,7 +767,10 @@ fn pool_key_with_hint_adaptive_debug() {
 
 #[tokio::test]
 async fn pool_clone_shares_state() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let pool2 = pool.clone();
     let k = key("example.com:80");
 
@@ -708,7 +788,10 @@ async fn pool_clone_shares_state() {
 
 #[tokio::test]
 async fn checkin_evicts_oldest_when_at_capacity() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(1, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(1)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
 
     let mut conn1 = make_h1_conn().await;
@@ -738,7 +821,10 @@ async fn checkin_evicts_oldest_when_at_capacity() {
 
 #[tokio::test]
 async fn checkin_populates_san_index() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -758,7 +844,10 @@ async fn checkin_populates_san_index() {
 
 #[tokio::test]
 async fn checkout_coalesced_multiple_sans_finds_any() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -793,7 +882,10 @@ async fn checkout_coalesced_multiple_sans_finds_any() {
 
 #[test]
 fn mark_connecting_h2_independent_keys() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k1 = key("a.example.com:80");
     let k2 = key("b.example.com:80");
 
@@ -814,7 +906,10 @@ fn mark_connecting_h2_independent_keys() {
 
 #[tokio::test]
 async fn checkout_coalesced_cleans_stale_san_index() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_millis(50));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -888,7 +983,10 @@ async fn make_h2_conn_with_shutdown() -> (
 
 #[tokio::test]
 async fn checkout_coalesced_removes_not_ready_connection() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let (mut conn, shutdown_tx) = make_h2_conn_with_shutdown().await;
@@ -913,7 +1011,10 @@ async fn checkout_coalesced_removes_not_ready_connection() {
 
 #[tokio::test]
 async fn checkout_coalesced_cleans_san_index_when_no_connections_remain() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let (mut conn, shutdown_tx) = make_h2_conn_with_shutdown().await;
@@ -946,7 +1047,10 @@ async fn checkout_coalesced_san_index_stale_entry_continue_on_missing_queue() {
     // Test the path where san_index has a key but idle map doesn't (line 231: continue).
     // This happens when two different keys map to the same SAN: the first key's
     // idle queue might be empty/removed, so checkout_coalesced continues to the next key.
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k1 = key_https("origin1.example.com:443");
     let k2 = key_https("origin2.example.com:443");
 
@@ -981,7 +1085,10 @@ async fn checkout_coalesced_san_index_stale_entry_continue_on_missing_queue() {
 async fn pool_zero_max_idle_always_evicts() {
     // Edge case: max_idle_per_host = 0 means nothing stays pooled
     // (In practice the pool stores at least 1 because pop_front happens before push_back)
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(1, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(1)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
 
     let conn = make_h1_conn().await;
@@ -1002,7 +1109,10 @@ async fn checkout_coalesced_san_index_has_entry_but_conn_sans_dont_match() {
     // This tests the scenario where the SAN index is populated via a shared SAN,
     // but the actual connection's SANs don't include the specific target_host
     // we're looking for from a different lookup path.
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -1036,7 +1146,10 @@ async fn checkout_coalesced_san_index_has_entry_but_conn_sans_dont_match() {
 async fn checkout_coalesced_last_connection_in_queue_triggers_removal() {
     // When the last connection in a queue is checkout out (non-multiplex path),
     // the queue becomes empty and found_key is set for removal.
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     // Add a single H1 connection with SANs (won't multiplex)
@@ -1069,7 +1182,9 @@ async fn ensure_reaper_local_removes_expired() {
     // Actually TokioRuntime implements RuntimePoll, not RuntimeLocal.
     // The local reaper is tested in tests_compio.rs. Let's just verify the
     // send-path reaper cleans the SAN index properly.
-    let pool = ConnectionPool::<RequestBodySend>::new(1, Duration::from_millis(50));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .with_max_idle_per_host(1)
+        .with_idle_timeout(Duration::from_millis(50));
     pool.ensure_reaper::<TokioRuntime>();
     let k = key_https("origin.example.com:443");
 
@@ -1101,7 +1216,10 @@ async fn ensure_reaper_local_removes_expired() {
 
 #[tokio::test]
 async fn checkin_populates_san_index_for_all_sans() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     let mut conn = make_h2_conn().await;
@@ -1136,7 +1254,10 @@ async fn checkin_populates_san_index_for_all_sans() {
 
 #[tokio::test]
 async fn checkout_skips_not_ready_h1_connection() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
 
     let (mut conn, shutdown_tx) = make_h2_conn_with_shutdown().await;
@@ -1181,7 +1302,10 @@ async fn checkout_skips_not_ready_h1_connection() {
 async fn checkout_coalesced_san_index_key_but_idle_empty() {
     // Create a scenario where san_index maps a SAN to a key, but the idle map
     // no longer has that key (because we checked out the H1 connection via regular checkout).
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("origin.example.com:443");
 
     // Use H1 connection - regular checkout removes it completely from idle
@@ -1215,7 +1339,10 @@ async fn checkout_coalesced_san_index_key_but_idle_empty() {
 async fn checkout_coalesced_san_index_cleanup_removes_empty_set() {
     // Test that after checkout_coalesced finds no idle queue for a key,
     // it cleans up the san_index entry (lines 283-288).
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key_https("only-origin.example.com:443");
 
     // Use H1 connection so regular checkout fully removes from idle
@@ -1254,7 +1381,9 @@ async fn checkout_coalesced_san_index_cleanup_removes_empty_set() {
 async fn reaper_loop_runs_multiple_cycles() {
     // Verify the reaper can run multiple cycles and correctly clean up connections
     // added at different times.
-    let pool = ConnectionPool::<RequestBodySend>::new(4, Duration::from_millis(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .with_max_idle_per_host(4)
+        .with_idle_timeout(Duration::from_millis(30));
     pool.ensure_reaper::<TokioRuntime>();
     let k = key("reaper-multi.example.com:80");
 
@@ -1285,7 +1414,9 @@ async fn reaper_loop_runs_multiple_cycles() {
 
 #[tokio::test]
 async fn reaper_cleans_san_index_keys_not_in_idle() {
-    let pool = ConnectionPool::<RequestBodySend>::new(4, Duration::from_millis(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .with_max_idle_per_host(4)
+        .with_idle_timeout(Duration::from_millis(30));
     pool.ensure_reaper::<TokioRuntime>();
     let k = key_https("reaper-san.example.com:443");
 
@@ -1313,7 +1444,10 @@ async fn reaper_cleans_san_index_keys_not_in_idle() {
 
 #[tokio::test]
 async fn checkout_tries_multiple_candidates_lifo() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
 
     // Add two connections
@@ -1347,7 +1481,10 @@ async fn checkout_tries_multiple_candidates_lifo() {
 
 #[tokio::test]
 async fn evict_removes_all_connections_for_key() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k = key("example.com:80");
 
     let conn1 = make_h1_conn().await;
@@ -1366,7 +1503,10 @@ async fn evict_removes_all_connections_for_key() {
 
 #[tokio::test]
 async fn evict_does_not_affect_other_keys() {
-    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
     let k1 = key("a.example.com:80");
     let k2 = key("b.example.com:80");
 

@@ -45,9 +45,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
     /// Build the configured [`HttpEngineLocal`] for a completion-based runtime.
     pub fn build_local(self) -> Result<HttpEngineLocal<R, C>, crate::error::Error> {
         let pool = if self.no_connection_reuse {
-            ConnectionPool::new(0, Duration::from_secs(0))
+            ConnectionPool::new()
+                .with_max_idle_per_host(0)
+                .with_idle_timeout(Duration::ZERO)
         } else {
-            let mut pool = ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout);
+            let mut pool = ConnectionPool::new()
+                .with_max_idle_per_host(self.pool_max_idle_per_host)
+                .with_idle_timeout(self.pool_idle_timeout);
             if let Some(max_active) = self.pool_max_active_streams_per_connection {
                 pool = pool.with_max_active_streams_per_connection(max_active);
             }
