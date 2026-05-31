@@ -24,6 +24,15 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Set the maximum lifetime for pooled connections.
+    ///
+    /// Connections older than this are not reused once they return idle.
+    /// In-flight requests are not interrupted.
+    pub fn pool_max_lifetime(mut self, lifetime: Duration) -> Self {
+        self.pool_max_lifetime = Some(lifetime);
+        self
+    }
+
     /// Set the max idle connections per host (default: 10).
     pub fn pool_max_idle_per_host(mut self, max: usize) -> Self {
         self.pool_max_idle_per_host = max;

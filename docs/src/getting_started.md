@@ -139,6 +139,7 @@ let client = TokioClient::builder()
     .timeout(Duration::from_secs(30))
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))
+    .pool_max_lifetime(Duration::from_secs(600))
     .pool_max_idle_per_host(10)
     .build()?;
 ```

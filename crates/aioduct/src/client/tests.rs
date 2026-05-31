@@ -288,7 +288,19 @@ mod builder_tests {
             .pool_idle_timeout(Duration::from_secs(30))
             .build()
             .unwrap();
-        assert_eq!(client.core.timeout, None);
+        assert_eq!(client.core.pool.idle_timeout(), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn builder_pool_max_lifetime() {
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+            .pool_max_lifetime(Duration::from_secs(120))
+            .build()
+            .unwrap();
+        assert_eq!(
+            client.core.pool.max_lifetime(),
+            Some(Duration::from_secs(120))
+        );
     }
 
     #[tokio::test]
