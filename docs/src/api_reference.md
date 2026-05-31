@@ -29,6 +29,7 @@ let client = TokioClient::builder()
     .timeout(Duration::from_secs(30))
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))
+    .pool_max_lifetime(Duration::from_secs(600))
     .pool_max_idle_per_host(10)
     .build()?;
 ```
@@ -62,6 +63,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `referer(bool)`         | false       | Set `Referer` header on redirects    |
 | `https_only(bool)`      | false       | Reject non-HTTPS URLs                |
 | `pool_idle_timeout(Duration)` | 90s  | Idle connection lifetime             |
+| `pool_max_lifetime(Duration)` | None | Maximum connection age before reuse stops |
 | `pool_max_idle_per_host(usize)` | 10 | Max idle connections per origin      |
 | `default_headers(HeaderMap)` | User-Agent | Headers applied to every request |
 | `no_default_headers()`  | —           | Remove all default headers           |

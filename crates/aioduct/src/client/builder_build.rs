@@ -118,7 +118,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         let pool = if self.no_connection_reuse {
             ConnectionPool::new(0, Duration::from_secs(0))
         } else {
-            ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout)
+            let pool = ConnectionPool::new(self.pool_max_idle_per_host, self.pool_idle_timeout);
+            if let Some(max_lifetime) = self.pool_max_lifetime {
+                pool.with_max_lifetime(max_lifetime)
+            } else {
+                pool
+            }
         };
 
         #[cfg(feature = "rustls")]

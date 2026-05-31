@@ -25,6 +25,7 @@ use super::DEFAULT_USER_AGENT;
 pub struct HttpEngineBuilder<R, C> {
     pub(super) connector: C,
     pub(super) pool_idle_timeout: Duration,
+    pub(super) pool_max_lifetime: Option<Duration>,
     pub(super) pool_max_idle_per_host: usize,
     pub(super) no_connection_reuse: bool,
     pub(super) tcp_fast_open: bool,
@@ -101,6 +102,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
         Self {
             connector,
             pool_idle_timeout: Duration::from_secs(90),
+            pool_max_lifetime: None,
             pool_max_idle_per_host: 10,
             no_connection_reuse: false,
             tcp_fast_open: false,

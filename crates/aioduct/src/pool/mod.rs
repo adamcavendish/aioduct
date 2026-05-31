@@ -70,6 +70,7 @@ struct PoolInner<B> {
     connecting_h2: HashSet<PoolKey>,
     max_idle_per_host: usize,
     idle_timeout: Duration,
+    max_lifetime: Option<Duration>,
 }
 
 /// Thread-safe pool of idle HTTP connections keyed by origin.
@@ -90,6 +91,15 @@ impl<B> Clone for ConnectionPool<B> {
 impl<B: 'static> ConnectionPool<B> {
     /// Create a pool with the given capacity and timeout settings.
     pub(crate) fn new(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
+        Self::new_inner(max_idle_per_host, idle_timeout, None, false)
+    }
+
+    fn new_inner(
+        max_idle_per_host: usize,
+        idle_timeout: Duration,
+        max_lifetime: Option<Duration>,
+        reaper_spawned: bool,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(PoolInner {
                 idle: HashMap::new(),
@@ -97,9 +107,18 @@ impl<B: 'static> ConnectionPool<B> {
                 connecting_h2: HashSet::new(),
                 max_idle_per_host,
                 idle_timeout,
+                max_lifetime,
             })),
-            reaper_spawned: Arc::new(AtomicBool::new(false)),
+            reaper_spawned: Arc::new(AtomicBool::new(reaper_spawned)),
         }
+    }
+
+    /// Set the maximum lifetime for pooled connections.
+    pub(crate) fn with_max_lifetime(self, max_lifetime: Duration) -> Self {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.max_lifetime = Some(max_lifetime);
+        }
+        self
     }
 
     /// Create a pool without spawning the background reaper task.
@@ -108,16 +127,7 @@ impl<B: 'static> ConnectionPool<B> {
     /// have a full async runtime available.
     #[cfg(any(test, feature = "__bench"))]
     pub(crate) fn new_no_reaper(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(PoolInner {
-                idle: HashMap::new(),
-                san_index: HashMap::new(),
-                connecting_h2: HashSet::new(),
-                max_idle_per_host,
-                idle_timeout,
-            })),
-            reaper_spawned: Arc::new(AtomicBool::new(true)),
-        }
+        Self::new_inner(max_idle_per_host, idle_timeout, None, true)
     }
 
     /// Returns the configured idle timeout for this pool.
@@ -128,6 +138,25 @@ impl<B: 'static> ConnectionPool<B> {
             .idle_timeout
     }
 
+    /// Returns the configured maximum connection lifetime for this pool.
+    #[cfg(test)]
+    pub(crate) fn max_lifetime(&self) -> Option<Duration> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .max_lifetime
+    }
+
+    fn connection_within_lifetime(
+        connection: &PooledConnection<B>,
+        max_lifetime: Option<Duration>,
+    ) -> bool {
+        match max_lifetime {
+            Some(max_lifetime) => connection.created_at.elapsed() < max_lifetime,
+            None => true,
+        }
+    }
+
     /// Retrieve an idle, ready connection for the given key.
     ///
     /// Uses LIFO ordering (most recently returned first) and checks readiness
@@ -135,11 +164,15 @@ impl<B: 'static> ConnectionPool<B> {
     pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection<B>> {
         let mut inner = self.inner.lock().ok()?;
         let idle_timeout = inner.idle_timeout;
+        let max_lifetime = inner.max_lifetime;
         let queue = inner.idle.get_mut(key)?;
         let now = Instant::now();
 
         while let Some(entry) = queue.pop_back() {
             if now.duration_since(entry.idle_since) >= idle_timeout {
+                continue;
+            }
+            if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
                 continue;
             }
             if entry.connection.is_ready() {
@@ -172,6 +205,10 @@ impl<B: 'static> ConnectionPool<B> {
         let max = inner.max_idle_per_host;
 
         if max == 0 {
+            return;
+        }
+
+        if !Self::connection_within_lifetime(&connection, inner.max_lifetime) {
             return;
         }
 
@@ -240,6 +277,7 @@ impl<B: 'static> ConnectionPool<B> {
         let mut inner = self.inner.lock().ok()?;
         let now = Instant::now();
         let idle_timeout = inner.idle_timeout;
+        let max_lifetime = inner.max_lifetime;
 
         let candidate_keys: Vec<PoolKey> = match inner.san_index.get(target_host) {
             Some(keys) => keys.iter().cloned().collect(),
@@ -262,6 +300,9 @@ impl<B: 'static> ConnectionPool<B> {
                 i -= 1;
 
                 if now.duration_since(queue[i].idle_since) >= idle_timeout {
+                    continue;
+                }
+                if !Self::connection_within_lifetime(&queue[i].connection, max_lifetime) {
                     continue;
                 }
                 if !queue[i].connection.is_h2_or_h3() {
@@ -340,7 +381,7 @@ impl<B: 'static> ConnectionPool<B> {
                     let Ok(guard) = inner.lock() else {
                         return;
                     };
-                    guard.idle_timeout
+                    reaper_interval(guard.idle_timeout, guard.max_lifetime)
                 };
                 R::sleep(timeout).await;
 
@@ -349,8 +390,12 @@ impl<B: 'static> ConnectionPool<B> {
                 };
                 let now = Instant::now();
                 let idle_timeout = guard.idle_timeout;
+                let max_lifetime = guard.max_lifetime;
                 guard.idle.retain(|_, queue| {
-                    queue.retain(|entry| now.duration_since(entry.idle_since) < idle_timeout);
+                    queue.retain(|entry| {
+                        now.duration_since(entry.idle_since) < idle_timeout
+                            && Self::connection_within_lifetime(&entry.connection, max_lifetime)
+                    });
                     !queue.is_empty()
                 });
                 let live_keys: HashSet<PoolKey> = guard.idle.keys().cloned().collect();
@@ -377,7 +422,7 @@ impl<B: 'static> ConnectionPool<B> {
                     let Ok(guard) = inner.lock() else {
                         return;
                     };
-                    guard.idle_timeout
+                    reaper_interval(guard.idle_timeout, guard.max_lifetime)
                 };
                 R::sleep(timeout).await;
 
@@ -386,8 +431,12 @@ impl<B: 'static> ConnectionPool<B> {
                 };
                 let now = Instant::now();
                 let idle_timeout = guard.idle_timeout;
+                let max_lifetime = guard.max_lifetime;
                 guard.idle.retain(|_, queue| {
-                    queue.retain(|entry| now.duration_since(entry.idle_since) < idle_timeout);
+                    queue.retain(|entry| {
+                        now.duration_since(entry.idle_since) < idle_timeout
+                            && Self::connection_within_lifetime(&entry.connection, max_lifetime)
+                    });
                     !queue.is_empty()
                 });
                 let live_keys: HashSet<PoolKey> = guard.idle.keys().cloned().collect();
@@ -397,6 +446,13 @@ impl<B: 'static> ConnectionPool<B> {
                 });
             }
         });
+    }
+}
+
+fn reaper_interval(idle_timeout: Duration, max_lifetime: Option<Duration>) -> Duration {
+    match max_lifetime {
+        Some(max_lifetime) if !max_lifetime.is_zero() => idle_timeout.min(max_lifetime),
+        _ => idle_timeout,
     }
 }
 

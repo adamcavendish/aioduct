@@ -144,6 +144,40 @@ async fn checkout_expired_connection_returns_none() {
 }
 
 #[tokio::test]
+async fn checkout_connection_past_max_lifetime_returns_none() {
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+        .with_max_lifetime(Duration::from_millis(50));
+    let k = key("example.com:80");
+
+    let conn = make_h1_conn().await;
+    pool.checkin(k.clone(), conn);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        pool.checkout(&k).is_none(),
+        "connection older than max lifetime should be discarded"
+    );
+}
+
+#[tokio::test]
+async fn checkin_connection_past_max_lifetime_drops_it() {
+    let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30))
+        .with_max_lifetime(Duration::ZERO);
+    let k = key("example.com:80");
+
+    let conn = make_h1_conn().await;
+    pool.checkin(k.clone(), conn);
+
+    tokio::task::yield_now().await;
+
+    assert!(
+        pool.checkout(&k).is_none(),
+        "expired connection should not be inserted into the pool"
+    );
+}
+
+#[tokio::test]
 async fn reaper_removes_expired_connections() {
     let pool = ConnectionPool::<RequestBodySend>::new(1, Duration::from_millis(50));
     pool.ensure_reaper::<TokioRuntime>();
@@ -157,6 +191,24 @@ async fn reaper_removes_expired_connections() {
     assert!(
         pool.checkout(&k).is_none(),
         "reaper should have removed the expired connection"
+    );
+}
+
+#[tokio::test]
+async fn reaper_removes_connections_past_max_lifetime() {
+    let pool = ConnectionPool::<RequestBodySend>::new(1, Duration::from_secs(30))
+        .with_max_lifetime(Duration::from_millis(50));
+    pool.ensure_reaper::<TokioRuntime>();
+    let k = key("example.com:80");
+
+    let conn = make_h1_conn().await;
+    pool.checkin(k.clone(), conn);
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert!(
+        pool.checkout(&k).is_none(),
+        "reaper should remove connections older than max lifetime"
     );
 }
 

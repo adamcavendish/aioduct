@@ -37,6 +37,7 @@ use aioduct::TokioClient;
 
 let client = TokioClient::builder()
     .pool_idle_timeout(Duration::from_secs(90))  // default: 90s
+    .pool_max_lifetime(Duration::from_secs(600)) // default: none
     .pool_max_idle_per_host(10)                   // default: 10
     .build()?;
 ```
@@ -46,6 +47,7 @@ let client = TokioClient::builder()
 | Option                  | Default | Description                                        |
 |-------------------------|---------|----------------------------------------------------|
 | `pool_idle_timeout`     | 90s     | How long an idle connection is kept before eviction |
+| `pool_max_lifetime`     | none    | Maximum connection age before it stops being reused |
 | `pool_max_idle_per_host`| 10      | Maximum idle connections per (scheme, authority)    |
 
 ## Connection Health
