@@ -20,7 +20,7 @@ pub enum Error {
 
     /// A TLS handshake or protocol error.
     #[error("TLS error: {0}")]
-    Tls(BoxError),
+    Tls(#[source] BoxError),
 
     /// The request timed out.
     #[error("request timeout")]
@@ -60,7 +60,7 @@ pub enum Error {
 
     /// A catch-all for other errors.
     #[error("{0}")]
-    Other(BoxError),
+    Other(#[source] BoxError),
 }
 
 /// An error paired with the URL that was being requested.
@@ -75,7 +75,17 @@ pub struct SendError {
 
 impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} for url ({})", self.error, redact_url(&self.url))
+        if let Some(root) = self.error.hidden_root_cause() {
+            write!(
+                f,
+                "{}: {} for url ({})",
+                self.error,
+                root,
+                redact_url(&self.url)
+            )
+        } else {
+            write!(f, "{} for url ({})", self.error, redact_url(&self.url))
+        }
     }
 }
 
@@ -129,6 +139,11 @@ impl SendError {
     pub fn status(&self) -> Option<http::StatusCode> {
         self.error.status()
     }
+
+    /// Returns the deepest source in the underlying error chain.
+    pub fn root_cause(&self) -> &(dyn std::error::Error + 'static) {
+        self.error.root_cause()
+    }
 }
 
 impl From<SendError> for Error {
@@ -138,6 +153,15 @@ impl From<SendError> for Error {
 }
 
 impl Error {
+    /// Returns the deepest source in this error's chain, or this error if it has no source.
+    pub fn root_cause(&self) -> &(dyn std::error::Error + 'static) {
+        let mut source = self as &(dyn std::error::Error + 'static);
+        while let Some(next) = source.source() {
+            source = next;
+        }
+        source
+    }
+
     /// Returns `true` if the error is a network-level failure (I/O, TLS, timeout).
     pub fn is_connect(&self) -> bool {
         matches!(self, Error::Io(_) | Error::Tls(_) | Error::ConnectTimeout)
@@ -200,6 +224,22 @@ impl Error {
             _ => false,
         }
     }
+
+    fn hidden_root_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let mut source = std::error::Error::source(self)?;
+        let mut nested = false;
+
+        while let Some(next) = source.source() {
+            nested = true;
+            source = next;
+        }
+
+        if nested && !self.to_string().contains(&source.to_string()) {
+            Some(source)
+        } else {
+            None
+        }
+    }
 }
 
 fn redact_url(uri: &Uri) -> String {
@@ -227,6 +267,17 @@ fn redact_url(uri: &Uri) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("outer layer")]
+    struct OuterLayer {
+        #[source]
+        source: InnerLayer,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("inner cause")]
+    struct InnerLayer;
 
     #[test]
     fn is_connect_for_io() {
@@ -437,6 +488,50 @@ mod tests {
         let send_err = SendError::new(Error::ReadTimeout, uri);
         let err: Error = send_err.into();
         assert!(matches!(err, Error::ReadTimeout));
+    }
+
+    #[test]
+    fn boxed_tls_error_exposes_source_chain() {
+        use std::error::Error as StdError;
+
+        let err = Error::Tls(Box::new(OuterLayer { source: InnerLayer }));
+        let source = err.source().expect("TLS should expose boxed source");
+
+        assert_eq!(source.to_string(), "outer layer");
+        assert_eq!(err.root_cause().to_string(), "inner cause");
+    }
+
+    #[test]
+    fn boxed_other_error_exposes_source_chain() {
+        use std::error::Error as StdError;
+
+        let err = Error::Other(Box::new(OuterLayer { source: InnerLayer }));
+        let source = err.source().expect("Other should expose boxed source");
+
+        assert_eq!(source.to_string(), "outer layer");
+        assert_eq!(err.root_cause().to_string(), "inner cause");
+    }
+
+    #[test]
+    fn send_error_root_cause_forwards_to_underlying_error() {
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let err = SendError::new(
+            Error::Other(Box::new(OuterLayer { source: InnerLayer })),
+            uri,
+        );
+
+        assert_eq!(err.root_cause().to_string(), "inner cause");
+    }
+
+    #[test]
+    fn send_error_display_includes_hidden_root_cause_and_redacts_url() {
+        let uri: Uri = "http://user:password@example.com/path".parse().unwrap();
+        let err = SendError::new(Error::Tls(Box::new(OuterLayer { source: InnerLayer })), uri);
+
+        let display = err.to_string();
+        assert!(display.contains("TLS error: outer layer: inner cause"));
+        assert!(display.contains("http://[redacted]@example.com/path"));
+        assert!(!display.contains("user:password"));
     }
 
     #[test]
