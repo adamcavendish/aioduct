@@ -393,6 +393,56 @@ mod tests {
     }
 
     #[test]
+    fn generated_boundary_is_rfc_2046_safe() {
+        fn is_boundary_char(byte: u8) -> bool {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'\''
+                        | b'('
+                        | b')'
+                        | b'+'
+                        | b'_'
+                        | b','
+                        | b'-'
+                        | b'.'
+                        | b'/'
+                        | b':'
+                        | b'='
+                        | b'?'
+                )
+        }
+
+        for _ in 0..128 {
+            let mp = Multipart::new();
+            let boundary = mp.boundary();
+
+            assert!(!boundary.is_empty(), "multipart boundary must not be empty");
+            assert!(
+                boundary.len() <= 70,
+                "multipart boundary must be at most 70 bytes, got {} for {boundary:?}",
+                boundary.len()
+            );
+            assert!(
+                boundary.bytes().all(is_boundary_char),
+                "multipart boundary contains an unsafe RFC 2046 character: {boundary:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_type_boundary_matches_body_delimiter() {
+        let mp = Multipart::new().text("name", "value");
+        let boundary = extract_boundary(&mp.content_type()).to_owned();
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(body.starts_with(&format!("--{boundary}\r\n")));
+        assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+        assert!(!body.contains("----aioduct<boundary>"));
+    }
+
+    #[test]
     fn has_streaming_parts_false_for_buffered() {
         let mp = Multipart::new().text("field", "value");
         assert!(!mp.has_streaming_parts());
