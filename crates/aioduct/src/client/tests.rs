@@ -609,6 +609,7 @@ mod builder_tests {
                 http::HeaderMap::new(),
                 None,
                 None,
+                None,
             )
             .await;
         let err = result.unwrap_err();
@@ -629,6 +630,7 @@ mod builder_tests {
                 Method::GET,
                 "https://example.com".parse().unwrap(),
                 http::HeaderMap::new(),
+                None,
                 None,
                 None,
             )

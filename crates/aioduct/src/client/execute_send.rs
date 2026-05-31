@@ -2,6 +2,7 @@ use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderMap};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
+use std::time::Duration;
 
 use super::HttpEngineSend;
 use crate::body::{RequestBody, RequestBodySend};
@@ -19,6 +20,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         headers: http::HeaderMap,
         body: Option<RequestBody>,
         version: Option<http::Version>,
+        connect_timeout: Option<Duration>,
     ) -> Result<Response, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
@@ -112,7 +114,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             };
 
             let resp = match self
-                .execute_single(request, &current_uri, replay_bytes_for_stale, stale_headers)
+                .execute_single(
+                    request,
+                    &current_uri,
+                    replay_bytes_for_stale,
+                    stale_headers,
+                    connect_timeout,
+                )
                 .await
             {
                 Ok(resp) => {
@@ -158,7 +166,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     &current_uri,
                     &mut current_headers,
                     replay_bytes,
-                    version,
+                    connect_timeout,
                 )
                 .await?;
 
@@ -201,7 +209,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         uri: &Uri,
         headers: &mut HeaderMap,
         body_for_replay: Option<Bytes>,
-        version: Option<http::Version>,
+        connect_timeout: Option<Duration>,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -213,6 +221,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             return Ok(resp);
         };
 
+        let version = resp.version();
         let _ = resp.bytes().await;
         headers.insert(AUTHORIZATION, auth_value);
 
@@ -234,16 +243,20 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let mut retry_builder = http::Request::builder()
             .method(method.clone())
             .uri(retry_uri);
-        if let Some(ver) = version {
-            retry_builder = retry_builder.version(ver);
-        }
+        retry_builder = retry_builder.version(version);
         let mut retry_request = retry_builder.body(retry_body)?;
         *retry_request.headers_mut() = headers.clone();
         if !self.core.middleware.is_empty() {
             self.core.middleware.apply_request(&mut retry_request, uri);
         }
-        self.execute_single(retry_request, uri, replay_for_stale, Some(headers))
-            .await
+        self.execute_single(
+            retry_request,
+            uri,
+            replay_for_stale,
+            Some(headers),
+            connect_timeout,
+        )
+        .await
     }
 
     pub(super) async fn finalize_response(

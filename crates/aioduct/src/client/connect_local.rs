@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use crate::body::RequestBodyLocal;
 use crate::error::Error;
@@ -15,6 +16,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
+        connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
@@ -63,7 +65,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 crate::socks5::Socks5Dns::Local
             };
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -73,7 +75,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             }
             crate::socks5::socks5_handshake(&mut std_stream, host, port, proxy.auth.as_ref(), dns)
                 .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
@@ -89,7 +91,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 .port_u16()
                 .unwrap_or(if is_https { 443 } else { 80 });
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -99,7 +101,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             }
             crate::socks4::socks4a_handshake(&mut std_stream, host, port, proxy.auth.as_ref())
                 .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
@@ -127,7 +129,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     .await
                     .map_err(|e| Error::Tls(Box::new(e)))?;
                 if is_https {
-                    self.connect_tunnel_local(tls_stream, proxy, target_authority)
+                    self.connect_tunnel_local(tls_stream, proxy, target_authority, connect_timeout)
                         .await
                 } else {
                     self.connect_plaintext_local(tls_stream).await
@@ -140,7 +142,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 ))
             }
         } else if is_https {
-            self.connect_tunnel_local(tcp_stream, proxy, target_authority)
+            self.connect_tunnel_local(tcp_stream, proxy, target_authority, connect_timeout)
                 .await
         } else {
             self.connect_plaintext_local(tcp_stream).await
@@ -152,17 +154,17 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         stream: S,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
+        _connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
     {
-        // Suppress unused warnings when compio is not enabled
-        let _ = (&stream, &proxy, &target_authority);
+        let port = target_authority.port_u16().unwrap_or(443);
+        let target = format!("{}:{port}", target_authority.host());
+        let tunnel_stream = do_connect_handshake_local(stream, proxy, &target).await?;
         #[cfg(all(feature = "rustls", feature = "compio"))]
         {
-            let port = target_authority.port_u16().unwrap_or(443);
-            let target = format!("{}:{port}", target_authority.host());
-            let stream = do_connect_handshake_local(stream, proxy, &target).await?;
+            let stream = tunnel_stream;
             let host = target_authority.host();
             use crate::tls::TlsConnectLocal;
             use std::time::Instant;
@@ -237,6 +239,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         }
         #[cfg(not(all(feature = "rustls", feature = "compio")))]
         {
+            drop(tunnel_stream);
             Err(Error::Tls(
                 "HTTPS CONNECT tunnel requires rustls + compio features".into(),
             ))
@@ -249,6 +252,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         second: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
+        connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         let second_authority = second.authority()?;
         let second_default_port = second.default_port();
@@ -299,7 +303,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 crate::socks5::Socks5Dns::Local
             };
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -315,16 +319,22 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 dns,
             )
             .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
             let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            self.connect_second_hop_local(stream, second, target_authority, is_https)
-                .await
+            self.connect_second_hop_local(
+                stream,
+                second,
+                target_authority,
+                is_https,
+                connect_timeout,
+            )
+            .await
         } else if first.scheme == crate::proxy::ProxyScheme::Socks4 {
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -339,13 +349,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 first.auth.as_ref(),
             )
             .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
             let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            self.connect_second_hop_local(stream, second, target_authority, is_https)
-                .await
+            self.connect_second_hop_local(
+                stream,
+                second,
+                target_authority,
+                is_https,
+                connect_timeout,
+            )
+            .await
         } else if first.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(all(feature = "rustls", feature = "compio"))]
             {
@@ -370,7 +386,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 );
                 let stream = do_connect_handshake_local(tls_stream, first, &second_target).await?;
                 if is_https {
-                    self.connect_tunnel_local(stream, second, target_authority)
+                    self.connect_tunnel_local(stream, second, target_authority, connect_timeout)
                         .await
                 } else {
                     self.connect_plaintext_local(stream).await
@@ -390,8 +406,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 second_authority.port_u16().unwrap_or(second.default_port())
             );
             let stream = do_connect_handshake_local(tcp_stream, first, &second_target).await?;
-            self.connect_second_hop_local(stream, second, target_authority, is_https)
-                .await
+            self.connect_second_hop_local(
+                stream,
+                second,
+                target_authority,
+                is_https,
+                connect_timeout,
+            )
+            .await
         }
     }
 
@@ -403,6 +425,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         second: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
+        connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         let target_host = target_authority.host();
         let target_port = target_authority
@@ -418,7 +441,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 crate::socks5::Socks5Dns::Local
             };
             let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -434,7 +457,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 dns,
             )
             .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
@@ -446,7 +469,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             }
         } else if second.scheme == crate::proxy::ProxyScheme::Socks4 {
             let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -461,7 +484,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 second.auth.as_ref(),
             )
             .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
@@ -490,7 +513,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     .await
                     .map_err(|e| Error::Tls(Box::new(e)))?;
                 if is_https {
-                    self.connect_tunnel_local(tls_stream, second, target_authority)
+                    self.connect_tunnel_local(tls_stream, second, target_authority, connect_timeout)
                         .await
                 } else {
                     self.connect_plaintext_local(tls_stream).await
@@ -505,7 +528,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         } else {
             // HTTP: CONNECT through second to reach target
             if is_https {
-                self.connect_tunnel_local(stream, second, target_authority)
+                self.connect_tunnel_local(stream, second, target_authority, connect_timeout)
                     .await
             } else {
                 self.connect_plaintext_local(stream).await
@@ -518,12 +541,18 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         chain: &crate::proxy::ProxyChain,
         target_authority: &http::uri::Authority,
         is_https: bool,
+        connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         match chain.len() {
             0 => Err(Error::Other("empty proxy chain".into())),
             1 => {
-                self.connect_via_proxy_local(&chain.proxies[0], target_authority, is_https)
-                    .await
+                self.connect_via_proxy_local(
+                    &chain.proxies[0],
+                    target_authority,
+                    is_https,
+                    connect_timeout,
+                )
+                .await
             }
             2 => {
                 self.connect_two_hop_local(
@@ -531,6 +560,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     &chain.proxies[1],
                     target_authority,
                     is_https,
+                    connect_timeout,
                 )
                 .await
             }

@@ -328,6 +328,16 @@ async fn timeout_setter() {
 }
 
 #[tokio::test]
+async fn connect_timeout_setter() {
+    let client = test_client();
+    let rb = client
+        .get("http://example.com")
+        .unwrap()
+        .connect_timeout(Duration::from_secs(2));
+    assert_eq!(rb.connect_timeout, Some(Duration::from_secs(2)));
+}
+
+#[tokio::test]
 async fn retry_setter() {
     let client = test_client();
     let rb = client
