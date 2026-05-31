@@ -277,6 +277,76 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[test]
+    fn blocking_tokio_wraps_http2_keep_alive_config() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::builder()
+            .http2_prior_knowledge()
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_timeout(Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let config = client.inner.core.http2.as_ref().expect("http2 config");
+        assert!(client.inner.core.http2_prior_knowledge);
+        assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
+        assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
+        assert_eq!(config.keep_alive_timeout, Some(Duration::from_secs(10)));
+        assert_eq!(config.keep_alive_while_idle, Some(true));
+    }
+
+    #[cfg(feature = "smol")]
+    #[test]
+    fn blocking_smol_wraps_http2_keep_alive_config() {
+        use crate::runtime::smol_rt::TcpConnector;
+
+        let engine = crate::HttpEngineSend::<crate::runtime::SmolRuntime, TcpConnector>::builder()
+            .http2_prior_knowledge()
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .http2_keep_alive_timeout(Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let client = BlockingClient::<_, crate::runtime::SmolRuntime>::new(engine);
+        let config = client.inner.core.http2.as_ref().expect("http2 config");
+        assert!(client.inner.core.http2_prior_knowledge);
+        assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
+        assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
+        assert_eq!(config.keep_alive_timeout, Some(Duration::from_secs(10)));
+        assert_eq!(config.keep_alive_while_idle, Some(true));
+    }
+
+    #[cfg(feature = "compio")]
+    #[test]
+    fn blocking_compio_wraps_http2_keep_alive_config() {
+        use crate::runtime::compio_rt::TcpConnector;
+
+        let engine =
+            crate::HttpEngineLocal::<crate::runtime::CompioRuntime, TcpConnector>::builder()
+                .http2_prior_knowledge()
+                .http2_keep_alive_interval(Duration::from_secs(30))
+                .http2_keep_alive_timeout(Duration::from_secs(10))
+                .http2_keep_alive_while_idle(true)
+                .timeout(Duration::from_secs(5))
+                .build_local()
+                .unwrap();
+
+        let client = BlockingClient::<_, crate::runtime::CompioRuntime>::new(engine);
+        let config = client.inner.core.http2.as_ref().expect("http2 config");
+        assert!(client.inner.core.http2_prior_knowledge);
+        assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
+        assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
+        assert_eq!(config.keep_alive_timeout, Some(Duration::from_secs(10)));
+        assert_eq!(config.keep_alive_while_idle, Some(true));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
     fn blocking_client_all_methods() {
         use crate::runtime::tokio_rt::TcpConnector;
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
