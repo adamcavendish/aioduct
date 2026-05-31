@@ -23,6 +23,22 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
+Blocking clients for Tokio, smol, and compio use the same engine configuration
+as async clients. Build the runtime client with the HTTP/2 options you need,
+then wrap it:
+
+```rust,no_run
+use aioduct::{BlockingTokioClient, TokioClient};
+use std::time::Duration;
+
+let async_client = TokioClient::builder()
+    .http2_keep_alive_interval(Duration::from_secs(30))
+    .http2_keep_alive_timeout(Duration::from_secs(10))
+    .http2_keep_alive_while_idle(true)
+    .build()?;
+let client = BlockingTokioClient::new(async_client);
+```
+
 ## Available Options
 
 | Method | Description |
