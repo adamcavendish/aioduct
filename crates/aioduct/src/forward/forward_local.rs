@@ -232,7 +232,9 @@ where
 
         let request = http::Request::from_parts(parts, boxed_body);
 
-        let send_fut = self.client.execute_single_local(request, &full_uri, None);
+        let send_fut = self
+            .client
+            .execute_single_local(request, &full_uri, None, None);
 
         let mut resp = if let Some(duration) = self.timeout {
             crate::timeout::Timeout::WithTimeout {

@@ -58,6 +58,11 @@ impl<R: RuntimePoll, C: ConnectorSend> RequestBuilderExt for OwnedRequestBuilder
         self
     }
 
+    fn connect_timeout(mut self, duration: Duration) -> Self {
+        self.inner = self.inner.connect_timeout(duration);
+        self
+    }
+
     async fn send(self) -> Result<Response, SendError> {
         self.inner.send().await
     }

@@ -27,6 +27,7 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     body: Option<RequestBody>,
     version: Option<Version>,
     timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
     retry: Option<RetryConfig>,
     _runtime: PhantomData<(R, C)>,
 }
@@ -50,6 +51,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             body: None,
             version: None,
             timeout: None,
+            connect_timeout: None,
             retry: None,
             _runtime: PhantomData,
         }
@@ -64,6 +66,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             body: None,
             version: None,
             timeout: None,
+            connect_timeout: None,
             retry: None,
             _runtime: PhantomData,
         }
@@ -260,6 +263,15 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         self
     }
 
+    /// Set a timeout for establishing this request's connection.
+    ///
+    /// This overrides the client's default connect timeout. The request or
+    /// client overall timeout still bounds the whole request.
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = Some(timeout);
+        self
+    }
+
     /// Set a retry configuration for this request.
     pub fn retry(mut self, config: RetryConfig) -> Self {
         self.retry = Some(config);
@@ -323,6 +335,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             body: cloned_body,
             version: self.version,
             timeout: self.timeout,
+            connect_timeout: self.connect_timeout,
             retry: self.retry.clone(),
             _runtime: PhantomData,
         })
@@ -347,11 +360,19 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     async fn send_once(self) -> Result<Response, Error> {
         let effective_timeout = self.timeout.or(self.client.default_timeout());
+        let effective_connect_timeout = self
+            .connect_timeout
+            .or(self.client.default_connect_timeout());
         let method = self.method.clone();
         let uri = self.uri.clone();
-        let execute_fut =
-            self.client
-                .execute(self.method, self.uri, self.headers, self.body, self.version);
+        let execute_fut = self.client.execute(
+            self.method,
+            self.uri,
+            self.headers,
+            self.body,
+            self.version,
+            effective_connect_timeout,
+        );
 
         let result = match effective_timeout {
             Some(duration) => {
@@ -381,6 +402,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     async fn send_with_retry(self, config: RetryConfig) -> Result<Response, Error> {
         let retry_start = crate::clock::Instant::now();
         let effective_timeout = self.timeout.or(self.client.default_timeout());
+        let effective_connect_timeout = self
+            .connect_timeout
+            .or(self.client.default_connect_timeout());
         let mut last_error = None;
         let mut body = self.body;
         let mut retry_after_delay: Option<Duration> = None;
@@ -405,6 +429,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 self.headers.clone(),
                 body_for_attempt,
                 self.version,
+                effective_connect_timeout,
             );
 
             let result = match effective_timeout {

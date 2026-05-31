@@ -3,6 +3,7 @@ use crate::clock::Instant;
 use bytes::Bytes;
 use http::Uri;
 use http::header::HeaderMap;
+use std::time::Duration;
 
 use crate::body::RequestBodySend;
 use crate::error::Error;
@@ -31,6 +32,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         original_uri: &Uri,
         replay_body: Option<Bytes>,
         stale_retry_headers: Option<&HeaderMap>,
+        connect_timeout: Option<Duration>,
     ) -> Result<Response, Error> {
         self.execute_single_with_hint(
             request,
@@ -38,6 +40,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ProtocolHint::Auto,
             replay_body,
             stale_retry_headers,
+            connect_timeout,
         )
         .await
     }
@@ -50,6 +53,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         protocol: ProtocolHint,
         replay_body: Option<Bytes>,
         stale_retry_headers: Option<&HeaderMap>,
+        connect_timeout: Option<Duration>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
         #[allow(deprecated)]
@@ -438,7 +442,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .await
                     }
                 };
-                let (mut pooled, addr) = match self.core.connect_timeout {
+                let (mut pooled, addr) = match connect_timeout {
                     Some(duration) => {
                         crate::timeout::Timeout::WithTimeout {
                             future: h3_connect_fut,
@@ -529,10 +533,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let may_h2 = force_h2c || is_https || self.core.http2_prior_knowledge;
         if may_h2 && !self.core.no_connection_reuse && self.core.pool.mark_connecting_h2(&pool_key)
         {
-            let wait_budget = self
-                .core
-                .connect_timeout
-                .unwrap_or(std::time::Duration::from_secs(5));
+            let wait_budget = connect_timeout.unwrap_or(std::time::Duration::from_secs(5));
             let poll_interval = std::time::Duration::from_millis(5);
             let max_polls =
                 (wait_budget.as_millis() / poll_interval.as_millis().max(1)).clamp(1, 200);
@@ -706,7 +707,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         "unix socket support requires tokio or smol feature".into(),
                     ))
                 };
-                match self.core.connect_timeout {
+                match connect_timeout {
                     Some(duration) => {
                         crate::timeout::Timeout::WithTimeout {
                             future: connect_fut,
@@ -720,10 +721,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             #[cfg(not(unix))]
             unreachable!()
         } else if let Some(ref chain) = self.core.proxy_chain {
-            self.connect_via_proxy_chain(chain, authority, is_https)
+            self.connect_via_proxy_chain(chain, authority, is_https, connect_timeout)
                 .await?
         } else if let Some(ref proxy) = proxy {
-            self.connect_via_proxy(proxy, authority, is_https).await?
+            self.connect_via_proxy(proxy, authority, is_https, connect_timeout)
+                .await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
             let host = authority.host();
@@ -888,7 +890,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 Ok::<(PooledConnection<RequestBodySend>, Instant), Error>((conn, Instant::now()))
             };
 
-            let (conn, connect_done) = match self.core.connect_timeout {
+            let (conn, connect_done) = match connect_timeout {
                 Some(duration) => {
                     crate::timeout::Timeout::WithTimeout {
                         future: connect_fut,

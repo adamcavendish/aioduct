@@ -319,6 +319,7 @@ where
             self.protocol_hint,
             None,
             None,
+            None,
         );
 
         let mut resp = if let Some(duration) = self.timeout {

@@ -23,6 +23,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     body: Option<RequestBody>,
     version: Option<Version>,
     timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
 }
 
 impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, C> {
@@ -35,6 +36,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             body: None,
             version: None,
             timeout: None,
+            connect_timeout: None,
         }
     }
 
@@ -47,6 +49,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             body: None,
             version: None,
             timeout: None,
+            connect_timeout: None,
         }
     }
 
@@ -235,6 +238,15 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         self
     }
 
+    /// Set a timeout for establishing this request's connection.
+    ///
+    /// This overrides the client's default connect timeout. The request or
+    /// client overall timeout still bounds the whole request.
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = Some(timeout);
+        self
+    }
+
     pub(crate) fn uri(&self) -> &Uri {
         &self.uri
     }
@@ -295,16 +307,23 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             body,
             version: self.version,
             timeout: self.timeout,
+            connect_timeout: self.connect_timeout,
         })
     }
 
     /// Send the request and return the response.
     pub async fn send(self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         let effective_timeout = self.timeout.or(self.client.core.timeout);
+        let effective_connect_timeout = self.connect_timeout.or(self.client.core.connect_timeout);
 
-        let execute_fut =
-            self.client
-                .execute_local(self.method, self.uri, self.headers, self.body, self.version);
+        let execute_fut = self.client.execute_local(
+            self.method,
+            self.uri,
+            self.headers,
+            self.body,
+            self.version,
+            effective_connect_timeout,
+        );
 
         match effective_timeout {
             Some(duration) => {
@@ -659,5 +678,15 @@ mod tests {
             .unwrap()
             .timeout(Duration::from_secs(5));
         let _req = rb.build().unwrap();
+    }
+
+    #[test]
+    fn connect_timeout_setter() {
+        let client = test_client();
+        let rb = client
+            .get_local("http://example.com")
+            .unwrap()
+            .connect_timeout(Duration::from_secs(2));
+        assert_eq!(rb.connect_timeout, Some(Duration::from_secs(2)));
     }
 }

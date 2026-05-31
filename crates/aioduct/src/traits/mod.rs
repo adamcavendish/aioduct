@@ -89,6 +89,14 @@ pub trait RequestBuilderExt: Sized {
     /// Set a per-request timeout.
     fn timeout(self, duration: Duration) -> Self;
 
+    /// Set a per-request connect timeout.
+    ///
+    /// Implementations that cannot control connection establishment may ignore
+    /// this option.
+    fn connect_timeout(self, _duration: Duration) -> Self {
+        self
+    }
+
     /// Send the request and return the response.
     fn send(self) -> impl Future<Output = Result<Self::Response, SendError>>;
 }

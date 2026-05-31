@@ -148,6 +148,12 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingRequestBuilder<C, R> {
         self
     }
 
+    /// Set a timeout for establishing this request's connection.
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.inner = self.inner.connect_timeout(timeout);
+        self
+    }
+
     /// Send the request and block until the response is received.
     pub fn send(
         self,

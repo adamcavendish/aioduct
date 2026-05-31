@@ -2,6 +2,7 @@ use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderMap};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
+use std::time::Duration;
 
 use super::{HttpEngineCore, HttpEngineLocal};
 use crate::body::RequestBody;
@@ -29,6 +30,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         headers: http::HeaderMap,
         body: Option<RequestBody>,
         version: Option<http::Version>,
+        connect_timeout: Option<Duration>,
     ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
@@ -114,7 +116,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             };
 
             let resp = match self
-                .execute_single_local(request, &current_uri, replay_bytes_for_stale)
+                .execute_single_local(
+                    request,
+                    &current_uri,
+                    replay_bytes_for_stale,
+                    connect_timeout,
+                )
                 .await
             {
                 Ok(resp) => {
@@ -160,7 +167,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     &current_uri,
                     &mut current_headers,
                     replay_bytes,
-                    version,
+                    connect_timeout,
                 )
                 .await?;
 
@@ -208,7 +215,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         uri: &Uri,
         headers: &mut HeaderMap,
         body_for_replay: Option<Bytes>,
-        version: Option<http::Version>,
+        connect_timeout: Option<Duration>,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -220,6 +227,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             return Ok(resp);
         };
 
+        let version = resp.version();
         let _ = resp.bytes().await;
         headers.insert(AUTHORIZATION, auth_value);
 
@@ -239,9 +247,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         let mut retry_builder = http::Request::builder()
             .method(method.clone())
             .uri(retry_uri);
-        if let Some(ver) = version {
-            retry_builder = retry_builder.version(ver);
-        }
+        retry_builder = retry_builder.version(version);
         let mut retry_request = retry_builder.body(retry_body)?;
         *retry_request.headers_mut() = headers.clone();
         if !self.core.middleware.is_empty() {
@@ -249,7 +255,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 .middleware
                 .apply_request_local(&mut retry_request, uri);
         }
-        self.execute_single_local(retry_request, uri, replay_for_stale)
+        self.execute_single_local(retry_request, uri, replay_for_stale, connect_timeout)
             .await
     }
 
@@ -303,6 +309,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         mut request: http::Request<RequestBodyLocal>,
         original_uri: &Uri,
         replay_body: Option<Bytes>,
+        connect_timeout: Option<Duration>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
         #[allow(deprecated)]
@@ -451,10 +458,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
         if may_h2 && !self.core.no_connection_reuse && self.core.pool.mark_connecting_h2(&pool_key)
         {
-            let wait_budget = self
-                .core
-                .connect_timeout
-                .unwrap_or(std::time::Duration::from_secs(5));
+            let wait_budget = connect_timeout.unwrap_or(std::time::Duration::from_secs(5));
             let poll_interval = std::time::Duration::from_millis(5);
             let max_polls =
                 (wait_budget.as_millis() / poll_interval.as_millis().max(1)).clamp(1, 200);
@@ -586,10 +590,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         let mut timing = TimingCollector::default();
 
         let mut pooled = if let Some(ref chain) = self.core.proxy_chain {
-            self.connect_via_proxy_chain_local(chain, authority, is_https)
+            self.connect_via_proxy_chain_local(chain, authority, is_https, connect_timeout)
                 .await?
         } else if let Some(ref proxy) = proxy {
-            self.connect_via_proxy_local(proxy, authority, is_https)
+            self.connect_via_proxy_local(proxy, authority, is_https, connect_timeout)
                 .await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
@@ -668,7 +672,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 Ok::<(PooledConnection<RequestBodyLocal>, Instant), Error>((conn, Instant::now()))
             };
 
-            let (conn, connect_done) = match self.core.connect_timeout {
+            let (conn, connect_done) = match connect_timeout {
                 Some(duration) => {
                     crate::timeout::Timeout::WithTimeout {
                         future: connect_fut,

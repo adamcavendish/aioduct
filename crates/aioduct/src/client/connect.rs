@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 use crate::body::RequestBodySend;
 use crate::error::Error;
@@ -15,6 +16,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
+        connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
@@ -63,7 +65,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 crate::socks5::Socks5Dns::Local
             };
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -73,7 +75,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
             crate::socks5::socks5_handshake(&mut std_stream, host, port, proxy.auth.as_ref(), dns)
                 .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
@@ -89,7 +91,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .port_u16()
                 .unwrap_or(if is_https { 443 } else { 80 });
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -99,7 +101,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
             crate::socks4::socks4a_handshake(&mut std_stream, host, port, proxy.auth.as_ref())
                 .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
@@ -126,7 +128,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .await
                 .map_err(|e| Error::Tls(Box::new(e)))?;
                 if is_https {
-                    self.connect_tunnel(tls_stream, proxy, target_authority)
+                    self.connect_tunnel(tls_stream, proxy, target_authority, connect_timeout)
                         .await
                 } else {
                     self.connect_plaintext(tls_stream).await
@@ -139,7 +141,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 ))
             }
         } else if is_https {
-            self.connect_tunnel(tcp_stream, proxy, target_authority)
+            self.connect_tunnel(tcp_stream, proxy, target_authority, connect_timeout)
                 .await
         } else {
             self.connect_plaintext(tcp_stream).await
@@ -153,17 +155,17 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         stream: S,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
+        _connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodySend>, Error>
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
-        // Suppress unused warnings when rustls is not enabled
-        let _ = (&stream, &proxy, &target_authority);
+        let port = target_authority.port_u16().unwrap_or(443);
+        let target = format!("{}:{port}", target_authority.host());
+        let tunnel_stream = do_connect_handshake(stream, proxy, &target).await?;
         #[cfg(feature = "rustls")]
         {
-            let port = target_authority.port_u16().unwrap_or(443);
-            let target = format!("{}:{port}", target_authority.host());
-            let stream = do_connect_handshake(stream, proxy, &target).await?;
+            let stream = tunnel_stream;
             let host = target_authority.host();
             use crate::tls::TlsConnect;
             use std::time::Instant;
@@ -223,6 +225,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         }
         #[cfg(not(feature = "rustls"))]
         {
+            drop(tunnel_stream);
             Err(Error::Tls(
                 "HTTPS CONNECT tunnel requires the `rustls` TLS backend feature".into(),
             ))
@@ -235,6 +238,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         second: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
+        connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         let second_authority = second.authority()?;
         let second_default_port = second.default_port();
@@ -285,7 +289,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 crate::socks5::Socks5Dns::Local
             };
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -301,16 +305,22 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 dns,
             )
             .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
             let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            self.connect_second_hop_send(stream, second, target_authority, is_https)
-                .await
+            self.connect_second_hop_send(
+                stream,
+                second,
+                target_authority,
+                is_https,
+                connect_timeout,
+            )
+            .await
         } else if first.scheme == crate::proxy::ProxyScheme::Socks4 {
             let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -325,13 +335,19 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 first.auth.as_ref(),
             )
             .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
             let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            self.connect_second_hop_send(stream, second, target_authority, is_https)
-                .await
+            self.connect_second_hop_send(
+                stream,
+                second,
+                target_authority,
+                is_https,
+                connect_timeout,
+            )
+            .await
         } else if first.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(feature = "rustls")]
             {
@@ -355,7 +371,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 );
                 let stream = do_connect_handshake(tls_stream, first, &second_target).await?;
                 if is_https {
-                    self.connect_tunnel(stream, second, target_authority).await
+                    self.connect_tunnel(stream, second, target_authority, connect_timeout)
+                        .await
                 } else {
                     self.connect_plaintext(stream).await
                 }
@@ -374,8 +391,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 second_authority.port_u16().unwrap_or(second.default_port())
             );
             let stream = do_connect_handshake(tcp_stream, first, &second_target).await?;
-            self.connect_second_hop_send(stream, second, target_authority, is_https)
-                .await
+            self.connect_second_hop_send(
+                stream,
+                second,
+                target_authority,
+                is_https,
+                connect_timeout,
+            )
+            .await
         }
     }
 
@@ -387,6 +410,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         second: &ProxyConfig,
         target_authority: &http::uri::Authority,
         is_https: bool,
+        connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         let target_host = target_authority.host();
         let target_port = target_authority
@@ -402,7 +426,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 crate::socks5::Socks5Dns::Local
             };
             let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -418,7 +442,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 dns,
             )
             .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
@@ -430,7 +454,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         } else if second.scheme == crate::proxy::ProxyScheme::Socks4 {
             let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
-            if let Some(timeout) = self.core.connect_timeout {
+            if let Some(timeout) = connect_timeout {
                 std_stream
                     .set_read_timeout(Some(timeout))
                     .map_err(Error::Io)?;
@@ -445,7 +469,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 second.auth.as_ref(),
             )
             .map_err(Error::Io)?;
-            if self.core.connect_timeout.is_some() {
+            if connect_timeout.is_some() {
                 std_stream.set_read_timeout(None).map_err(Error::Io)?;
                 std_stream.set_write_timeout(None).map_err(Error::Io)?;
             }
@@ -473,7 +497,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .await
                 .map_err(|e| Error::Tls(Box::new(e)))?;
                 if is_https {
-                    self.connect_tunnel(tls_stream, second, target_authority)
+                    self.connect_tunnel(tls_stream, second, target_authority, connect_timeout)
                         .await
                 } else {
                     self.connect_plaintext(tls_stream).await
@@ -488,7 +512,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         } else {
             // HTTP: CONNECT through second to reach target
             if is_https {
-                self.connect_tunnel(stream, second, target_authority).await
+                self.connect_tunnel(stream, second, target_authority, connect_timeout)
+                    .await
             } else {
                 self.connect_plaintext(stream).await
             }
@@ -500,12 +525,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         chain: &crate::proxy::ProxyChain,
         target_authority: &http::uri::Authority,
         is_https: bool,
+        connect_timeout: Option<Duration>,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         match chain.len() {
             0 => Err(Error::Other("empty proxy chain".into())),
             1 => {
-                self.connect_via_proxy(&chain.proxies[0], target_authority, is_https)
-                    .await
+                self.connect_via_proxy(
+                    &chain.proxies[0],
+                    target_authority,
+                    is_https,
+                    connect_timeout,
+                )
+                .await
             }
             2 => {
                 self.connect_two_hop_send(
@@ -513,6 +544,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     &chain.proxies[1],
                     target_authority,
                     is_https,
+                    connect_timeout,
                 )
                 .await
             }
@@ -1122,7 +1154,7 @@ mod tokio_tests {
         // connect_tunnel will succeed the CONNECT handshake but then try TLS
         // which will fail since no TLS connector is configured (make_engine() has no TLS)
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
         assert!(
             result.is_err(),
@@ -1135,6 +1167,30 @@ mod tokio_tests {
     async fn connect_tunnel_requires_rustls_feature() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (mut server_io, _) = listener.accept().await.unwrap();
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut request = Vec::new();
+
+            loop {
+                let n = server_io.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let req_str = String::from_utf8_lossy(&request);
+            assert!(req_str.starts_with("CONNECT target.example.com:443 "));
+            server_io
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+        });
 
         let connector = TcpConnector;
         let tcp_stream =
@@ -1146,7 +1202,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
         match result {
             Err(crate::Error::Tls(err)) => {
@@ -1158,6 +1214,7 @@ mod tokio_tests {
             Ok(_) => panic!("CONNECT tunnel unexpectedly succeeded without rustls"),
             Err(err) => panic!("expected TLS feature error, got {err}"),
         }
+        proxy_task.await.unwrap();
     }
 
     #[cfg(feature = "rustls")]
@@ -1212,7 +1269,7 @@ mod tokio_tests {
         // handshake should succeed and the capture should show the target
         // includes :443.
         let _result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
 
         let captured = captured_rx.try_recv().unwrap();
@@ -1268,7 +1325,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "[::1]".parse().unwrap();
 
         let _result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
 
         let captured = captured_rx.try_recv().unwrap();
@@ -1324,7 +1381,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "example.com:8443".parse().unwrap();
 
         let _result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
 
         let captured = captured_rx.try_recv().unwrap();
@@ -1374,7 +1431,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1426,7 +1483,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1515,7 +1572,7 @@ mod tokio_tests {
         // connect_tunnel will succeed the CONNECT handshake, send auth header,
         // then TLS fails because no TLS connector configured
         let _result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
 
         // Verify the captured request contains the Proxy-Authorization header
@@ -1569,7 +1626,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority)
+            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1688,7 +1745,7 @@ mod tokio_tests {
         let chain = crate::proxy::ProxyChain::new(vec![]);
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
         let result = engine
-            .connect_via_proxy_chain(&chain, &authority, true)
+            .connect_via_proxy_chain(&chain, &authority, true, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1707,7 +1764,7 @@ mod tokio_tests {
         let chain = crate::proxy::ProxyChain::new(vec![p1, p2, p3]);
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
         let result = engine
-            .connect_via_proxy_chain(&chain, &authority, true)
+            .connect_via_proxy_chain(&chain, &authority, true, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1790,7 +1847,7 @@ mod tokio_tests {
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_via_proxy_chain(&chain, &authority, true)
+            .connect_via_proxy_chain(&chain, &authority, true, None)
             .await;
         // Should open both tunnels then fail at TLS to the target
         assert!(result.is_err());

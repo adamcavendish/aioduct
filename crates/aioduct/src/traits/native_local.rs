@@ -60,6 +60,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderExt
         self
     }
 
+    fn connect_timeout(mut self, duration: Duration) -> Self {
+        self.inner = self.inner.connect_timeout(duration);
+        self
+    }
+
     async fn send(self) -> Result<Response<ResponseBodyLocal>, SendError> {
         let url = self.inner.uri().clone();
         self.inner.send().await.map_err(|e| SendError::new(e, url))
