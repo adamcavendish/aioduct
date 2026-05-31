@@ -14,6 +14,9 @@ use http::uri::{Authority, Scheme};
 
 use crate::runtime::RuntimePoll;
 
+const DEFAULT_MAX_IDLE_PER_HOST: usize = 10;
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// Protocol version hint for pool key segregation.
 #[derive(Clone, Copy, Debug, Default, Hash, Eq, PartialEq)]
 pub(crate) enum ProtocolHint {
@@ -91,29 +94,36 @@ impl<B> Clone for ConnectionPool<B> {
 }
 
 impl<B: 'static> ConnectionPool<B> {
-    /// Create a pool with the given capacity and timeout settings.
-    pub(crate) fn new(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
-        Self::new_inner(max_idle_per_host, idle_timeout, None, false)
-    }
-
-    fn new_inner(
-        max_idle_per_host: usize,
-        idle_timeout: Duration,
-        max_lifetime: Option<Duration>,
-        reaper_spawned: bool,
-    ) -> Self {
+    /// Create a pool with default settings.
+    pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(PoolInner {
                 idle: HashMap::new(),
                 san_index: HashMap::new(),
                 connecting_h2: HashSet::new(),
-                max_idle_per_host,
+                max_idle_per_host: DEFAULT_MAX_IDLE_PER_HOST,
                 max_active_streams_per_connection: None,
-                idle_timeout,
-                max_lifetime,
+                idle_timeout: DEFAULT_IDLE_TIMEOUT,
+                max_lifetime: None,
             })),
-            reaper_spawned: Arc::new(AtomicBool::new(reaper_spawned)),
+            reaper_spawned: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Set the maximum idle connections per host.
+    pub(crate) fn with_max_idle_per_host(self, max_idle_per_host: usize) -> Self {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.max_idle_per_host = max_idle_per_host;
+        }
+        self
+    }
+
+    /// Set the idle timeout for pooled connections.
+    pub(crate) fn with_idle_timeout(self, idle_timeout: Duration) -> Self {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.idle_timeout = idle_timeout;
+        }
+        self
     }
 
     /// Set the maximum lifetime for pooled connections.
@@ -140,13 +150,14 @@ impl<B: 'static> ConnectionPool<B> {
             .max_active_streams_per_connection
     }
 
-    /// Create a pool without spawning the background reaper task.
+    /// Disable spawning the background reaper task.
     ///
     /// This is useful for unit tests that don't need the reaper and may not
     /// have a full async runtime available.
     #[cfg(any(test, feature = "__bench"))]
-    pub(crate) fn new_no_reaper(max_idle_per_host: usize, idle_timeout: Duration) -> Self {
-        Self::new_inner(max_idle_per_host, idle_timeout, None, true)
+    pub(crate) fn without_reaper(self) -> Self {
+        self.reaper_spawned.store(true, Ordering::Relaxed);
+        self
     }
 
     /// Returns the configured idle timeout for this pool.
@@ -159,6 +170,7 @@ impl<B: 'static> ConnectionPool<B> {
 
     /// Returns the configured maximum connection lifetime for this pool.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn max_lifetime(&self) -> Option<Duration> {
         self.inner
             .lock()
@@ -523,7 +535,10 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn checkout_returns_none_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30));
         let k = key("example.com:80");
 
         // Poison the mutex by panicking inside a lock
@@ -546,7 +561,10 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn checkin_returns_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30));
 
         // Poison the mutex
         let inner = Arc::clone(&pool.inner);
@@ -567,7 +585,10 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn mark_connecting_h2_returns_false_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30));
         let k = key("example.com:80");
 
         // Poison the mutex
@@ -586,7 +607,10 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn unmark_connecting_h2_no_panic_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30));
         let k = key("example.com:80");
 
         // Poison the mutex
@@ -605,7 +629,10 @@ mod tests_sync {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn checkout_coalesced_returns_none_on_poisoned_mutex() {
-        let pool = ConnectionPool::<RequestBodySend>::new_no_reaper(8, Duration::from_secs(30));
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30));
 
         // Poison the mutex
         let inner = Arc::clone(&pool.inner);

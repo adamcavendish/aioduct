@@ -317,7 +317,12 @@ pub mod __bench {
     pub struct BenchKey(PoolKey);
 
     pub fn new_pool(max_idle: usize, timeout: Duration) -> BenchPool {
-        BenchPool(ConnectionPool::new_no_reaper(max_idle, timeout))
+        BenchPool(
+            ConnectionPool::new()
+                .without_reaper()
+                .with_max_idle_per_host(max_idle)
+                .with_idle_timeout(timeout),
+        )
     }
 
     pub async fn make_h2_conn() -> BenchConn {
