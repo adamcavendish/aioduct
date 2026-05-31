@@ -2529,3 +2529,33 @@ fn set_default_alpn_does_not_overwrite_existing() {
     // Should NOT overwrite existing protocols
     assert_eq!(config.alpn_protocols, vec![b"custom/1.0".to_vec()]);
 }
+
+#[cfg(feature = "rustls-aws-lc-rs")]
+#[test]
+fn custom_config_accepts_ech_enabled_rustls_client_config() {
+    use rustls::crypto::hpke::Hpke as _;
+
+    install_crypto_provider();
+
+    let hpke = rustls::crypto::aws_lc_rs::hpke::DH_KEM_P256_HKDF_SHA256_AES_128;
+    let (placeholder_key, _) = hpke.generate_key_pair().expect("hpke key pair");
+    let ech_mode = rustls::client::EchMode::Grease(rustls::client::EchGreaseConfig::new(
+        hpke,
+        placeholder_key,
+    ));
+    let root_store =
+        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let mut config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+        .with_ech(ech_mode)
+        .expect("ech config")
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let connector = RustlsConnector::new(Arc::new(config));
+    assert_eq!(
+        connector.config().alpn_protocols,
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    );
+}
