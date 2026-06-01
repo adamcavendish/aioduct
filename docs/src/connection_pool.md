@@ -10,9 +10,9 @@ Connections are keyed by `(scheme, authority)` — for example, `(https, api.exa
 
 ### Lifecycle
 
-1. **Checkout**: When a request is made, the pool checks for an existing idle connection to the target origin. It uses LIFO ordering (most recently returned first) to prefer the freshest connections. Each candidate is checked for readiness — if a connection is stale or closed, it's discarded and the next one is tried.
+1. **Checkout**: When a request is made, the pool checks for an existing idle connection to the target origin. It uses LIFO ordering (most recently returned first) to prefer the freshest connections. Each candidate is checked for readiness and maximum lifetime — if a connection is stale, closed, too old, or saturated by the active stream cap, it's skipped or discarded and the next one is tried.
 2. **Send**: The request is sent on the connection (either reused or freshly established).
-3. **Checkin**: After the response headers are received, the connection is returned to the pool. When at capacity, the oldest idle connection is evicted to make room for the new one.
+3. **Checkin**: After the response headers are received, the connection is returned to the pool. Connections past `pool_max_lifetime` are not checked back in. When at capacity, the oldest idle connection is evicted to make room for the new one.
 
 ### Idle Eviction
 
@@ -45,6 +45,9 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
+The builder methods compose fluently and are applied to the underlying
+`ConnectionPool` before the client is built.
+
 ### Options
 
 | Option                                    | Default   | Description                                          |
@@ -53,6 +56,10 @@ let client = TokioClient::builder()
 | `pool_max_lifetime`                       | none      | Maximum connection age before it stops being reused   |
 | `pool_max_idle_per_host`                  | 10        | Maximum idle connections per (scheme, authority)      |
 | `pool_max_active_streams_per_connection`  | unlimited | Maximum active HTTP/2 or HTTP/3 streams per connection |
+
+Tokio, smol, compio, and blocking clients use this native pool. Wasm and
+wasi-p2 transports are platform-managed, so pooling and DNS reuse behavior are
+provided by the browser or WASI host rather than by `ConnectionPool`.
 
 ## Connection Health
 

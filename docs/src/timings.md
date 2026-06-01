@@ -46,6 +46,21 @@ async fn main() -> Result<(), aioduct::Error> {
 | `transfer()` | Request sent → first response byte (TTFB) | Should not normally be `None` |
 | `total()` | Wall-clock start to response headers | Always present |
 
+## Timeout Phases
+
+Timings report what happened; timeout settings decide where a request may be
+cut off:
+
+| Setting | Applies to | Error |
+|---------|------------|-------|
+| `connect_timeout()` | Establishing the connection path, including native proxy handshakes and TLS where applicable | `ConnectTimeout` |
+| `timeout()` | Overall request deadline through response headers and body consumption | `Timeout` |
+| `read_timeout()` | Gaps between response body chunks after headers arrive | `ReadTimeout` |
+
+DNS timing is recorded for native resolution when a hostname must be resolved by
+aioduct. It is `None` for literal IPs, pooled connections, SOCKS remote-DNS
+paths, and platform-managed transports such as browser wasm and wasi-p2.
+
 ## Pool Hits
 
 When a request reuses an existing pooled connection, the connection setup phases (DNS, TCP, TLS) are skipped and reported as `None`. Only `transfer()` and `total()` are populated.

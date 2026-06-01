@@ -27,12 +27,20 @@ let client = TokioClient::with_rustls();
 // Custom configuration via builder
 let client = TokioClient::builder()
     .timeout(Duration::from_secs(30))
+    .connect_timeout(Duration::from_secs(10))
     .max_redirects(5)
     .pool_idle_timeout(Duration::from_secs(90))
     .pool_max_lifetime(Duration::from_secs(600))
     .pool_max_idle_per_host(10)
+    .pool_max_active_streams_per_connection(100)
     .build()?;
 ```
+
+Tokio, smol, and compio share the same native client builder surface. Blocking
+clients wrap an already-configured async or local client, so pool, timeout,
+TLS, proxy, retry, and HTTP/2 keep-alive settings are preserved by the wrapper.
+Wasm and wasi-p2 clients use platform-managed transports, so connection
+pooling, DNS, proxy, and TLS details are controlled by the browser or WASI host.
 
 ### HTTP Methods
 
@@ -54,9 +62,9 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 
 | Method                  | Default      | Description                          |
 |-------------------------|-------------|--------------------------------------|
-| `timeout(Duration)`     | None        | Default timeout for all requests     |
-| `connect_timeout(Duration)` | None   | Timeout for TCP connect + TLS handshake |
-| `read_timeout(Duration)` | None      | Timeout between body data chunks     |
+| `timeout(Duration)`     | None        | Overall request deadline             |
+| `connect_timeout(Duration)` | None   | Connection establishment timeout for TCP/proxy/TLS phases |
+| `read_timeout(Duration)` | None      | Timeout between response body chunks |
 | `tcp_keepalive(Duration)` | None     | Enable TCP keepalive with given interval |
 | `local_address(IpAddr)`   | None     | Bind outgoing connections to a local IP  |
 | `max_redirects(usize)`  | 10          | Maximum redirect hops (0 = disabled) |
@@ -65,9 +73,10 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `pool_idle_timeout(Duration)` | 90s  | Idle connection lifetime             |
 | `pool_max_lifetime(Duration)` | None | Maximum connection age before reuse stops |
 | `pool_max_idle_per_host(usize)` | 10 | Max idle connections per origin      |
+| `pool_max_active_streams_per_connection(usize)` | Unlimited | Max active HTTP/2 or HTTP/3 streams per pooled connection |
 | `default_headers(HeaderMap)` | User-Agent | Headers applied to every request |
 | `no_default_headers()`  | —           | Remove all default headers           |
-| `tls(RustlsConnector)`  | None        | Custom TLS configuration             |
+| `tls(RustlsConnector)`  | None        | Custom rustls configuration, including caller-built ECH configs |
 | `danger_accept_invalid_certs()` | —  | Accept any TLS certificate (INSECURE) |
 | `no_decompression()`    | —           | Disable automatic response decompression |
 | `system_proxy()`        | —           | Read proxy from HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars |
@@ -132,6 +141,11 @@ let rb = client.post("http://example.com").unwrap()
 let rb = client.post("http://example.com").unwrap()
     .form(&[("username", "admin"), ("password", "secret")]);
 
+// Multipart form-data
+// Generated boundaries are RFC 2046-safe and at most 70 bytes.
+// let rb = client.post("http://example.com").unwrap()
+//     .multipart(aioduct::Multipart::new().text("field", "value"));
+
 // JSON (requires `json` feature)
 // let rb = client.post("http://example.com").unwrap()
 //     .json(&my_struct).unwrap();
@@ -156,6 +170,7 @@ use std::time::Duration;
 
 let rb = client.get("http://example.com").unwrap()
     .timeout(Duration::from_secs(5))     // per-request timeout
+    .connect_timeout(Duration::from_secs(2)) // per-request connection timeout
     .version(http::Version::HTTP_11);    // force HTTP version
 
 // HTTP upgrade (WebSocket)
@@ -173,6 +188,24 @@ let resp = client.get("http://example.com")?.send().await?;
 # Ok(())
 # }
 ```
+
+## Error Handling
+
+Async `send()` returns `SendError` on failure. It keeps the redacted request URL
+next to the underlying `Error`, exposes helpers such as `is_timeout()`,
+`is_connect()`, `is_status()`, and `status()`, and implements `source()` so
+standard error-chain traversal works. `Error::root_cause()` and
+`SendError::root_cause()` return the deepest source, and display output includes
+hidden nested causes for boxed TLS or catch-all errors when the outer message
+would otherwise omit the useful detail.
+
+Timeout helpers distinguish the configured phases:
+
+| Error | Typical source |
+|-------|----------------|
+| `Timeout` | Overall request deadline from `timeout()` |
+| `ConnectTimeout` | Connection establishment deadline from `connect_timeout()` |
+| `ReadTimeout` | Gap between response body chunks from `read_timeout()` |
 
 ## ResponseBodySend / ResponseBodyLocal
 
@@ -232,6 +265,26 @@ let body = client.get("http://example.com")?.send().await?.into_body();
 
 // HTTP upgrade (WebSocket) — after 101 response
 // let upgraded = resp.upgrade().await?;
+# Ok(())
+# }
+```
+
+## Blocking Client
+
+With the `blocking` feature enabled, `BlockingTokioClient` wraps `TokioClient`
+for synchronous callers. `BlockingResponse` exposes the same buffered consumers
+as async responses and native response metadata accessors before body
+consumption.
+
+```rust,no_run
+# #[cfg(all(feature = "blocking", feature = "tokio"))]
+# fn example() -> Result<(), aioduct::Error> {
+use aioduct::{BlockingTokioClient, TokioClient};
+
+let client = BlockingTokioClient::new(TokioClient::new());
+let mut resp = client.get("http://example.com/")?.send()?;
+resp.headers_mut().insert("x-local", "yes".parse().unwrap());
+let body = resp.bytes()?;
 # Ok(())
 # }
 ```
