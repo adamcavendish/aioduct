@@ -840,4 +840,159 @@ mod tests {
         assert_eq!(&chunk[..], b"no observer");
         assert!(stream.next().await.is_none());
     }
+
+    #[tokio::test]
+    async fn body_stream_trailers_fires_observer_event() {
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use std::task::{Context, Poll};
+
+        #[derive(Default, Clone)]
+        struct TestObs {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl observer::RequestObserver for TestObs {
+            fn on_event(&self, event: &observer::RequestEvent) {
+                let name = match &event.phase {
+                    RequestPhase::TrailersReceived { headers } => {
+                        let hdr_strs: Vec<String> =
+                            headers.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                        format!("TrailersReceived({})", hdr_strs.join(","))
+                    }
+                    other => format!("{other:?}"),
+                };
+                self.events.lock().unwrap().push(name);
+            }
+
+            fn on_connection_event(&self, _event: &observer::ConnectionEvent) {}
+        }
+
+        struct TrailerOnlyBody {
+            sent: bool,
+        }
+
+        impl http_body::Body for TrailerOnlyBody {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                if !self.sent {
+                    self.sent = true;
+                    let mut trailers = http::HeaderMap::new();
+                    trailers.insert("x-trailer", "trailer-val".parse().unwrap());
+                    Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+
+        let obs = TestObs::default();
+        let ctx = BodyObserverCtx {
+            observer: Arc::new(obs.clone()),
+            method: http::Method::GET,
+            uri: "http://example.com/trailers".parse().unwrap(),
+            response_started: Instant::now(),
+        };
+
+        let hyper_body: RequestBodySend = TrailerOnlyBody { sent: false }.boxed_unsync();
+        let mut stream = BodyStreamSend::with_observer(hyper_body, Some(ctx));
+
+        // next() loops past the trailers frame (firing TrailersReceived)
+        // and returns None when the body ends (firing TransferComplete)
+        assert!(stream.next().await.is_none());
+
+        let events = obs.events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains("TrailersReceived") && e.contains("x-trailer=trailer-val")),
+            "should fire TrailersReceived with x-trailer=trailer-val, got: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn body_stream_empty_with_only_trailers() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct TrailersOnlyBody {
+            sent: bool,
+        }
+
+        impl http_body::Body for TrailersOnlyBody {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                if !self.sent {
+                    self.sent = true;
+                    let mut trailers = http::HeaderMap::new();
+                    trailers.insert("x-trailer-key", "x-trailer-value".parse().unwrap());
+                    Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+        }
+
+        let hyper_body: RequestBodySend = TrailersOnlyBody { sent: false }.boxed_unsync();
+        let mut stream = BodyStreamSend::new(hyper_body);
+
+        // No data frames — next() returns None without panicking
+        assert!(stream.next().await.is_none());
+    }
+
+    #[cfg(feature = "compio")]
+    #[test]
+    fn body_stream_local_skips_trailers() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct TrailerThenData {
+            state: u8,
+        }
+
+        impl http_body::Body for TrailerThenData {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                match self.state {
+                    0 => {
+                        self.state = 1;
+                        let mut trailers = http::HeaderMap::new();
+                        trailers.insert("x-local-test", "val".parse().unwrap());
+                        Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
+                    }
+                    1 => {
+                        self.state = 2;
+                        Poll::Ready(Some(Ok(http_body::Frame::data(Bytes::from(
+                            "after_trailer",
+                        )))))
+                    }
+                    _ => Poll::Ready(None),
+                }
+            }
+        }
+
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let local_body: ResponseBodyLocal = Box::pin(TrailerThenData { state: 0 });
+            let mut stream = BodyStreamLocal::with_observer(local_body, None);
+
+            // The trailers frame should be skipped, only data returned
+            let chunk = stream.next().await.unwrap().unwrap();
+            assert_eq!(&chunk[..], b"after_trailer");
+
+            // Then done
+            assert!(stream.next().await.is_none());
+        });
+    }
 }

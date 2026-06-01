@@ -529,4 +529,187 @@ mod tests {
         let cfg = RetryConfig::default().backoff_multiplier(0.0);
         assert_eq!(cfg.delay_for_attempt(1), Duration::ZERO);
     }
+
+    // ────────────────────────────────────────────────────────
+    // is_retryable_status full coverage
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_retryable_status_too_early_is_retryable() {
+        assert!(is_retryable_status(StatusCode::TOO_EARLY));
+    }
+
+    #[test]
+    fn is_retryable_status_too_many_requests_is_retryable() {
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+    }
+
+    #[test]
+    fn is_retryable_status_service_unavailable_is_retryable() {
+        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+    }
+
+    #[test]
+    fn is_retryable_status_internal_server_error_is_retryable() {
+        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[test]
+    fn is_retryable_status_ok_not_retryable() {
+        assert!(!is_retryable_status(StatusCode::OK));
+    }
+
+    #[test]
+    fn is_retryable_status_bad_request_not_retryable() {
+        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn is_retryable_status_unauthorized_not_retryable() {
+        assert!(!is_retryable_status(StatusCode::UNAUTHORIZED));
+    }
+
+    #[test]
+    fn is_retryable_status_not_found_not_retryable() {
+        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn is_retryable_status_moved_permanently_not_retryable() {
+        assert!(!is_retryable_status(StatusCode::MOVED_PERMANENTLY));
+    }
+
+    // ────────────────────────────────────────────────────────
+    // parse_retry_after edge cases
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_retry_after_whitespace_around_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, " 120 ".parse().unwrap());
+        let delay = parse_retry_after(&headers).unwrap();
+        assert_eq!(delay, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn parse_retry_after_very_large_value_no_panic() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, "999999999".parse().unwrap());
+        let delay = parse_retry_after(&headers).unwrap();
+        assert_eq!(delay, Duration::from_secs(999999999));
+    }
+
+    #[test]
+    fn parse_retry_after_empty_string_returns_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, "".parse().unwrap());
+        assert!(parse_retry_after(&headers).is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_whitespace_only_returns_none() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::RETRY_AFTER, "   ".parse().unwrap());
+        assert!(parse_retry_after(&headers).is_none());
+    }
+
+    // ────────────────────────────────────────────────────────
+    // RetryBudget edge cases
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn budget_max_tokens_zero() {
+        let budget = RetryBudget::new(0, 1);
+        assert_eq!(budget.available(), 0);
+        assert!(!budget.try_withdraw());
+    }
+
+    #[test]
+    fn budget_deposit_restores_exhausted_tokens() {
+        let budget = RetryBudget::new(2, 1);
+        assert!(budget.try_withdraw());
+        assert!(budget.try_withdraw());
+        assert_eq!(budget.available(), 0);
+        assert!(!budget.try_withdraw());
+        budget.deposit();
+        assert_eq!(budget.available(), 1);
+        assert!(budget.try_withdraw());
+    }
+
+    #[test]
+    fn budget_multiple_withdraws_until_exhaustion_consistent() {
+        let budget = RetryBudget::new(5, 1);
+        let mut count = 0;
+        while budget.try_withdraw() {
+            count += 1;
+        }
+        assert_eq!(count, 5);
+        for _ in 0..10 {
+            assert!(!budget.try_withdraw());
+        }
+    }
+
+    // ────────────────────────────────────────────────────────
+    // delay_for_attempt boundary
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn delay_for_attempt_first_is_initial_backoff() {
+        let cfg = RetryConfig::default();
+        assert_eq!(cfg.delay_for_attempt(0), cfg.initial_backoff);
+    }
+
+    #[test]
+    fn delay_for_attempt_at_max_backoff_boundary() {
+        let cfg = RetryConfig::default().max_backoff(Duration::from_millis(500));
+        // 100 * 2^3 = 800, capped at max_backoff 500
+        assert_eq!(cfg.delay_for_attempt(3), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn delay_for_attempt_zero_multiplier_zero_delay() {
+        let cfg = RetryConfig::default().backoff_multiplier(0.0);
+        assert_eq!(cfg.delay_for_attempt(1), Duration::ZERO);
+        assert_eq!(cfg.delay_for_attempt(10), Duration::ZERO);
+    }
+
+    // ────────────────────────────────────────────────────────
+    // Idempotency
+    // ────────────────────────────────────────────────────────
+
+    #[test]
+    fn post_not_idempotent() {
+        assert!(!is_idempotent(&http::Method::POST));
+    }
+
+    #[test]
+    fn patch_not_idempotent() {
+        assert!(!is_idempotent(&http::Method::PATCH));
+    }
+
+    #[test]
+    fn get_head_put_delete_options_trace_idempotent() {
+        assert!(is_idempotent(&http::Method::GET));
+        assert!(is_idempotent(&http::Method::HEAD));
+        assert!(is_idempotent(&http::Method::PUT));
+        assert!(is_idempotent(&http::Method::DELETE));
+        assert!(is_idempotent(&http::Method::OPTIONS));
+        assert!(is_idempotent(&http::Method::TRACE));
+    }
+
+    // ────────────────────────────────────────────────────────
+    // RequestBody::Streaming try_clone
+    // ────────────────────────────────────────────────────────
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn request_body_streaming_try_clone_returns_none() {
+        use crate::body::RequestBody;
+        use http_body_util::BodyExt;
+        let streaming_body: crate::body::RequestBodySend = http_body_util::Empty::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let body = RequestBody::Streaming(streaming_body);
+        assert!(body.try_clone().is_none());
+    }
 }
