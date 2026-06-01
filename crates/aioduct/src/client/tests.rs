@@ -1826,15 +1826,15 @@ mod builder_tests {
                     if host.starts_with("sub.") {
                         sub.store(true, Ordering::SeqCst);
                     }
-                    Ok::<_, Infallible>(
-                        http::Response::builder()
-                            .header(
-                                "strict-transport-security",
-                                "max-age=3600; includeSubDomains",
-                            )
-                            .body(Full::new(Bytes::from("ok")))
-                            .unwrap(),
-                    )
+                    let response = http::Response::builder()
+                        .status(200)
+                        .header(
+                            "strict-transport-security",
+                            "max-age=3600; includeSubDomains",
+                        )
+                        .body(Full::new(Bytes::from("ok")))
+                        .unwrap();
+                    Ok::<_, Infallible>(response)
                 }
             })
             .await;
@@ -1842,26 +1842,7 @@ mod builder_tests {
         let cert = crate::tls::Certificate::from_der(cert_der.to_vec());
         let store = crate::hsts::HstsStore::new();
 
-        // First, verify TLS connectivity works using the IP directly
-        {
-            let cert2 = crate::tls::Certificate::from_der(cert_der.to_vec());
-            let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-                .add_root_certificates(&[cert2])
-                .danger_accept_invalid_hostnames(true)
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap();
-            let resp = client
-                .get(&format!("https://127.0.0.1:{}/", addr.port()))
-                .unwrap()
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), 200);
-            assert_eq!(resp.text().await.unwrap(), "ok");
-        }
-
-        // Now test with HSTS and custom resolver using example.com
+        // Use localhost hostname to match the TLS cert from generate_self_signed
         let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .hsts(store.clone())
             .add_root_certificates(&[cert])
@@ -1882,28 +1863,36 @@ mod builder_tests {
             .build()
             .unwrap();
 
-        let base_url = format!("https://example.com:{}", addr.port());
-
         // First request: HTTPS — server returns HSTS header with includeSubDomains
-        let resp = client.get(&base_url).unwrap().send().await.unwrap();
+        let resp = client
+            .get(&format!("https://localhost:{}/", addr.port()))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.text().await.unwrap(), "ok");
         assert!(
-            store.should_upgrade("example.com"),
-            "HSTS should be stored for example.com"
+            store.should_upgrade("localhost"),
+            "HSTS should be stored for localhost"
         );
         assert!(
-            store.should_upgrade("sub.example.com"),
-            "includeSubDomains should cover sub.example.com"
+            store.should_upgrade("sub.localhost"),
+            "includeSubDomains should cover sub.localhost"
         );
 
-        // Second request: http://sub.example.com should be upgraded to https://
-        let sub_url = format!("http://sub.example.com:{}", addr.port());
-        let resp = client.get(&sub_url).unwrap().send().await.unwrap();
+        // Second request: http://sub.localhost should be upgraded to https://
+        let resp = client
+            .get(&format!("http://sub.localhost:{}/", addr.port()))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
         assert_eq!(resp.text().await.unwrap(), "ok");
         assert!(
             sub_requested.load(Ordering::SeqCst),
-            "sub.example.com should have been requested (via HTTPS upgrade)"
+            "sub.localhost should have been requested (via HTTPS upgrade)"
         );
     }
 }
