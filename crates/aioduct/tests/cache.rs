@@ -189,6 +189,182 @@ async fn test_cache_304_revalidation() {
     assert_eq!(attempt.load(Ordering::SeqCst), 2);
 }
 #[tokio::test]
+async fn cache_last_modified_revalidation() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let (addr, _counter) = h1_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("cache-control", "max-age=0, must-revalidate")
+                        .header("last-modified", "Sun, 06 Nov 1994 08:49:37 GMT")
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::from("original")))
+                        .unwrap(),
+                )
+            } else {
+                let ims = req
+                    .headers()
+                    .get("if-modified-since")
+                    .map(|v| v.to_str().unwrap().to_owned())
+                    .unwrap_or_default();
+                if ims.contains("Sun, 06 Nov 1994 08:49:37 GMT") {
+                    Ok(Response::builder()
+                        .status(304)
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap())
+                } else {
+                    Ok(Response::new(Full::new(Bytes::from("new data"))))
+                }
+            }
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cache(cache)
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/lm-reval"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+
+    let resp = client
+        .get(&format!("http://{addr}/lm-reval"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+#[tokio::test]
+async fn cache_stale_if_error_expired() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let (addr, _counter) = h1_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("cache-control", "max-age=0, stale-if-error=1")
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::from("cached")))
+                        .unwrap(),
+                )
+            } else {
+                let has_inm = req.headers().contains_key("if-none-match");
+                assert!(has_inm, "revalidation should send If-None-Match");
+                Ok(Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::from("server error")))
+                    .unwrap())
+            }
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cache(cache)
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/sie-expired"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cached");
+
+    // Wait past the stale-if-error window (1 second)
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let resp = client
+        .get(&format!("http://{addr}/sie-expired"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::INTERNAL_SERVER_ERROR,
+        "500 should be returned when stale-if-error window has expired"
+    );
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+#[tokio::test]
+async fn cache_stale_if_error_non_5xx_is_not_served() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let (addr, _counter) = h1_server_with(move |req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            let n = attempt.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("cache-control", "max-age=0, stale-if-error=60")
+                        .header("etag", "\"v1\"")
+                        .body(Full::new(Bytes::from("cached")))
+                        .unwrap(),
+                )
+            } else {
+                let has_inm = req.headers().contains_key("if-none-match");
+                assert!(has_inm, "revalidation should send If-None-Match");
+                Ok(Response::builder()
+                    .status(404)
+                    .body(Full::new(Bytes::from("not found")))
+                    .unwrap())
+            }
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cache(cache)
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/sie-non-5xx"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cached");
+
+    let resp = client
+        .get(&format!("http://{addr}/sie-non-5xx"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::NOT_FOUND,
+        "stale-if-error should only apply to 5xx, not 404"
+    );
+    assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+#[tokio::test]
 async fn test_cache_stale_if_error_serves_stale_on_5xx() {
     let attempt = Arc::new(AtomicU32::new(0));
     let attempt_clone = attempt.clone();

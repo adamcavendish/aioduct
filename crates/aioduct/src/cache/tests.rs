@@ -576,6 +576,33 @@ fn test_cache_stale_without_validators_is_miss() {
 }
 
 #[test]
+fn cache_max_age_zero_without_validators_is_miss() {
+    let cache = HttpCache::new();
+    let uri: Uri = "http://example.com/max-age-zero-no-validators"
+        .parse()
+        .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(CACHE_CONTROL, "max-age=0".parse().unwrap());
+    // No ETag or Last-Modified — no validators
+
+    cache.store(
+        &Method::GET,
+        &uri,
+        StatusCode::OK,
+        &headers,
+        &Bytes::from("should not be retrievable"),
+        &HeaderMap::new(),
+    );
+
+    // Immediate lookup — max-age=0 means stale right away, no validators → Miss
+    match cache.lookup(&Method::GET, &uri, &HeaderMap::new()) {
+        CacheLookup::Miss => {}
+        CacheLookup::Fresh(_) => panic!("expected Miss, got Fresh"),
+        CacheLookup::Stale { .. } => panic!("expected Miss, got Stale"),
+    }
+}
+
+#[test]
 fn test_cache_immutable_with_must_revalidate() {
     let cache = HttpCache::new();
     let uri: Uri = "http://example.com/immut-mr".parse().unwrap();
