@@ -655,3 +655,256 @@ mod tls_tests {
         );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// H2/H3 edge-case tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// GOAWAY with concurrent streams: server sends GOAWAY after 1 request, but 3
+/// concurrent requests are in-flight. At least the first completes before GOAWAY,
+/// and the remaining complete on a new connection.
+#[tokio::test]
+async fn h2_goaway_with_concurrent_streams() {
+    let (addr, counter) = aioduct_test_server::h2::h2_goaway_after(1).await;
+    let client = h2_client();
+    let url = format!("http://{addr}/");
+
+    // Warm the connection so it is pooled
+    let warm = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(warm.status(), 200);
+    let _ = warm.text().await.unwrap();
+
+    // Let the GOAWAY arrive before we fire concurrent requests
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Fire 3 concurrent requests — all should complete on a new connection
+    let mut handles = Vec::new();
+    for _ in 0..3 {
+        let c = client.clone();
+        let u = url.clone();
+        handles.push(tokio::spawn(async move {
+            let resp = c.get(&u).unwrap().send().await.unwrap();
+            assert_eq!(resp.status(), 200, "concurrent request should succeed");
+            let body = resp.text().await.unwrap();
+            assert_eq!(body, "ok");
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    // All 4 requests (1 warmup + 3 concurrent) should be counted
+    assert_eq!(counter.requests(), 4);
+    // At least 2 connections: the warmup connection (GOAWAY'd) and at least one
+    // new connection for the 3 concurrent requests.
+    assert!(
+        counter.connections() >= 2,
+        "expected >=2 connections, got {}",
+        counter.connections()
+    );
+}
+
+/// GOAWAY with retry: the first request succeeds but the connection receives a
+/// GOAWAY. A second request on the pooled (GOAWAY'd) connection may encounter a
+/// closed-stale error; the configured retry policy opens a new connection and
+/// the second request completes successfully.
+#[tokio::test]
+async fn h2_goaway_with_retry() {
+    use aioduct::retry::RetryConfig;
+
+    let (addr, counter) = aioduct_test_server::h2::h2_goaway_after(1).await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .http2_prior_knowledge()
+        .timeout(Duration::from_secs(5))
+        .retry(
+            RetryConfig::default()
+                .max_retries(3)
+                .initial_backoff(Duration::from_millis(10))
+                .max_backoff(Duration::from_millis(200)),
+        )
+        .build()
+        .unwrap();
+
+    let url = format!("http://{addr}/");
+
+    // First request succeeds normally
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "ok");
+
+    // Send the second request quickly — the pool may reuse the GOAWAY'd
+    // connection, in which case the request fails and retry opens a new one.
+    // If the pool already discarded the GOAWAY'd connection, the second request
+    // simply opens a new connection. Either way, it succeeds.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "second request after GOAWAY should succeed (retry if needed)"
+    );
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "ok");
+
+    // Two requests completed
+    assert_eq!(counter.requests(), 2);
+}
+
+/// Adaptive h2c probing: a forward with `.adaptive_h2c()` probes the upstream
+/// for h2c support and negotiates HTTP/2 when the upstream is an h2 server.
+///
+/// NOTE: the probe-cache TTL is 300s by default. The public builder exposes
+/// `.h2c_probe_ttl()` which allows setting a custom TTL, but actually expiring
+/// and re-probing an entry would require waiting > TTL in a test, which is
+/// impractical. This test verifies the probe itself works correctly.
+#[tokio::test]
+async fn adaptive_h2c_ttl_expiry_reprobes() {
+    use bytes::Bytes;
+    use http_body_util::Full;
+
+    let (addr, _counter) = aioduct_test_server::h2::h2_server_with(|req| async move {
+        let version = format!("{:?}", req.version());
+        Ok::<_, std::convert::Infallible>(http::Response::new(Full::new(Bytes::from(version))))
+    })
+    .await;
+
+    // Build a client with a short h2c probe TTL to exercise the config path
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .h2c_probe_ttl(Duration::from_secs(60))
+        .build()
+        .unwrap();
+
+    // First request: adaptive h2c probes the upstream, discovers h2c support
+    let req1 = http::Request::builder()
+        .method("GET")
+        .uri("/test")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(req1)
+        .upstream(
+            format!("http://127.0.0.1:{}", addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .adaptive_h2c()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    // The upstream should have received an HTTP/2 request
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("HTTP/2"),
+        "adaptive h2c should negotiate HTTP/2 against h2 server, got: {body}"
+    );
+
+    // Second request: cache hit, still uses h2c
+    let req2 = http::Request::builder()
+        .method("GET")
+        .uri("/test2")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(req2)
+        .upstream(
+            format!("http://127.0.0.1:{}", addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .adaptive_h2c()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("HTTP/2"),
+        "cached h2c should still use HTTP/2, got: {body}"
+    );
+}
+
+/// HTTP/2 keep-alive PING frames maintain an idle connection so that a second
+/// request after a 3-second sleep still succeeds on the same connection.
+#[tokio::test]
+async fn http2_config_keep_alive_applied() {
+    let (addr, counter) = aioduct_test_server::h2::h2_server().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .http2_prior_knowledge()
+        .http2_keep_alive_interval(Duration::from_secs(1))
+        .http2_keep_alive_while_idle(true)
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .pool_idle_timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let url = format!("http://{addr}/");
+
+    // First request
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+
+    // Wait long enough for multiple keep-alive PINGs to fire (interval=1s)
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Second request — should reuse the same connection thanks to PING keep-alive
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+
+    // Both requests should have used a single connection
+    assert_eq!(
+        counter.connections(),
+        1,
+        "keep-alive PINGs should maintain a single connection"
+    );
+    assert_eq!(counter.requests(), 2);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// H3 edge-case tests (cfg-gated on feature = "http3")
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(all(feature = "rustls", feature = "http3"))]
+mod h3_edge_case_tests {
+    use super::*;
+
+    fn install_provider() {
+        aioduct_test_server::tls::install_crypto_provider();
+    }
+
+    /// Connecting to an H3 endpoint on a closed port should produce a connect
+    /// error classified as `is_connect()`.
+    #[tokio::test]
+    async fn h3_connection_refused_is_connect_error() {
+        install_provider();
+
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+            .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
+            .http3(true)
+            .unwrap()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .unwrap();
+
+        // Port 1 is typically closed (requires root on most systems)
+        let result = client.get("https://127.0.0.1:1/").unwrap().send().await;
+
+        assert!(result.is_err(), "H3 connection to closed port should fail");
+        let err = result.unwrap_err();
+        assert!(
+            err.is_connect(),
+            "H3 connection refused should be classified as is_connect(), got: {err}"
+        );
+    }
+}

@@ -1799,4 +1799,111 @@ mod builder_tests {
             "should return Done when redirect policy is None"
         );
     }
+
+    #[cfg(feature = "rustls")]
+    #[tokio::test]
+    async fn hsts_include_subdomains_end_to_end() {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use std::convert::Infallible;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        install_crypto();
+
+        let sub_requested = Arc::new(AtomicBool::new(false));
+        let sub_requested_clone = sub_requested.clone();
+
+        let (addr, cert_der, _counter) =
+            aioduct_test_server::tls::tls_server_with(&[b"http/1.1"], move |req| {
+                let sub = sub_requested_clone.clone();
+                async move {
+                    let host = req
+                        .headers()
+                        .get("host")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    if host.starts_with("sub.") {
+                        sub.store(true, Ordering::SeqCst);
+                    }
+                    Ok::<_, Infallible>(
+                        http::Response::builder()
+                            .header(
+                                "strict-transport-security",
+                                "max-age=3600; includeSubDomains",
+                            )
+                            .body(Full::new(Bytes::from("ok")))
+                            .unwrap(),
+                    )
+                }
+            })
+            .await;
+
+        let cert = crate::tls::Certificate::from_der(cert_der.to_vec());
+        let store = crate::hsts::HstsStore::new();
+
+        // First, verify TLS connectivity works using the IP directly
+        {
+            let cert2 = crate::tls::Certificate::from_der(cert_der.to_vec());
+            let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+                .add_root_certificates(&[cert2])
+                .danger_accept_invalid_hostnames(true)
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap();
+            let resp = client
+                .get(&format!("https://127.0.0.1:{}/", addr.port()))
+                .unwrap()
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+            assert_eq!(resp.text().await.unwrap(), "ok");
+        }
+
+        // Now test with HSTS and custom resolver using example.com
+        let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+            .hsts(store.clone())
+            .add_root_certificates(&[cert])
+            .danger_accept_invalid_hostnames(true)
+            .timeout(std::time::Duration::from_secs(5))
+            .resolver({
+                move |_host: &str, _port: u16| {
+                    Box::pin(async move { Ok(addr) })
+                        as std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<
+                                        Output = std::io::Result<std::net::SocketAddr>,
+                                    > + Send,
+                            >,
+                        >
+                }
+            })
+            .build()
+            .unwrap();
+
+        let base_url = format!("https://example.com:{}", addr.port());
+
+        // First request: HTTPS — server returns HSTS header with includeSubDomains
+        let resp = client.get(&base_url).unwrap().send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.text().await.unwrap(), "ok");
+        assert!(
+            store.should_upgrade("example.com"),
+            "HSTS should be stored for example.com"
+        );
+        assert!(
+            store.should_upgrade("sub.example.com"),
+            "includeSubDomains should cover sub.example.com"
+        );
+
+        // Second request: http://sub.example.com should be upgraded to https://
+        let sub_url = format!("http://sub.example.com:{}", addr.port());
+        let resp = client.get(&sub_url).unwrap().send().await.unwrap();
+        assert_eq!(resp.text().await.unwrap(), "ok");
+        assert!(
+            sub_requested.load(Ordering::SeqCst),
+            "sub.example.com should have been requested (via HTTPS upgrade)"
+        );
+    }
 }

@@ -295,4 +295,16 @@ mod tests {
         store.store_from_response("example.com", &headers);
         assert!(store.should_upgrade("example.com"));
     }
+
+    #[test]
+    fn hsts_max_age_negative_ignored() {
+        let store = HstsStore::new();
+        let headers = hsts_headers("max-age=-1");
+        store.store_from_response("example.com", &headers);
+        // max-age=-1 should NOT create an entry — should_upgrade returns false
+        assert!(
+            !store.should_upgrade("example.com"),
+            "max-age=-1 should be ignored, no entry should be stored"
+        );
+    }
 }
