@@ -409,3 +409,303 @@ async fn connect_timeout_does_not_affect_fast_connects() {
 
     assert_eq!(resp.status(), http::StatusCode::OK);
 }
+
+// ── Edge-Case Timeout Tests ─────────────────────────────────────────────
+
+// 1. Per-request connect_timeout without client-level connect_timeout.
+#[tokio::test]
+async fn connect_timeout_per_request() {
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+
+    let start = tokio::time::Instant::now();
+    let result = client
+        .get("http://192.0.2.1:81/unreachable")
+        .unwrap()
+        .connect_timeout(Duration::from_millis(50))
+        .send()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "per-request connect_timeout should fire for unreachable IP"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.is_timeout() || err.is_connect(),
+        "expected timeout or connect error, got: {err:?}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "per-request connect_timeout should fire quickly"
+    );
+}
+
+// 2. Timeout fires during body upload when server reads slowly.
+#[tokio::test]
+async fn timeout_during_body_upload() {
+    use tokio::io::AsyncReadExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Server: accept connection, read only headers, then delay reading body.
+    // This causes TCP send buffer backpressure on the client side.
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 8192];
+        let mut total = 0;
+        loop {
+            let n = stream.read(&mut buf[total..]).await.unwrap();
+            if n == 0 {
+                return;
+            }
+            total += n;
+            if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        // Server has read headers but intentionally does not read the body.
+        // Sleep to keep the connection open while client uploads.
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .unwrap();
+
+    // Large streaming body: enough chunks to fill TCP send buffers.
+    use http_body_util::BodyExt;
+    let chunk = Bytes::from(vec![b'X'; 65536]);
+    let num_chunks = 200;
+    let chunks: Vec<_> = (0..num_chunks)
+        .map(|_| Ok(hyper::body::Frame::data(chunk.clone())))
+        .collect();
+    let stream = futures_util::stream::iter(chunks);
+    let stream_body: aioduct::body::RequestBodySend =
+        http_body_util::StreamBody::new(stream).boxed_unsync();
+
+    let result = client
+        .post(&format!("http://{addr}/upload"))
+        .unwrap()
+        .body_stream(stream_body)
+        .send()
+        .await;
+
+    assert!(result.is_err(), "timeout should fire during body upload");
+    let err = result.unwrap_err();
+    assert!(
+        err.is_timeout(),
+        "expected timeout during upload, got: {err:?}"
+    );
+}
+
+// 3. After a request times out, the pool has no idle connections for that host.
+#[tokio::test]
+async fn timeout_cancellation_aftermath() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let rc = Arc::clone(&request_count);
+
+    let (addr, counter) = h1_server_with(move |_req| {
+        let n = rc.fetch_add(1, Ordering::SeqCst);
+        async move {
+            if n == 1 {
+                // Second request (n=1, zero-indexed): sleep past the client timeout.
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(Duration::from_secs(60))
+        .pool_max_idle_per_host(5)
+        .timeout(Duration::from_millis(200))
+        .build()
+        .unwrap();
+
+    // First request succeeds — connection is pooled after body consumed.
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _body = resp.text().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Second request uses the pooled connection but times out.
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+    assert!(
+        result.is_err(),
+        "second request should time out using pooled connection"
+    );
+    assert!(result.unwrap_err().is_timeout());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // After timeout eviction, a third request needs a fresh connection.
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _body = resp.text().await.unwrap();
+
+    // Pool should have no idle connections: a new TCP connection was opened.
+    assert!(
+        counter.connections() >= 2,
+        "timeout should evict connection from pool; expected >= 2 connections, got {}",
+        counter.connections()
+    );
+}
+
+// 4. Timeout covers the entire redirect chain, not reset per hop.
+#[tokio::test]
+async fn timeout_during_redirect_chain() {
+    // Server B: slow — sleeps 500 ms before responding.
+    let (slow_addr, _slow_counter) = h1_server_with(|_req| async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("slow response"))))
+    })
+    .await;
+
+    // Server A: redirects to the slow Server B immediately.
+    let (redirect_addr, _redirect_counter) = h1_server_with(move |_req| {
+        let target = format!("http://{slow_addr}/slow");
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_millis(200))
+        .build()
+        .unwrap();
+
+    // The timeout covers the redirect hop + slow response — 200 ms < 500 ms.
+    let result = client
+        .get(&format!("http://{redirect_addr}/start"))
+        .unwrap()
+        .send()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "200ms timeout should fire before 500ms redirect chain completes"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.is_timeout(),
+        "expected timeout bounding entire redirect chain, got: {err:?}"
+    );
+
+    // With a generous per-request timeout the same redirect chain succeeds.
+    let resp = client
+        .get(&format!("http://{redirect_addr}/start"))
+        .unwrap()
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "slow response");
+}
+
+// 5. Combined timeout + connect_timeout + read_timeout each fire independently.
+#[tokio::test]
+async fn multiple_timeouts_combined() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .connect_timeout(Duration::from_millis(200))
+        .read_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    // ── connect_timeout fires for unreachable IP ──
+    let start = tokio::time::Instant::now();
+    let result = client
+        .get("http://192.0.2.1:82/unreachable")
+        .unwrap()
+        .send()
+        .await;
+    assert!(
+        result.is_err(),
+        "connect_timeout should fire for unreachable IP"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.is_timeout() || err.is_connect(),
+        "expected connect timeout or connect error, got: {err:?}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "connect_timeout should fire quickly"
+    );
+
+    // ── overall timeout does not fire for fast connect + fast response ──
+    let (addr, _counter) = h1_server().await;
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+
+    // ── read_timeout fires on stalled body reads ──
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let read_addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        // Send headers + partial body, then stall.
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        // Never send the remaining 5 bytes.
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let resp2 = client
+        .get(&format!("http://{read_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), http::StatusCode::OK);
+
+    let body_result = resp2.text().await;
+    assert!(
+        body_result.is_err(),
+        "read_timeout should fire on stalled body chunks"
+    );
+    assert!(
+        body_result
+            .unwrap_err()
+            .to_string()
+            .to_lowercase()
+            .contains("timeout"),
+        "error should indicate timeout"
+    );
+}
