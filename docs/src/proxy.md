@@ -113,6 +113,11 @@ The uppercase variant takes precedence over the lowercase variant. The
 following URL schemes are recognised: `http://`, `https://`, `socks4://`,
 `socks4a://`, `socks5://`, and `socks5h://`.
 
+System proxy support is environment-based on native runtimes and blocking
+clients. Wasm/browser and wasi-p2 transports are host-managed; proxy discovery,
+DNS, and bypass behavior come from the browser or WASI host rather than
+aioduct's native proxy stack.
+
 ### NO_PROXY Rules
 
 The `NO_PROXY` value is a comma-separated list of patterns:
@@ -123,6 +128,13 @@ The `NO_PROXY` value is a comma-separated list of patterns:
 | `.example.com` | `*.example.com` (subdomains only) |
 | `*` | All hosts (disables proxy) |
 | `127.0.0.1` | Exact IP match |
+| `10.0.0.0/8` | IPv4 CIDR match |
+| `2001:db8::/32` | IPv6 CIDR match |
+| `example.com:8080` | Hostname only when the request port is 8080 |
+| `[2001:db8::1]:443` | IPv6 literal only when the request port is 443 |
+
+Host matching is case-insensitive. A bare hostname rule matches that hostname
+and its subdomains; a leading-dot rule matches subdomains only.
 
 ## Advanced: Separate HTTP/HTTPS Proxies
 

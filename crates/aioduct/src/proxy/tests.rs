@@ -11,6 +11,7 @@ fn no_proxy_wildcard_matches_everything() {
     let np = NoProxy::new("*");
     assert!(np.matches("anything.example.com"));
     assert!(np.matches("127.0.0.1"));
+    assert!(np.matches("2001:db8::1"));
 }
 
 #[test]
@@ -59,6 +60,32 @@ fn no_proxy_ip_address() {
 }
 
 #[test]
+fn no_proxy_ipv6_exact_address() {
+    let np = NoProxy::new("2001:db8::1");
+    assert!(np.matches("2001:db8::1"));
+    assert!(np.matches("[2001:db8::1]"));
+    assert!(!np.matches("2001:db8::2"));
+}
+
+#[test]
+fn no_proxy_ipv4_cidr() {
+    let np = NoProxy::new("10.0.0.0/8");
+    assert!(np.matches("10.1.2.3"));
+    assert!(np.matches("10.255.255.255"));
+    assert!(!np.matches("11.0.0.1"));
+    assert!(!np.matches("example.com"));
+}
+
+#[test]
+fn no_proxy_ipv6_cidr() {
+    let np = NoProxy::new("2001:db8::/32");
+    assert!(np.matches("2001:db8::1"));
+    assert!(np.matches("[2001:db8:abcd::1]"));
+    assert!(!np.matches("2001:db9::1"));
+    assert!(!np.matches("example.com"));
+}
+
+#[test]
 fn no_proxy_empty_matches_nothing() {
     let np = NoProxy::new("");
     assert!(!np.matches("anything"));
@@ -68,8 +95,17 @@ fn no_proxy_empty_matches_nothing() {
 fn no_proxy_with_port_matches_specific_port() {
     let np = NoProxy::new("example.com:8080");
     assert!(np.matches_with_port("example.com", Some(8080)));
+    assert!(np.matches("example.com:8080"));
     assert!(!np.matches_with_port("example.com", Some(9090)));
     assert!(!np.matches_with_port("example.com", None));
+}
+
+#[test]
+fn no_proxy_host_port_matches_subdomain_on_same_port() {
+    let np = NoProxy::new("example.com:8080");
+    assert!(np.matches_with_port("sub.example.com", Some(8080)));
+    assert!(!np.matches_with_port("sub.example.com", Some(8081)));
+    assert!(!np.matches_with_port("other.com", Some(8080)));
 }
 
 #[test]
@@ -85,6 +121,32 @@ fn no_proxy_port_with_subdomain() {
     let np = NoProxy::new(".example.com:8080");
     assert!(np.matches_with_port("sub.example.com", Some(8080)));
     assert!(!np.matches_with_port("sub.example.com", Some(9090)));
+}
+
+#[test]
+fn no_proxy_bracketed_ipv6_with_port() {
+    let np = NoProxy::new("[2001:db8::1]:443");
+    assert!(np.matches_with_port("2001:db8::1", Some(443)));
+    assert!(np.matches_with_port("[2001:db8::1]", Some(443)));
+    assert!(np.matches("[2001:db8::1]:443"));
+    assert!(!np.matches_with_port("2001:db8::1", Some(8443)));
+    assert!(!np.matches_with_port("2001:db8::2", Some(443)));
+}
+
+#[test]
+fn no_proxy_cidr_with_port_matches_specific_port() {
+    let np = NoProxy::new("10.0.0.0/8:443,[2001:db8::/32]:8443");
+    assert!(np.matches_with_port("10.1.2.3", Some(443)));
+    assert!(!np.matches_with_port("10.1.2.3", Some(80)));
+    assert!(np.matches_with_port("2001:db8::1", Some(8443)));
+    assert!(!np.matches_with_port("2001:db8::1", Some(443)));
+}
+
+#[test]
+fn no_proxy_invalid_cidr_prefix_does_not_match_ip() {
+    let np = NoProxy::new("10.0.0.0/33,2001:db8::/129");
+    assert!(!np.matches("10.1.2.3"));
+    assert!(!np.matches("2001:db8::1"));
 }
 
 #[test]
