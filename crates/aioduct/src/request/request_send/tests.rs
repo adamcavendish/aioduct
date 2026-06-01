@@ -1,6 +1,7 @@
 use super::*;
 use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 use http::StatusCode;
+use http_body_util::BodyExt;
 
 fn test_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::new()
@@ -680,4 +681,63 @@ async fn form_percent_encoding() {
         }
         _ => panic!("expected buffered body"),
     }
+}
+
+#[tokio::test]
+async fn custom_method_report() {
+    let client = test_client();
+    let method = Method::from_bytes(b"REPORT").unwrap();
+    let req = client
+        .request(method, "http://example.com")
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(req.method().as_str(), "REPORT");
+}
+
+#[tokio::test]
+async fn body_stream_sets_streaming_variant() {
+    let client = test_client();
+    let stream_body: crate::body::RequestBodySend = http_body_util::Empty::new()
+        .map_err(|never| match never {})
+        .boxed_unsync();
+    let rb = client
+        .post("http://example.com")
+        .unwrap()
+        .body_stream(stream_body);
+    assert!(
+        matches!(rb.body, Some(RequestBody::Streaming(_))),
+        "expected Streaming variant in builder's body field"
+    );
+}
+
+#[tokio::test]
+async fn build_with_streaming_body() {
+    let client = test_client();
+    let stream_body: crate::body::RequestBodySend = http_body_util::Empty::new()
+        .map_err(|never| match never {})
+        .boxed_unsync();
+    let rb = client
+        .post("http://example.com")
+        .unwrap()
+        .body_stream(stream_body);
+    let req = rb.build().unwrap();
+    assert!(
+        matches!(req.into_body(), RequestBody::Streaming(_)),
+        "expected Streaming variant in built request body"
+    );
+}
+
+#[tokio::test]
+async fn new_owned_creates_valid_request() {
+    let client = test_client();
+    let uri: Uri = "http://example.com/path".parse().unwrap();
+    let req = RequestBuilderSend::new_owned(client, Method::GET, uri)
+        .header_str("x-custom", "value")
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(req.method(), Method::GET);
+    assert_eq!(req.uri().path(), "/path");
+    assert_eq!(req.headers().get("x-custom").unwrap(), "value");
 }
