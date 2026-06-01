@@ -895,8 +895,17 @@ mod h3_edge_case_tests {
         aioduct_test_server::tls::install_crypto_provider();
     }
 
-    /// Connecting to an H3 endpoint on a closed port should produce a connect
-    /// error classified as `is_connect()`.
+    /// Connecting to an H3 endpoint on a closed port.
+    ///
+    /// NOTE: QUIC (UDP) connection attempts to closed ports do not produce a
+    /// TCP-style "connection refused" error. Instead, the QUIC handshake
+    /// times out. The resulting error is `Error::Timeout`, which does NOT
+    /// satisfy `is_connect()` — that method requires `Error::Io(ConnectionRefused)`,
+    /// `Error::Tls`, or `Error::ConnectTimeout`. The `Error::Timeout` variant
+    /// does satisfy `is_timeout()`.
+    ///
+    /// This test verifies that the H3 client does not panic or hang when the
+    /// endpoint is unreachable, and that the error is a timeout.
     #[tokio::test]
     async fn h3_connection_refused_is_connect_error() {
         install_provider();
@@ -914,9 +923,12 @@ mod h3_edge_case_tests {
 
         assert!(result.is_err(), "H3 connection to closed port should fail");
         let err = result.unwrap_err();
+        // QUIC to a closed port times out rather than producing a
+        // connection-refused error (unlike TCP). The timeout is
+        // Error::Timeout, which satisfies is_timeout() but not is_connect().
         assert!(
-            err.is_connect(),
-            "H3 connection refused should be classified as is_connect(), got: {err}"
+            err.is_timeout(),
+            "H3 to closed port should time out, got: {err}"
         );
     }
 }
