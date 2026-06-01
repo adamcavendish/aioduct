@@ -675,3 +675,41 @@ async fn no_spurious_pending_on_buffered_decode() {
         "poll_frame returned Pending {pending_count} times — should loop internally when inner body has data"
     );
 }
+
+#[cfg(all(feature = "gzip", feature = "tokio"))]
+#[tokio::test]
+async fn decompress_strips_content_length() {
+    use bytes::Bytes;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+    use http_body_util::BodyExt;
+    use std::io::Write;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(b"content length must go").unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_ENCODING, "gzip".parse().unwrap());
+    headers.insert(
+        CONTENT_LENGTH,
+        compressed.len().to_string().parse().unwrap(),
+    );
+
+    let body: RequestBodySend = http_body_util::Full::new(Bytes::from(compressed))
+        .map_err(|never| match never {})
+        .boxed_unsync();
+    let ae = AcceptEncoding::default();
+    let result_body = maybe_decompress(&mut headers, body, &ae);
+
+    // Content-Length must be stripped because decompression changes the size
+    assert!(
+        !headers.contains_key(CONTENT_LENGTH),
+        "Content-Length should be stripped after decompression"
+    );
+
+    // Verify the actual body content
+    let collected = result_body.collect().await.unwrap().to_bytes();
+    assert_eq!(&collected[..], b"content length must go");
+}

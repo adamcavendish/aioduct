@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -42,6 +42,10 @@ pub(crate) struct PooledConnection<B> {
     _active_stream_permit: Option<ActiveStreamPermit>,
     /// Upgrade handle for Local path (!Send) HTTP/1.1 upgrades.
     pub(crate) upgrade_handle_local: Option<crate::upgrade::UpgradeHandleLocal>,
+    /// Weak reference to the pool this connection was checked out from.
+    pub(crate) pool: Weak<std::sync::Mutex<super::PoolInner<B>>>,
+    /// The pool key this connection was checked out under.
+    pub(crate) key: Option<super::PoolKey>,
 }
 
 struct ActiveStreamPermit {
@@ -71,6 +75,8 @@ impl<B> PooledConnection<B> {
             active_streams: None,
             _active_stream_permit: None,
             upgrade_handle_local: None,
+            pool: Weak::new(),
+            key: None,
         }
     }
 
@@ -90,6 +96,8 @@ impl<B> PooledConnection<B> {
             active_streams: Some(Arc::new(AtomicUsize::new(0))),
             _active_stream_permit: None,
             upgrade_handle_local: None,
+            pool: Weak::new(),
+            key: None,
         }
     }
 
@@ -112,6 +120,8 @@ impl<B> PooledConnection<B> {
             active_streams: Some(Arc::new(AtomicUsize::new(0))),
             _active_stream_permit: None,
             upgrade_handle_local: None,
+            pool: Weak::new(),
+            key: None,
         }
     }
 
@@ -201,6 +211,23 @@ impl<B> PooledConnection<B> {
     }
 }
 
+impl<B> Drop for PooledConnection<B> {
+    fn drop(&mut self) {
+        if let Some(ref key) = self.key {
+            if let Some(pool_inner) = self.pool.upgrade() {
+                if let Ok(mut inner) = pool_inner.lock() {
+                    if let Some(count) = inner.active.get_mut(key) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            inner.active.remove(key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl<B: 'static> PooledConnection<B> {
     /// Clone the underlying send handle for H2/H3 multiplexing.
     ///
@@ -240,6 +267,8 @@ impl<B: 'static> PooledConnection<B> {
             active_streams: self.active_streams.clone(),
             _active_stream_permit: Some(active_stream_permit),
             upgrade_handle_local: None,
+            pool: self.pool.clone(),
+            key: self.key.clone(),
         })
     }
 }

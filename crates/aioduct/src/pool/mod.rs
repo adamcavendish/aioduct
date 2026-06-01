@@ -66,16 +66,19 @@ struct IdleConnection<B> {
     idle_since: Instant,
 }
 
-struct PoolInner<B> {
+pub(crate) struct PoolInner<B> {
     idle: HashMap<PoolKey, VecDeque<IdleConnection<B>>>,
     /// Reverse index: SAN → set of pool keys whose connections cover that name.
     san_index: HashMap<String, HashSet<PoolKey>>,
     /// Pool keys with an in-progress H2/H3 connection attempt.
     connecting_h2: HashSet<PoolKey>,
     max_idle_per_host: usize,
+    max_active_per_host: Option<NonZeroUsize>,
     max_active_streams_per_connection: Option<NonZeroUsize>,
     idle_timeout: Duration,
     max_lifetime: Option<Duration>,
+    /// Count of active (checked-out, not yet returned) connections per host key.
+    active: HashMap<PoolKey, usize>,
 }
 
 /// Thread-safe pool of idle HTTP connections keyed by origin.
@@ -102,9 +105,11 @@ impl<B: 'static> ConnectionPool<B> {
                 san_index: HashMap::new(),
                 connecting_h2: HashSet::new(),
                 max_idle_per_host: DEFAULT_MAX_IDLE_PER_HOST,
+                max_active_per_host: None,
                 max_active_streams_per_connection: None,
                 idle_timeout: DEFAULT_IDLE_TIMEOUT,
                 max_lifetime: None,
+                active: HashMap::new(),
             })),
             reaper_spawned: Arc::new(AtomicBool::new(false)),
         }
@@ -132,6 +137,28 @@ impl<B: 'static> ConnectionPool<B> {
             inner.max_lifetime = Some(max_lifetime);
         }
         self
+    }
+
+    /// Set the maximum active connections per host. `None` means unlimited.
+    pub(crate) fn with_max_active_per_host(self, max: Option<NonZeroUsize>) -> Self {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.max_active_per_host = max;
+        }
+        self
+    }
+
+    /// Returns whether a new connection can be created for the given key,
+    /// respecting the configured `max_active_per_host` cap.
+    pub(crate) fn can_connect(&self, key: &PoolKey) -> bool {
+        let inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+        let max = match inner.max_active_per_host {
+            Some(max) => max.get(),
+            None => return true,
+        };
+        inner.active.get(key).copied().unwrap_or(0) < max
     }
 
     /// Set the maximum active H2/H3 streams allowed per pooled connection.
@@ -193,6 +220,7 @@ impl<B: 'static> ConnectionPool<B> {
     /// Uses LIFO ordering (most recently returned first) and checks readiness
     /// on each candidate, trying all pooled connections before giving up.
     pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection<B>> {
+        let pool_weak = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().ok()?;
         let idle_timeout = inner.idle_timeout;
         let max_lifetime = inner.max_lifetime;
@@ -211,9 +239,17 @@ impl<B: 'static> ConnectionPool<B> {
             if entry.connection.is_ready() {
                 if entry.connection.is_h2_or_h3() {
                     let mut entry = entry;
-                    if let Some(cloned) =
+                    if let Some(mut cloned) =
                         entry.connection.clone_for_multiplex_with_limit(max_active)
                     {
+                        // Set pool/key on the cloned connection.
+                        cloned.pool = pool_weak;
+                        cloned.key = Some(key.clone());
+                        // Increment active count for this host.
+                        *inner.active.entry(key.clone()).or_insert(0) += 1;
+                        // Clear pool/key on the original before re-inserting.
+                        entry.connection.pool = Weak::new();
+                        entry.connection.key = None;
                         entry.idle_since = now;
                         for retained in retained_unavailable.into_iter().rev() {
                             queue.push_back(retained);
@@ -231,7 +267,11 @@ impl<B: 'static> ConnectionPool<B> {
                 if queue.is_empty() {
                     inner.idle.remove(key);
                 }
-                return Some(entry.connection);
+                let mut conn = entry.connection;
+                conn.pool = pool_weak;
+                conn.key = Some(key.clone());
+                *inner.active.entry(key.clone()).or_insert(0) += 1;
+                return Some(conn);
             }
         }
 
@@ -247,10 +287,22 @@ impl<B: 'static> ConnectionPool<B> {
     /// Return a connection to the pool for future reuse.
     ///
     /// When at capacity, evicts the oldest idle connection to make room.
-    pub(crate) fn checkin(&self, key: PoolKey, connection: PooledConnection<B>) {
+    pub(crate) fn checkin(&self, key: PoolKey, mut connection: PooledConnection<B>) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
+
+        // Decrement the active count tracked for this connection.
+        let active_key = connection.key.clone();
+        if let Some(ref k) = active_key {
+            if let Some(count) = inner.active.get_mut(k) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    inner.active.remove(k);
+                }
+            }
+        }
+
         let max = inner.max_idle_per_host;
 
         if max == 0 {
@@ -260,6 +312,10 @@ impl<B: 'static> ConnectionPool<B> {
         if !Self::connection_within_lifetime(&connection, inner.max_lifetime) {
             return;
         }
+
+        // Clear pool/key so Drop does not double-decrement.
+        connection.pool = Weak::new();
+        connection.key = None;
 
         for san in connection.sans.iter() {
             inner
