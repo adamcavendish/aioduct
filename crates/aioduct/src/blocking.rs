@@ -257,6 +257,21 @@ impl<R: RuntimeCompletion> BlockingResponse<crate::Response, R> {
         self.inner.tls_info()
     }
 
+    /// Returns a mutable reference to the response headers.
+    pub fn headers_mut(&mut self) -> &mut HeaderMap {
+        self.inner.headers_mut()
+    }
+
+    /// Returns a reference to the response extensions.
+    pub fn extensions(&self) -> &http::Extensions {
+        self.inner.extensions()
+    }
+
+    /// Returns a mutable reference to the response extensions.
+    pub fn extensions_mut(&mut self) -> &mut http::Extensions {
+        self.inner.extensions_mut()
+    }
+
     /// Consume the response body and deserialize it as JSON.
     #[cfg(feature = "json")]
     pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
@@ -485,6 +500,35 @@ mod tests {
         assert_eq!(resp.version(), http::Version::HTTP_11);
         assert!(resp.remote_addr().is_some());
         assert!(resp.tls_info().is_none());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn blocking_response_native_metadata_mutators() {
+        use crate::runtime::tokio_rt::TcpConnector;
+
+        #[derive(Clone, Debug, PartialEq)]
+        struct Marker(&'static str);
+
+        let addr = aioduct_test_server::h1::spawn_h1_server();
+        let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let mut resp = client
+            .get(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .unwrap();
+
+        resp.headers_mut()
+            .insert("x-blocking-mutated", http::HeaderValue::from_static("yes"));
+        assert_eq!(resp.headers().get("x-blocking-mutated").unwrap(), "yes");
+
+        assert!(resp.extensions().get::<Marker>().is_none());
+        resp.extensions_mut().insert(Marker("native"));
+        assert_eq!(
+            resp.extensions().get::<Marker>().map(|marker| marker.0),
+            Some("native")
+        );
     }
 
     #[cfg(feature = "tokio")]
@@ -728,7 +772,7 @@ mod tests {
         assert_eq!(resp.content_length(), Some(7));
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", feature = "json"))]
     #[test]
     fn blocking_json_deserialization() {
         use crate::runtime::tokio_rt::TcpConnector;
