@@ -154,6 +154,24 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingRequestBuilder<C, R> {
         self
     }
 
+    /// Set HTTP Basic auth credentials.
+    pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
+        self.inner = self.inner.basic_auth(username, password);
+        self
+    }
+
+    /// Append query parameters to the URL.
+    pub fn query(mut self, params: &[(&str, &str)]) -> Self {
+        self.inner = self.inner.query(params);
+        self
+    }
+
+    /// Force a specific HTTP version.
+    pub fn version(mut self, version: http::Version) -> Self {
+        self.inner = self.inner.version(version);
+        self
+    }
+
     /// Send the request and block until the response is received.
     pub fn send(
         self,

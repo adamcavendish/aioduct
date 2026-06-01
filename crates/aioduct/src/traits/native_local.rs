@@ -65,6 +65,21 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderExt
         self
     }
 
+    fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
+        self.inner = self.inner.basic_auth(username, password);
+        self
+    }
+
+    fn query(mut self, params: &[(&str, &str)]) -> Self {
+        self.inner = self.inner.query(params);
+        self
+    }
+
+    fn version(mut self, version: http::Version) -> Self {
+        self.inner = self.inner.version(version);
+        self
+    }
+
     async fn send(self) -> Result<Response<ResponseBodyLocal>, SendError> {
         let url = self.inner.uri().clone();
         self.inner.send().await.map_err(|e| SendError::new(e, url))

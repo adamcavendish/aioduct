@@ -27,6 +27,15 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     force_addr: Option<std::net::SocketAddr>,
 }
 
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for RequestBuilderLocal<'_, R, C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestBuilderLocal")
+            .field("method", &self.method)
+            .field("uri", &self.uri)
+            .finish()
+    }
+}
+
 impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, C> {
     pub(crate) fn new(client: &'a HttpEngineLocal<R, C>, method: Method, uri: Uri) -> Self {
         Self {
@@ -703,5 +712,31 @@ mod tests {
             .unwrap()
             .connect_timeout(Duration::from_secs(2));
         assert_eq!(rb.connect_timeout, Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn debug_request_builder_local() {
+        let client = test_client();
+        let rb = client.get_local("http://example.com/path").unwrap();
+        let dbg = format!("{rb:?}");
+        assert!(
+            dbg.contains("RequestBuilderLocal"),
+            "Debug output should contain struct name, got: {dbg}"
+        );
+        assert!(
+            dbg.contains("GET"),
+            "Debug output should contain method, got: {dbg}"
+        );
+    }
+
+    #[test]
+    fn force_addr_setter_local() {
+        let client = test_client();
+        let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let rb = client
+            .get_local("http://example.com")
+            .unwrap()
+            .force_addr(addr);
+        assert_eq!(rb.force_addr, Some(addr));
     }
 }
