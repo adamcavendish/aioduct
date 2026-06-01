@@ -1,12 +1,36 @@
 #![cfg(feature = "tokio")]
 
 use std::convert::Infallible;
+#[cfg(any(
+    feature = "gzip",
+    feature = "deflate",
+    feature = "brotli",
+    feature = "zstd"
+))]
 use std::sync::Arc;
+#[cfg(any(
+    feature = "gzip",
+    feature = "deflate",
+    feature = "brotli",
+    feature = "zstd"
+))]
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(any(
+    feature = "gzip",
+    feature = "deflate",
+    feature = "brotli",
+    feature = "zstd"
+))]
 use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
+#[cfg(any(
+    feature = "gzip",
+    feature = "deflate",
+    feature = "brotli",
+    feature = "zstd"
+))]
 use hyper::Request;
 use hyper::Response;
 
@@ -15,6 +39,12 @@ use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
 use aioduct_test_server::h1::h1_server_with;
+#[cfg(any(
+    feature = "gzip",
+    feature = "deflate",
+    feature = "brotli",
+    feature = "zstd"
+))]
 use aioduct_test_server::raw::raw_streaming_server;
 
 #[cfg(feature = "gzip")]

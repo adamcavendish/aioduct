@@ -864,4 +864,31 @@ mod tests {
             Ok(_) => panic!("expected send_request to fail on failing IO"),
         }
     }
+
+    #[test]
+    fn is_dns_for_invalid_url_cannot_resolve() {
+        let err = Error::InvalidUrl("cannot resolve host.invalid:80: dns error".into());
+        assert!(
+            err.is_dns(),
+            "Error::InvalidUrl with 'cannot resolve' should match is_dns()"
+        );
+    }
+
+    #[test]
+    fn is_dns_for_invalid_url_no_dns_resolver() {
+        let err = Error::InvalidUrl("no DNS resolver configured for host:80".into());
+        assert!(
+            err.is_dns(),
+            "Error::InvalidUrl with 'no DNS resolver' should match is_dns()"
+        );
+    }
+
+    #[test]
+    fn is_dns_for_invalid_url_unrelated() {
+        let err = Error::InvalidUrl("bad url format".into());
+        assert!(
+            !err.is_dns(),
+            "Error::InvalidUrl without DNS keywords should not match is_dns()"
+        );
+    }
 }

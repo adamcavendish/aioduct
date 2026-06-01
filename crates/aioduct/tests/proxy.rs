@@ -703,3 +703,241 @@ fn test_https_proxy_constructor_without_port() {
         "https:// without port should be accepted"
     );
 }
+
+// --- Integration tests ---
+
+/// Serializes env var mutations in integration tests.
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[tokio::test]
+async fn system_proxy_integration() {
+    let connect_seen = Arc::new(AtomicBool::new(false));
+    let connect_seen_clone = connect_seen.clone();
+
+    let proxy_addr = raw_server(move |req_bytes| {
+        let connect_seen = connect_seen_clone.clone();
+        async move {
+            let req_str = String::from_utf8_lossy(&req_bytes);
+            if req_str.starts_with("CONNECT") {
+                connect_seen.store(true, AtomicOrdering::SeqCst);
+            }
+            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n".to_vec()
+        }
+    })
+    .await;
+
+    let proxy_url = format!("http://{proxy_addr}");
+
+    {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("HTTP_PROXY", &proxy_url);
+            std::env::set_var("HTTPS_PROXY", &proxy_url);
+            std::env::remove_var("NO_PROXY");
+            std::env::remove_var("no_proxy");
+        }
+    }
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .system_proxy()
+        .build()
+        .unwrap();
+
+    let result = client
+        .get("https://hyper.rs.local/prox")
+        .unwrap()
+        .send()
+        .await;
+
+    {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::remove_var("HTTP_PROXY");
+            std::env::remove_var("http_proxy");
+            std::env::remove_var("HTTPS_PROXY");
+            std::env::remove_var("https_proxy");
+        }
+    }
+
+    // HTTPS request should trigger a CONNECT tunnel through the proxy
+    assert!(
+        connect_seen.load(AtomicOrdering::SeqCst),
+        "system_proxy should route HTTPS request through proxy CONNECT"
+    );
+    // The request itself should fail because our raw server returns 400
+    assert!(result.is_err(), "expected tunnel to fail with 400");
+}
+
+#[tokio::test]
+async fn proxy_chain_integration() {
+    // Target server that returns a distinctive response
+    let (target_addr, _) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target-reached"))))
+    })
+    .await;
+
+    // Proxy server that echoes back the request URI (acting as first chain hop)
+    let (proxy_addr, _) = h1_server_with(|req| async move {
+        let uri = req.uri().to_string();
+        let body = format!("via-chain: {uri}");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    let chain = aioduct::ProxyChain::single(
+        aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap(),
+    );
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_chain(chain)
+        .build()
+        .unwrap();
+
+    // Request is sent through the chain (proxy hop 1) to the target (hop 2)
+    let resp = client
+        .get(&format!("http://{target_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("via-chain:"),
+        "expected chain proxy response, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn no_proxy_cidr_integration() {
+    // Target server on localhost
+    let (target_addr, _) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
+    })
+    .await;
+
+    // A "proxy" server that labels responses
+    let (proxy_addr, _) = h1_server_with(|req| async move {
+        let uri = req.uri().to_string();
+        let body = format!("proxied: {uri}");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    // NoProxy with CIDR 127.0.0.0/8 — covers all localhost IPs
+    let settings = aioduct::ProxySettings::all(
+        aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap(),
+    )
+    .no_proxy(aioduct::NoProxy::new("127.0.0.0/8"));
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_settings(settings)
+        .build()
+        .unwrap();
+
+    // Request to localhost target should bypass the proxy
+    let resp = client
+        .get(&format!("http://{target_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "direct");
+}
+
+#[tokio::test]
+async fn no_proxy_port_specific() {
+    // Verify port-specific NoProxy matching: host:1234 only bypasses for port 1234
+    let (target_addr, _) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
+    })
+    .await;
+
+    // Proxy server
+    let (proxy_addr, _) = h1_server_with(|req| async move {
+        let uri = req.uri().to_string();
+        let body = format!("proxied: {uri}");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+    })
+    .await;
+
+    // NoProxy matching the target IP but only on a DIFFERENT port (target_port + 1)
+    let target_ip = target_addr.ip().to_string();
+    let non_matching_port = target_addr.port() + 1;
+    let no_proxy_rule = format!("{target_ip}:{non_matching_port}");
+
+    let settings = aioduct::ProxySettings::all(
+        aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap(),
+    )
+    .no_proxy(aioduct::NoProxy::new(&no_proxy_rule));
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_settings(settings)
+        .build()
+        .unwrap();
+
+    // Request to the target's actual port should NOT be bypassed (port mismatch)
+    let resp = client
+        .get(&format!("http://{target_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("proxied:"),
+        "expected proxied (port mismatch), got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn proxy_failure_dns() {
+    // Use a hostname that will never resolve to trigger DNS failure
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(
+            aioduct::ProxyConfig::http("http://this.hostname.does.not.exist.invalid:80").unwrap(),
+        )
+        .build()
+        .unwrap();
+
+    let err = client
+        .get("http://example.com/path")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.is_dns(),
+        "expected DNS error, got: {err} (is_dns={})",
+        err.is_dns()
+    );
+}
+
+#[tokio::test]
+async fn proxy_failure_connection_refused() {
+    // Bind a port, get its address, then drop the listener so the port is closed
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{addr}")).unwrap())
+        .build()
+        .unwrap();
+
+    let err = client
+        .get("http://example.com/path")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.is_connect(),
+        "expected connect error, got: {err} (is_connect={})",
+        err.is_connect()
+    );
+}
