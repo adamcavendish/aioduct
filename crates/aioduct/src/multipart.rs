@@ -602,6 +602,97 @@ mod tests {
         assert_eq!(part.content_type.as_deref(), Some("text/plain"));
         assert_eq!(part.headers.len(), 1);
     }
+
+    #[test]
+    fn into_bytes_skips_streaming_parts() {
+        let data = bytes::Bytes::from("streamed data that should be absent");
+        let stream_body: crate::body::RequestBodySend = http_body_util::Full::new(data)
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let part = Part::stream("field", stream_body);
+        let mp = Multipart::new().part(part);
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(
+            !body.contains("streamed data that should be absent"),
+            "streaming part body data must not appear in into_bytes() output, found:\n{body}"
+        );
+        // Headers for the streaming part should still appear.
+        assert!(
+            body.contains("name=\"field\""),
+            "streaming part headers should appear"
+        );
+    }
+
+    #[test]
+    fn field_name_with_special_chars() {
+        let mp = Multipart::new().text("na me", "value");
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        // The space in the field name should appear literally, not percent-encoded.
+        assert!(
+            body.contains("name=\"na me\""),
+            "field name with space should appear with space intact in Content-Disposition, found:\n{body}"
+        );
+        assert!(
+            !body.contains("na%20me"),
+            "field name should not be percent-encoded"
+        );
+    }
+
+    #[test]
+    fn file_name_escape_quote() {
+        // Input: file\"name.txt (contains a backslash and a literal quote character)
+        let input = "file\\\"name.txt";
+        let escaped = escape_quote(input);
+        // After escape_quote: backslash -> \\, quote -> \"
+        assert_eq!(escaped, "file\\\\\\\"name.txt");
+
+        let part = Part::text("f", "v").file_name(input);
+        let mp = Multipart::new().part(part);
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        // The escaped filename should appear in the serialized output.
+        assert!(
+            body.contains(&format!("filename=\"{}\"", escaped)),
+            "escaped filename should appear in serialized output, found:\n{body}"
+        );
+    }
+
+    #[test]
+    fn duplicate_field_names_both_appear() {
+        let mp = Multipart::new().text("dup", "val1").text("dup", "val2");
+        let bytes = mp.into_bytes();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(
+            body.contains("val1"),
+            "first duplicate field value should appear, found:\n{body}"
+        );
+        assert!(
+            body.contains("val2"),
+            "second duplicate field value should appear, found:\n{body}"
+        );
+        // Both parts should have the same field name.
+        let name_occurrences = body.matches("name=\"dup\"").count();
+        assert_eq!(
+            name_occurrences, 2,
+            "field name 'dup' should appear exactly twice, found {name_occurrences} in:\n{body}"
+        );
+    }
+
+    #[test]
+    fn content_type_always_form_data() {
+        let mp = Multipart::new().text("k", "v");
+        let ct = mp.content_type();
+        assert!(
+            ct.starts_with("multipart/form-data"),
+            "content_type() must start with multipart/form-data, got: {ct}"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "tokio"))]
