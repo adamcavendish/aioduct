@@ -589,26 +589,22 @@ async fn force_addr_setter() {
 }
 
 #[tokio::test]
-async fn build_invalid_uri_error() {
-    // In http 1.x, builder.body() is lenient about URI forms and
-    // essentially never errors for inputs that pass Uri::parse().
-    // The Error::Http path is validated by creating an http::Error
-    // from an invalid header name (which IS reachable via from_bytes).
-    let invalid_name = http::HeaderName::from_bytes(b"\n").unwrap_err();
-    let http_err: http::Error = invalid_name.into();
-    let error: Error = Error::Http(http_err);
-    assert!(
-        matches!(&error, Error::Http(_)),
-        "Error::Http should be constructible from http::Error"
-    );
-
-    // Also verify build() succeeds for unusual-but-valid URIs.
+async fn build_constructs_valid_request() {
     let client = test_client();
-    let uri: Uri = "http://example.com".parse().unwrap();
-    let req = RequestBuilderSend::new(&client, Method::GET, uri)
+    let uri: Uri = "http://example.com/path?q=1".parse().unwrap();
+    let req = RequestBuilderSend::new(&client, Method::POST, uri)
+        .header(
+            HeaderName::from_static("x-custom"),
+            HeaderValue::from_static("value"),
+        )
+        .body("hello")
         .build()
         .unwrap();
+    assert_eq!(req.method(), Method::POST);
     assert_eq!(req.uri().scheme_str(), Some("http"));
+    assert_eq!(req.uri().path(), "/path");
+    assert_eq!(req.uri().query(), Some("q=1"));
+    assert_eq!(req.headers().get("x-custom").unwrap(), "value");
 }
 
 #[tokio::test]
