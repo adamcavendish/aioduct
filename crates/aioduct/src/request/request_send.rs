@@ -29,6 +29,7 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
     retry: Option<RetryConfig>,
+    force_addr: Option<std::net::SocketAddr>,
     _runtime: PhantomData<(R, C)>,
 }
 
@@ -53,6 +54,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             timeout: None,
             connect_timeout: None,
             retry: None,
+            force_addr: None,
             _runtime: PhantomData,
         }
     }
@@ -68,6 +70,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             timeout: None,
             connect_timeout: None,
             retry: None,
+            force_addr: None,
             _runtime: PhantomData,
         }
     }
@@ -272,6 +275,24 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         self
     }
 
+    /// Force this request to connect to a specific address, bypassing DNS
+    /// resolution and Happy Eyeballs.
+    ///
+    /// The `Host` header is still set from the request URL. Use this with
+    /// [`HttpEngineSend::resolve_all`] to implement custom load-balancing:
+    ///
+    /// ```ignore
+    /// let addrs = client.resolve_all("my-svc.local", 8080).await?;
+    /// let chosen = my_selector.select(&addrs);
+    /// let resp = client.get("http://my-svc.local/api")
+    ///     .force_addr(chosen)
+    ///     .send().await?;
+    /// ```
+    pub fn force_addr(mut self, addr: std::net::SocketAddr) -> Self {
+        self.force_addr = Some(addr);
+        self
+    }
+
     /// Set a retry configuration for this request.
     pub fn retry(mut self, config: RetryConfig) -> Self {
         self.retry = Some(config);
@@ -337,6 +358,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
             retry: self.retry.clone(),
+            force_addr: self.force_addr,
             _runtime: PhantomData,
         })
     }
@@ -372,6 +394,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             self.body,
             self.version,
             effective_connect_timeout,
+            self.force_addr,
         );
 
         let result = match effective_timeout {
@@ -430,6 +453,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 body_for_attempt,
                 self.version,
                 effective_connect_timeout,
+                self.force_addr,
             );
 
             let result = match effective_timeout {

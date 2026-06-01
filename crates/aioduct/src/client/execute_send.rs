@@ -13,6 +13,7 @@ use crate::runtime::{ConnectorSend, RuntimePoll};
 use super::execute::{CacheLookupOutcome, PostExecuteAction};
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute(
         &self,
         method: Method,
@@ -21,6 +22,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         body: Option<RequestBody>,
         version: Option<http::Version>,
         connect_timeout: Option<Duration>,
+        force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
@@ -120,6 +122,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     replay_bytes_for_stale,
                     stale_headers,
                     connect_timeout,
+                    force_addr,
                 )
                 .await
             {
@@ -167,6 +170,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     &mut current_headers,
                     replay_bytes,
                     connect_timeout,
+                    force_addr,
                 )
                 .await?;
 
@@ -202,6 +206,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn maybe_retry_digest(
         &self,
         resp: Response,
@@ -210,6 +215,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         headers: &mut HeaderMap,
         body_for_replay: Option<Bytes>,
         connect_timeout: Option<Duration>,
+        force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -255,6 +261,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             replay_for_stale,
             Some(headers),
             connect_timeout,
+            force_addr,
         )
         .await
     }

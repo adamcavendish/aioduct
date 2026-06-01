@@ -13,7 +13,7 @@ impl<B> HttpEngineCore<B> {
         self.resolve_authority_raw(host, port).await
     }
 
-    async fn resolve_authority_raw(
+    pub(super) async fn resolve_authority_raw(
         &self,
         host: &str,
         port: u16,
@@ -23,7 +23,12 @@ impl<B> HttpEngineCore<B> {
             .map(|addrs| addrs[0])
     }
 
-    pub(super) async fn resolve_all_authority_raw(
+    /// Resolve a hostname and port to all available socket addresses.
+    ///
+    /// If `host` is an IP literal, returns it as a single-element `Vec` without
+    /// consulting the resolver. Otherwise delegates to the configured
+    /// [`Resolve`](crate::Resolve) implementation.
+    pub async fn resolve_all_authority_raw(
         &self,
         host: &str,
         port: u16,

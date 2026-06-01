@@ -110,6 +110,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         {
             return Some(Arc::new(crate::runtime::smol_rt::DefaultResolver));
         }
+        #[cfg(feature = "compio")]
+        {
+            return Some(Arc::new(crate::runtime::compio_rt::DefaultResolver));
+        }
         None
     }
 

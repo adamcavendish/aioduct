@@ -23,6 +23,7 @@ use super::extract_headers;
 // ── Local path (RuntimeLocal + ConnectorLocal) ────────────────────────────────────
 
 impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute_local(
         &self,
         method: Method,
@@ -31,6 +32,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         body: Option<RequestBody>,
         version: Option<http::Version>,
         connect_timeout: Option<Duration>,
+        force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
@@ -121,6 +123,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     &current_uri,
                     replay_bytes_for_stale,
                     connect_timeout,
+                    force_addr,
                 )
                 .await
             {
@@ -168,6 +171,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     &mut current_headers,
                     replay_bytes,
                     connect_timeout,
+                    force_addr,
                 )
                 .await?;
 
@@ -208,6 +212,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn maybe_retry_digest_local(
         &self,
         resp: Response,
@@ -216,6 +221,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         headers: &mut HeaderMap,
         body_for_replay: Option<Bytes>,
         connect_timeout: Option<Duration>,
+        force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -255,8 +261,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 .middleware
                 .apply_request_local(&mut retry_request, uri);
         }
-        self.execute_single_local(retry_request, uri, replay_for_stale, connect_timeout)
-            .await
+        self.execute_single_local(
+            retry_request,
+            uri,
+            replay_for_stale,
+            connect_timeout,
+            force_addr,
+        )
+        .await
     }
 
     pub(super) async fn finalize_response_local(
@@ -310,6 +322,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         original_uri: &Uri,
         replay_body: Option<Bytes>,
         connect_timeout: Option<Duration>,
+        force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
         #[allow(deprecated)]
@@ -601,7 +614,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             let port = authority.port_u16().unwrap_or(default_port);
 
             let dns_start = Instant::now();
-            let addrs = self.core.resolve_all_authority_raw(host, port).await?;
+            let addrs = if let Some(addr) = force_addr {
+                vec![addr]
+            } else {
+                self.core.resolve_all_authority_raw(host, port).await?
+            };
             timing.dns = Some(dns_start.elapsed());
             self.core.notify(
                 request.method(),

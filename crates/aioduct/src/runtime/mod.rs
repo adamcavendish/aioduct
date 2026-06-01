@@ -1,7 +1,13 @@
 pub(crate) mod executor;
+mod fallback_resolver;
 mod legacy;
+#[cfg(not(target_arch = "wasm32"))]
+mod system_resolver;
 mod traits;
 
+pub use fallback_resolver::FallbackResolver;
+#[cfg(any(feature = "tokio", feature = "smol", feature = "compio"))]
+pub use system_resolver::SystemResolver;
 pub use traits::{
     ConnectorLocal, ConnectorSend, RuntimeCompletion, RuntimeLocal, RuntimePoll, SocketConfig,
 };
@@ -58,20 +64,31 @@ where
 
 /// A resolver that maps specific hostnames to fixed socket addresses,
 /// falling back to an inner resolver for unmatched hosts.
-pub(crate) struct StaticResolver {
+pub struct StaticResolver {
     overrides: std::collections::HashMap<String, Vec<SocketAddr>>,
     fallback: Option<Arc<dyn Resolve>>,
 }
 
 impl StaticResolver {
-    pub(crate) fn new(fallback: Option<Arc<dyn Resolve>>) -> Self {
+    /// Create a new resolver that delegates to the given fallback for
+    /// hostnames without a static override.
+    pub fn new(fallback: Option<Arc<dyn Resolve>>) -> Self {
         Self {
             overrides: std::collections::HashMap::new(),
             fallback,
         }
     }
 
-    pub(crate) fn add(&mut self, host: String, addrs: Vec<SocketAddr>) {
+    /// Create a new resolver with the given fallback resolver.
+    pub fn with_fallback(fallback: impl Resolve) -> Self {
+        Self {
+            overrides: std::collections::HashMap::new(),
+            fallback: Some(Arc::new(fallback)),
+        }
+    }
+
+    /// Add a static override for the given hostname.
+    pub fn add(&mut self, host: String, addrs: Vec<SocketAddr>) {
         self.overrides.insert(host, addrs);
     }
 }
