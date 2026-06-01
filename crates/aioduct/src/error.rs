@@ -169,7 +169,31 @@ impl Error {
 
     /// Returns `true` if the error is a network-level failure (I/O, TLS, timeout).
     pub fn is_connect(&self) -> bool {
-        matches!(self, Error::Io(_) | Error::Tls(_) | Error::ConnectTimeout)
+        match self {
+            Error::Io(_) | Error::Tls(_) | Error::ConnectTimeout => true,
+            Error::Hyper(e) => {
+                // A hyper error is a "connect" failure when it wraps an I/O
+                // error that indicates the connection was refused, reset, or
+                // otherwise could not be established.
+                let mut source = std::error::Error::source(e);
+                while let Some(err) = source {
+                    if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+                        return matches!(
+                            io_err.kind(),
+                            std::io::ErrorKind::ConnectionRefused
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::AddrNotAvailable
+                                | std::io::ErrorKind::AddrInUse
+                                | std::io::ErrorKind::NotConnected
+                        );
+                    }
+                    source = err.source();
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Returns `true` if the error is a timeout.
@@ -206,6 +230,9 @@ impl Error {
                     || e.to_string().contains("dns")
                     || e.to_string().contains("resolve")
                     || e.to_string().contains("no DNS resolver")
+            }
+            Error::InvalidUrl(msg) => {
+                msg.contains("no DNS resolver") || msg.contains("cannot resolve")
             }
             _ => false,
         }
@@ -685,28 +712,19 @@ mod tests {
 
     #[test]
     fn is_dns_for_message_containing_dns() {
-        let err = Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "dns error",
-        ));
+        let err = Error::Io(std::io::Error::other("dns error"));
         assert!(err.is_dns());
     }
 
     #[test]
     fn is_dns_for_message_containing_resolve() {
-        let err = Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "failed to resolve host",
-        ));
+        let err = Error::Io(std::io::Error::other("failed to resolve host"));
         assert!(err.is_dns());
     }
 
     #[test]
     fn is_dns_for_no_dns_resolver() {
-        let err = Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "no DNS resolver available",
-        ));
+        let err = Error::InvalidUrl("no DNS resolver configured".into());
         assert!(err.is_dns());
     }
 
@@ -748,5 +766,102 @@ mod tests {
         let uri: Uri = "http://example.com/".parse().unwrap();
         let err = SendError::new(Error::Timeout, uri);
         assert!(!err.is_dns());
+    }
+
+    #[test]
+    fn is_dns_false_for_connection_refused() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        assert!(!err.is_dns());
+    }
+
+    #[test]
+    fn is_closed_for_connection_refused() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        // Connection refused means the connection was never established,
+        // so is_closed should return false (it's not a "closed" reused connection).
+        assert!(!err.is_closed());
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn is_connect_for_hyper_connection_error() {
+        // Create a custom IO that fails with ConnectionRefused on read/write.
+        // The handshake itself returns immediately; the error surfaces when we
+        // drive the connection or send a request.
+        use crate::runtime::tokio_rt::TokioIo;
+        use std::io;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct FailingIo;
+
+        impl tokio::io::AsyncRead for FailingIo {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "connection refused",
+                )))
+            }
+        }
+
+        impl tokio::io::AsyncWrite for FailingIo {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "connection refused",
+                )))
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let io = TokioIo::new(FailingIo);
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake::<_, http_body_util::Empty<bytes::Bytes>>(io)
+                .await
+                .expect("handshake future should succeed (lazy)");
+
+        // Drive the connection. The first read/write will hit our failing IO
+        // and produce a hyper error wrapping ConnectionRefused.
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let req = http::Request::builder()
+            .uri("http://example.com/")
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+
+        let result = sender.send_request(req).await;
+        match result {
+            Err(hyper_err) => {
+                let err = Error::Hyper(hyper_err);
+                assert!(
+                    err.is_connect(),
+                    "Error::Hyper wrapping a connection error should return true from is_connect()"
+                );
+            }
+            Ok(_) => panic!("expected send_request to fail on failing IO"),
+        }
     }
 }
