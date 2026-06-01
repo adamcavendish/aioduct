@@ -33,6 +33,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         replay_body: Option<Bytes>,
         stale_retry_headers: Option<&HeaderMap>,
         connect_timeout: Option<Duration>,
+        force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
         self.execute_single_with_hint(
             request,
@@ -41,11 +42,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             replay_body,
             stale_retry_headers,
             connect_timeout,
+            force_addr,
         )
         .await
     }
 
-    #[allow(deprecated)] // TimingCollector usage — will be removed when observer replaces it
+    #[allow(deprecated, clippy::too_many_arguments)] // TimingCollector usage — will be removed when observer replaces it
     pub(crate) async fn execute_single_with_hint(
         &self,
         mut request: http::Request<RequestBodySend>,
@@ -54,6 +56,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         replay_body: Option<Bytes>,
         stale_retry_headers: Option<&HeaderMap>,
         connect_timeout: Option<Duration>,
+        force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
         #[allow(deprecated)]
@@ -237,7 +240,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
         // Connection coalescing: try to reuse an h2/h3 connection whose TLS cert
         // covers the target domain via SANs (RFC 7540 §9.1.1).
-        if self.core.connection_coalescing && is_https && !self.core.no_connection_reuse {
+        if force_addr.is_none()
+            && self.core.connection_coalescing
+            && is_https
+            && !self.core.no_connection_reuse
+        {
             let port = authority.port_u16().unwrap_or(443);
             let resolved_ip = self
                 .core
@@ -400,10 +407,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
                 let connect_host = h3_host.as_deref().unwrap_or(authority.host());
                 let dns_start = Instant::now();
-                let addrs = self
-                    .core
-                    .resolve_all_authority_raw(connect_host, h3_port)
-                    .await?;
+                let addrs = if let Some(addr) = force_addr {
+                    vec![addr]
+                } else {
+                    self.core
+                        .resolve_all_authority_raw(connect_host, h3_port)
+                        .await?
+                };
                 self.core.notify(
                     request.method(),
                     original_uri,
@@ -732,7 +742,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let port = authority.port_u16().unwrap_or(default_port);
 
             let dns_start = Instant::now();
-            let addrs = self.core.resolve_all_authority_raw(host, port).await?;
+            let addrs = if let Some(addr) = force_addr {
+                vec![addr]
+            } else {
+                self.core.resolve_all_authority_raw(host, port).await?
+            };
             timing.dns = Some(dns_start.elapsed());
             self.core.notify(
                 request.method(),

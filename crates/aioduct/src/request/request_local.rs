@@ -24,6 +24,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     version: Option<Version>,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    force_addr: Option<std::net::SocketAddr>,
 }
 
 impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, C> {
@@ -37,6 +38,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: None,
             timeout: None,
             connect_timeout: None,
+            force_addr: None,
         }
     }
 
@@ -50,6 +52,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: None,
             timeout: None,
             connect_timeout: None,
+            force_addr: None,
         }
     }
 
@@ -247,6 +250,16 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         self
     }
 
+    /// Force this request to connect to a specific address, bypassing DNS
+    /// resolution.
+    ///
+    /// The `Host` header is still set from the request URL. Use this with
+    /// [`HttpEngineLocal::resolve_all`] to implement custom load-balancing.
+    pub fn force_addr(mut self, addr: std::net::SocketAddr) -> Self {
+        self.force_addr = Some(addr);
+        self
+    }
+
     pub(crate) fn uri(&self) -> &Uri {
         &self.uri
     }
@@ -308,6 +321,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: self.version,
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            force_addr: self.force_addr,
         })
     }
 
@@ -323,6 +337,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             self.body,
             self.version,
             effective_connect_timeout,
+            self.force_addr,
         );
 
         match effective_timeout {

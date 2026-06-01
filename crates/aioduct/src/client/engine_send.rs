@@ -151,6 +151,24 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         crate::chunk_download::ChunkDownload::new(self.clone(), url.to_owned())
     }
 
+    /// Resolve a hostname to all socket addresses using the configured DNS resolver.
+    ///
+    /// Returns every address the resolver provides. This enables service discovery
+    /// and custom load-balancing: resolve once, select an address with your
+    /// strategy (round-robin, least-connections, consistent hashing), then send the
+    /// request to the chosen address via
+    /// [`crate::RequestBuilderSend::force_addr`].
+    ///
+    /// For a host that is already an IP literal, this returns a single-element vec
+    /// without consulting any resolver.
+    pub async fn resolve_all(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<std::net::SocketAddr>, Error> {
+        self.core.resolve_all_authority_raw(host, port).await
+    }
+
     /// Forward an incoming HTTP request to an upstream server.
     pub fn forward<B>(
         &self,

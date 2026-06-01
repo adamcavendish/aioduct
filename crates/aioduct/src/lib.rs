@@ -220,10 +220,12 @@ pub use response::Response;
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(deprecated)]
 pub use runtime::Runtime;
+#[cfg(any(feature = "tokio", feature = "smol", feature = "compio"))]
+pub use runtime::SystemResolver;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::{
-    ConnectorLocal, ConnectorSend, Resolve, RuntimeCompletion, RuntimeLocal, RuntimePoll,
-    SocketConfig,
+    ConnectorLocal, ConnectorSend, FallbackResolver, Resolve, RuntimeCompletion, RuntimeLocal,
+    RuntimePoll, SocketConfig, StaticResolver,
 };
 #[cfg(feature = "wasi-p2")]
 pub use traits::OwnedWasiRequestBuilder;
