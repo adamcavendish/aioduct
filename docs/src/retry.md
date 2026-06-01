@@ -31,7 +31,7 @@ async fn main() -> Result<(), aioduct::Error> {
 | `initial_backoff`   | `Duration` | `100ms`  | Delay before the first retry                 |
 | `max_backoff`       | `Duration` | `30s`    | Upper bound on backoff delay                 |
 | `backoff_multiplier`| `f64`      | `2.0`    | Multiplier applied to backoff each attempt   |
-| `retry_on_status`   | `bool`     | `true`   | Whether to retry on 5xx server errors        |
+| `retry_on_status`   | `bool`     | `true`   | Whether to retry on retryable HTTP statuses  |
 | `budget`            | `Option<RetryBudget>` | `None` | Token-bucket budget to prevent retry storms |
 
 The delay for attempt *n* (0-indexed) is:
@@ -44,20 +44,27 @@ delay = min(initial_backoff * multiplier^n, max_backoff)
 
 By default, aioduct retries on:
 - **Connection errors** — I/O errors, hyper transport errors
-- **Timeouts** — request-level or client-level timeout exceeded
+- **Timeouts** — overall request, connect, and response read-gap timeouts
 - **5xx server errors** — 500, 502, 503, etc. (when `retry_on_status` is true)
 - **429 Too Many Requests** — rate limiting responses (when `retry_on_status` is true)
+- **408 Request Timeout** and **425 Too Early** — retried for idempotent requests (when `retry_on_status` is true)
 
-Client errors (4xx, other than 429) are never retried. To disable status-based retry, set `retry_on_status(false)`.
+Status-based retries are only attempted for idempotent methods: GET, HEAD, PUT,
+DELETE, OPTIONS, and TRACE. POST and PATCH are not retried on status by the
+default classifier. Other client errors are never retried. To disable all
+status-based retry, set `retry_on_status(false)`.
 
 ## Retry-After Header
 
-When a server responds with a `Retry-After` header (common on 429 and 503 responses), aioduct uses the server's requested delay instead of its own exponential backoff for that attempt. Both formats are supported:
+When a server responds with a `Retry-After` header on a retryable status response (common on 429 and 503 responses), aioduct uses the server's requested delay instead of its own exponential backoff for that attempt. Both formats are supported:
 
 - **Seconds**: `Retry-After: 120` — wait 120 seconds
 - **HTTP-date**: `Retry-After: Wed, 21 Oct 2026 07:28:00 GMT` — wait until the specified time
 
 If the `Retry-After` value is missing or unparseable, the normal backoff delay is used.
+
+`Retry-After` is only considered after a retryable status response. Transport
+errors and timeout retries use the configured exponential backoff.
 
 ## Retry Budget
 
