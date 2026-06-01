@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
-use http::{Method, StatusCode, Uri, Version};
+use http::{Method, Uri, Version};
 
 use crate::body::RequestBody;
 use crate::body::RequestBodySend;
@@ -451,8 +451,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             match result {
                 Ok(resp) => {
                     if config.retry_on_status
-                        && (resp.status().is_server_error()
-                            || resp.status() == StatusCode::TOO_MANY_REQUESTS)
+                        && crate::retry::is_retryable_status(resp.status())
                         && attempt < config.max_retries
                         && crate::retry::is_idempotent(&self.method)
                     {

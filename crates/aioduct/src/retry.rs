@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use http::HeaderMap;
+use http::{HeaderMap, StatusCode};
 
 use crate::error::Error;
 
@@ -99,6 +99,14 @@ pub(crate) fn is_retryable_error(err: &Error) -> bool {
             | Error::ConnectTimeout
             | Error::ReadTimeout
     )
+}
+
+pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
+    status.is_server_error()
+        || matches!(
+            status,
+            StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_EARLY | StatusCode::TOO_MANY_REQUESTS
+        )
 }
 
 pub(crate) fn is_idempotent(method: &http::Method) -> bool {
@@ -304,6 +312,25 @@ mod tests {
         )));
         assert!(!is_retryable_error(&Error::InvalidUrl("bad".into())));
         assert!(!is_retryable_error(&Error::Other("misc".into())));
+    }
+
+    #[test]
+    fn retryable_statuses_include_5xx_and_explicit_4xx() {
+        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(is_retryable_status(StatusCode::BAD_GATEWAY));
+        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(is_retryable_status(StatusCode::REQUEST_TIMEOUT));
+        assert!(is_retryable_status(StatusCode::TOO_EARLY));
+        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
+    }
+
+    #[test]
+    fn retryable_statuses_exclude_other_4xx_and_success() {
+        assert!(!is_retryable_status(StatusCode::OK));
+        assert!(!is_retryable_status(StatusCode::BAD_REQUEST));
+        assert!(!is_retryable_status(StatusCode::UNAUTHORIZED));
+        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
+        assert!(!is_retryable_status(StatusCode::CONFLICT));
     }
 
     #[test]

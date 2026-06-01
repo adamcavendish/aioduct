@@ -1,5 +1,6 @@
 use super::*;
 use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+use http::StatusCode;
 
 fn test_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::new()
@@ -510,6 +511,52 @@ async fn retry_without_timeout_uses_no_timeout_path() {
         )
         .send()
         .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(attempt_count.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn retry_after_is_used_for_retryable_request_timeout_status() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let attempt_count = Arc::new(AtomicU32::new(0));
+    let attempt_count2 = attempt_count.clone();
+
+    let (addr, _counter) = aioduct_test_server::h1::h1_server_with(move |_req| {
+        let count = attempt_count2.fetch_add(1, Ordering::Relaxed);
+        async move {
+            if count == 0 {
+                Ok(hyper::Response::builder()
+                    .status(StatusCode::REQUEST_TIMEOUT)
+                    .header(http::header::RETRY_AFTER, "0")
+                    .body(http_body_util::Full::new(bytes::Bytes::from("timeout")))
+                    .unwrap())
+            } else {
+                Ok(hyper::Response::new(http_body_util::Full::new(
+                    bytes::Bytes::from("ok"),
+                )))
+            }
+        }
+    })
+    .await;
+
+    let client = test_client();
+    let send = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            RetryConfig::default()
+                .max_retries(1)
+                .initial_backoff(Duration::from_secs(60))
+                .retry_on_status(true),
+        )
+        .send();
+
+    let resp = tokio::time::timeout(Duration::from_millis(500), send)
+        .await
+        .expect("Retry-After: 0 should override the configured backoff")
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(attempt_count.load(Ordering::Relaxed), 2);
