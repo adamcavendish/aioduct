@@ -761,3 +761,69 @@ mod smol_tls_tests {
         });
     }
 }
+
+// ── Smol DNS / resolver tests ────────────────────────────────────────
+
+#[test]
+fn test_smol_force_addr_skips_dns() {
+    smol::block_on(async {
+        let addr = start_server().await;
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new();
+        let resp = client
+            .get(&format!("http://127.0.0.1:{}/", addr.port()))
+            .unwrap()
+            .force_addr(addr)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "hello aioduct");
+    });
+}
+
+#[test]
+fn test_smol_force_addr_with_resolve_all_workflow() {
+    smol::block_on(async {
+        let addr = start_server().await;
+        let client = HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::new();
+        let addrs = client.resolve_all("127.0.0.1", addr.port()).await.unwrap();
+        let chosen = addrs.into_iter().next().unwrap();
+
+        let resp = client
+            .get(&format!("http://127.0.0.1:{}/", addr.port()))
+            .unwrap()
+            .force_addr(chosen)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "hello aioduct");
+    });
+}
+
+#[test]
+fn test_smol_system_resolver_resolves_localhost() {
+    smol::block_on(async {
+        let addr = start_server().await;
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder()
+                .resolver(aioduct::SystemResolver)
+                .build()
+                .unwrap();
+
+        let resp = client
+            .get(&format!("http://127.0.0.1:{}/", addr.port()))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert_eq!(body, "hello aioduct");
+    });
+}

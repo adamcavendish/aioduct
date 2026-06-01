@@ -40,6 +40,20 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Set the max active connections per host.
+    ///
+    /// When `max` is 0, the cap is disabled (unlimited). This limits the number
+    /// of concurrent active connections to the same host, regardless of whether
+    /// they are idle or actively processing requests.
+    ///
+    /// # Panics
+    ///
+    /// Does **not** panic on 0 — 0 is treated as unlimited.
+    pub fn pool_max_active_per_host(mut self, max: usize) -> Self {
+        self.pool_max_active_per_host = NonZeroUsize::new(max);
+        self
+    }
+
     /// Set the maximum active multiplexed streams per HTTP/2 or HTTP/3 connection.
     ///
     /// The default is unlimited. This does not affect HTTP/1.1 connections.

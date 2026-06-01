@@ -126,6 +126,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         } else {
             let mut pool = ConnectionPool::new()
                 .with_max_idle_per_host(self.pool_max_idle_per_host)
+                .with_max_active_per_host(self.pool_max_active_per_host)
                 .with_idle_timeout(self.pool_idle_timeout);
             if let Some(max_active) = self.pool_max_active_streams_per_connection {
                 pool = pool.with_max_active_streams_per_connection(max_active);
