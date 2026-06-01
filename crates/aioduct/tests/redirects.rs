@@ -2673,7 +2673,7 @@ fn redirect_cross_origin_strips_authorization_compio() {
             aioduct::runtime::compio_rt::TcpConnector,
         > = aioduct::HttpEngineLocal::builder()
             .timeout(Duration::from_secs(5))
-            .build()
+            .build_local()
             .unwrap();
 
         let resp = client
@@ -2856,7 +2856,7 @@ fn redirect_cross_origin_strips_cookie_compio() {
             aioduct::runtime::compio_rt::TcpConnector,
         > = aioduct::HttpEngineLocal::builder()
             .timeout(Duration::from_secs(5))
-            .build()
+            .build_local()
             .unwrap();
 
         let resp = client
@@ -3042,7 +3042,7 @@ fn redirect_cross_origin_strips_proxy_authorization_compio() {
             aioduct::runtime::compio_rt::TcpConnector,
         > = aioduct::HttpEngineLocal::builder()
             .timeout(Duration::from_secs(5))
-            .build()
+            .build_local()
             .unwrap();
 
         let resp = client
@@ -3351,7 +3351,7 @@ fn redirect_rejects_data_scheme_location_compio() {
             aioduct::runtime::compio_rt::TcpConnector,
         > = aioduct::HttpEngineLocal::builder()
             .timeout(Duration::from_secs(5))
-            .build()
+            .build_local()
             .unwrap();
 
         let result = client
@@ -3445,7 +3445,7 @@ fn redirect_rejects_javascript_scheme_location_compio() {
             aioduct::runtime::compio_rt::TcpConnector,
         > = aioduct::HttpEngineLocal::builder()
             .timeout(Duration::from_secs(5))
-            .build()
+            .build_local()
             .unwrap();
 
         let result = client
