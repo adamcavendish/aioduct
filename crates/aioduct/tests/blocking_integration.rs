@@ -591,3 +591,105 @@ fn blocking_request_timeout_per_request() {
         .send();
     assert!(result.is_err(), "per-request timeout should fire");
 }
+
+#[test]
+fn blocking_basic_auth() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        let auth = req
+            .headers()
+            .get("authorization")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(auth))))
+    });
+
+    let client = BlockingTokioClient::new(TokioClient::new());
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .basic_auth("user", Some("pass"))
+        .send()
+        .unwrap();
+
+    let auth = resp.text().unwrap();
+    assert!(
+        auth.starts_with("Basic "),
+        "expected Basic auth header, got: {auth}"
+    );
+}
+
+#[test]
+fn blocking_query_params() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        let query = req.uri().query().unwrap_or("").to_owned();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(query))))
+    });
+
+    let client = BlockingTokioClient::new(TokioClient::new());
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .query(&[("key", "value"), ("foo", "bar")])
+        .send()
+        .unwrap();
+
+    let body = resp.text().unwrap();
+    assert!(
+        body.contains("key=value"),
+        "expected key=value in query, got: {body}"
+    );
+    assert!(
+        body.contains("foo=bar"),
+        "expected foo=bar in query, got: {body}"
+    );
+}
+
+#[test]
+fn blocking_request_version() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        let version = format!("{:?}", req.version());
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(version))))
+    });
+
+    let client = BlockingTokioClient::new(TokioClient::new());
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .version(http::Version::HTTP_11)
+        .send()
+        .unwrap();
+
+    let version = resp.text().unwrap();
+    assert_eq!(version, "HTTP/1.1", "expected HTTP/1.1, got: {version}");
+}
+
+#[test]
+fn blocking_connect_timeout() {
+    let client = BlockingTokioClient::new(TokioClient::new());
+    // TEST-NET-1 address (RFC 5737) — should be unroutable, triggering connect timeout
+    let result = client
+        .get("http://192.0.2.1:81/")
+        .unwrap()
+        .connect_timeout(Duration::from_millis(50))
+        .send();
+    assert!(result.is_err(), "connect timeout should produce an error");
+}
+
+#[test]
+fn blocking_send_error_contains_url() {
+    let client = TokioClient::new();
+    let url = "http://nonexistent.invalid/";
+    let rb = client.get(url).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result: Result<_, aioduct::SendError> = rt.block_on(rb.send());
+    match result {
+        Err(send_err) => {
+            assert!(
+                send_err.url().to_string().contains("nonexistent.invalid"),
+                "expected URL in SendError, got: {}",
+                send_err.url()
+            );
+        }
+        Ok(_) => panic!("expected SendError for unreachable host"),
+    }
+}

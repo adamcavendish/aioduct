@@ -579,3 +579,105 @@ async fn send_error_contains_url() {
         err.url()
     );
 }
+
+#[tokio::test]
+async fn force_addr_setter() {
+    let client = test_client();
+    let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let rb = client.get("http://example.com").unwrap().force_addr(addr);
+    assert_eq!(rb.force_addr, Some(addr));
+}
+
+#[tokio::test]
+async fn build_invalid_uri_error() {
+    let client = test_client();
+    // In http 1.x, CONNECT requests must not include a URI scheme.
+    // Using Method::CONNECT with a scheme-bearing URI triggers Error::Http
+    // from builder.body().
+    let uri: Uri = "http://example.com:443".parse().unwrap();
+    let rb = RequestBuilderSend::new(&client, Method::CONNECT, uri);
+    let result = rb.build();
+    assert!(
+        result.is_err(),
+        "build() with CONNECT + scheme should return an error"
+    );
+    match result {
+        Err(Error::Http(_)) => {} // expected
+        other => panic!("expected Error::Http, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn header_overwrites_on_conflict() {
+    let client = test_client();
+    let rb = client.get("http://example.com").unwrap();
+    let rb = rb.header(
+        HeaderName::from_static("x-test"),
+        HeaderValue::from_static("first"),
+    );
+    let rb = rb.header(
+        HeaderName::from_static("x-test"),
+        HeaderValue::from_static("second"),
+    );
+    let req = rb.build().unwrap();
+    assert_eq!(
+        req.headers().get("x-test").unwrap(),
+        "second",
+        "second header() call should overwrite the first"
+    );
+}
+
+#[tokio::test]
+async fn headers_keep_both_on_conflict() {
+    let client = test_client();
+    let mut hm = HeaderMap::new();
+    hm.insert(
+        HeaderName::from_static("x-test"),
+        HeaderValue::from_static("from_map"),
+    );
+    hm.insert(
+        HeaderName::from_static("x-other"),
+        HeaderValue::from_static("other"),
+    );
+    let rb = client.get("http://example.com").unwrap();
+    let rb = rb.headers(hm);
+    let rb = rb.header(
+        HeaderName::from_static("x-test"),
+        HeaderValue::from_static("override"),
+    );
+    let req = rb.build().unwrap();
+    // header() insert overwrites the value set by headers()
+    assert_eq!(
+        req.headers().get("x-test").unwrap(),
+        "override",
+        "subsequent header() should overwrite the value from headers()"
+    );
+    // Other header from headers() is still present
+    assert_eq!(
+        req.headers().get("x-other").unwrap(),
+        "other",
+        "unrelated header from headers() should be preserved"
+    );
+}
+
+#[tokio::test]
+async fn form_percent_encoding() {
+    let client = test_client();
+    let rb = client.post("http://example.com").unwrap();
+    let rb = rb.form(&[("key", "value with spaces"), ("special", "a&b=c%")]);
+    let req = rb.build().unwrap();
+    match req.into_body() {
+        RequestBody::Buffered(b) => {
+            let body_str = String::from_utf8(b.to_vec()).unwrap();
+            assert!(
+                body_str.contains("key=value+with+spaces"),
+                "spaces should become + in form encoding, got: {body_str}"
+            );
+            assert!(
+                body_str.contains("special=a%26b%3Dc%25"),
+                "special chars &, =, % should be percent-encoded, got: {body_str}"
+            );
+        }
+        _ => panic!("expected buffered body"),
+    }
+}

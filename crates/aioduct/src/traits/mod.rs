@@ -97,6 +97,27 @@ pub trait RequestBuilderExt: Sized {
         self
     }
 
+    /// Set HTTP Basic auth credentials.
+    ///
+    /// Implementations that do not support auth headers may ignore this option.
+    fn basic_auth(self, _username: &str, _password: Option<&str>) -> Self {
+        self
+    }
+
+    /// Append query parameters to the URL.
+    ///
+    /// Implementations that do not support URL modification may ignore this option.
+    fn query(self, _params: &[(&str, &str)]) -> Self {
+        self
+    }
+
+    /// Force a specific HTTP version.
+    ///
+    /// Implementations that cannot control the HTTP version may ignore this option.
+    fn version(self, _version: http::Version) -> Self {
+        self
+    }
+
     /// Send the request and return the response.
     fn send(self) -> impl Future<Output = Result<Self::Response, SendError>>;
 }
