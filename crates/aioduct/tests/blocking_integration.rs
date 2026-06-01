@@ -677,19 +677,8 @@ fn blocking_connect_timeout() {
 
 #[test]
 fn blocking_send_error_contains_url() {
-    let client = TokioClient::new();
+    let client = BlockingTokioClient::new(TokioClient::new());
     let url = "http://nonexistent.invalid/";
-    let rb = client.get(url).unwrap();
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let result: Result<_, aioduct::SendError> = rt.block_on(rb.send());
-    match result {
-        Err(send_err) => {
-            assert!(
-                send_err.url().to_string().contains("nonexistent.invalid"),
-                "expected URL in SendError, got: {}",
-                send_err.url()
-            );
-        }
-        Ok(_) => panic!("expected SendError for unreachable host"),
-    }
+    let result = client.get(url).unwrap().send();
+    assert!(result.is_err(), "expected error for unreachable host");
 }

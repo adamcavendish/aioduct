@@ -226,10 +226,29 @@ impl Error {
     pub fn is_dns(&self) -> bool {
         match self {
             Error::Io(e) => {
-                e.kind() == std::io::ErrorKind::AddrNotAvailable
-                    || e.to_string().contains("dns")
-                    || e.to_string().contains("resolve")
-                    || e.to_string().contains("no DNS resolver")
+                // OS DNS errors on Linux (glibc): "Name or service not known"
+                // OS DNS errors on macOS: "nodename nor servname provided"
+                let msg = e.to_string();
+                msg.contains("dns")
+                    || msg.contains("resolve")
+                    || msg.contains("Name or service not known")
+                    || msg.contains("nodename nor servname")
+                    || msg.contains("no DNS resolver")
+            }
+            Error::Hyper(e) => {
+                // Walk the Hyper source chain for I/O DNS errors
+                let mut source = std::error::Error::source(e);
+                while let Some(err) = source {
+                    if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+                        let msg = io_err.to_string();
+                        return msg.contains("dns")
+                            || msg.contains("resolve")
+                            || msg.contains("Name or service not known")
+                            || msg.contains("nodename nor servname");
+                    }
+                    source = err.source();
+                }
+                false
             }
             Error::InvalidUrl(msg) => {
                 msg.contains("no DNS resolver") || msg.contains("cannot resolve")
@@ -702,12 +721,14 @@ mod tests {
     }
 
     #[test]
-    fn is_dns_for_addr_not_available() {
+    fn is_dns_false_for_addr_not_available() {
+        // AddrNotAvailable is a local address binding error (EADDRNOTAVAIL),
+        // not a DNS resolution failure.
         let err = Error::Io(std::io::Error::new(
             std::io::ErrorKind::AddrNotAvailable,
             "address not available",
         ));
-        assert!(err.is_dns());
+        assert!(!err.is_dns());
     }
 
     #[test]
@@ -740,21 +761,12 @@ mod tests {
     }
 
     #[test]
-    fn is_dns_false_for_unrelated_io() {
-        let err = Error::Io(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            "connection refused",
-        ));
-        assert!(!err.is_dns());
-    }
-
-    #[test]
-    fn send_error_is_dns() {
+    fn send_error_is_dns_for_os_error() {
         let uri: Uri = "http://example.com/".parse().unwrap();
+        // Linux glibc getaddrinfo failure message
         let err = SendError::new(
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::AddrNotAvailable,
-                "address not available",
+            Error::Io(std::io::Error::other(
+                "failed to lookup address information: Name or service not known",
             )),
             uri,
         );
