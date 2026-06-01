@@ -149,6 +149,7 @@ impl<B: 'static> ConnectionPool<B> {
 
     /// Returns whether a new connection can be created for the given key,
     /// respecting the configured `max_active_per_host` cap.
+    #[allow(dead_code)]
     pub(crate) fn can_connect(&self, key: &PoolKey) -> bool {
         let inner = match self.inner.lock() {
             Ok(guard) => guard,
@@ -300,12 +301,12 @@ impl<B: 'static> ConnectionPool<B> {
 
         // Decrement the active count tracked for this connection.
         let active_key = connection.key.clone();
-        if let Some(ref k) = active_key {
-            if let Some(count) = inner.active.get_mut(k) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    inner.active.remove(k);
-                }
+        if let Some(ref k) = active_key
+            && let Some(count) = inner.active.get_mut(k)
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                inner.active.remove(k);
             }
         }
 

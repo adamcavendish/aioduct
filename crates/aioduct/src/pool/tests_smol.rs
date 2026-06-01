@@ -193,3 +193,137 @@ fn reaper_removes_expired_connections() {
         );
     });
 }
+
+// --- max_active_per_host tests ---
+
+#[test]
+fn max_active_per_host_blocks_when_at_cap() {
+    smol::block_on(async {
+        let max_active = std::num::NonZeroUsize::new(1).unwrap();
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30))
+            .with_max_active_per_host(Some(max_active));
+        let k = key("example.com:80");
+
+        assert!(
+            pool.can_connect(&k),
+            "can_connect should return true initially"
+        );
+
+        let conn = make_h1_conn().await;
+        pool.checkin(k.clone(), conn);
+        SmolRuntime::sleep(Duration::from_millis(10)).await;
+
+        let _out = pool.checkout(&k).expect("first checkout should succeed");
+        assert!(
+            !pool.can_connect(&k),
+            "can_connect should return false when at cap"
+        );
+    });
+}
+
+#[test]
+fn checkin_frees_active_slot() {
+    smol::block_on(async {
+        let max_active = std::num::NonZeroUsize::new(1).unwrap();
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30))
+            .with_max_active_per_host(Some(max_active));
+        let k = key("example.com:80");
+
+        let conn = make_h1_conn().await;
+        pool.checkin(k.clone(), conn);
+        SmolRuntime::sleep(Duration::from_millis(10)).await;
+
+        let out = pool.checkout(&k).expect("first checkout");
+        assert!(!pool.can_connect(&k), "at cap after checkout");
+
+        pool.checkin(k.clone(), out);
+        assert!(
+            pool.can_connect(&k),
+            "can_connect should return true after checkin frees the slot"
+        );
+
+        let out2 = pool.checkout(&k);
+        assert!(out2.is_some(), "should checkout after checkin freed slot");
+    });
+}
+
+#[test]
+fn drop_frees_active_slot() {
+    smol::block_on(async {
+        let max_active = std::num::NonZeroUsize::new(1).unwrap();
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30))
+            .with_max_active_per_host(Some(max_active));
+        let k = key("example.com:80");
+
+        let conn = make_h1_conn().await;
+        pool.checkin(k.clone(), conn);
+        SmolRuntime::sleep(Duration::from_millis(10)).await;
+
+        let out = pool.checkout(&k).expect("first checkout");
+        assert!(!pool.can_connect(&k), "at cap after checkout");
+
+        drop(out);
+        assert!(
+            pool.can_connect(&k),
+            "can_connect should return true after drop frees the slot"
+        );
+    });
+}
+
+#[test]
+fn max_active_per_host_none_means_unlimited() {
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
+    let k = key("example.com:80");
+    assert!(pool.can_connect(&k));
+}
+
+#[test]
+fn max_active_per_host_zero_disables_cap() {
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
+        .with_max_active_per_host(None);
+    let k = key("example.com:80");
+    assert!(pool.can_connect(&k));
+}
+
+#[test]
+fn per_host_isolation() {
+    smol::block_on(async {
+        let max_active = std::num::NonZeroUsize::new(1).unwrap();
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30))
+            .with_max_active_per_host(Some(max_active));
+        let k1 = key("a.example.com:80");
+        let k2 = key("b.example.com:80");
+
+        assert!(pool.can_connect(&k1));
+        assert!(pool.can_connect(&k2));
+
+        let conn1 = make_h1_conn().await;
+        pool.checkin(k1.clone(), conn1);
+        SmolRuntime::sleep(Duration::from_millis(10)).await;
+        let _out1 = pool.checkout(&k1).expect("checkout k1");
+
+        assert!(!pool.can_connect(&k1), "k1 should be at cap");
+        assert!(
+            pool.can_connect(&k2),
+            "k2 should not be affected by k1's cap"
+        );
+    });
+}
