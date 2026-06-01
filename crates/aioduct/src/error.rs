@@ -125,6 +125,11 @@ impl SendError {
         self.error.is_connect()
     }
 
+    /// Returns `true` if the underlying error is a DNS resolution failure.
+    pub fn is_dns(&self) -> bool {
+        self.error.is_dns()
+    }
+
     /// Returns `true` if the underlying error is an HTTP status error.
     pub fn is_status(&self) -> bool {
         self.error.is_status()
@@ -191,6 +196,19 @@ impl Error {
     /// Returns `true` if the error is a redirect error.
     pub fn is_redirect(&self) -> bool {
         matches!(self, Error::Redirect(_) | Error::TooManyRedirects(_))
+    }
+
+    /// Returns `true` if the error was caused by a DNS resolution failure.
+    pub fn is_dns(&self) -> bool {
+        match self {
+            Error::Io(e) => {
+                e.kind() == std::io::ErrorKind::AddrNotAvailable
+                    || e.to_string().contains("dns")
+                    || e.to_string().contains("resolve")
+                    || e.to_string().contains("no DNS resolver")
+            }
+            _ => false,
+        }
     }
 
     /// Returns `true` if the error indicates a reused connection was closed by the peer.
@@ -654,5 +672,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn is_dns_for_addr_not_available() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "address not available",
+        ));
+        assert!(err.is_dns());
+    }
+
+    #[test]
+    fn is_dns_for_message_containing_dns() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "dns error",
+        ));
+        assert!(err.is_dns());
+    }
+
+    #[test]
+    fn is_dns_for_message_containing_resolve() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "failed to resolve host",
+        ));
+        assert!(err.is_dns());
+    }
+
+    #[test]
+    fn is_dns_for_no_dns_resolver() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "no DNS resolver available",
+        ));
+        assert!(err.is_dns());
+    }
+
+    #[test]
+    fn is_dns_false_for_non_io_errors() {
+        assert!(!Error::Timeout.is_dns());
+        assert!(!Error::ConnectTimeout.is_dns());
+        assert!(!Error::ReadTimeout.is_dns());
+        assert!(!Error::Status(http::StatusCode::OK).is_dns());
+        assert!(!Error::Tls("bad".into()).is_dns());
+        assert!(!Error::Redirect("nope".into()).is_dns());
+        assert!(!Error::TooManyRedirects(5).is_dns());
+    }
+
+    #[test]
+    fn is_dns_false_for_unrelated_io() {
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        assert!(!err.is_dns());
+    }
+
+    #[test]
+    fn send_error_is_dns() {
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let err = SendError::new(
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "address not available",
+            )),
+            uri,
+        );
+        assert!(err.is_dns());
+    }
+
+    #[test]
+    fn send_error_is_dns_false() {
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let err = SendError::new(Error::Timeout, uri);
+        assert!(!err.is_dns());
     }
 }
