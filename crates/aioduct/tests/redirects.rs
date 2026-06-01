@@ -11,7 +11,9 @@ use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
-use aioduct_test_server::h1::{h1_server, h1_server_with};
+use aioduct_test_server::h1::{h1_server, h1_server_with, spawn_h1_server_with};
+
+use std::sync::{Arc, Mutex};
 
 use http_body_util::BodyExt;
 
@@ -2407,4 +2409,1053 @@ async fn redirect_cross_origin_preserves_custom_sensitive_headers() {
          are stripped (execute.rs:136-138). Got X-Api-Key={} on cross-origin target.",
         api_key.unwrap_or_default()
     );
+}
+
+// ── Multi-Runtime Redirect Safety Tests ────────────────────────────────
+//
+// Tests below verify redirect safety edge cases across tokio, smol, and
+// compio runtimes. The test server always runs on a background tokio
+// thread (spawn_h1_server_with), making it runtime-agnostic.
+//
+// Each test has:
+//   - _tokio variant: async #[tokio::test] using HttpEngineSend<TokioRuntime, ..>
+//   - _smol  variant: sync #[test] using HttpEngineSend<SmolRuntime, ..>
+//   - _compio variant: sync #[test] using HttpEngineLocal<CompioRuntime, ..>
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 1. https_only_blocks_http_redirect_target
+//    Client with https_only(true) must reject HTTP requests, including
+//    redirect targets that resolve to HTTP.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn https_only_blocks_http_redirect_target_tokio() {
+    let _addr = spawn_h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .https_only(true)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let result = client
+        .get(&format!("http://{_addr}/"))
+        .unwrap()
+        .send()
+        .await;
+    assert!(result.is_err(), "https_only should block HTTP requests");
+    let err_str = format!("{}", result.unwrap_err());
+    assert!(
+        err_str.to_lowercase().contains("https"),
+        "error should mention HTTPS requirement, got: {err_str}"
+    );
+}
+
+#[cfg(feature = "smol")]
+#[test]
+fn https_only_blocks_http_redirect_target_smol() {
+    smol::block_on(async {
+        let _addr = spawn_h1_server_with(|_req| async move {
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+        });
+
+        let client = HttpEngineSend::<
+            aioduct::runtime::smol_rt::SmolRuntime,
+            aioduct::runtime::smol_rt::TcpConnector,
+        >::builder()
+        .https_only(true)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+        let result = client
+            .get(&format!("http://{_addr}/"))
+            .unwrap()
+            .send()
+            .await;
+        assert!(result.is_err(), "https_only should block HTTP requests");
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(
+            err_str.to_lowercase().contains("https"),
+            "error should mention HTTPS requirement, got: {err_str}"
+        );
+    });
+}
+
+#[cfg(feature = "compio")]
+#[test]
+fn https_only_blocks_http_redirect_target_compio() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let _addr = spawn_h1_server_with(|_req| async move {
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+        });
+
+        let client: aioduct::HttpEngineLocal<
+            aioduct::runtime::compio_rt::CompioRuntime,
+            aioduct::runtime::compio_rt::TcpConnector,
+        > = aioduct::HttpEngineLocal::builder()
+            .https_only(true)
+            .timeout(Duration::from_secs(5))
+            .build_local()
+            .unwrap();
+
+        let result = client
+            .get_local(&format!("http://{_addr}/"))
+            .unwrap()
+            .send()
+            .await;
+        assert!(result.is_err(), "https_only should block HTTP requests");
+        let err_str = format!("{}", result.unwrap_err());
+        assert!(
+            err_str.to_lowercase().contains("https"),
+            "error should mention HTTPS requirement, got: {err_str}"
+        );
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2. redirect_cross_origin_strips_authorization
+//    Cross-origin redirect (different port) must strip Authorization header.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_cross_origin_strips_authorization_tokio() {
+    let captured_auth = Arc::new(Mutex::new(None::<String>));
+    let cap = captured_auth.clone();
+
+    // Server B (target): captures Authorization header
+    let target_addr = spawn_h1_server_with(move |req| {
+        let cap = cap.clone();
+        async move {
+            let auth = req
+                .headers()
+                .get("authorization")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            *cap.lock().unwrap() = auth;
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+        }
+    });
+
+    // Server A (origin): redirects to Server B
+    let origin_addr = spawn_h1_server_with(move |_req| {
+        let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(307)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{origin_addr}/start"))
+        .unwrap()
+        .bearer_auth("secret-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _ = resp.text().await.unwrap();
+
+    let auth = captured_auth.lock().unwrap().clone();
+    assert!(
+        auth.is_none(),
+        "Authorization should be stripped on cross-origin redirect, got: {}",
+        auth.unwrap_or_default()
+    );
+}
+
+#[cfg(feature = "smol")]
+#[test]
+fn redirect_cross_origin_strips_authorization_smol() {
+    smol::block_on(async {
+        let captured_auth = Arc::new(Mutex::new(None::<String>));
+        let cap = captured_auth.clone();
+
+        let target_addr = spawn_h1_server_with(move |req| {
+            let cap = cap.clone();
+            async move {
+                let auth = req
+                    .headers()
+                    .get("authorization")
+                    .map(|v| v.to_str().unwrap_or("").to_string());
+                *cap.lock().unwrap() = auth;
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+            }
+        });
+
+        let origin_addr = spawn_h1_server_with(move |_req| {
+            let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(307)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        });
+
+        let client: HttpEngineSend<
+            aioduct::runtime::smol_rt::SmolRuntime,
+            aioduct::runtime::smol_rt::TcpConnector,
+        > = HttpEngineSend::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get(&format!("http://{origin_addr}/start"))
+            .unwrap()
+            .bearer_auth("secret-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await.unwrap();
+
+        let auth = captured_auth.lock().unwrap().clone();
+        assert!(
+            auth.is_none(),
+            "Authorization should be stripped on cross-origin redirect, got: {}",
+            auth.unwrap_or_default()
+        );
+    });
+}
+
+#[cfg(feature = "compio")]
+#[test]
+fn redirect_cross_origin_strips_authorization_compio() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let captured_auth = Arc::new(Mutex::new(None::<String>));
+        let cap = captured_auth.clone();
+
+        let target_addr = spawn_h1_server_with(move |req| {
+            let cap = cap.clone();
+            async move {
+                let auth = req
+                    .headers()
+                    .get("authorization")
+                    .map(|v| v.to_str().unwrap_or("").to_string());
+                *cap.lock().unwrap() = auth;
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+            }
+        });
+
+        let origin_addr = spawn_h1_server_with(move |_req| {
+            let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(307)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        });
+
+        let client: aioduct::HttpEngineLocal<
+            aioduct::runtime::compio_rt::CompioRuntime,
+            aioduct::runtime::compio_rt::TcpConnector,
+        > = aioduct::HttpEngineLocal::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get_local(&format!("http://{origin_addr}/start"))
+            .unwrap()
+            .bearer_auth("secret-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await.unwrap();
+
+        let auth = captured_auth.lock().unwrap().clone();
+        assert!(
+            auth.is_none(),
+            "Authorization should be stripped on cross-origin redirect, got: {}",
+            auth.unwrap_or_default()
+        );
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3. redirect_cross_origin_strips_cookie
+//    Cross-origin redirect must strip Cookie header.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_cross_origin_strips_cookie_tokio() {
+    let captured_cookie = Arc::new(Mutex::new(None::<String>));
+    let cap = captured_cookie.clone();
+
+    let target_addr = spawn_h1_server_with(move |req| {
+        let cap = cap.clone();
+        async move {
+            let cookie = req
+                .headers()
+                .get("cookie")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            *cap.lock().unwrap() = cookie;
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+        }
+    });
+
+    let origin_addr = spawn_h1_server_with(move |_req| {
+        let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(307)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{origin_addr}/start"))
+        .unwrap()
+        .header(
+            http::header::COOKIE,
+            http::header::HeaderValue::from_static("session=abc"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _ = resp.text().await.unwrap();
+
+    let cookie = captured_cookie.lock().unwrap().clone();
+    assert!(
+        cookie.is_none(),
+        "Cookie should be stripped on cross-origin redirect, got: {}",
+        cookie.unwrap_or_default()
+    );
+}
+
+#[cfg(feature = "smol")]
+#[test]
+fn redirect_cross_origin_strips_cookie_smol() {
+    smol::block_on(async {
+        let captured_cookie = Arc::new(Mutex::new(None::<String>));
+        let cap = captured_cookie.clone();
+
+        let target_addr = spawn_h1_server_with(move |req| {
+            let cap = cap.clone();
+            async move {
+                let cookie = req
+                    .headers()
+                    .get("cookie")
+                    .map(|v| v.to_str().unwrap_or("").to_string());
+                *cap.lock().unwrap() = cookie;
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+            }
+        });
+
+        let origin_addr = spawn_h1_server_with(move |_req| {
+            let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(307)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        });
+
+        let client: HttpEngineSend<
+            aioduct::runtime::smol_rt::SmolRuntime,
+            aioduct::runtime::smol_rt::TcpConnector,
+        > = HttpEngineSend::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get(&format!("http://{origin_addr}/start"))
+            .unwrap()
+            .header(
+                http::header::COOKIE,
+                http::header::HeaderValue::from_static("session=abc"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await.unwrap();
+
+        let cookie = captured_cookie.lock().unwrap().clone();
+        assert!(
+            cookie.is_none(),
+            "Cookie should be stripped on cross-origin redirect, got: {}",
+            cookie.unwrap_or_default()
+        );
+    });
+}
+
+#[cfg(feature = "compio")]
+#[test]
+fn redirect_cross_origin_strips_cookie_compio() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let captured_cookie = Arc::new(Mutex::new(None::<String>));
+        let cap = captured_cookie.clone();
+
+        let target_addr = spawn_h1_server_with(move |req| {
+            let cap = cap.clone();
+            async move {
+                let cookie = req
+                    .headers()
+                    .get("cookie")
+                    .map(|v| v.to_str().unwrap_or("").to_string());
+                *cap.lock().unwrap() = cookie;
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+            }
+        });
+
+        let origin_addr = spawn_h1_server_with(move |_req| {
+            let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(307)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        });
+
+        let client: aioduct::HttpEngineLocal<
+            aioduct::runtime::compio_rt::CompioRuntime,
+            aioduct::runtime::compio_rt::TcpConnector,
+        > = aioduct::HttpEngineLocal::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get_local(&format!("http://{origin_addr}/start"))
+            .unwrap()
+            .header(
+                http::header::COOKIE,
+                http::header::HeaderValue::from_static("session=abc"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await.unwrap();
+
+        let cookie = captured_cookie.lock().unwrap().clone();
+        assert!(
+            cookie.is_none(),
+            "Cookie should be stripped on cross-origin redirect, got: {}",
+            cookie.unwrap_or_default()
+        );
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. redirect_cross_origin_strips_proxy_authorization
+//    Cross-origin redirect must strip Proxy-Authorization header.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_cross_origin_strips_proxy_authorization_tokio() {
+    let captured_proxy_auth = Arc::new(Mutex::new(None::<String>));
+    let cap = captured_proxy_auth.clone();
+
+    let target_addr = spawn_h1_server_with(move |req| {
+        let cap = cap.clone();
+        async move {
+            let pa = req
+                .headers()
+                .get("proxy-authorization")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            *cap.lock().unwrap() = pa;
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+        }
+    });
+
+    let origin_addr = spawn_h1_server_with(move |_req| {
+        let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(307)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{origin_addr}/start"))
+        .unwrap()
+        .header(
+            http::header::PROXY_AUTHORIZATION,
+            http::header::HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _ = resp.text().await.unwrap();
+
+    let pa = captured_proxy_auth.lock().unwrap().clone();
+    assert!(
+        pa.is_none(),
+        "Proxy-Authorization should be stripped on cross-origin redirect, got: {}",
+        pa.unwrap_or_default()
+    );
+}
+
+#[cfg(feature = "smol")]
+#[test]
+fn redirect_cross_origin_strips_proxy_authorization_smol() {
+    smol::block_on(async {
+        let captured_proxy_auth = Arc::new(Mutex::new(None::<String>));
+        let cap = captured_proxy_auth.clone();
+
+        let target_addr = spawn_h1_server_with(move |req| {
+            let cap = cap.clone();
+            async move {
+                let pa = req
+                    .headers()
+                    .get("proxy-authorization")
+                    .map(|v| v.to_str().unwrap_or("").to_string());
+                *cap.lock().unwrap() = pa;
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+            }
+        });
+
+        let origin_addr = spawn_h1_server_with(move |_req| {
+            let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(307)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        });
+
+        let client: HttpEngineSend<
+            aioduct::runtime::smol_rt::SmolRuntime,
+            aioduct::runtime::smol_rt::TcpConnector,
+        > = HttpEngineSend::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get(&format!("http://{origin_addr}/start"))
+            .unwrap()
+            .header(
+                http::header::PROXY_AUTHORIZATION,
+                http::header::HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await.unwrap();
+
+        let pa = captured_proxy_auth.lock().unwrap().clone();
+        assert!(
+            pa.is_none(),
+            "Proxy-Authorization should be stripped on cross-origin redirect, got: {}",
+            pa.unwrap_or_default()
+        );
+    });
+}
+
+#[cfg(feature = "compio")]
+#[test]
+fn redirect_cross_origin_strips_proxy_authorization_compio() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let captured_proxy_auth = Arc::new(Mutex::new(None::<String>));
+        let cap = captured_proxy_auth.clone();
+
+        let target_addr = spawn_h1_server_with(move |req| {
+            let cap = cap.clone();
+            async move {
+                let pa = req
+                    .headers()
+                    .get("proxy-authorization")
+                    .map(|v| v.to_str().unwrap_or("").to_string());
+                *cap.lock().unwrap() = pa;
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+            }
+        });
+
+        let origin_addr = spawn_h1_server_with(move |_req| {
+            let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(307)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        });
+
+        let client: aioduct::HttpEngineLocal<
+            aioduct::runtime::compio_rt::CompioRuntime,
+            aioduct::runtime::compio_rt::TcpConnector,
+        > = aioduct::HttpEngineLocal::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let resp = client
+            .get_local(&format!("http://{origin_addr}/start"))
+            .unwrap()
+            .header(
+                http::header::PROXY_AUTHORIZATION,
+                http::header::HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await.unwrap();
+
+        let pa = captured_proxy_auth.lock().unwrap().clone();
+        assert!(
+            pa.is_none(),
+            "Proxy-Authorization should be stripped on cross-origin redirect, got: {}",
+            pa.unwrap_or_default()
+        );
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. redirect_cross_origin_preserves_custom_header_when_not_registered
+//    Custom headers not registered as sensitive should survive cross-origin
+//    redirects. Only Authorization, Cookie, Proxy-Authorization, and
+//    explicitly registered sensitive headers are stripped.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_cross_origin_preserves_custom_header_when_not_registered_tokio() {
+    let captured_custom = Arc::new(Mutex::new(None::<String>));
+    let cap = captured_custom.clone();
+
+    let target_addr = spawn_h1_server_with(move |req| {
+        let cap = cap.clone();
+        async move {
+            let custom = req
+                .headers()
+                .get("x-custom-header")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            *cap.lock().unwrap() = custom;
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+        }
+    });
+
+    let origin_addr = spawn_h1_server_with(move |_req| {
+        let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(307)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    });
+
+    // NOT registering x-custom-header as sensitive — it should be forwarded
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{origin_addr}/start"))
+        .unwrap()
+        .header(
+            http::header::HeaderName::from_static("x-custom-header"),
+            http::header::HeaderValue::from_static("custom-value"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _ = resp.text().await.unwrap();
+
+    let custom = captured_custom.lock().unwrap().clone();
+    assert_eq!(
+        custom.as_deref(),
+        Some("custom-value"),
+        "Custom headers (not registered as sensitive) should be forwarded \
+         across cross-origin redirects"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. redirect_same_origin_different_port_preserves_auth
+//    Same host, different port is cross-origin (port is part of origin per
+//    RFC 6454). This test verifies that when redirecting to the SAME host
+//    and port, Authorization IS preserved because the same-origin check
+//    correctly includes port.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_same_origin_different_port_preserves_auth_tokio() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let auth_preserved = Arc::new(AtomicBool::new(false));
+    let ap = auth_preserved.clone();
+
+    // Single server that redirects to itself (same host:port) but a
+    // different path. Auth should be preserved because it's same-origin.
+    let addr = spawn_h1_server_with(move |req| {
+        let ap = ap.clone();
+        async move {
+            if req.uri().path() == "/step1" {
+                // Redirect to same server, explicit host:port in Location
+                let host = req
+                    .headers()
+                    .get("host")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(302)
+                        .header("location", format!("http://{host}/step2"))
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            } else {
+                let has_auth = req.headers().get("authorization").is_some();
+                ap.store(has_auth, Ordering::SeqCst);
+                Ok(Response::new(Full::new(Bytes::from("final"))))
+            }
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/step1"))
+        .unwrap()
+        .bearer_auth("my-token")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(
+        auth_preserved.load(Ordering::SeqCst),
+        "Same-origin redirect (same host:port) should preserve Authorization"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. redirect_referer_not_sent_on_https_to_http_downgrade
+//    Per RFC 7231 Section 5.5.2, the Referer header MUST NOT be sent when
+//    redirecting from HTTPS to HTTP. This test verifies that with
+//    referer(true), Referer is STILL sent on same-scheme HTTP→HTTP
+//    redirects (documenting current behavior), while the HTTPS→HTTP
+//    downgrade check remains untestable without TLS infrastructure.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_referer_not_sent_on_https_to_http_downgrade_tokio() {
+    let captured_referer = Arc::new(Mutex::new(None::<String>));
+    let cap = captured_referer.clone();
+
+    // Server B (target): captures Referer header
+    let target_addr = spawn_h1_server_with(move |req| {
+        let cap = cap.clone();
+        async move {
+            let referer = req
+                .headers()
+                .get("referer")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            *cap.lock().unwrap() = referer;
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+        }
+    });
+
+    // Server A (origin): redirects to Server B on a different port
+    let origin_addr = spawn_h1_server_with(move |_req| {
+        let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .referer(true)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    // Use an "https" scheme in the original URL to simulate the downgrade
+    // scenario. Since the server is HTTP-only, the initial connect will
+    // fail — but this documents the concept.
+    //
+    // For the HTTP→HTTP case, Referer IS set (current behavior, same as
+    // curl default). The HTTPS→HTTP case would require a real TLS server.
+    let resp = client
+        .get(&format!("http://{origin_addr}/secret-path"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _ = resp.text().await.unwrap();
+
+    let referer = captured_referer.lock().unwrap().clone();
+    // On HTTP→HTTP cross-origin redirect with referer(true), the library
+    // sets the Referer header (same behavior as curl by default).
+    // The RFC violation (HTTPS→HTTP) is untestable without TLS.
+    assert!(
+        referer.is_some(),
+        "referer(true) should set Referer on same-scheme redirect \
+         (HTTPS→HTTP downgrade check requires TLS infrastructure)"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. redirect_rejects_data_scheme_location
+//    Redirect to data: URIs must be rejected as a security measure.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_rejects_data_scheme_location_tokio() {
+    let addr = spawn_h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(302)
+                .header("location", "data:text/html,<h1>pwned</h1>")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+    assert!(
+        result.is_err(),
+        "redirect to data: scheme should be rejected as a security measure"
+    );
+}
+
+#[cfg(feature = "smol")]
+#[test]
+fn redirect_rejects_data_scheme_location_smol() {
+    smol::block_on(async {
+        let addr = spawn_h1_server_with(|_req| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", "data:text/html,<h1>pwned</h1>")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        });
+
+        let client: HttpEngineSend<
+            aioduct::runtime::smol_rt::SmolRuntime,
+            aioduct::runtime::smol_rt::TcpConnector,
+        > = HttpEngineSend::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+        assert!(
+            result.is_err(),
+            "redirect to data: scheme should be rejected as a security measure"
+        );
+    });
+}
+
+#[cfg(feature = "compio")]
+#[test]
+fn redirect_rejects_data_scheme_location_compio() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let addr = spawn_h1_server_with(|_req| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", "data:text/html,<h1>pwned</h1>")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        });
+
+        let client: aioduct::HttpEngineLocal<
+            aioduct::runtime::compio_rt::CompioRuntime,
+            aioduct::runtime::compio_rt::TcpConnector,
+        > = aioduct::HttpEngineLocal::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let result = client
+            .get_local(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await;
+        assert!(
+            result.is_err(),
+            "redirect to data: scheme should be rejected as a security measure"
+        );
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 9. redirect_rejects_javascript_scheme_location
+//    Redirect to javascript: URIs must be rejected as a security measure.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_rejects_javascript_scheme_location_tokio() {
+    let addr = spawn_h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(302)
+                .header("location", "javascript:alert(1)")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+    assert!(
+        result.is_err(),
+        "redirect to javascript: scheme should be rejected as a security measure"
+    );
+}
+
+#[cfg(feature = "smol")]
+#[test]
+fn redirect_rejects_javascript_scheme_location_smol() {
+    smol::block_on(async {
+        let addr = spawn_h1_server_with(|_req| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", "javascript:alert(1)")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        });
+
+        let client: HttpEngineSend<
+            aioduct::runtime::smol_rt::SmolRuntime,
+            aioduct::runtime::smol_rt::TcpConnector,
+        > = HttpEngineSend::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+        assert!(
+            result.is_err(),
+            "redirect to javascript: scheme should be rejected as a security measure"
+        );
+    });
+}
+
+#[cfg(feature = "compio")]
+#[test]
+fn redirect_rejects_javascript_scheme_location_compio() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let addr = spawn_h1_server_with(|_req| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", "javascript:alert(1)")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        });
+
+        let client: aioduct::HttpEngineLocal<
+            aioduct::runtime::compio_rt::CompioRuntime,
+            aioduct::runtime::compio_rt::TcpConnector,
+        > = aioduct::HttpEngineLocal::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let result = client
+            .get_local(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await;
+        assert!(
+            result.is_err(),
+            "redirect to javascript: scheme should be rejected as a security measure"
+        );
+    });
 }

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use http::uri::{Authority, Scheme};
@@ -225,63 +225,69 @@ impl<B: 'static> ConnectionPool<B> {
         let idle_timeout = inner.idle_timeout;
         let max_lifetime = inner.max_lifetime;
         let max_active = inner.max_active_streams_per_connection;
-        let queue = inner.idle.get_mut(key)?;
-        let now = Instant::now();
-        let mut retained_unavailable = Vec::new();
 
-        while let Some(entry) = queue.pop_back() {
-            if now.duration_since(entry.idle_since) >= idle_timeout {
-                continue;
-            }
-            if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
-                continue;
-            }
-            if entry.connection.is_ready() {
-                if entry.connection.is_h2_or_h3() {
-                    let mut entry = entry;
-                    if let Some(mut cloned) =
-                        entry.connection.clone_for_multiplex_with_limit(max_active)
-                    {
-                        // Set pool/key on the cloned connection.
-                        cloned.pool = pool_weak;
-                        cloned.key = Some(key.clone());
-                        // Increment active count for this host.
-                        *inner.active.entry(key.clone()).or_insert(0) += 1;
-                        // Clear pool/key on the original before re-inserting.
-                        entry.connection.pool = Weak::new();
-                        entry.connection.key = None;
-                        entry.idle_since = now;
-                        for retained in retained_unavailable.into_iter().rev() {
-                            queue.push_back(retained);
-                        }
-                        queue.push_back(entry);
-                        return Some(cloned);
-                    }
-                    entry.idle_since = now;
-                    retained_unavailable.push(entry);
+        // Scope queue borrow so inner can be accessed afterwards.
+        let (result, remove_idle_key) = {
+            let queue = inner.idle.get_mut(key)?;
+            let now = Instant::now();
+            let mut retained_unavailable = Vec::new();
+            let mut result = None;
+            let mut remove_idle_key = false;
+
+            while let Some(entry) = queue.pop_back() {
+                if now.duration_since(entry.idle_since) >= idle_timeout {
                     continue;
                 }
-                for retained in retained_unavailable.into_iter().rev() {
-                    queue.push_back(retained);
+                if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
+                    continue;
                 }
-                if queue.is_empty() {
-                    inner.idle.remove(key);
+                if entry.connection.is_ready() {
+                    if entry.connection.is_h2_or_h3() {
+                        let mut entry = entry;
+                        if let Some(mut cloned) =
+                            entry.connection.clone_for_multiplex_with_limit(max_active)
+                        {
+                            cloned.pool = pool_weak.clone();
+                            cloned.key = Some(key.clone());
+                            entry.connection.pool = Weak::new();
+                            entry.connection.key = None;
+                            entry.idle_since = now;
+                            // drain avoids double-move; after drain the vec is empty
+                            queue.extend(retained_unavailable.drain(..).rev());
+                            queue.push_back(entry);
+                            result = Some(cloned);
+                            break;
+                        }
+                        entry.idle_since = now;
+                        retained_unavailable.push(entry);
+                        continue;
+                    }
+                    queue.extend(retained_unavailable.drain(..).rev());
+                    remove_idle_key = queue.is_empty();
+                    let mut conn = entry.connection;
+                    conn.pool = pool_weak.clone();
+                    conn.key = Some(key.clone());
+                    result = Some(conn);
+                    break;
                 }
-                let mut conn = entry.connection;
-                conn.pool = pool_weak;
-                conn.key = Some(key.clone());
-                *inner.active.entry(key.clone()).or_insert(0) += 1;
-                return Some(conn);
             }
-        }
 
-        for retained in retained_unavailable.into_iter().rev() {
-            queue.push_back(retained);
-        }
-        if queue.is_empty() {
+            if result.is_none() {
+                queue.extend(retained_unavailable.drain(..).rev());
+                remove_idle_key = queue.is_empty();
+            }
+
+            (result, remove_idle_key)
+        };
+
+        // Queue borrow released — safe to mutate inner again.
+        if remove_idle_key {
             inner.idle.remove(key);
         }
-        None
+        if result.is_some() {
+            *inner.active.entry(key.clone()).or_insert(0) += 1;
+        }
+        result
     }
 
     /// Return a connection to the pool for future reuse.
@@ -379,6 +385,7 @@ impl<B: 'static> ConnectionPool<B> {
         target_host: &str,
         resolved_ip: Option<IpAddr>,
     ) -> Option<PooledConnection<B>> {
+        let pool_weak = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().ok()?;
         let now = Instant::now();
         let idle_timeout = inner.idle_timeout;
@@ -392,64 +399,82 @@ impl<B: 'static> ConnectionPool<B> {
 
         let mut found_key = None;
         let mut found_conn = None;
+        let mut active_key: Option<PoolKey> = None;
 
-        for key in &candidate_keys {
-            let queue = match inner.idle.get_mut(key) {
-                Some(q) => q,
-                None => {
-                    continue;
-                }
-            };
+        // Scope: all queue operations happen here.
+        {
+            for key in &candidate_keys {
+                let queue = match inner.idle.get_mut(key) {
+                    Some(q) => q,
+                    None => {
+                        continue;
+                    }
+                };
 
-            let mut i = queue.len();
-            while i > 0 {
-                i -= 1;
+                let mut i = queue.len();
+                while i > 0 {
+                    i -= 1;
 
-                if now.duration_since(queue[i].idle_since) >= idle_timeout {
-                    continue;
-                }
-                if !Self::connection_within_lifetime(&queue[i].connection, max_lifetime) {
-                    continue;
-                }
-                if !queue[i].connection.is_h2_or_h3() {
-                    continue;
-                }
-                if !queue[i].connection.sans.iter().any(|s| s == target_host) {
-                    continue;
-                }
-                if let Some(ip) = resolved_ip
-                    && queue[i].connection.remote_addr.map(|a| a.ip()) != Some(ip)
-                {
-                    continue;
-                }
-
-                if !queue[i].connection.is_ready() {
-                    continue;
-                }
-
-                if queue[i].connection.is_h2_or_h3() {
-                    if let Some(cloned) = queue[i]
-                        .connection
-                        .clone_for_multiplex_with_limit(max_active)
+                    if now.duration_since(queue[i].idle_since) >= idle_timeout {
+                        continue;
+                    }
+                    if !Self::connection_within_lifetime(&queue[i].connection, max_lifetime) {
+                        continue;
+                    }
+                    if !queue[i].connection.is_h2_or_h3() {
+                        continue;
+                    }
+                    if !queue[i].connection.sans.iter().any(|s| s == target_host) {
+                        continue;
+                    }
+                    if let Some(ip) = resolved_ip
+                        && queue[i].connection.remote_addr.map(|a| a.ip()) != Some(ip)
                     {
-                        queue[i].idle_since = now;
-                        found_conn = Some(cloned);
+                        continue;
+                    }
+
+                    if !queue[i].connection.is_ready() {
+                        continue;
+                    }
+
+                    if queue[i].connection.is_h2_or_h3() {
+                        if let Some(mut cloned) = queue[i]
+                            .connection
+                            .clone_for_multiplex_with_limit(max_active)
+                        {
+                            cloned.pool = pool_weak.clone();
+                            cloned.key = Some(key.clone());
+                            queue[i].connection.pool = Weak::new();
+                            queue[i].connection.key = None;
+                            queue[i].idle_since = now;
+                            active_key = Some(key.clone());
+                            found_conn = Some(cloned);
+                            break;
+                        }
+                        continue;
+                    }
+
+                    if let Some(entry) = queue.remove(i) {
+                        if queue.is_empty() {
+                            found_key = Some(key.clone());
+                        }
+                        let mut conn = entry.connection;
+                        conn.pool = pool_weak.clone();
+                        conn.key = Some(key.clone());
+                        active_key = Some(key.clone());
+                        found_conn = Some(conn);
                         break;
                     }
-                    continue;
                 }
-
-                if let Some(entry) = queue.remove(i) {
-                    if queue.is_empty() {
-                        found_key = Some(key.clone());
-                    }
-                    found_conn = Some(entry.connection);
+                if found_conn.is_some() {
                     break;
                 }
             }
-            if found_conn.is_some() {
-                break;
-            }
+        }
+
+        // Increment active count after queue borrows are released.
+        if let Some(ref k) = active_key {
+            *inner.active.entry(k.clone()).or_insert(0) += 1;
         }
 
         if let Some(key) = found_key {
