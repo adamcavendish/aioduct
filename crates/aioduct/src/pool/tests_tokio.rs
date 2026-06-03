@@ -385,6 +385,30 @@ fn checkout_coalesced_empty_pool_returns_none() {
     assert!(result.is_none(), "empty pool should return None");
 }
 
+#[tokio::test]
+async fn coalesced_checkout_skips_past_max_lifetime() {
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
+        .with_max_lifetime(Duration::from_millis(1));
+    let k = key_https("origin.example.com:443");
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
+    conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
+    pool.checkin(k, conn);
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let ip: IpAddr = [10, 0, 0, 1].into();
+    let result = pool.checkout_coalesced("cdn.example.com", Some(ip));
+    assert!(
+        result.is_none(),
+        "connection past max lifetime should not be returned"
+    );
+}
+
 #[test]
 fn mark_connecting_h2_returns_false_first_time() {
     let pool = ConnectionPool::<RequestBodySend>::new()
@@ -1099,6 +1123,25 @@ async fn pool_zero_max_idle_always_evicts() {
     // Should be able to checkout the one connection
     assert!(pool.checkout(&k).is_some());
     assert!(pool.checkout(&k).is_none());
+}
+
+#[tokio::test]
+async fn max_idle_per_host_zero_drops_on_checkin() {
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(0)
+        .with_idle_timeout(Duration::from_secs(30));
+    let k = key("example.com:80");
+
+    let conn = make_h1_conn().await;
+    pool.checkin(k.clone(), conn);
+
+    tokio::task::yield_now().await;
+
+    assert!(
+        pool.checkout(&k).is_none(),
+        "connection should be dropped when max_idle_per_host is 0"
+    );
 }
 
 // --- checkout_coalesced: SAN in index but connection SANs don't match target ---
