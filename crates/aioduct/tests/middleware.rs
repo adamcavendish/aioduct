@@ -2,7 +2,9 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(feature = "tokio")]
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "tokio")]
 use std::time::Duration;
 
