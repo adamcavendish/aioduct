@@ -1183,3 +1183,211 @@ async fn uppercase_zstd_decompressed() {
         .unwrap();
     assert_eq!(resp.text().await.unwrap(), content);
 }
+
+// ── Body malformed/boundary tests ─────────────────────────────────────
+
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn malformed_gzip_body_returns_error() {
+    use tokio::io::AsyncWriteExt;
+
+    let addr = raw_streaming_server(move |_req, mut stream| async move {
+        let body = b"this is not valid gzip compressed data";
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(header.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        stream.flush().await.unwrap();
+        stream.shutdown().await.unwrap();
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let result = resp.text().await;
+    assert!(
+        result.is_err(),
+        "malformed gzip body should cause decompression error, got: {:?}",
+        result.ok()
+    );
+}
+
+/// Server sends Content-Length: 5 but writes far more bytes on the wire.
+/// After the client reads the 5-byte body, the remaining bytes corrupt the
+/// connection, so the next request either fails or opens a new connection.
+#[tokio::test]
+async fn content_length_mismatch_too_long_poisons_reuse() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let conn_count = Arc::new(AtomicUsize::new(0));
+
+    tokio::spawn({
+        let conn_count = conn_count.clone();
+        async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                conn_count.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let n = match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    if !buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                        return;
+                    }
+
+                    // Content-Length claims 5 bytes but we write ~105.
+                    let extra = "x".repeat(100);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\nhello{extra}"
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.flush().await;
+
+                    // Leave the connection open; the 100 extra bytes will
+                    // corrupt any subsequent request the client tries to
+                    // pipeline on the same TCP stream.
+                    let _ = tokio::time::timeout(Duration::from_millis(300), stream.read(&mut buf))
+                        .await;
+                });
+            }
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let url = format!("http://{addr}/");
+
+    // First request: reads exactly 5 bytes (Content-Length) — succeeds.
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello");
+
+    // Give the pool a moment to return the (now-corrupted) connection.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Second request: either fails (dirty connection) or succeeds but
+    // must use a fresh connection.
+    let before = conn_count.load(Ordering::SeqCst);
+    let result = client.get(&url).unwrap().send().await;
+    match result {
+        Ok(resp) => {
+            let _ = resp.text().await.unwrap();
+            let after = conn_count.load(Ordering::SeqCst);
+            assert!(
+                after > before,
+                "expected a new connection after Content-Length \
+                 mismatch (before={before}, after={after})"
+            );
+        }
+        Err(_) => {
+            // Corrupted connection produced an error — acceptable.
+        }
+    }
+}
+
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn content_length_removed_after_decompression() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let content = "content length should disappear";
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(content.as_bytes()).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let compressed = compressed.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-encoding", "gzip")
+                    .header("content-length", compressed.len().to_string())
+                    .body(Full::new(Bytes::from(compressed)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    // Content-Length must be removed because the decompressed body size
+    // no longer matches the original value.
+    assert!(
+        resp.headers().get("content-length").is_none(),
+        "Content-Length should be stripped after decompression"
+    );
+
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, content);
+}
+
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn decompressed_body_empty_is_ok() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    // A gzip stream with no payload — just header + footer.
+    let encoder = GzEncoder::new(Vec::new(), Compression::default());
+    let compressed = encoder.finish().unwrap();
+    // Should still be a valid gzip file (header + trailer, zero payload).
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let compressed = compressed.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-encoding", "gzip")
+                    .body(Full::new(Bytes::from(compressed)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let text = resp.text().await.unwrap();
+    assert_eq!(
+        text, "",
+        "empty gzip body should decompress to empty string"
+    );
+}
