@@ -2559,3 +2559,79 @@ fn custom_config_accepts_ech_enabled_rustls_client_config() {
         vec![b"h2".to_vec(), b"http/1.1".to_vec()]
     );
 }
+
+// ---- Hostname verification bypass: chain validation intact, hostname mismatch ignored ----
+
+/// Verify that `danger_accept_invalid_hostnames` (i.e.
+/// `build_configured` with `skip_hostname_verification: true`) bypasses
+/// only the hostname check while keeping certificate chain validation
+/// active.
+///
+/// The server presents a certificate that is trusted (added to the
+/// client's root store) but issued for a different hostname. The
+/// connector is built with hostname verification disabled. The handshake
+/// must succeed because chain validation passes and the hostname mismatch
+/// is tolerated.
+///
+/// This is different from `danger_accept_invalid_certs()` which disables
+/// ALL certificate verification (including chain validation).
+#[tokio::test]
+async fn no_hostname_verifier_allows_wrong_hostname() {
+    install_crypto_provider();
+
+    // Generate CA
+    let mut ca_params = rcgen::CertificateParams::new(vec!["Test CA".into()]).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params
+        .key_usages
+        .push(rcgen::KeyUsagePurpose::KeyCertSign);
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+    let ca_cert_der = rustls::pki_types::CertificateDer::from(ca_cert.cert.der().to_vec());
+
+    // Server cert signed by the CA but for a hostname DIFFERENT from
+    // what the client will connect to.
+    let mut server_params =
+        rcgen::CertificateParams::new(vec!["wrong-host.example.com".into()]).unwrap();
+    server_params.is_ca = rcgen::IsCa::NoCa;
+    let server_key = rcgen::KeyPair::generate().unwrap();
+    let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+    let server_cert = server_params.signed_by(&server_key, &issuer).unwrap();
+    let server_cert_der = rustls::pki_types::CertificateDer::from(server_cert.der().to_vec());
+    let server_key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(server_key.serialize_der().into());
+
+    let srv_cfg = Arc::new(
+        rustls::ServerConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![server_cert_der], server_key_der)
+            .unwrap(),
+    );
+
+    // Client trusts the CA (chain validation passes) but skips hostname
+    // verification.
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.add(ca_cert_der).unwrap();
+
+    let connector = RustlsConnector::build_configured(
+        root_store,
+        &[&rustls::version::TLS12, &rustls::version::TLS13],
+        vec![],
+        true, // skip_hostname_verification
+        None,
+    )
+    .unwrap();
+
+    let (client_io, server_io) = tokio::io::duplex(8192);
+    let mut server_stream = TokioIo::new(server_io);
+
+    let (client_result, _) = tokio::join!(
+        client_connect(&connector, TokioIo::new(client_io)),
+        do_server_handshake(srv_cfg, &mut server_stream),
+    );
+
+    let tls_stream = client_result
+        .expect("handshake must succeed: chain validation passes, hostname mismatch is tolerated");
+    assert!(!tls_stream.tls.is_handshaking());
+}
