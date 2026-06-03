@@ -784,3 +784,302 @@ async fn mutual_tls_client_no_identity_server_requires() {
         Ok(r) => panic!("expected mTLS handshake failure, got status {}", r.status()),
     }
 }
+
+// ── SNI disable test ───────────────────────────────────────────────────
+
+/// Verifies that when `tls_sni(false)` is set on the builder, the server
+/// does NOT receive an SNI extension. A second connection with the default
+/// SNI (enabled) confirms the server sees `Some("localhost")`.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn tls_sni_disabled_server_does_not_receive_sni() {
+    use std::sync::Arc;
+
+    install_crypto_provider();
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+
+    let mut server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("configured rustls provider does not support the default TLS versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
+    server_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let server_tls_config = Arc::new(server_tls_config);
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let (sni_tx, mut sni_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    tokio::spawn({
+        let tls_acceptor = tls_acceptor.clone();
+        async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let acceptor = tls_acceptor.clone();
+                let sni_tx = sni_tx.clone();
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+                    // Record the SNI as seen by the server
+                    let sni = tls_stream.get_ref().1.server_name().map(|s| s.to_string());
+                    let _ = sni_tx.send(sni);
+
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExec)
+                        .serve_connection(
+                            io,
+                            service_fn(|_req| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+                            }),
+                        )
+                        .await;
+                });
+            }
+        }
+    });
+
+    // Shared client TLS config that trusts the server cert
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.add(cert_der).unwrap();
+    let mut client_tls_config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("configured rustls provider does not support the default TLS versions")
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    // Connection 1: SNI disabled
+    {
+        let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config.clone()));
+        let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+            .tls(connector)
+            .tls_sni(false)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let _ = client
+            .get(&format!("https://localhost:{}/", addr.port()))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        let first_sni = sni_rx
+            .recv()
+            .await
+            .expect("channel closed before SNI received");
+        assert!(
+            first_sni.is_none(),
+            "SNI should be None when tls_sni is disabled, got: {first_sni:?}"
+        );
+    }
+
+    // Connection 2: SNI enabled (default behavior)
+    {
+        let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
+        let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+            .tls(connector)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let _ = client
+            .get(&format!("https://localhost:{}/", addr.port()))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        let second_sni = sni_rx
+            .recv()
+            .await
+            .expect("channel closed before SNI received");
+        assert_eq!(
+            second_sni,
+            Some("localhost".to_string()),
+            "SNI should be Some(\"localhost\") with default SNI enabled"
+        );
+    }
+}
+
+// ── ALPN mismatch test ─────────────────────────────────────────────────
+
+/// Client offers only h2 via ALPN; server only offers http/1.1. The rustls
+/// server sends a fatal NoApplicationProtocol alert, so the connection must
+/// fail. Uses a custom rustls config (h2-only ALPN), not the default
+/// [h2, http/1.1].
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn alpn_h2_only_client_rejects_h1_server() {
+    use std::sync::Arc;
+
+    install_crypto_provider();
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+
+    // Server: only http/1.1 ALPN
+    let mut server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("configured rustls provider does not support the default TLS versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    server_tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let server_tls_config = Arc::new(server_tls_config);
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn({
+        let tls_acceptor = tls_acceptor.clone();
+        async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let acceptor = tls_acceptor.clone();
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|_req| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                    "should not reach",
+                                ))))
+                            }),
+                        )
+                        .await;
+                });
+            }
+        }
+    });
+
+    // Client: h2-only ALPN (custom config, NOT default [h2, http/1.1])
+    let mut connector = aioduct::tls::RustlsConnector::danger_accept_invalid_certs();
+    connector.config_mut().alpn_protocols = vec![b"h2".to_vec()];
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/", addr.port()))
+        .unwrap()
+        .send()
+        .await;
+
+    match resp {
+        Err(e) => {
+            assert!(
+                e.is_connect(),
+                "ALPN mismatch error must be a connect error, got: {e:?}"
+            );
+        }
+        Ok(_) => panic!("expected ALPN mismatch to cause connection failure"),
+    }
+}
+
+// ── danger_accept_invalid_certs smoke test ──────────────────────────────
+
+/// Verifies that `danger_accept_invalid_certs()` (NoVerifier) bypasses ALL
+/// certificate verification and allows a connection to a self-signed server
+/// to succeed with a 200 OK response.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn danger_accept_invalid_certs_allows_self_signed() {
+    use std::sync::Arc;
+
+    install_crypto_provider();
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+
+    let mut server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("configured rustls provider does not support the default TLS versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    server_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let server_tls_config = Arc::new(server_tls_config);
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn({
+        let tls_acceptor = tls_acceptor.clone();
+        async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let acceptor = tls_acceptor.clone();
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExec)
+                        .serve_connection(
+                            io,
+                            service_fn(|_req| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                    "insecure ok",
+                                ))))
+                            }),
+                        )
+                        .await;
+                });
+            }
+        }
+    });
+
+    let connector = aioduct::tls::RustlsConnector::danger_accept_invalid_certs();
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/", addr.port()))
+        .unwrap()
+        .send()
+        .await;
+
+    match &resp {
+        Ok(r) => assert_eq!(r.status(), http::StatusCode::OK),
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("timeout"),
+                "danger_accept_invalid_certs request timed out: {e}"
+            );
+            panic!("danger_accept_invalid_certs request failed: {e}");
+        }
+    }
+    let body = resp.unwrap().text().await.unwrap();
+    assert_eq!(body, "insecure ok");
+}
