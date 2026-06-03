@@ -2635,3 +2635,99 @@ async fn no_hostname_verifier_allows_wrong_hostname() {
         .expect("handshake must succeed: chain validation passes, hostname mismatch is tolerated");
     assert!(!tls_stream.tls.is_handshaking());
 }
+
+// ---- danger_accept_invalid_hostnames preserves chain validation ----
+
+/// Verifies that hostname-verification bypass (via
+/// `build_configured` with `skip_hostname_verification: true`) does NOT
+/// disable certificate chain validation.
+///
+/// The server presents a self-signed cert for "other.example.com" that is
+/// NOT in the client's WebPKI root store. Even though hostname verification
+/// is skipped, the handshake must fail because the certificate chain is
+/// untrusted.
+#[tokio::test]
+async fn no_hostname_verifier_preserves_chain_validation() {
+    install_crypto_provider();
+
+    // Self-signed cert for a hostname different from what we connect to,
+    // and NOT signed by any CA in our root store.
+    let untrusted = rcgen::generate_simple_self_signed(vec!["other.example.com".into()]).unwrap();
+    let untrusted_cert_der = rustls::pki_types::CertificateDer::from(untrusted.cert.der().to_vec());
+    let untrusted_key_der =
+        rustls::pki_types::PrivateKeyDer::Pkcs8(untrusted.signing_key.serialize_der().into());
+
+    let srv_cfg = Arc::new(
+        rustls::ServerConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("versions should be supported")
+            .with_no_client_auth()
+            .with_single_cert(vec![untrusted_cert_der], untrusted_key_der)
+            .unwrap(),
+    );
+
+    // Client: WebPKI roots + hostname verification skipped.
+    // Chain validation is still active — the self-signed cert is not trusted.
+    let root_store =
+        rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let connector = RustlsConnector::build_configured(
+        root_store,
+        &[&rustls::version::TLS12, &rustls::version::TLS13],
+        vec![],
+        true, // skip hostname verification
+        None,
+    )
+    .unwrap();
+
+    let (client_io, server_io) = tokio::io::duplex(8192);
+    let mut server_stream = TokioIo::new(server_io);
+
+    // Use a tolerant server handshake that handles client disconnection
+    let server_fut = async {
+        let mut tls = rustls::ServerConnection::new(srv_cfg).unwrap();
+        while tls.is_handshaking() {
+            if tls.wants_read() {
+                let n =
+                    std::future::poll_fn(|cx| srv_read_tls(&mut tls, &mut server_stream, cx)).await;
+                match n {
+                    Ok(0) => return,
+                    Ok(_) => {
+                        if tls.process_new_packets().is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => return,
+                }
+            }
+            while tls.wants_write() {
+                if std::future::poll_fn(|cx| srv_write_tls(&mut tls, &mut server_stream, cx))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = std::future::poll_fn(|cx| Pin::new(&mut server_stream).poll_flush(cx)).await;
+        }
+    };
+
+    let (client_result, _) = tokio::join!(
+        client_connect(&connector, TokioIo::new(client_io)),
+        server_fut,
+    );
+
+    match client_result {
+        Ok(_) => {
+            panic!("handshake must fail: hostname bypass does not disable chain validation");
+        }
+        Err(err) => {
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::InvalidData,
+                "chain validation failure should yield InvalidData, got {:?}",
+                err.kind()
+            );
+        }
+    }
+}
