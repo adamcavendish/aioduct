@@ -5,6 +5,7 @@
 - [Feature Flags](feature_flags.md)
 - [Architecture](architecture.md)
 - [Runtime Trait](runtime.md)
+- [WASM/WASI Parity](wasm_parity.md)
 - [TLS & HTTPS](tls.md)
 - [Connection Pool](connection_pool.md)
 - [Server-Sent Events](sse.md)
