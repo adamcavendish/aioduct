@@ -7,14 +7,14 @@ use std::convert::Infallible;
     feature = "brotli",
     feature = "zstd"
 ))]
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 #[cfg(any(
     feature = "gzip",
     feature = "deflate",
     feature = "brotli",
     feature = "zstd"
 ))]
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 #[cfg(any(
     feature = "gzip",
     feature = "deflate",
@@ -1390,4 +1390,204 @@ async fn decompressed_body_empty_is_ok() {
         text, "",
         "empty gzip body should decompress to empty string"
     );
+}
+
+// ── Round-trip and trailer pass-through tests ──────────────────────────
+
+/// 64KB gzip round-trip: compress, serve, decompress, verify.
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn decompress_gzip_round_trip_with_large_body() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let content = "A".repeat(65536); // 64 KB
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(content.as_bytes()).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let compressed = compressed.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-encoding", "gzip")
+                    .header("content-length", compressed.len().to_string())
+                    .body(Full::new(Bytes::from(compressed)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, content);
+}
+
+/// Send gzip-compressed chunked response followed by a trailer header.
+/// Verify the decompressed body is correct AND that `TrailersReceived`
+/// fires with the expected trailer headers.
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn trailer_frame_passes_through_decompress() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+    use tokio::io::AsyncWriteExt;
+
+    use aioduct::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
+
+    let content = "hello trailer decompress";
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(content.as_bytes()).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let events: Arc<Mutex<Vec<RequestPhase>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    struct TrailerObserver(Arc<Mutex<Vec<RequestPhase>>>);
+    impl RequestObserver for TrailerObserver {
+        fn on_event(&self, event: &RequestEvent) {
+            self.0.lock().unwrap().push(event.phase.clone());
+        }
+        fn on_connection_event(&self, _event: &ConnectionEvent) {}
+    }
+
+    let addr = raw_streaming_server(move |_req, mut stream| {
+        let compressed = compressed.clone();
+        async move {
+            let chunk_header = format!("{:x}\r\n", compressed.len());
+            let response_header = "HTTP/1.1 200 OK\r\n\
+                 Content-Encoding: gzip\r\n\
+                 Transfer-Encoding: chunked\r\n\
+                 Trailer: x-response-time\r\n\
+                 \r\n";
+            stream.write_all(response_header.as_bytes()).await.unwrap();
+            stream.write_all(chunk_header.as_bytes()).await.unwrap();
+            stream.write_all(&compressed).await.unwrap();
+            stream.write_all(b"\r\n").await.unwrap();
+            // Terminating chunk + trailer
+            stream.write_all(b"0\r\n").await.unwrap();
+            stream.write_all(b"x-response-time: 42\r\n").await.unwrap();
+            stream.write_all(b"\r\n").await.unwrap();
+            stream.flush().await.unwrap();
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .request_observer(TrailerObserver(events_clone))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    // Use into_bytes_stream so the observer fires TrailersReceived.
+    let mut stream = resp.into_bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        body.extend_from_slice(&chunk.unwrap());
+    }
+
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        content,
+        "decompressed body must match original"
+    );
+
+    let captured = events.lock().unwrap();
+    let has_trailers = captured.iter().any(|p| {
+        matches!(p, RequestPhase::TrailersReceived { headers }
+            if headers.iter().any(|(k, v)| k == "x-response-time" && v == "42"))
+    });
+    assert!(
+        has_trailers,
+        "expected TrailersReceived with x-response-time: 42, got: {captured:?}"
+    );
+}
+
+/// Round-trip brotli: compress, serve with Content-Encoding: br, decompress.
+#[cfg(feature = "brotli")]
+#[tokio::test]
+async fn decompress_brotli_round_trip() {
+    use std::io::Write;
+
+    let content = "hello brotli round trip test payload with sufficient length to compress well";
+    let mut compressed = Vec::new();
+    {
+        let mut writer = brotli::CompressorWriter::new(&mut compressed, 4096, 6, 22);
+        writer.write_all(content.as_bytes()).unwrap();
+        drop(writer);
+    }
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let compressed = compressed.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-encoding", "br")
+                    .body(Full::new(Bytes::from(compressed)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, content);
+}
+
+/// Round-trip zstd: compress, serve with Content-Encoding: zstd, decompress.
+#[cfg(feature = "zstd")]
+#[tokio::test]
+async fn decompress_zstd_round_trip() {
+    let content = "hello zstd round trip test payload with sufficient length to compress well";
+    let compressed = zstd::encode_all(content.as_bytes(), 3).unwrap();
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let compressed = compressed.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-encoding", "zstd")
+                    .body(Full::new(Bytes::from(compressed)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, content);
 }

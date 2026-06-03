@@ -485,3 +485,295 @@ async fn hsts_upgrades_redirect_targets() {
         "redirect target should have been HSTS-upgraded to HTTPS and reached the TLS server"
     );
 }
+
+// ── TLS Integration Tests ─────────────────────────────────────────────
+
+// Test 1: custom CA trusts end-to-end.
+// Generate a custom CA, issue a server cert signed by it, start a TLS
+// server, and connect using RustlsConnector::with_extra_roots.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn custom_ca_trusts_end_to_end() {
+    use std::sync::Arc;
+
+    install_crypto_provider();
+
+    // Generate CA
+    let mut ca_params = rcgen::CertificateParams::new(vec!["Test CA".into()]).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params
+        .key_usages
+        .push(rcgen::KeyUsagePurpose::KeyCertSign);
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+    let ca_cert_der = rustls::pki_types::CertificateDer::from(ca_cert.der().to_vec());
+
+    // Server cert signed by the custom CA
+    let mut server_params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+    server_params.is_ca = rcgen::IsCa::NoCa;
+    let server_key = rcgen::KeyPair::generate().unwrap();
+    let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+    let server_cert = server_params.signed_by(&server_key, &issuer).unwrap();
+    let server_cert_der = rustls::pki_types::CertificateDer::from(server_cert.der().to_vec());
+    let server_key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(server_key.serialize_der().into());
+
+    let mut server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("configured rustls provider does not support the default TLS versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![server_cert_der], server_key_der)
+        .unwrap();
+    server_tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let server_tls_config = Arc::new(server_tls_config);
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn({
+        let tls_acceptor = tls_acceptor.clone();
+        async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let acceptor = tls_acceptor.clone();
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|_req| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                    "custom ca ok",
+                                ))))
+                            }),
+                        )
+                        .await;
+                });
+            }
+        }
+    });
+
+    // Client trusts the custom CA via with_extra_roots
+    let extra_cert = aioduct::Certificate::from_der(ca_cert_der.to_vec());
+    let connector = aioduct::tls::RustlsConnector::with_extra_roots(&[extra_cert]);
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/", addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "custom ca ok");
+}
+
+// Test 2: TLS 1.3 client rejects a TLS 1.2-only server.
+// Client uses with_webpki_roots_versioned(TLSv13). Server only offers
+// TLS 1.2. The version mismatch causes a connect error.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn tls13_client_rejects_tls12_server() {
+    use std::sync::Arc;
+
+    install_crypto_provider();
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+
+    // Server: TLS 1.2 only
+    let mut server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .expect("configured rustls provider does not support TLS 1.2")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    server_tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let server_tls_config = Arc::new(server_tls_config);
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn({
+        let tls_acceptor = tls_acceptor.clone();
+        async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let acceptor = tls_acceptor.clone();
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|_req| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                    "should not reach",
+                                ))))
+                            }),
+                        )
+                        .await;
+                });
+            }
+        }
+    });
+
+    // Client: TLS 1.3 only
+    let connector =
+        aioduct::tls::RustlsConnector::with_webpki_roots_versioned(&[&rustls::version::TLS13]);
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/", addr.port()))
+        .unwrap()
+        .send()
+        .await;
+
+    match resp {
+        Err(e) => {
+            assert!(
+                e.is_connect(),
+                "version rejection error must be a connect error, got: {e:?}"
+            );
+        }
+        Ok(r) => panic!("expected error, got status {}", r.status()),
+    }
+}
+
+// Test 3: mTLS — client without identity fails against a server that
+// requires client authentication.
+//
+// The test-server helpers do not expose a `with_client_auth` API, so the
+// server is built inline using WebPkiClientVerifier (without
+// allow_unauthenticated) to require a client certificate.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn mutual_tls_client_no_identity_server_requires() {
+    use std::sync::Arc;
+
+    install_crypto_provider();
+
+    // Generate a CA for signing the server cert
+    let mut ca_params = rcgen::CertificateParams::new(vec!["Test CA".into()]).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params
+        .key_usages
+        .push(rcgen::KeyUsagePurpose::KeyCertSign);
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+    let ca_cert_der = rustls::pki_types::CertificateDer::from(ca_cert.der().to_vec());
+
+    // Server cert signed by the CA
+    let mut server_params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+    server_params.is_ca = rcgen::IsCa::NoCa;
+    let server_key = rcgen::KeyPair::generate().unwrap();
+    let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+    let server_cert = server_params.signed_by(&server_key, &issuer).unwrap();
+    let server_cert_der = rustls::pki_types::CertificateDer::from(server_cert.der().to_vec());
+    let server_key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(server_key.serialize_der().into());
+
+    // Dummy CA root so the WebPkiClientVerifier builder has at least one
+    // trusted root (the builder rejects an empty store). The actual client
+    // has no identity, so no client cert will be presented.
+    let dummy_root = rcgen::generate_simple_self_signed(vec!["dummy-ca".into()]).unwrap();
+    let mut client_root_store = rustls::RootCertStore::empty();
+    client_root_store
+        .add(rustls::pki_types::CertificateDer::from(
+            dummy_root.cert.der().to_vec(),
+        ))
+        .unwrap();
+    let client_verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(client_root_store),
+        crypto_provider(),
+    )
+    // No .allow_unauthenticated() — client auth is REQUIRED.
+    .build()
+    .unwrap();
+
+    let server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("configured rustls provider does not support the default TLS versions")
+        .with_client_cert_verifier(client_verifier)
+        .with_single_cert(vec![server_cert_der], server_key_der)
+        .unwrap();
+    server_tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let server_tls_config = Arc::new(server_tls_config);
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(server_tls_config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn({
+        let tls_acceptor = tls_acceptor.clone();
+        async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let acceptor = tls_acceptor.clone();
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|_req| async {
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                    "should not reach",
+                                ))))
+                            }),
+                        )
+                        .await;
+                });
+            }
+        }
+    });
+
+    // Client: trusts the CA (so server cert is valid) but has no identity
+    let ca_cert_aioduct = aioduct::Certificate::from_der(ca_cert_der.to_vec());
+    let connector = aioduct::tls::RustlsConnector::with_extra_roots(&[ca_cert_aioduct]);
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/", addr.port()))
+        .unwrap()
+        .send()
+        .await;
+
+    match resp {
+        Err(e) => {
+            assert!(
+                e.is_connect(),
+                "mTLS failure (no identity) must be a connect error, got: {e:?}"
+            );
+        }
+        Ok(r) => panic!("expected mTLS handshake failure, got status {}", r.status()),
+    }
+}
