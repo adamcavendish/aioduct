@@ -205,6 +205,27 @@ fn checkout_expired_connection_returns_none() {
     });
 }
 
+#[test]
+fn idle_timeout_eviction_on_checkout() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let pool = ConnectionPool::<RequestBodyLocal>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_millis(1));
+        let k = key("example.com:80");
+
+        let conn = make_h1_conn().await;
+        pool.checkin(k.clone(), conn);
+
+        CompioRuntime::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            pool.checkout(&k).is_none(),
+            "expired connection should be discarded on checkout"
+        );
+    });
+}
+
 // Note: no reaper test for compio — CompioRuntime is completion-based and does
 // not implement RuntimePoll, which is required by ConnectionPool::ensure_reaper.
 
@@ -360,6 +381,38 @@ fn per_host_isolation() {
         assert!(
             pool.can_connect(&k2),
             "k2 should not be affected by k1's cap"
+        );
+    });
+}
+
+#[test]
+fn max_active_per_host_isolation() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let max_active = std::num::NonZeroUsize::new(1).unwrap();
+        let pool = ConnectionPool::<RequestBodyLocal>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30))
+            .with_max_active_per_host(Some(max_active));
+        let k_a = key("a.example.com:80");
+        let k_b = key("b.example.com:80");
+
+        let conn = make_h1_conn().await;
+        pool.checkin(k_a.clone(), conn);
+
+        assert!(
+            wait_for_ready(&pool, &k_a).await,
+            "connection should become ready"
+        );
+
+        let _out = pool.checkout(&k_a).expect("checkout host A");
+        assert!(
+            !pool.can_connect(&k_a),
+            "can_connect should return false for host A at cap"
+        );
+        assert!(
+            pool.can_connect(&k_b),
+            "can_connect should return true for host B"
         );
     });
 }

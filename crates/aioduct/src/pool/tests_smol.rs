@@ -327,3 +327,25 @@ fn per_host_isolation() {
         );
     });
 }
+
+#[test]
+fn max_lifetime_checkin_drops_before_insert() {
+    smol::block_on(async {
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30))
+            .with_max_lifetime(Duration::from_millis(1));
+        let k = key("example.com:80");
+
+        let conn = make_h1_conn().await;
+        SmolRuntime::sleep(Duration::from_millis(50)).await;
+
+        pool.checkin(k.clone(), conn);
+
+        assert!(
+            pool.checkout(&k).is_none(),
+            "connection past max lifetime should be dropped at checkin"
+        );
+    });
+}
