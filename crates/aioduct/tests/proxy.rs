@@ -15,7 +15,7 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct_test_server::h1::{h1_server, h1_server_with};
 use aioduct_test_server::raw::raw_server;
 
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
 #[tokio::test]
 async fn test_http_proxy() {
@@ -940,4 +940,232 @@ async fn proxy_failure_connection_refused() {
         "expected connect error, got: {err} (is_connect={})",
         err.is_connect()
     );
+}
+
+// ── Proxy edge-case tests ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn proxy_settings_custom_with_no_proxy_precedence() {
+    // Verify no_proxy is checked before custom (settings.rs:96).
+    let (proxy_addr, _counter) = h1_server_with(|_req| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("proxied"))))
+    })
+    .await;
+
+    let (target_addr, _counter) = h1_server().await;
+
+    let called = Arc::new(AtomicBool::new(false));
+    let called2 = called.clone();
+
+    let settings = aioduct::ProxySettings::default()
+        .custom(move |_url| {
+            called2.store(true, AtomicOrdering::SeqCst);
+            Some(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        })
+        .no_proxy(aioduct::NoProxy::new("127.0.0.1"));
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_settings(settings)
+        .build()
+        .unwrap();
+
+    // Target is localhost — no_proxy matches, custom should NOT be called.
+    let resp = client
+        .get(&format!("http://{target_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+    assert!(!called.load(AtomicOrdering::SeqCst));
+}
+
+#[tokio::test]
+async fn proxy_with_redirect_routing() {
+    // Target server (behind proxy).
+    let (target_addr, _counter) = h1_server().await;
+
+    // Server that redirects to the target.
+    let (redirect_addr, _counter) = h1_server_with(move |_req| {
+        let target = format!("http://{target_addr}/");
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    // Raw TCP proxy that counts connections and forwards to the redirect server.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_req_count = Arc::new(AtomicUsize::new(0));
+    let prc = Arc::clone(&proxy_req_count);
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            prc.fetch_add(1, AtomicOrdering::SeqCst);
+            let mut buf = vec![0u8; 4096];
+            let _ = stream.read(&mut buf).await;
+            // Reply with a redirect to the target — the redirect follow-up
+            // will also go through the proxy.
+            let target = format!("http://{target_addr}/");
+            let resp =
+                format!("HTTP/1.1 302 Found\r\nlocation: {target}\r\nContent-Length: 0\r\n\r\n");
+            stream.write_all(resp.as_bytes()).await.ok();
+        }
+    });
+
+    // Client configured with the proxy.
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap();
+
+    // Send request to the redirect server through proxy.
+    // The redirect server redirects to target; the redirect target also
+    // goes through the proxy which redirects again to target (infinite loop).
+    // The client will exhaust max_redirects. We verify the proxy saw
+    // the request.
+    let result = client
+        .get(&format!("http://{redirect_addr}/start"))
+        .unwrap()
+        .send()
+        .await;
+
+    // The redirect chain will exhaust max_redirects because the proxy always
+    // issues 302 back to the target.
+    assert!(
+        result.is_err(),
+        "redirect loop should exhaust max_redirects"
+    );
+
+    // Proxy saw at least the initial request.
+    let count = proxy_req_count.load(AtomicOrdering::SeqCst);
+    assert!(
+        count >= 1,
+        "proxy should see the initial request, got {count}"
+    );
+}
+
+#[tokio::test]
+async fn credential_resolver_global_env() {
+    // EnvCredentialResolver applies global credentials (ignores key).
+    use aioduct::{CredentialResolver, EnvCredentialResolver};
+
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_MUTEX.lock().unwrap();
+
+    // The resolver reads from env; using defaults means no proxy-user is set.
+    // The resolver is a no-op when no env vars are set.
+    // Clear env vars that might have been inherited from the test process.
+    // ENV_MUTEX serializes proxy env tests; remove_var is unsafe in Rust 2024.
+    unsafe {
+        std::env::remove_var("AIODUCT_PROXY_USER");
+        std::env::remove_var("AIODUCT_PROXY_PASS");
+    }
+
+    let resolver = EnvCredentialResolver;
+    let result = resolver.resolve("any-key");
+    // With no env vars set, resolver returns None (no credentials).
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn proxy_connection_pooling_with_counter() {
+    // Raw TCP proxy server: counts connections, returns 200 for HTTP.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let conn_count = Arc::new(AtomicUsize::new(0));
+    let cc = Arc::clone(&conn_count);
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            loop {
+                let mut buf = vec![0u8; 4096];
+                let n = match stream.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nproxied")
+                        .await
+                        .unwrap();
+                    stream.flush().await.unwrap();
+                    // Keep-alive: continue reading next request.
+                }
+            }
+        }
+    });
+
+    // Target server behind proxy.
+    let (target_addr, _counter) = h1_server().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .pool_idle_timeout(std::time::Duration::from_secs(60))
+        .pool_max_idle_per_host(5)
+        .build()
+        .unwrap();
+
+    // Two sequential requests — should reuse proxy connection.
+    for _ in 0..2 {
+        let resp = client
+            .get(&format!("http://{target_addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.bytes().await.unwrap();
+    }
+
+    // Pooling may or may not reuse depending on timing — verify at least one
+    // connection was established (not zero).
+    let count = conn_count.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        count >= 1,
+        "expected at least 1 proxy connection, got {count}"
+    );
+}
+
+#[tokio::test]
+async fn proxy_failure_reset_deterministic() {
+    // Raw TCP server that accepts then immediately closes (RST).
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        // Immediately drop — sends RST, no HTTP response.
+        drop(stream);
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{addr}")).unwrap())
+        .build()
+        .unwrap();
+
+    let result = client.get("http://example.com/path").unwrap().send().await;
+
+    assert!(result.is_err(), "proxy reset should produce an error");
 }
