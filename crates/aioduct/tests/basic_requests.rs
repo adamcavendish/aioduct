@@ -1,6 +1,8 @@
 #![cfg(feature = "tokio")]
 
 use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -884,4 +886,144 @@ async fn no_default_headers_removes_user_agent() {
 
     let body = resp.text().await.unwrap();
     assert_eq!(body, "none");
+}
+
+#[tokio::test]
+async fn response_headers_accessible_after_bytes() {
+    let (addr, _counter) = h1_server().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    // Headers should be accessible before consuming the body
+    assert!(
+        !resp.headers().is_empty(),
+        "response headers should not be empty"
+    );
+    assert!(
+        resp.headers().contains_key("content-length"),
+        "content-length header should be present"
+    );
+    assert_eq!(resp.content_length(), Some(13));
+
+    // Consume body as bytes
+    let body = resp.bytes().await.unwrap();
+    assert_eq!(&body[..], b"hello aioduct");
+}
+
+#[tokio::test]
+async fn response_extensions_round_trip() {
+    let (addr, _counter) = h1_server().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+
+    let mut resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    resp.extensions_mut().insert("key");
+    let stored = resp.extensions().get::<&str>().copied();
+    assert_eq!(stored, Some("key"), "stored value should be retrieved");
+
+    // Body can still be consumed
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "hello aioduct");
+}
+
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn response_metadata_after_decompression() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let handler = |_req: hyper::Request<hyper::body::Incoming>| async {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(b"hello compressed world").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let resp = hyper::Response::builder()
+            .header("content-encoding", "gzip")
+            .body(Full::new(Bytes::from(compressed)))
+            .unwrap();
+        Ok::<_, Infallible>(resp)
+    };
+    let (addr, _counter) = h1_server_with(handler).await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    // Metadata accessible before consuming the body
+    let remote = resp.remote_addr();
+    assert!(remote.is_some(), "remote_addr should be set");
+    assert_eq!(remote.unwrap().port(), addr.port());
+    assert_eq!(resp.version(), http::Version::HTTP_11);
+
+    // Consume body (triggers decompression)
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, "hello compressed world");
+}
+
+#[tokio::test]
+async fn response_metadata_on_cached_hit() {
+    let attempt = Arc::new(AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                hyper::Response::builder()
+                    .header("cache-control", "max-age=3600")
+                    .body(Full::new(Bytes::from("cached data")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let cache = aioduct::HttpCache::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cache(cache)
+        .build()
+        .unwrap();
+
+    let url = format!("http://{addr}/resource");
+
+    // First request: hits the server, stores in cache
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.version(), http::Version::HTTP_11);
+    assert_eq!(resp.text().await.unwrap(), "cached data");
+    assert_eq!(attempt.load(Ordering::SeqCst), 1);
+
+    // Second request: cache hit
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert!(
+        resp.remote_addr().is_none(),
+        "cached hit should have no remote_addr"
+    );
+    assert_eq!(
+        resp.version(),
+        http::Version::HTTP_11,
+        "cached hit should preserve version from original response"
+    );
+    assert_eq!(resp.text().await.unwrap(), "cached data");
+    assert_eq!(
+        attempt.load(Ordering::SeqCst),
+        1,
+        "cache should prevent second server hit"
+    );
 }
