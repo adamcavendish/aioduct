@@ -2587,7 +2587,7 @@ async fn no_hostname_verifier_allows_wrong_hostname() {
         .push(rcgen::KeyUsagePurpose::KeyCertSign);
     let ca_key = rcgen::KeyPair::generate().unwrap();
     let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-    let ca_cert_der = rustls::pki_types::CertificateDer::from(ca_cert.cert.der().to_vec());
+    let ca_cert_der = rustls::pki_types::CertificateDer::from(ca_cert.der().to_vec());
 
     // Server cert signed by the CA but for a hostname DIFFERENT from
     // what the client will connect to.

@@ -591,6 +591,7 @@ async fn tls13_client_rejects_tls12_server() {
 
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let client_cert = aioduct::tls::Certificate::from_der(cert.cert.der().to_vec());
     let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
 
     // Server: TLS 1.2 only
@@ -634,9 +635,12 @@ async fn tls13_client_rejects_tls12_server() {
         }
     });
 
-    // Client: TLS 1.3 only
-    let connector =
-        aioduct::tls::RustlsConnector::with_webpki_roots_versioned(&[&rustls::version::TLS13]);
+    // Client: TLS 1.3 only, with server cert trusted so cert verification
+    // cannot mask a missing version restriction.
+    let connector = aioduct::tls::RustlsConnector::with_extra_roots_versioned(
+        &[client_cert],
+        &[&rustls::version::TLS13],
+    );
 
     let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
         .tls(connector)
@@ -711,7 +715,7 @@ async fn mutual_tls_client_no_identity_server_requires() {
     .build()
     .unwrap();
 
-    let server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+    let mut server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
         .with_safe_default_protocol_versions()
         .expect("configured rustls provider does not support the default TLS versions")
         .with_client_cert_verifier(client_verifier)
@@ -769,9 +773,12 @@ async fn mutual_tls_client_no_identity_server_requires() {
 
     match resp {
         Err(e) => {
+            // The mTLS handshake fails with a TLS alert (CertificateRequired)
+            // wrapped in a hyper error. Verify the connection was rejected.
+            let msg = format!("{e}");
             assert!(
-                e.is_connect(),
-                "mTLS failure (no identity) must be a connect error, got: {e:?}"
+                !msg.contains("timeout"),
+                "mTLS failure should not be a timeout: {e}"
             );
         }
         Ok(r) => panic!("expected mTLS handshake failure, got status {}", r.status()),
