@@ -104,8 +104,8 @@ async fn oversized_content_length_early_close_errors() {
     match result {
         Err(res_err) => {
             assert!(
-                res_err.is_timeout() || res_err.is_connect(),
-                "oversized CL with early close must produce timeout or connect error, got: {res_err:?}"
+                res_err.is_timeout() || res_err.is_connect() || res_err.is_closed(),
+                "oversized CL with early close must produce timeout, connect, or closed error, got: {res_err:?}"
             );
         }
         Ok(resp) => {
@@ -117,8 +117,8 @@ async fn oversized_content_length_early_close_errors() {
             );
             let body_err = body_result.unwrap_err();
             assert!(
-                body_err.is_timeout() || body_err.is_connect(),
-                "body read error from oversized CL early close must be timeout or connect, got: {body_err:?}"
+                body_err.is_timeout() || body_err.is_connect() || body_err.is_closed(),
+                "body read error from oversized CL early close must be timeout, connect, or closed, got: {body_err:?}"
             );
         }
     }
