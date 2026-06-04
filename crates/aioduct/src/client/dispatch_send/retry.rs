@@ -20,6 +20,11 @@ pub(super) fn retry_request_from_parts(
     *retry_req.method_mut() = method;
     *retry_req.uri_mut() = uri;
     *retry_req.headers_mut() = headers;
+    // Strip user-supplied framing headers to prevent smuggling.
+    retry_req
+        .headers_mut()
+        .remove(http::header::TRANSFER_ENCODING);
+    retry_req.headers_mut().remove(http::header::CONTENT_LENGTH);
     *retry_req.version_mut() = version;
     retry_req
 }

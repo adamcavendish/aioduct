@@ -210,6 +210,7 @@ impl<B> HttpEngineCore<B> {
             .to_owned();
 
         let next_uri = super::resolve_redirect(current_uri, &location)?;
+        let next_uri = self.maybe_upgrade_hsts(next_uri);
 
         if self
             .redirect_policy
