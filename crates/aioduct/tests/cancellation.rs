@@ -69,10 +69,8 @@ async fn drop_send_future_after_poll_evicts_connection() {
     tokio::pin!(send_fut);
     tokio::select! {
         _ = tokio::time::sleep(Duration::from_millis(100)) => {
-            // send_fut was polled into pending via the select!, now drop it.
-            // Dropping the Pin<&mut> wrapper; the underlying future (owned by
-            // the pin stack slot) is dropped when it goes out of scope below.
-            drop(send_fut);
+            // send_fut was polled into pending via select!, now pinned future
+            // is dropped when it goes out of scope at end of this block.
         }
         _result = &mut send_fut => {
             panic!("should not complete before 100ms");
