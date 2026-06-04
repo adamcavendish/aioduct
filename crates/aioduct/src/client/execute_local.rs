@@ -106,20 +106,18 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             let mut request = builder.body(req_body)?;
             *request.headers_mut() = current_headers.clone();
 
-            // Strip user-supplied framing headers to prevent request smuggling.
-            // Hyper manages Content-Length / Transfer-Encoding based on the
-            // body type; user-supplied values must not be injected into the
-            // framing layer.
-            request
-                .headers_mut()
-                .remove(http::header::TRANSFER_ENCODING);
-            request.headers_mut().remove(http::header::CONTENT_LENGTH);
-
             if !self.core.middleware.is_empty() {
                 self.core
                     .middleware
                     .apply_request_local(&mut request, &current_uri);
             }
+
+            // Strip user-supplied framing headers to prevent request smuggling.
+            // Runs AFTER middleware so middleware cannot re-inject them.
+            request
+                .headers_mut()
+                .remove(http::header::TRANSFER_ENCODING);
+            request.headers_mut().remove(http::header::CONTENT_LENGTH);
 
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
                 Some(RequestBody::Buffered(b)) => Some(b.clone()),
