@@ -263,18 +263,18 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         retry_builder = retry_builder.version(version);
         let mut retry_request = retry_builder.body(retry_body)?;
         *retry_request.headers_mut() = headers.clone();
-        // Strip framing headers on retry as well.
+        if !self.core.middleware.is_empty() {
+            self.core
+                .middleware
+                .apply_request_local(&mut retry_request, uri);
+        }
+        // Strip framing headers on retry — after middleware.
         retry_request
             .headers_mut()
             .remove(http::header::TRANSFER_ENCODING);
         retry_request
             .headers_mut()
             .remove(http::header::CONTENT_LENGTH);
-        if !self.core.middleware.is_empty() {
-            self.core
-                .middleware
-                .apply_request_local(&mut retry_request, uri);
-        }
         self.execute_single_local(
             retry_request,
             uri,

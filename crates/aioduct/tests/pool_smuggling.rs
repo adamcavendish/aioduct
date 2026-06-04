@@ -92,23 +92,24 @@ async fn chunked_body_trailers_then_pipelined_response_clean() {
     // Let the connection settle into the pool.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Second request: if the connection is reused, the pipelined response
-    // bytes should be consumed as the response to this request.
+    // Second request: must NOT consume the smuggled pipelined response bytes.
     let result = client.get(&url).unwrap().send().await;
     match result {
         Ok(resp2) => {
             assert_eq!(resp2.status(), 200);
             let body2 = resp2.text().await.unwrap();
-            assert!(
-                body2 == "SAFE" || body2 == "OKOK",
-                "second response body must be 'SAFE' (pipelined response) or \
-                 'OKOK' (fresh connection response), got '{body2}'"
+            // "SAFE" is the smuggled/pipelined response sent before the second
+            // request existed — accepting it means pool contamination occurred.
+            // "OKOK" means the connection was evicted and a fresh one was used.
+            assert_eq!(
+                body2, "OKOK",
+                "second response must come from fresh connection ('OKOK'), \
+                 not smuggled bytes ('SAFE' = pool contamination)"
             );
         }
         Err(_) => {
-            // Failing the second request is acceptable — the connection may
-            // have been evicted. The critical invariant is that we never
-            // silently serve injected/smuggled data.
+            // Failing the second request is also acceptable — the connection
+            // may have been evicted.
         }
     }
 }
