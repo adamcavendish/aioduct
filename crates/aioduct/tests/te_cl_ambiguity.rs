@@ -13,6 +13,7 @@ use tokio::io::AsyncWriteExt;
 fn client_with_timeout() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::builder()
         .timeout(Duration::from_secs(2))
+        .read_timeout(Duration::from_secs(2))
         .build()
         .unwrap()
 }

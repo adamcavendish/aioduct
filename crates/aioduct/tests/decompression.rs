@@ -1591,3 +1591,186 @@ async fn decompress_zstd_round_trip() {
     let text = resp.text().await.unwrap();
     assert_eq!(text, content);
 }
+
+// ── Decompression Edge-Case Tests ──────────────────────────────────────
+
+/// Corrupt gzip body (valid header/footer, zeroed payload) must produce a
+/// decode error. The error is at the application (decompression) level, not
+/// transport corruption, so the pooled connection must remain usable: a second
+/// request on the same client must succeed.
+#[cfg(feature = "gzip")]
+#[tokio::test]
+async fn corrupt_gzip_body_propagates_decode_error() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    // Build a valid gzip body, then corrupt its middle bytes.
+    let valid_content = "second request valid content";
+    let valid = {
+        let mut e = GzEncoder::new(Vec::new(), Compression::default());
+        e.write_all(valid_content.as_bytes()).unwrap();
+        e.finish().unwrap()
+    };
+
+    let corrupt_original =
+        "first request content that will be corrupted in the middle of the gzip stream";
+    let mut corrupt = {
+        let mut e = GzEncoder::new(Vec::new(), Compression::default());
+        e.write_all(corrupt_original.as_bytes()).unwrap();
+        e.finish().unwrap()
+    };
+
+    // Keep the gzip header and footer intact; zero-fill the middle section so
+    // the decoder recognizes the format but fails during stream decompression.
+    let start = corrupt.len() / 3;
+    let end = (corrupt.len() * 2) / 3;
+    for byte in &mut corrupt[start..end] {
+        *byte = 0;
+    }
+
+    let request_count = Arc::new(AtomicU32::new(0));
+
+    let (addr, _counter) = h1_server_with({
+        let request_count = request_count.clone();
+        let valid = valid.clone();
+        let corrupt = corrupt.clone();
+        move |_req: Request<hyper::body::Incoming>| {
+            let count = request_count.fetch_add(1, Ordering::SeqCst);
+            let body = if count == 0 {
+                corrupt.clone()
+            } else {
+                valid.clone()
+            };
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("content-encoding", "gzip")
+                        .body(Full::new(Bytes::from(body)))
+                        .unwrap(),
+                )
+            }
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+
+    // Request 1: corrupt body → must error.
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let result = resp.text().await;
+    assert!(
+        result.is_err(),
+        "corrupt gzip body must produce a decode error, got: {:?}",
+        result.ok()
+    );
+
+    // Request 2: same client, valid body → must succeed.
+    // The pool connection was NOT evicted by the application-level error.
+    let resp2 = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let text2 = resp2.text().await.unwrap();
+    assert_eq!(text2, valid_content);
+}
+
+/// Content-Encoding declares brotli ("br") but the body is actually gzip.
+/// With both decompressors enabled, the brotli decoder receives gzip bytes
+/// and must return an error — not silently pass through or return wrong data.
+#[cfg(all(feature = "gzip", feature = "brotli"))]
+#[tokio::test]
+async fn content_encoding_brotli_with_gzip_body_errors() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(b"gzip body served as brotli").unwrap();
+    let gzip_body = encoder.finish().unwrap();
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let gzip_body = gzip_body.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-encoding", "br")
+                    .body(Full::new(Bytes::from(gzip_body)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let result = resp.text().await;
+    assert!(
+        result.is_err(),
+        "brotli Content-Encoding with gzip body must error, got: {:?}",
+        result.ok()
+    );
+}
+
+/// Decompression bomb: 100 MB of zeros → ~100 KB gzip.
+///
+/// `#[ignore]` because aioduct has **no decompressed-size cap** — calling
+/// `bytes()` or `text()` would allocate the full 100 MB, which may OOM the
+/// test runner. This test exists to document that known security limitation.
+#[cfg(feature = "gzip")]
+#[ignore]
+#[tokio::test]
+async fn gzip_bomb_unbounded_memory_known_limitation() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let big = vec![0u8; 100_000_000]; // 100 MB zeros
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&big).unwrap();
+    let compressed = encoder.finish().unwrap();
+    // compressed is tiny (~100 KB), serves as a decompression bomb.
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let compressed = compressed.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-encoding", "gzip")
+                    .header("content-length", compressed.len().to_string())
+                    .body(Full::new(Bytes::from(compressed)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    // Known limitation: aioduct has no decompressed-size cap.
+    // bytes() would allocate ~100 MB — may OOM.
+    let _ = resp.bytes().await;
+}
