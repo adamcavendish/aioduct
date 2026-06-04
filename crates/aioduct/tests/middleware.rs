@@ -1061,3 +1061,246 @@ async fn middleware_with_streaming_request_body() {
         "streaming body should be preserved through middleware, got: {body}"
     );
 }
+
+// ── Edge-Case Tests ────────────────────────────────────────────────────
+
+/// Middleware `on_response` sees the original `Content-Encoding: gzip` header
+/// before decompression in `finalize_response`. After consuming the body, the
+/// decompressed text must match the original plaintext.
+#[cfg(all(feature = "tokio", feature = "gzip"))]
+#[tokio::test]
+async fn middleware_on_response_sees_original_headers_before_decompression() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let content = "hello middleware before decompress";
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(content.as_bytes()).unwrap();
+    let compressed = encoder.finish().unwrap();
+    let compressed_len = compressed.len();
+
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let compressed = compressed.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header("content-encoding", "gzip")
+                    .header("content-length", compressed_len.to_string())
+                    .body(Full::new(Bytes::from(compressed)))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    struct DecompressObserver {
+        saw_content_encoding: Arc<AtomicBool>,
+    }
+
+    impl aioduct::Middleware for DecompressObserver {
+        fn on_response(
+            &self,
+            response: &mut http::Response<aioduct::body::RequestBodySend>,
+            _uri: &http::Uri,
+        ) {
+            self.saw_content_encoding.store(
+                response.headers().get("content-encoding").is_some(),
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    let saw_content_encoding = Arc::new(AtomicBool::new(false));
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .middleware(DecompressObserver {
+            saw_content_encoding: saw_content_encoding.clone(),
+        })
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    // on_response fires during finalize_response, BEFORE decompress step
+    assert!(
+        saw_content_encoding.load(Ordering::SeqCst),
+        "on_response must see Content-Encoding: gzip before decompression"
+    );
+
+    // Headers have been stripped by decompress() after middleware ran
+    assert!(
+        resp.headers().get("content-encoding").is_none(),
+        "Content-Encoding should be stripped after decompression"
+    );
+
+    // Body is decompressed correctly
+    let text = resp.text().await.unwrap();
+    assert_eq!(text, content);
+}
+
+/// HSTS pre-loaded with `localhost: includeSubDomains`. Server A redirects
+/// to `http://localhost:<port_B>/target`. HSTS upgrades the redirect target
+/// to https. Middleware `on_redirect` must see the UPGRADED https URI.
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn middleware_on_redirect_with_hsts_upgrade() {
+    use std::sync::Mutex;
+
+    // Server B: the final target (plain h1, not used after redirect)
+    let (port_b_addr, _counter) = h1_server().await;
+
+    // Server A: redirects to http://localhost:<port_B>/target
+    let port_b_port = port_b_addr.port();
+    let (port_a_addr, _counter) = h1_server_with({
+        move |_req| {
+            let target = format!("http://localhost:{port_b_port}/target");
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(302)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        }
+    })
+    .await;
+
+    // Pre-load HSTS store: localhost with includeSubDomains
+    let mut hsts_headers = http::HeaderMap::new();
+    hsts_headers.insert(
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains".parse().unwrap(),
+    );
+    let hsts_store = aioduct::hsts::HstsStore::new();
+    hsts_store.store_from_response("localhost", &hsts_headers);
+
+    struct HstsRedirectRecorder {
+        redirect_target: Arc<Mutex<Option<String>>>,
+    }
+
+    impl aioduct::Middleware for HstsRedirectRecorder {
+        fn on_redirect(&self, _status: http::StatusCode, _from: &http::Uri, to: &http::Uri) {
+            *self.redirect_target.lock().unwrap() = Some(to.to_string());
+        }
+    }
+
+    let redirect_target = Arc::new(Mutex::new(None));
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .middleware(HstsRedirectRecorder {
+            redirect_target: redirect_target.clone(),
+        })
+        .hsts(hsts_store)
+        .connect_timeout(Duration::from_millis(200))
+        .build()
+        .unwrap();
+
+    // Initial request uses 127.0.0.1 (NOT in HSTS) so it is not upgraded.
+    // Only the redirect target (localhost) is HSTS-upgraded.
+    let port_a_port = port_a_addr.port();
+    let result = client
+        .get(&format!("http://127.0.0.1:{port_a_port}/"))
+        .unwrap()
+        .send()
+        .await;
+
+    // We don't care whether the redirected request succeeds — the
+    // HSTS-upgraded target uses https but the server only speaks plain
+    // HTTP. The middleware recorded the redirect URI before the engine
+    // attempted to follow it.
+    let _ = result;
+
+    let recorded = redirect_target.lock().unwrap();
+    let uri = recorded
+        .as_ref()
+        .expect("on_redirect should have recorded a target URI");
+    assert!(
+        uri.starts_with("https://localhost:"),
+        "on_redirect must see the HSTS-upgraded https URI, got: {uri}"
+    );
+    assert!(
+        uri.ends_with("/target"),
+        "redirect target path must be preserved, got: {uri}"
+    );
+}
+
+/// Middleware `on_request` fires even when `force_addr` bypasses DNS.
+/// The Host header in the outgoing request matches the URL authority,
+/// not the forced address.
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn middleware_on_request_with_force_addr() {
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let host_header = req
+            .headers()
+            .get("host")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        let middleware_header = req
+            .headers()
+            .get("x-force-addr-middleware")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "host={host_header}|mw={middleware_header}"
+        )))))
+    })
+    .await;
+
+    struct ForceAddrMiddleware {
+        on_request_fired: Arc<AtomicBool>,
+    }
+
+    impl aioduct::Middleware for ForceAddrMiddleware {
+        fn on_request(
+            &self,
+            req: &mut http::Request<aioduct::body::RequestBodySend>,
+            _uri: &http::Uri,
+        ) {
+            self.on_request_fired.store(true, Ordering::SeqCst);
+            req.headers_mut().insert(
+                http::header::HeaderName::from_static("x-force-addr-middleware"),
+                http::header::HeaderValue::from_static("injected"),
+            );
+        }
+    }
+
+    let on_request_fired = Arc::new(AtomicBool::new(false));
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .middleware(ForceAddrMiddleware {
+            on_request_fired: on_request_fired.clone(),
+        })
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://localhost:{}/", addr.port()))
+        .unwrap()
+        .force_addr(addr)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(
+        on_request_fired.load(Ordering::SeqCst),
+        "on_request must fire even when force_addr is used"
+    );
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("mw=injected"),
+        "middleware should inject x-force-addr-middleware header, got: {body}"
+    );
+    assert!(
+        body.contains(&format!("host=localhost:{}", addr.port())),
+        "Host header must match URL authority (localhost:{}), not force_addr, got: {body}",
+        addr.port()
+    );
+}
