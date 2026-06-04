@@ -1727,13 +1727,11 @@ async fn content_encoding_brotli_with_gzip_body_errors() {
 
 /// Decompression bomb: 100 MB of zeros → ~100 KB gzip.
 ///
-/// `#[ignore]` because aioduct has **no decompressed-size cap** — calling
-/// `bytes()` or `text()` would allocate the full 100 MB, which may OOM the
-/// test runner. This test exists to document that known security limitation.
+/// The `max_decoded_size(1_000_000)` limit (1 MB) should cause the body read
+/// to error before allocating the full 100 MB.
 #[cfg(feature = "gzip")]
-#[ignore]
 #[tokio::test]
-async fn gzip_bomb_unbounded_memory_known_limitation() {
+async fn gzip_bomb_rejected_by_max_decoded_size() {
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use std::io::Write;
@@ -1742,7 +1740,6 @@ async fn gzip_bomb_unbounded_memory_known_limitation() {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(&big).unwrap();
     let compressed = encoder.finish().unwrap();
-    // compressed is tiny (~100 KB), serves as a decompression bomb.
 
     let (addr, _counter) = h1_server_with(move |_req| {
         let compressed = compressed.clone();
@@ -1759,6 +1756,7 @@ async fn gzip_bomb_unbounded_memory_known_limitation() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .max_decoded_size(Some(1_000_000)) // 1 MB limit
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
@@ -1770,7 +1768,14 @@ async fn gzip_bomb_unbounded_memory_known_limitation() {
         .await
         .unwrap();
 
-    // Known limitation: aioduct has no decompressed-size cap.
-    // bytes() would allocate ~100 MB — may OOM.
-    let _ = resp.bytes().await;
+    let result = resp.text().await;
+    assert!(
+        result.is_err(),
+        "decompression bomb must be rejected by max_decoded_size limit"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("exceeds max size"),
+        "error should mention max size, got: {err_msg}"
+    );
 }

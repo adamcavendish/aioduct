@@ -198,6 +198,16 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Set the maximum decompressed body size in bytes.
+    ///
+    /// When set, decompressed responses exceeding this limit produce an error
+    /// instead of allocating unbounded memory. `None` (the default) means
+    /// unlimited.
+    pub fn max_decoded_size(mut self, max: impl Into<Option<u64>>) -> Self {
+        self.accept_encoding.max_decoded_size = max.into();
+        self
+    }
+
     /// Add headers sent with every request.
     pub fn default_headers(mut self, headers: HeaderMap) -> Self {
         self.default_headers.extend(headers);
