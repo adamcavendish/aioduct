@@ -439,7 +439,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             conn,
                             R::spawn_local,
                             R::sleep(self.core.pool.idle_timeout()),
-                            req_method == http::Method::HEAD,
                         );
                     }
                     return Ok(resp);
@@ -560,7 +559,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             }
                             if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp) {
                                 self.core
-                                    .checkin_when_ready_local::<R, _, _>(pool_key, conn, R::spawn_local, R::sleep(self.core.pool.idle_timeout()), req_method == http::Method::HEAD);
+                                    .checkin_when_ready_local::<R, _, _>(pool_key, conn, R::spawn_local, R::sleep(self.core.pool.idle_timeout()));
                             }
                             return Ok(resp);
                         }
@@ -615,6 +614,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             .and_then(|settings| settings.proxy_for(original_uri));
 
         let mut timing = TimingCollector::default();
+
+        if !self.core.pool.can_connect(&pool_key) {
+            return Err(Error::Other(
+                "max active connections per host reached".into(),
+            ));
+        }
 
         let mut pooled = if let Some(ref chain) = self.core.proxy_chain {
             self.connect_via_proxy_chain_local(chain, authority, is_https, connect_timeout)
@@ -859,7 +864,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 pooled,
                 R::spawn_local,
                 R::sleep(self.core.pool.idle_timeout()),
-                req_method == http::Method::HEAD,
             );
         }
 
