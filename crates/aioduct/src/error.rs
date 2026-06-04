@@ -130,6 +130,11 @@ impl SendError {
         self.error.is_dns()
     }
 
+    /// Returns `true` if the underlying error indicates a reused connection was closed.
+    pub fn is_closed(&self) -> bool {
+        self.error.is_closed()
+    }
+
     /// Returns `true` if the underlying error is an HTTP status error.
     pub fn is_status(&self) -> bool {
         self.error.is_status()
