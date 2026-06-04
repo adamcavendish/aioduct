@@ -96,6 +96,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let mut request = builder.body(req_body)?;
             *request.headers_mut() = current_headers.clone();
 
+            // Strip user-supplied framing headers to prevent request smuggling.
+            // Hyper manages Content-Length / Transfer-Encoding based on the
+            // body type; user-supplied values must not be injected into the
+            // framing layer.
+            request
+                .headers_mut()
+                .remove(http::header::TRANSFER_ENCODING);
+            request.headers_mut().remove(http::header::CONTENT_LENGTH);
+
             if !self.core.middleware.is_empty() {
                 self.core
                     .middleware
@@ -252,6 +261,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         retry_builder = retry_builder.version(version);
         let mut retry_request = retry_builder.body(retry_body)?;
         *retry_request.headers_mut() = headers.clone();
+        // Strip framing headers on retry as well.
+        retry_request
+            .headers_mut()
+            .remove(http::header::TRANSFER_ENCODING);
+        retry_request
+            .headers_mut()
+            .remove(http::header::CONTENT_LENGTH);
         if !self.core.middleware.is_empty() {
             self.core.middleware.apply_request(&mut retry_request, uri);
         }
