@@ -42,7 +42,6 @@ pub(crate) struct PoolKey {
 
 impl PoolKey {
     /// Create a new pool key with the default protocol hint (Auto).
-    #[allow(dead_code)]
     pub(crate) fn new(scheme: Scheme, authority: Authority) -> Self {
         Self {
             scheme,
@@ -149,6 +148,8 @@ impl<B: 'static> ConnectionPool<B> {
 
     /// Returns whether a new connection can be created for the given key,
     /// respecting the configured `max_active_per_host` cap.
+    /// Use `try_reserve_active` when opening a new connection to atomically
+    /// reserve the slot.
     #[allow(dead_code)]
     pub(crate) fn can_connect(&self, key: &PoolKey) -> bool {
         let inner = match self.inner.lock() {
@@ -198,7 +199,6 @@ impl<B: 'static> ConnectionPool<B> {
 
     /// Returns the configured maximum connection lifetime for this pool.
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn max_lifetime(&self) -> Option<Duration> {
         self.inner
             .lock()

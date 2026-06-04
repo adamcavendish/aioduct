@@ -83,7 +83,6 @@ impl<B: 'static> HttpEngineCore<B> {
         mut conn: PooledConnection<B>,
         spawn: F,
         sleep: S,
-        head_request: bool,
     ) where
         R: crate::runtime::RuntimePoll,
         F: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>),
@@ -99,10 +98,7 @@ impl<B: 'static> HttpEngineCore<B> {
         }
         self.fire_connection_metrics(&conn, false);
 
-        // HEAD responses have no body; hyper's H1 state machine may still
-        // report not-ready because it sees Content-Length, but there are no
-        // bytes to drain. Immediately return the connection to the pool.
-        if !conn.is_h1() || conn.is_ready() || head_request {
+        if !conn.is_h1() || conn.is_ready() {
             self.pool.checkin(key, conn);
             return;
         }
@@ -125,7 +121,6 @@ impl<B: 'static> HttpEngineCore<B> {
         mut conn: PooledConnection<B>,
         spawn: F,
         sleep: S,
-        head_request: bool,
     ) where
         R: crate::runtime::RuntimeLocal,
         F: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>),
@@ -141,7 +136,7 @@ impl<B: 'static> HttpEngineCore<B> {
         }
         self.fire_connection_metrics(&conn, false);
 
-        if !conn.is_h1() || conn.is_ready() || head_request {
+        if !conn.is_h1() || conn.is_ready() {
             self.pool.checkin(key, conn);
             return;
         }

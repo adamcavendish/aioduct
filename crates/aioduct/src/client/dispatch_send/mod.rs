@@ -181,7 +181,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             conn,
                             R::spawn_send,
                             R::sleep(self.core.pool.idle_timeout()),
-                            req_method == http::Method::HEAD,
                         );
                     }
                     return Ok(resp);
@@ -325,7 +324,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 conn,
                                 R::spawn_send,
                                 R::sleep(self.core.pool.idle_timeout()),
-                                req_method == http::Method::HEAD,
                             );
                         }
                         return Ok(resp);
@@ -521,7 +519,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         pooled,
                         R::spawn_send,
                         R::sleep(self.core.pool.idle_timeout()),
-                        req_method == http::Method::HEAD,
                     );
                 }
                 return Ok(resp);
@@ -617,7 +614,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                     conn,
                                     R::spawn_send,
                                     R::sleep(self.core.pool.idle_timeout()),
-                                    req_method == http::Method::HEAD,
                                 );
                             }
                             return Ok(resp);
@@ -687,6 +683,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let unix_socket: Option<&std::path::PathBuf> = None;
 
         let mut timing = TimingCollector::default();
+
+        if !self.core.pool.can_connect(&pool_key) {
+            return Err(Error::Other(
+                "max active connections per host reached".into(),
+            ));
+        }
 
         let mut pooled = if let Some(unix_path) = unix_socket {
             let _ = &proxy; // suppress unused warning when unix_socket is set
@@ -1069,7 +1071,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 pooled,
                 R::spawn_send,
                 R::sleep(self.core.pool.idle_timeout()),
-                req_method == http::Method::HEAD,
             );
         }
 

@@ -203,7 +203,6 @@ impl<B> PooledConnection<B> {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn active_multiplex_streams(&self) -> Option<usize> {
         self.active_streams
             .as_ref()
@@ -231,7 +230,6 @@ impl<B: 'static> PooledConnection<B> {
     ///
     /// Returns `None` for H1 connections (no multiplexing).
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn clone_for_multiplex(&self) -> Option<Self> {
         self.clone_for_multiplex_with_limit(None)
     }

@@ -118,9 +118,8 @@ async fn head_request_extra_bytes_not_consumed_as_body() {
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
+        // ── Connection 1: handles HEAD ──────────────────────────────────
         let (mut stream, _) = listener.accept().await.unwrap();
-
-        // ── Request 1 (HEAD) ────────────────────────────────────────────
         let mut buf = vec![0u8; 4096];
         let n = stream.read(&mut buf).await.unwrap();
         assert!(n > 0);
@@ -133,7 +132,13 @@ async fn head_request_extra_bytes_not_consumed_as_body() {
         response1.extend(std::iter::repeat_n(EXTRA_BYTE, EXTRA_PADDING));
         stream.write_all(&response1).await.unwrap();
 
-        // ── Request 2 (GET) ─────────────────────────────────────────────
+        // The client detects the protocol violation (body bytes on HEAD)
+        // and closes *this* connection.  The HEAD connection is evicted
+        // from the pool, so the GET that follows opens a new connection.
+        drop(stream);
+
+        // ── Connection 2: handles GET ───────────────────────────────────
+        let (mut stream, _) = listener.accept().await.unwrap();
         let n = stream.read(&mut buf).await.unwrap();
         if n == 0 {
             return;
@@ -159,25 +164,20 @@ async fn head_request_extra_bytes_not_consumed_as_body() {
     let resp1 = client.head(&url).unwrap().send().await.unwrap();
     assert_eq!(resp1.status(), 200);
 
-    // HEAD returns to pool immediately (no body to drain).
+    // HEAD connection is evicted from the pool because the server sent
+    // body bytes (a protocol violation). The GET opens a fresh connection.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Second request: GET on the same pooled connection.
-    let result = client.get(&url).unwrap().send().await;
-    match result {
-        Ok(resp2) => {
-            assert_eq!(resp2.status(), 200);
-            let body2 = resp2.text().await.unwrap();
-            assert_eq!(
-                body2, "safe",
-                "second GET body must be 'safe', not the {} leftover 'X' bytes from the HEAD response",
-                EXTRA_PADDING,
-            );
-        }
-        Err(_) => {
-            // Acceptable — connection may have been evicted.
-        }
-    }
+    // Second request: GET on a fresh connection.
+    // The HEAD connection was evicted, so this is a new clean connection.
+    let resp2 = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp2.status(), 200);
+    let body2 = resp2.text().await.unwrap();
+    assert_eq!(
+        body2, "safe",
+        "second GET body must be 'safe', not the {} leftover 'X' bytes from the HEAD response",
+        EXTRA_PADDING,
+    );
 }
 
 /// Test 3: dual_content_length_evicts_connection

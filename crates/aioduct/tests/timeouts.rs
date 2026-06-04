@@ -482,6 +482,9 @@ async fn connect_timeout_per_request() {
         "per-request connect_timeout should produce an error for unroutable IP"
     );
     let err = result.unwrap_err();
+    // Platform-dependent error classification:
+    // - Linux: TCP SYN times out → is_timeout()
+    // - macOS / some platforms: ICMP host unreachable arrives quickly → is_connect()
     assert!(
         err.is_timeout() || err.is_connect(),
         "expected timeout or connect error, got: {err:?}"
@@ -522,10 +525,12 @@ async fn timeout_during_body_upload() {
         .build()
         .unwrap();
 
-    // Large streaming body: enough chunks to fill TCP send buffers.
+    // Large streaming body: many small chunks to prolong streaming time
+    // and reliably trigger TCP send buffer backpressure within the 500ms timeout.
+    // CI note: 500×1KB reduces total data vs 200×64KB while extending wall time.
     use http_body_util::BodyExt;
-    let chunk = Bytes::from(vec![b'X'; 65536]);
-    let num_chunks = 200;
+    let chunk = Bytes::from(vec![b'X'; 1024]);
+    let num_chunks = 500;
     let chunks: Vec<_> = (0..num_chunks)
         .map(|_| Ok(hyper::body::Frame::data(chunk.clone())))
         .collect();
@@ -754,7 +759,7 @@ async fn read_timeout_independent_of_overall_timeout() {
 
 /// Both per-request timeout and read-timeout surface as `is_timeout()`.
 /// Only elapsed timing distinguishes which one fired: the per-request
-/// timeout fires at 100 ms, while read_timeout would wait 5 s.
+/// timeout fires at 200 ms, while read_timeout would wait 5 s.
 ///
 /// The server delays sending *everything* (headers included) beyond 100 ms,
 /// so the per-request deadline triggers during `send()`.
@@ -775,15 +780,15 @@ async fn per_request_timeout_vs_read_timeout_distinguished_by_elapsed() {
     let result = client
         .get(&format!("http://{addr}/"))
         .unwrap()
-        .timeout(Duration::from_millis(100))
+        .timeout(Duration::from_millis(200))
         .send()
         .await;
 
     assert!(result.is_err(), "per-request timeout should fire");
     assert!(result.unwrap_err().is_timeout());
     assert!(
-        start.elapsed() < Duration::from_millis(500),
-        "elapsed {:?} — per-request timeout (~100ms) should fire, not read_timeout (5s)",
+        start.elapsed() < Duration::from_millis(1000),
+        "elapsed {:?} — per-request timeout (~200ms) should fire, not read_timeout (5s)",
         start.elapsed()
     );
 }

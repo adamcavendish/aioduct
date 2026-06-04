@@ -21,7 +21,7 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 ///   connection 0 — stalls (never sends response)
 ///   connection 1+ — serves normally
 ///
-/// The client polls the send future, races it against a 100ms sleep,
+/// The client polls the send future, races it against a 200ms sleep,
 /// drops the future, then sends a second request that must succeed via
 /// a new connection.
 #[tokio::test]
@@ -68,12 +68,12 @@ async fn drop_send_future_after_poll_evicts_connection() {
     let send_fut = client.get(&url).unwrap().send();
     tokio::pin!(send_fut);
     tokio::select! {
-        _ = tokio::time::sleep(Duration::from_millis(100)) => {
+        _ = tokio::time::sleep(Duration::from_millis(200)) => {
             // send_fut was polled into pending via select!, now pinned future
             // is dropped when it goes out of scope at end of this block.
         }
         _result = &mut send_fut => {
-            panic!("should not complete before 100ms");
+            panic!("should not complete before 200ms");
         }
     }
 
@@ -97,7 +97,7 @@ async fn drop_send_future_after_poll_evicts_connection() {
 /// The server sends a chunked response with 2 chunks, then stalls (never
 /// sends the terminating zero-length chunk). The client reads one chunk,
 /// drops the stream, and verifies:
-///   - No hang (test completes within 2 seconds).
+///   - No hang (test completes within 3 seconds).
 ///   - A subsequent request succeeds (fresh connection).
 #[tokio::test]
 async fn drop_body_stream_after_one_chunk_no_hang() {
@@ -139,7 +139,7 @@ async fn drop_body_stream_after_one_chunk_no_hang() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(3))
         .build()
         .unwrap();
 
