@@ -10,9 +10,9 @@ use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 use tokio::io::AsyncWriteExt;
 
-fn client_with_timeout() -> HttpEngineSend<TokioRuntime, TcpConnector> {
+fn client_with_read_timeout() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(3))
         .read_timeout(Duration::from_secs(2))
         .build()
         .unwrap()
@@ -48,7 +48,7 @@ async fn chunked_takes_priority_over_content_length() {
     })
     .await;
 
-    let client = client_with_timeout();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -79,20 +79,21 @@ async fn chunked_takes_priority_over_content_length() {
 /// truncated 100 bytes — it must produce a timeout or connect error.
 #[tokio::test]
 async fn oversized_content_length_early_close_errors() {
-    // Use raw_streaming_server to control the write+close sequence:
-    // send headers claiming 1 MB, send 100 bytes of 'X', then close.
+    // Use raw_streaming_server to send headers claiming 1 MB + 100 bytes of
+    // body, then stall (never send the remaining bytes). The stall forces
+    // the client's read_timeout to fire, producing a proper timeout error.
     let addr = aioduct_test_server::raw::raw_streaming_server(|_req, mut stream| async move {
         let headers = b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n";
         let _ = stream.write_all(headers).await;
-        let body = vec![b'X'; 100];
-        let _ = stream.write_all(&body).await;
+        let body_bytes = vec![b'X'; 100];
+        let _ = stream.write_all(&body_bytes).await;
         let _ = stream.flush().await;
-        // Close the connection — the server is done.
-        let _ = stream.shutdown().await;
+        // Stall — never send the remaining ~1 MB, forcing the read timeout.
+        tokio::time::sleep(Duration::from_secs(3600)).await;
     })
     .await;
 
-    let client = client_with_timeout();
+    let client = client_with_read_timeout();
     let result = client
         .get(&format!("http://{addr}/"))
         .unwrap()
@@ -102,18 +103,12 @@ async fn oversized_content_length_early_close_errors() {
 
     match result {
         Err(res_err) => {
-            // Error at send() level is acceptable — but due to early close
-            // producing EOF rather than a timeout, the error may be a Hyper
-            // incomplete-body error. We still verify it does not hang and
-            // does not return Ok with truncated data.
             assert!(
-                res_err.is_timeout() || res_err.is_connect() || res_err.to_string().contains("od"),
-                "oversized CL with early close must surface an error, got Ok unexpectedly"
+                res_err.is_timeout() || res_err.is_connect(),
+                "oversized CL with early close must produce timeout or connect error, got: {res_err:?}"
             );
         }
         Ok(resp) => {
-            // Headers were received, but reading the body must fail because
-            // the 100 bytes payload is far less than the declared 1 MB.
             let body_result = resp.text().await;
             assert!(
                 body_result.is_err(),
