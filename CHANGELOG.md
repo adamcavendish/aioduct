@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.5] - 2026-06-04
+
+### Added
+- DNS-based service discovery: `SystemResolver`, `FallbackResolver`, `StaticResolver` made public, `resolve_all()` on `HttpEngineSend`/`HttpEngineLocal`, `force_addr()` on request builders
+- `is_dns()` error classifier on `Error` and `SendError`
+- `is_closed()` on `SendError`
+- `max_decoded_size()` builder method to prevent gzip decompression bombs
+- `pool_max_active_per_host()` wired into dispatch layer
+- Outbound request smuggling defense: framing headers stripped before send
+- HEAD response body drain before pool checkin
+- WASM/WASI runtime parity documentation
+- 130+ tests covering all 16 AIO-REQWEST audit areas
+
+### Fixed
+- Gzip decompression bomb: no size cap existed, `bytes()` allocated unbounded memory
+- HEAD connections with illegal body bytes contaminating next pooled request
+- `Error::Hyper(IncompleteBody)` not classified by `is_timeout()` or `is_connect()`
+- Pool connections returned before body drain on HEAD/204/304 responses
+
+### Changed
+- Framing-header stripping moved after middleware to prevent re-injection
+- Pool cross-runtime parity: smol and compio max_lifetime/idle_timeout tests
+- TLS tests expanded: custom CA, version rejection, mTLS, hostname verification
+
 ## [0.2.0-alpha.4] - 2026-05-28
 
 ### Fixed
