@@ -14,6 +14,8 @@ pub(crate) struct AcceptEncoding {
     pub zstd: bool,
     #[cfg(feature = "deflate")]
     pub deflate: bool,
+    /// Maximum decompressed body size in bytes. `None` means unlimited.
+    pub max_decoded_size: Option<u64>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -28,6 +30,7 @@ impl Default for AcceptEncoding {
             zstd: true,
             #[cfg(feature = "deflate")]
             deflate: true,
+            max_decoded_size: None,
         }
     }
 }
@@ -43,6 +46,7 @@ impl AcceptEncoding {
             zstd: false,
             #[cfg(feature = "deflate")]
             deflate: false,
+            max_decoded_size: None,
         }
     }
 
@@ -250,6 +254,8 @@ mod imp {
         decoder: Option<StreamDecoder>,
         finished: bool,
         has_data: bool,
+        total_decoded: u64,
+        max_decoded_size: Option<u64>,
     }
 
     impl http_body::Body for DecompressBody {
@@ -283,6 +289,18 @@ mod imp {
                                     if output.is_empty() {
                                         continue;
                                     }
+                                    self.total_decoded += output.len() as u64;
+                                    if let Some(max) = self.max_decoded_size
+                                        && self.total_decoded > max
+                                    {
+                                        self.finished = true;
+                                        return Poll::Ready(Some(Err(Error::Other(
+                                            format!(
+                                                "decompressed body exceeds max size of {max} bytes"
+                                            )
+                                            .into(),
+                                        ))));
+                                    }
                                     return Poll::Ready(Some(Ok(hyper::body::Frame::data(
                                         Bytes::from(output),
                                     ))));
@@ -304,10 +322,26 @@ mod imp {
                                 return Poll::Ready(None);
                             }
                             return match decoder.finish() {
-                                Ok(remaining) if !remaining.is_empty() => Poll::Ready(Some(Ok(
-                                    hyper::body::Frame::data(Bytes::from(remaining)),
-                                ))),
-                                Ok(_) => Poll::Ready(None),
+                                Ok(remaining) => {
+                                    if !remaining.is_empty() {
+                                        self.total_decoded += remaining.len() as u64;
+                                        if let Some(max) = self.max_decoded_size
+                                            && self.total_decoded > max
+                                        {
+                                            return Poll::Ready(Some(Err(Error::Other(
+                                                format!(
+                                                    "decompressed body exceeds max size of {max} bytes"
+                                                )
+                                                .into(),
+                                            ))));
+                                        }
+                                        Poll::Ready(Some(Ok(hyper::body::Frame::data(
+                                            Bytes::from(remaining),
+                                        ))))
+                                    } else {
+                                        Poll::Ready(None)
+                                    }
+                                }
                                 Err(e) => Poll::Ready(Some(Err(e))),
                             };
                         } else {
@@ -377,6 +411,8 @@ mod imp {
                         decoder: Some(decoder),
                         finished: false,
                         has_data: false,
+                        total_decoded: 0,
+                        max_decoded_size: accept.max_decoded_size,
                     };
                     current_body = decompress.boxed_unsync();
                 }
