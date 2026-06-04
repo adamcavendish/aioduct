@@ -10,7 +10,7 @@ use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
-use aioduct_test_server::h1::{echo_headers, h1_server_with};
+use aioduct_test_server::h1::h1_server_with;
 
 /// Test 1: user-supplied Transfer-Encoding header is stripped.
 ///
@@ -120,12 +120,38 @@ async fn duplicate_content_length_request_sent_correctly() {
 /// the server. The key assertion: it must not silently truncate the header.
 #[tokio::test]
 async fn oversized_header_value_rejected() {
-    let (addr, _counter) = h1_server_with(echo_headers).await;
+    let large_value = "X".repeat(100 * 1024);
+
+    // We use a custom handler that echoes back the received x-large-header
+    // value so we can verify it wasn't truncated.
+    let large_value_clone = large_value.clone();
+    let (addr, _counter) = h1_server_with(move |req| {
+        let large_value = large_value_clone.clone();
+        async move {
+            // Check whether the server received the large header
+            let received = req
+                .headers()
+                .get("x-large-header")
+                .map(|v| v.as_bytes().to_vec());
+
+            match received {
+                Some(received_bytes) => {
+                    let received_len = received_bytes.len();
+                    let matches = received_bytes == large_value.as_bytes();
+                    let body = format!("received=true len={received_len} matches={matches}");
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
+                }
+                None => {
+                    // The header was not received at all — it was silently
+                    // dropped.
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("received=false"))))
+                }
+            }
+        }
+    })
+    .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
-
-    // Build a large header value (100KB of 'X')
-    let large_value = "X".repeat(100 * 1024);
 
     // Try to set the large header
     let result = client
@@ -140,17 +166,14 @@ async fn oversized_header_value_rejected() {
             // truncated).
             let resp = builder.send().await.unwrap();
             let body = resp.text().await.unwrap();
-            // Verify the server received the full header value
-            let expected_header_line = format!("x-large-header: {large_value}");
+            // The header must either be received in full or rejected at
+            // build time. Silently dropping it is a bug.
             assert!(
-                body.contains(&expected_header_line),
-                "oversized header was truncated or missing from echoed headers.\n\
-                 expected header line length: {}\n\
-                 actual body length: {}\n\
-                 body (first 500 chars): {}",
-                expected_header_line.len(),
-                body.len(),
-                &body[..body.len().min(500)],
+                body.contains("received=true") && body.contains("matches=true"),
+                "oversized header was silently dropped or truncated.\n\
+                 response body: {body}\n\
+                 expected header len: {}",
+                large_value.len(),
             );
         }
         Err(e) => {
