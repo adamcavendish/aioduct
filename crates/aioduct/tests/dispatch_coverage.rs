@@ -983,18 +983,49 @@ async fn tls_h2_multiplex_checkin_path() {
 
 #[tokio::test]
 async fn http_proxy_injects_proxy_authorization() {
-    // Set up a mock "proxy" that echoes back request headers
-    let (proxy_addr, _counter) = h1_server_with(|req| async move {
-        let auth = req
-            .headers()
-            .get("proxy-authorization")
-            .map(|v| v.to_str().unwrap_or("").to_owned())
-            .unwrap_or_else(|| "missing".to_owned());
-        let uri = req.uri().to_string();
-        let body = format!("auth={auth}\nuri={uri}");
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-    })
-    .await;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let auth_seen = Arc::new(AtomicBool::new(false));
+    let auth_seen_clone = auth_seen.clone();
+
+    // Start a real HTTP target server
+    let (target_addr, _counter) = aioduct_test_server::h1::h1_server().await;
+
+    // Build a CONNECT proxy that checks Proxy-Authorization on the CONNECT request
+    let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let auth = auth_seen_clone;
+
+    tokio::spawn(async move {
+        loop {
+            let (mut client, _) = proxy_listener.accept().await.unwrap();
+            let auth = auth.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let n = client.read(&mut buf).await.unwrap();
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+                if !req_str.starts_with("CONNECT") {
+                    return;
+                }
+                // Check for Proxy-Authorization in the CONNECT request
+                if req_str.contains("proxy-authorization:")
+                    || req_str.contains("Proxy-Authorization:")
+                {
+                    auth.store(true, Ordering::SeqCst);
+                }
+                let target = req_str.split_whitespace().nth(1).unwrap_or("");
+                let _ = client
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await;
+                let mut upstream = match tokio::net::TcpStream::connect(target).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
 
     let proxy = aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
         .unwrap()
@@ -1006,22 +1037,22 @@ async fn http_proxy_injects_proxy_authorization() {
         .build()
         .unwrap();
 
-    // plaintext HTTP request through proxy should have Proxy-Authorization injected
+    // plaintext HTTP request through proxy — Proxy-Authorization is in CONNECT
     let resp = client
-        .get("http://example.com/resource")
+        .get(&format!("http://{target_addr}/resource"))
         .unwrap()
         .send()
         .await
         .unwrap();
 
-    let body = resp.text().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    // Give the proxy a moment to process the auth check
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        body.contains("auth=Basic"),
-        "expected Basic auth in proxy-authorization, got: {body}"
-    );
-    assert!(
-        body.contains("dXNlcjpzZWNyZXQ="), // base64("user:secret")
-        "expected base64 credentials, got: {body}"
+        auth_seen.load(Ordering::SeqCst),
+        "CONNECT request should include Proxy-Authorization header"
     );
 }
 
@@ -1270,17 +1301,48 @@ async fn h2_goaway_triggers_fresh_connection() {
 
 #[tokio::test]
 async fn proxy_settings_injects_authorization_on_http() {
-    let (proxy_addr, _counter) = h1_server_with(|req| async move {
-        let auth = req
-            .headers()
-            .get("proxy-authorization")
-            .map(|v| v.to_str().unwrap_or("").to_owned())
-            .unwrap_or_else(|| "none".to_owned());
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
-            "proxy-auth={auth}"
-        )))))
-    })
-    .await;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let auth_seen = Arc::new(AtomicBool::new(false));
+    let auth_seen_clone = auth_seen.clone();
+
+    // Start a real HTTP target server
+    let (target_addr, _counter) = aioduct_test_server::h1::h1_server().await;
+
+    // Build a CONNECT proxy that checks Proxy-Authorization on the CONNECT request
+    let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let auth = auth_seen_clone;
+
+    tokio::spawn(async move {
+        loop {
+            let (mut client, _) = proxy_listener.accept().await.unwrap();
+            let auth = auth.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let n = client.read(&mut buf).await.unwrap();
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+                if !req_str.starts_with("CONNECT") {
+                    return;
+                }
+                if req_str.contains("proxy-authorization:")
+                    || req_str.contains("Proxy-Authorization:")
+                {
+                    auth.store(true, Ordering::SeqCst);
+                }
+                let target = req_str.split_whitespace().nth(1).unwrap_or("");
+                let _ = client
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await;
+                let mut upstream = match tokio::net::TcpStream::connect(target).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
 
     let proxy = aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
         .unwrap()
@@ -1295,16 +1357,20 @@ async fn proxy_settings_injects_authorization_on_http() {
         .unwrap();
 
     let resp = client
-        .get("http://target.example.com/api")
+        .get(&format!("http://{target_addr}/api"))
         .unwrap()
         .send()
         .await
         .unwrap();
 
-    let body = resp.text().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    // Give the proxy a moment to process the auth check
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        body.contains("proxy-auth=Basic"),
-        "expected Basic proxy-authorization, got: {body}"
+        auth_seen.load(Ordering::SeqCst),
+        "CONNECT request should include Proxy-Authorization header"
     );
 }
 

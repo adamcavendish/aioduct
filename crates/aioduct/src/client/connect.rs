@@ -131,7 +131,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     self.connect_tunnel(tls_stream, proxy, target_authority, connect_timeout)
                         .await
                 } else {
-                    self.connect_plaintext(tls_stream).await
+                    // HTTPS proxy for HTTP target: CONNECT through TLS pipe, then H1.
+                    // TODO: honor self.core.http2_prior_knowledge for h2c through proxy.
+                    // The CONNECT tunnel gives us a raw TCP pipe to the target, so h2c
+                    // prior-knowledge could work — we just need to call connect_h2()
+                    // instead of connect_h1() when configured.
+                    let port = target_authority.port_u16().unwrap_or(80);
+                    let target = format!("{}:{port}", target_authority.host());
+                    let tunnel_stream = do_connect_handshake(tls_stream, proxy, &target).await?;
+                    self.connect_h1(tunnel_stream).await
                 }
             }
             #[cfg(not(feature = "rustls"))]
@@ -144,7 +152,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             self.connect_tunnel(tcp_stream, proxy, target_authority, connect_timeout)
                 .await
         } else {
-            self.connect_plaintext(tcp_stream).await
+            // HTTP proxy for HTTP target: CONNECT to create a raw pipe, then H1.
+            // TODO: honor self.core.http2_prior_knowledge for h2c through proxy.
+            let port = target_authority.port_u16().unwrap_or(80);
+            let target = format!("{}:{port}", target_authority.host());
+            let tunnel_stream = do_connect_handshake(tcp_stream, proxy, &target).await?;
+            self.connect_h1(tunnel_stream).await
         }
     }
 
