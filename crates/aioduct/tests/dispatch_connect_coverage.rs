@@ -461,12 +461,35 @@ async fn connect_tunnel_succeeds_through_proxy() {
 
 #[tokio::test]
 async fn proxy_connection_with_keepalive() {
-    let (proxy_addr, _counter) = h1_server_with(|req| async move {
-        let uri = req.uri().to_string();
-        let body = format!("proxied: {uri}");
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-    })
-    .await;
+    // Start a real HTTP target server
+    let (target_addr, _counter) = aioduct_test_server::h1::h1_server().await;
+
+    // Build a CONNECT proxy that relays bytes to the target
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut client, _) = proxy_listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let n = client.read(&mut buf).await.unwrap();
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+                if !req_str.starts_with("CONNECT") {
+                    return;
+                }
+                let target = req_str.split_whitespace().nth(1).unwrap_or("");
+                let _ = client
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await;
+                let mut upstream = match tokio::net::TcpStream::connect(target).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
@@ -478,7 +501,7 @@ async fn proxy_connection_with_keepalive() {
         .unwrap();
 
     let resp = client
-        .get("http://example.com/keepalive-test")
+        .get(&format!("http://{target_addr}/keepalive-test"))
         .unwrap()
         .send()
         .await
@@ -487,7 +510,7 @@ async fn proxy_connection_with_keepalive() {
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains("proxied:"),
+        body.contains("hello aioduct"),
         "request through proxy with keepalive should succeed, got: {body}"
     );
 }
@@ -499,12 +522,35 @@ async fn proxy_connection_with_keepalive() {
 
 #[tokio::test]
 async fn proxy_connection_with_fast_open() {
-    let (proxy_addr, _counter) = h1_server_with(|req| async move {
-        let uri = req.uri().to_string();
-        let body = format!("proxied: {uri}");
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-    })
-    .await;
+    // Start a real HTTP target server
+    let (target_addr, _counter) = aioduct_test_server::h1::h1_server().await;
+
+    // Build a CONNECT proxy that relays bytes to the target
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut client, _) = proxy_listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let n = client.read(&mut buf).await.unwrap();
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+                if !req_str.starts_with("CONNECT") {
+                    return;
+                }
+                let target = req_str.split_whitespace().nth(1).unwrap_or("");
+                let _ = client
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await;
+                let mut upstream = match tokio::net::TcpStream::connect(target).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
@@ -514,7 +560,7 @@ async fn proxy_connection_with_fast_open() {
         .unwrap();
 
     let resp = client
-        .get("http://example.com/fast-open-test")
+        .get(&format!("http://{target_addr}/fast-open-test"))
         .unwrap()
         .send()
         .await
@@ -523,7 +569,7 @@ async fn proxy_connection_with_fast_open() {
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains("proxied:"),
+        body.contains("hello aioduct"),
         "request through proxy with fast_open should succeed, got: {body}"
     );
 }

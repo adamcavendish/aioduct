@@ -132,7 +132,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     self.connect_tunnel_local(tls_stream, proxy, target_authority, connect_timeout)
                         .await
                 } else {
-                    self.connect_plaintext_local(tls_stream).await
+                    // HTTPS proxy for HTTP target: CONNECT through TLS pipe, then H1.
+                    // TODO: honor self.core.http2_prior_knowledge for h2c through proxy.
+                    let port = target_authority.port_u16().unwrap_or(80);
+                    let target = format!("{}:{port}", target_authority.host());
+                    let tunnel_stream =
+                        do_connect_handshake_local(tls_stream, proxy, &target).await?;
+                    self.connect_h1_local(tunnel_stream).await
                 }
             }
             #[cfg(not(all(feature = "rustls", feature = "compio")))]
@@ -145,7 +151,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             self.connect_tunnel_local(tcp_stream, proxy, target_authority, connect_timeout)
                 .await
         } else {
-            self.connect_plaintext_local(tcp_stream).await
+            // HTTP proxy for HTTP target: CONNECT to create a raw pipe, then H1.
+            // TODO: honor self.core.http2_prior_knowledge for h2c through proxy.
+            let port = target_authority.port_u16().unwrap_or(80);
+            let target = format!("{}:{port}", target_authority.host());
+            let tunnel_stream = do_connect_handshake_local(tcp_stream, proxy, &target).await?;
+            self.connect_h1_local(tunnel_stream).await
         }
     }
 

@@ -235,23 +235,52 @@ runtime_test! {
     async fn test_proxy_auth_injected_for_plain_http() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
 
         let auth_seen = Arc::new(AtomicBool::new(false));
         let auth_seen_clone = auth_seen.clone();
 
-        let proxy_addr = spawn_server_with(move |req| {
-            let auth_seen = auth_seen_clone.clone();
-            async move {
-                if let Some(auth) = req.headers().get("proxy-authorization")
-                    && auth.to_str().unwrap_or("") == "Basic dXNlcjpwYXNz"
-                {
-                    auth_seen.store(true, Ordering::SeqCst);
+        // Start a real HTTP target server (runs on background tokio thread via spawn_h1_server)
+        let target_addr = spawn_h1_server();
+
+        // Build a CONNECT proxy on a background tokio thread
+        let (tx, rx) = mpsc::channel();
+        let auth = auth_seen_clone;
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                tx.send(listener.local_addr().unwrap()).unwrap();
+                loop {
+                    let (mut client, _) = listener.accept().await.unwrap();
+                    let auth = auth.clone();
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 4096];
+                        let n = client.read(&mut buf).await.unwrap();
+                        let req_str = String::from_utf8_lossy(&buf[..n]);
+                        if !req_str.starts_with("CONNECT") {
+                            return;
+                        }
+                        if req_str.contains("proxy-authorization:")
+                            || req_str.contains("Proxy-Authorization:")
+                        {
+                            auth.store(true, Ordering::SeqCst);
+                        }
+                        let target = req_str.split_whitespace().nth(1).unwrap_or("");
+                        let _ = client
+                            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                            .await;
+                        let mut upstream = match tokio::net::TcpStream::connect(target).await {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        };
+                        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                    });
                 }
-                Ok::<_, std::convert::Infallible>(hyper::Response::new(
-                    http_body_util::Full::new(bytes::Bytes::from("proxied")),
-                ))
-            }
+            });
         });
+        let proxy_addr = rx.recv().unwrap();
 
         let client = new_client_builder()
             .proxy(
@@ -262,7 +291,7 @@ runtime_test! {
             .build().unwrap();
 
         let resp = client
-            .get("http://example.com/test")
+            .get(&format!("http://{target_addr}/test"))
             .unwrap()
             .send()
             .await
@@ -271,7 +300,7 @@ runtime_test! {
         assert_eq!(resp.status(), http::StatusCode::OK);
         assert!(
             auth_seen.load(Ordering::SeqCst),
-            "proxy should receive Proxy-Authorization header for plain HTTP"
+            "CONNECT request should include Proxy-Authorization header"
         );
     }
 

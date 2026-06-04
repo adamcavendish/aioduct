@@ -804,18 +804,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             self.core.pool.unmark_connecting_h2(&pool_key);
         }
 
-        if let Some(ref proxy) = proxy
-            && !is_https
-            && proxy.scheme == crate::proxy::ProxyScheme::Http
-            && let Some(auth_value) = proxy.connect_header("")
-        {
-            request.headers_mut().insert(
-                http::header::PROXY_AUTHORIZATION,
-                http::header::HeaderValue::from_str(&auth_value)
-                    .unwrap_or_else(|_| http::header::HeaderValue::from_static("")),
-            );
-        }
-
         let req_method = request.method().clone();
         let transfer_start = Instant::now();
         self.core.notify(
