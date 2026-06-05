@@ -132,13 +132,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     self.connect_tunnel_local(tls_stream, proxy, target_authority, connect_timeout)
                         .await
                 } else {
-                    // HTTPS proxy for HTTP target: CONNECT through TLS pipe, then H1.
-                    // TODO: honor self.core.http2_prior_knowledge for h2c through proxy.
+                    // HTTPS proxy for HTTP target: CONNECT through TLS pipe.
                     let port = target_authority.port_u16().unwrap_or(80);
                     let target = format!("{}:{port}", target_authority.host());
                     let tunnel_stream =
                         do_connect_handshake_local(tls_stream, proxy, &target).await?;
-                    self.connect_h1_local(tunnel_stream).await
+                    if self.core.http2_prior_knowledge {
+                        self.connect_h2_prior_knowledge_local(tunnel_stream).await
+                    } else {
+                        self.connect_h1_local(tunnel_stream).await
+                    }
                 }
             }
             #[cfg(not(all(feature = "rustls", feature = "compio")))]
@@ -151,12 +154,15 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             self.connect_tunnel_local(tcp_stream, proxy, target_authority, connect_timeout)
                 .await
         } else {
-            // HTTP proxy for HTTP target: CONNECT to create a raw pipe, then H1.
-            // TODO: honor self.core.http2_prior_knowledge for h2c through proxy.
+            // HTTP proxy for HTTP target: CONNECT to create a raw pipe.
             let port = target_authority.port_u16().unwrap_or(80);
             let target = format!("{}:{port}", target_authority.host());
             let tunnel_stream = do_connect_handshake_local(tcp_stream, proxy, &target).await?;
-            self.connect_h1_local(tunnel_stream).await
+            if self.core.http2_prior_knowledge {
+                self.connect_h2_prior_knowledge_local(tunnel_stream).await
+            } else {
+                self.connect_h1_local(tunnel_stream).await
+            }
         }
     }
 
@@ -791,6 +797,13 @@ where
         written += n;
     }
 
+    // Flush after write: completion-based runtimes (compio) may buffer
+    // writes internally; poll_flush ensures bytes reach the proxy before
+    // we start reading the CONNECT response.
+    std::future::poll_fn(|cx| Pin::new(&mut stream).poll_flush(cx))
+        .await
+        .map_err(Error::Io)?;
+
     let mut resp_buf = Vec::with_capacity(256);
     loop {
         let mut one = [0u8; 1];
@@ -1172,6 +1185,150 @@ mod compio_tests {
 
 #[cfg(all(test, feature = "tokio"))]
 mod tokio_tests {
+    use std::cell::Cell;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use super::*;
+
+    /// Mock stream that records whether poll_flush was called before poll_read.
+    struct FlushTrackingStream {
+        response: Vec<u8>,
+        read_pos: usize,
+        flushed: Cell<bool>,
+    }
+
+    impl FlushTrackingStream {
+        fn new(response: &[u8]) -> Self {
+            Self {
+                response: response.to_vec(),
+                read_pos: 0,
+                flushed: Cell::new(false),
+            }
+        }
+        fn was_flushed(&self) -> bool {
+            self.flushed.get()
+        }
+    }
+
+    impl hyper::rt::Write for FlushTrackingStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.flushed.set(true);
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hyper::rt::Read for FlushTrackingStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            mut buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let this = self.get_mut();
+            // Assert flush was called before any read
+            assert!(
+                this.flushed.get(),
+                "poll_flush must be called before poll_read"
+            );
+            if this.read_pos < this.response.len() {
+                let remaining = &this.response[this.read_pos..];
+                let to_copy = remaining.len().min(buf.remaining());
+                let dest = unsafe { buf.as_mut() };
+                // Manually copy from initialized bytes into MaybeUninit buffer
+                for (i, &byte) in remaining[..to_copy].iter().enumerate() {
+                    dest[i].write(byte);
+                }
+                unsafe { buf.advance(to_copy) };
+                this.read_pos += to_copy;
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn connect_handshake_flushes_before_read() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let proxy = crate::ProxyConfig::http("http://proxy:8080").unwrap();
+            let response = b"HTTP/1.1 200 Connection Established\r\n\r\n";
+            let stream = FlushTrackingStream::new(response);
+
+            let result = do_connect_handshake_local(stream, &proxy, "example.com:80").await;
+            assert!(
+                result.is_ok(),
+                "handshake should succeed: {:?}",
+                result.err()
+            );
+            assert!(
+                result.unwrap().was_flushed(),
+                "stream should have been flushed"
+            );
+        });
+    }
+
+    #[test]
+    fn connect_handshake_flush_failure_propagates() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let proxy = crate::ProxyConfig::http("http://proxy:8080").unwrap();
+
+            // Stream that fails on flush
+            #[derive(Debug)]
+            struct FlushFailingStream;
+            impl hyper::rt::Write for FlushFailingStream {
+                fn poll_write(
+                    self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                    buf: &[u8],
+                ) -> Poll<std::io::Result<usize>> {
+                    Poll::Ready(Ok(buf.len()))
+                }
+                fn poll_flush(
+                    self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                ) -> Poll<std::io::Result<()>> {
+                    Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "flush failed",
+                    )))
+                }
+                fn poll_shutdown(
+                    self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                ) -> Poll<std::io::Result<()>> {
+                    Poll::Ready(Ok(()))
+                }
+            }
+            impl hyper::rt::Read for FlushFailingStream {
+                fn poll_read(
+                    self: Pin<&mut Self>,
+                    _cx: &mut Context<'_>,
+                    _buf: hyper::rt::ReadBufCursor<'_>,
+                ) -> Poll<std::io::Result<()>> {
+                    Poll::Ready(Ok(()))
+                }
+            }
+
+            let result =
+                do_connect_handshake_local(FlushFailingStream, &proxy, "example.com:80").await;
+            assert!(result.is_err());
+            assert!(
+                format!("{}", result.unwrap_err()).contains("flush"),
+                "error should mention flush failure"
+            );
+        });
+    }
+
     #[test]
     fn connect_local_uses_same_parse_connect_status() {
         // connect_local.rs uses super::connect::parse_connect_status
