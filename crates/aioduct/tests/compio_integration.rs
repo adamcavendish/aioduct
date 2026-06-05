@@ -3152,6 +3152,9 @@ fn start_socks4_proxy_tokio() -> std::net::SocketAddr {
 /// For HTTPS requests, the client sends CONNECT; for plain HTTP, the proxy
 /// just forwards the request.
 fn start_http_proxy_tokio() -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3161,25 +3164,30 @@ fn start_http_proxy_tokio() -> std::net::SocketAddr {
             tx.send(addr).unwrap();
 
             loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+                let (mut client, _) = match listener.accept().await {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
                 tokio::spawn(async move {
-                    let _ = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(
-                            io,
-                            service_fn(|req: Request<hyper::body::Incoming>| async move {
-                                // Forward the request to the target
-                                let uri = req.uri().to_string();
-                                let host = req
-                                    .headers()
-                                    .get("host")
-                                    .map(|v| v.to_str().unwrap_or("").to_owned())
-                                    .unwrap_or_default();
-                                let body = format!("proxied: uri={uri} host={host}");
-                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-                            }),
-                        )
-                        .await;
+                    let mut buf = vec![0u8; 8192];
+                    let n = match client.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    let head = String::from_utf8_lossy(&buf[..n]);
+                    if !head.starts_with("CONNECT ") {
+                        return;
+                    }
+                    let target = head.split_whitespace().nth(1).unwrap_or("");
+                    client
+                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let mut target_stream = match TcpStream::connect(target).await {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut target_stream).await;
                 });
             }
         });
@@ -3269,9 +3277,9 @@ fn test_compio_socks4_proxy_local() {
     });
 }
 
-#[ignore = "TODO: CONNECT handshake uses poll_fn which hangs under compio completion-based runtime"]
 #[test]
 fn test_compio_http_proxy_local() {
+    let target_addr = start_server_tokio();
     let http_proxy_addr = start_http_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
@@ -3281,7 +3289,7 @@ fn test_compio_http_proxy_local() {
             .unwrap();
 
         let resp = client
-            .get_local("http://example.com/test-path")
+            .get_local(&format!("http://{target_addr}/test-path"))
             .unwrap()
             .send()
             .await
@@ -3290,26 +3298,25 @@ fn test_compio_http_proxy_local() {
         assert_eq!(resp.status(), http::StatusCode::OK);
         let body = resp.text().await.unwrap();
         assert!(
-            body.contains("proxied:"),
-            "expected proxied response, got: {body}"
-        );
-        assert!(
-            body.contains("/test-path"),
-            "expected path in proxied URI, got: {body}"
+            body.contains("hello aioduct"),
+            "expected target response, got: {body}"
         );
     });
 }
 
-#[ignore = "TODO: CONNECT handshake uses poll_fn which hangs under compio completion-based runtime"]
 #[test]
 fn test_compio_http_proxy_with_auth_local() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    let target_addr = start_server_tokio();
     let auth_seen = Arc::new(AtomicBool::new(false));
     let auth_seen_clone = auth_seen.clone();
 
     let proxy_addr = {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3319,31 +3326,37 @@ fn test_compio_http_proxy_with_auth_local() {
                 tx.send(addr).unwrap();
 
                 loop {
-                    let (stream, _) = listener.accept().await.unwrap();
-                    let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+                    let (mut client, _) = match listener.accept().await {
+                        Ok(c) => c,
+                        Err(_) => return,
+                    };
                     let auth_seen = auth_seen_clone.clone();
                     tokio::spawn(async move {
-                        let _ = hyper::server::conn::http1::Builder::new()
-                            .serve_connection(
-                                io,
-                                service_fn(move |req: Request<hyper::body::Incoming>| {
-                                    let auth_seen = auth_seen.clone();
-                                    async move {
-                                        if req
-                                            .headers()
-                                            .get("proxy-authorization")
-                                            .and_then(|v| v.to_str().ok())
-                                            .is_some_and(|s| s.starts_with("Basic "))
-                                        {
-                                            auth_seen.store(true, Ordering::SeqCst);
-                                        }
-                                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
-                                            "authed-proxy",
-                                        ))))
-                                    }
-                                }),
-                            )
-                            .await;
+                        let mut buf = vec![0u8; 8192];
+                        let n = match client.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => n,
+                        };
+                        let head = String::from_utf8_lossy(&buf[..n]);
+                        if !head.starts_with("CONNECT ") {
+                            return;
+                        }
+                        if head.contains("proxy-authorization:")
+                            || head.contains("Proxy-Authorization:")
+                        {
+                            auth_seen.store(true, Ordering::SeqCst);
+                        }
+                        let target = head.split_whitespace().nth(1).unwrap_or("");
+                        client
+                            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                            .await
+                            .unwrap();
+                        let mut target_stream = match TcpStream::connect(target).await {
+                            Ok(s) => s,
+                            Err(_) => return,
+                        };
+                        let _ =
+                            tokio::io::copy_bidirectional(&mut client, &mut target_stream).await;
                     });
                 }
             });
@@ -3362,21 +3375,21 @@ fn test_compio_http_proxy_with_auth_local() {
             .unwrap();
 
         let resp = client
-            .get_local("http://example.com/auth-test")
+            .get_local(&format!("http://{target_addr}/auth-test"))
             .unwrap()
             .send()
             .await
             .unwrap();
 
         assert_eq!(resp.status(), http::StatusCode::OK);
-        assert_eq!(resp.text().await.unwrap(), "authed-proxy");
+        assert_eq!(resp.text().await.unwrap(), "hello aioduct");
     });
 
     // Give the proxy thread a moment to process the auth check
     std::thread::sleep(Duration::from_millis(50));
     assert!(
         auth_seen.load(Ordering::SeqCst),
-        "proxy should have received Proxy-Authorization header"
+        "CONNECT request should include Proxy-Authorization header"
     );
 }
 
@@ -3830,20 +3843,22 @@ fn test_compio_socks5_proxy_with_tcp_keepalive() {
 
 // ── Proxy connection reuse test ─────────────────────────────────────
 
-#[ignore = "TODO: CONNECT handshake uses poll_fn which hangs under compio completion-based runtime"]
 #[test]
 fn test_compio_http_proxy_connection_reuse_local() {
+    let target_addr = start_server_tokio();
     let http_proxy_addr = start_http_proxy_tokio();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::proxy::ProxyConfig::http(&format!("http://{http_proxy_addr}")).unwrap())
+            .pool_idle_timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(5)
             .build_local()
             .unwrap();
 
         // First request
         let resp1 = client
-            .get_local("http://example.com/first")
+            .get_local(&format!("http://{target_addr}/first"))
             .unwrap()
             .send()
             .await
@@ -3851,13 +3866,13 @@ fn test_compio_http_proxy_connection_reuse_local() {
         assert_eq!(resp1.status(), http::StatusCode::OK);
         let body1 = resp1.text().await.unwrap();
         assert!(
-            body1.contains("proxied:"),
-            "first request should be proxied"
+            body1.contains("hello aioduct"),
+            "first request should succeed"
         );
 
         // Second request -- should reuse the connection
         let resp2 = client
-            .get_local("http://example.com/second")
+            .get_local(&format!("http://{target_addr}/second"))
             .unwrap()
             .send()
             .await
@@ -3865,12 +3880,8 @@ fn test_compio_http_proxy_connection_reuse_local() {
         assert_eq!(resp2.status(), http::StatusCode::OK);
         let body2 = resp2.text().await.unwrap();
         assert!(
-            body2.contains("proxied:"),
-            "second request should also be proxied"
-        );
-        assert!(
-            body2.contains("/second"),
-            "second request should have /second path"
+            body2.contains("hello aioduct"),
+            "second request should also succeed"
         );
     });
 }

@@ -131,15 +131,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     self.connect_tunnel(tls_stream, proxy, target_authority, connect_timeout)
                         .await
                 } else {
-                    // HTTPS proxy for HTTP target: CONNECT through TLS pipe, then H1.
-                    // TODO: honor self.core.http2_prior_knowledge for h2c through proxy.
-                    // The CONNECT tunnel gives us a raw TCP pipe to the target, so h2c
-                    // prior-knowledge could work — we just need to call connect_h2()
-                    // instead of connect_h1() when configured.
+                    // HTTPS proxy for HTTP target: CONNECT through TLS pipe.
                     let port = target_authority.port_u16().unwrap_or(80);
                     let target = format!("{}:{port}", target_authority.host());
                     let tunnel_stream = do_connect_handshake(tls_stream, proxy, &target).await?;
-                    self.connect_h1(tunnel_stream).await
+                    if self.core.http2_prior_knowledge {
+                        self.connect_h2_prior_knowledge(tunnel_stream).await
+                    } else {
+                        self.connect_h1(tunnel_stream).await
+                    }
                 }
             }
             #[cfg(not(feature = "rustls"))]
@@ -152,12 +152,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             self.connect_tunnel(tcp_stream, proxy, target_authority, connect_timeout)
                 .await
         } else {
-            // HTTP proxy for HTTP target: CONNECT to create a raw pipe, then H1.
-            // TODO: honor self.core.http2_prior_knowledge for h2c through proxy.
+            // HTTP proxy for HTTP target: CONNECT to create a raw pipe.
             let port = target_authority.port_u16().unwrap_or(80);
             let target = format!("{}:{port}", target_authority.host());
             let tunnel_stream = do_connect_handshake(tcp_stream, proxy, &target).await?;
-            self.connect_h1(tunnel_stream).await
+            if self.core.http2_prior_knowledge {
+                self.connect_h2_prior_knowledge(tunnel_stream).await
+            } else {
+                self.connect_h1(tunnel_stream).await
+            }
         }
     }
 
@@ -746,6 +749,13 @@ where
         }
         written += n;
     }
+
+    // Flush after write: completion-based runtimes may buffer writes
+    // internally; poll_flush ensures bytes reach the proxy before we
+    // start reading the CONNECT response.
+    std::future::poll_fn(|cx| Pin::new(&mut stream).poll_flush(cx))
+        .await
+        .map_err(Error::Io)?;
 
     let mut resp_buf = Vec::with_capacity(256);
     loop {
