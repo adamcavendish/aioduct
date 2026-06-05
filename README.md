@@ -62,7 +62,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Tower integration** — use aioduct as a tower `Service`
 - **Link headers** — RFC 8288 Link header parsing for pagination and discovery
 - **Forwarded header** — RFC 7239 Forwarded header builder and parser
-- **Request timings** — per-request DNS, TCP connect, TLS handshake, transfer (TTFB), and total durations via `Response::timings()`
+- **Request timings** — per-phase timing via `RequestObserver` (DNS, TCP, TLS, TTFB, total)
 
 ## Quick Start
 
@@ -476,7 +476,7 @@ pub trait Resolve: Send + Sync + 'static {
 | Digest auth | No | Built-in |
 | Bandwidth limiter | No | Built-in |
 | Netrc | No | Built-in |
-| Request timings | No | Built-in |
+| Request timings | No | Observer |
 | Connection coalescing | No | Built-in (RFC 7540) |
 | DNS-over-HTTPS/TLS | No | Built-in |
 | HTTP/3 0-RTT | No | Built-in |

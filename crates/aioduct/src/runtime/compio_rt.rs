@@ -188,9 +188,10 @@ pin_project! {
     ///
     /// # Safety
     ///
-    /// This type has `unsafe impl Send` for compatibility with the legacy `Runtime`
-    /// trait. It must only be used within compio's thread-per-core model where
-    /// values never actually cross thread boundaries.
+    /// This type has `unsafe impl Send` so it can be stored in
+    /// `Arc`-based shared state. It must only be used within compio's
+    /// thread-per-core model where values never actually cross thread
+    /// boundaries.
     pub struct CompioTcpStream {
         #[pin]
         io: CompioIo<compio_io::compat::AsyncStream<compio_net::TcpStream>>,
@@ -251,8 +252,7 @@ impl Write for CompioTcpStream {
 pin_project! {
     /// Compio-backed sleep future using async_io::Timer.
     ///
-    /// Uses async_io's timer because compio_runtime's `TimerFuture` is `!Send`,
-    /// which conflicts with the legacy `Runtime` trait's `Sleep: Send` requirement.
+    /// Uses async_io's timer because compio_runtime's `TimerFuture` is `!Send`.
     pub struct CompioSleep {
         #[pin]
         inner: async_io::Timer,
@@ -433,41 +433,6 @@ impl<F: Future> Future for AssertSend<F> {
 #[allow(deprecated)]
 mod tests {
     use super::*;
-    use crate::runtime::Runtime;
-
-    #[test]
-    fn resolve_all_localhost() {
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let addrs = CompioRuntime::resolve_all("localhost", 80).await.unwrap();
-            assert!(!addrs.is_empty());
-        });
-    }
-
-    #[test]
-    fn connect_and_set_keepalive() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let stream = CompioRuntime::connect(addr).await.unwrap();
-            let result = CompioRuntime::set_tcp_keepalive(
-                &stream,
-                Duration::from_secs(60),
-                Some(Duration::from_secs(10)),
-                Some(3),
-            );
-            assert!(result.is_ok());
-        });
-    }
-
-    #[test]
-    fn from_std_tcp_succeeds() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let std_stream = std::net::TcpStream::connect(addr).unwrap();
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let _compio_stream = CompioRuntime::from_std_tcp(std_stream).unwrap();
-        });
-    }
 
     #[test]
     fn connector_connect_works() {
@@ -478,80 +443,6 @@ mod tests {
             let stream = connector.connect(addr).await.unwrap();
             assert!(Write::is_write_vectored(&stream));
         });
-    }
-
-    #[test]
-    fn is_write_vectored_returns_true() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let stream = CompioRuntime::connect(addr).await.unwrap();
-            assert!(Write::is_write_vectored(&stream));
-        });
-    }
-
-    #[test]
-    fn write_vectored_delivers_data() {
-        use std::future::poll_fn;
-        use std::io::Read as _;
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let mut client = CompioRuntime::connect(addr).await.unwrap();
-
-            let data = b"hello world";
-            let mut written = 0;
-            while written < data.len() {
-                let bufs = [io::IoSlice::new(&data[written..])];
-                let n = poll_fn(|cx| Pin::new(&mut client).poll_write_vectored(cx, &bufs))
-                    .await
-                    .unwrap();
-                assert!(n > 0);
-                written += n;
-            }
-            assert_eq!(written, 11);
-
-            poll_fn(|cx| Pin::new(&mut client).poll_flush(cx))
-                .await
-                .unwrap();
-            poll_fn(|cx| Pin::new(&mut client).poll_shutdown(cx))
-                .await
-                .unwrap();
-        });
-
-        let (mut server, _) = listener.accept().unwrap();
-        let mut buf = vec![0u8; 11];
-        server.read_exact(&mut buf).unwrap();
-        assert_eq!(&buf, b"hello world");
-    }
-
-    #[test]
-    fn sleep_completes() {
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let start = std::time::Instant::now();
-            <CompioRuntime as Runtime>::sleep(Duration::from_millis(10)).await;
-            assert!(start.elapsed() >= Duration::from_millis(10));
-        });
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn connect_unix_succeeds() {
-        let dir = std::env::temp_dir().join("aioduct_compio_rt_unix_test");
-        let _ = std::fs::create_dir_all(&dir);
-        let sock_path = dir.join("rt_test.sock");
-        let _ = std::fs::remove_file(&sock_path);
-
-        let _listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let stream = CompioRuntime::connect_unix(&sock_path).await.unwrap();
-            drop(stream);
-        });
-
-        let _ = std::fs::remove_file(&sock_path);
-        let _ = std::fs::remove_dir(&dir);
     }
 
     // ── New trait tests (v0.2) ──────────────────────────────────────────────
@@ -579,39 +470,6 @@ mod tests {
             });
             compio_runtime::time::sleep(Duration::from_millis(10)).await;
             assert!(flag.load(Ordering::SeqCst));
-        });
-    }
-
-    #[test]
-    fn keepalive_after_shutdown() {
-        use std::future::poll_fn;
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let mut stream = CompioRuntime::connect(addr).await.unwrap();
-
-            CompioRuntime::set_tcp_keepalive(
-                &stream,
-                Duration::from_secs(60),
-                Some(Duration::from_secs(10)),
-                Some(3),
-            )
-            .unwrap();
-
-            poll_fn(|cx| Pin::new(&mut stream).poll_shutdown(cx))
-                .await
-                .unwrap();
-
-            // socket_handle survives shutdown — keepalive set on it is still readable
-            let result = CompioRuntime::set_tcp_keepalive(
-                &stream,
-                Duration::from_secs(30),
-                Some(Duration::from_secs(5)),
-                Some(2),
-            );
-            assert!(result.is_ok());
         });
     }
 
@@ -702,18 +560,6 @@ mod tests {
         let _inner = io.inner();
     }
 
-    #[test]
-    fn set_keepalive_interval_none() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let stream = CompioRuntime::connect(addr).await.unwrap();
-            let result =
-                CompioRuntime::set_tcp_keepalive(&stream, Duration::from_secs(60), None, None);
-            assert!(result.is_ok());
-        });
-    }
-
     // ── CompioIo tests ─────────────────────────────────────────────────
 
     #[test]
@@ -771,35 +617,5 @@ mod tests {
         // block_on should work for simple computations
         let result = CompioRuntime::block_on(async { "hello".len() }).unwrap();
         assert_eq!(result, 5);
-    }
-
-    // ── CompioTcpStream I/O delegation ─────────────────────────────────
-
-    #[test]
-    fn compio_tcp_stream_read_write() {
-        use std::future::poll_fn;
-        use std::io::Read as _;
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let mut stream = CompioRuntime::connect(addr).await.unwrap();
-
-            let data = b"compio tcp test";
-            let n = poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, data))
-                .await
-                .unwrap();
-            assert!(n > 0);
-
-            poll_fn(|cx| Pin::new(&mut stream).poll_flush(cx))
-                .await
-                .unwrap();
-        });
-
-        let (mut conn, _) = listener.accept().unwrap();
-        let mut buf = vec![0u8; 15];
-        conn.read_exact(&mut buf).unwrap();
-        assert_eq!(&buf, b"compio tcp test");
     }
 }

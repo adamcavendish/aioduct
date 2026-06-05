@@ -278,13 +278,6 @@ pin_project! {
     }
 }
 
-impl SmolSleep {
-    /// Create a new sleep future from an async-io timer.
-    pub(crate) fn new(inner: async_io::Timer) -> Self {
-        Self { inner }
-    }
-}
-
 impl Future for SmolSleep {
     type Output = ();
 
@@ -386,113 +379,6 @@ where
 #[allow(deprecated)]
 mod tests {
     use super::*;
-    use crate::runtime::Runtime;
-
-    #[test]
-    fn resolve_all_localhost() {
-        smol::block_on(async {
-            let addrs = SmolRuntime::resolve_all("localhost", 80).await.unwrap();
-            assert!(!addrs.is_empty());
-        });
-    }
-
-    #[test]
-    fn connect_and_set_keepalive() {
-        smol::block_on(async {
-            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let stream = SmolRuntime::connect(addr).await.unwrap();
-            let result = SmolRuntime::set_tcp_keepalive(
-                &stream,
-                Duration::from_secs(60),
-                Some(Duration::from_secs(10)),
-                Some(3),
-            );
-            assert!(result.is_ok());
-        });
-    }
-
-    #[test]
-    fn from_std_tcp_succeeds() {
-        smol::block_on(async {
-            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let std_stream = std::net::TcpStream::connect(addr).unwrap();
-            let smol_stream = SmolRuntime::from_std_tcp(std_stream).unwrap();
-            assert!(smol_stream.inner().peer_addr().is_ok());
-        });
-    }
-
-    #[test]
-    fn is_write_vectored_returns_true() {
-        smol::block_on(async {
-            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let stream = SmolRuntime::connect(addr).await.unwrap();
-            assert!(Write::is_write_vectored(&stream));
-        });
-    }
-
-    #[test]
-    fn write_vectored_delivers_data() {
-        use std::future::poll_fn;
-
-        smol::block_on(async {
-            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-
-            let mut client = SmolRuntime::connect(addr).await.unwrap();
-            let (mut server, _) = listener.accept().await.unwrap();
-
-            let bufs = [
-                io::IoSlice::new(b"hello"),
-                io::IoSlice::new(b" "),
-                io::IoSlice::new(b"world"),
-            ];
-            let n = poll_fn(|cx| Pin::new(&mut client).poll_write_vectored(cx, &bufs))
-                .await
-                .unwrap();
-            assert_eq!(n, 11);
-
-            use futures_io::AsyncRead;
-            let mut buf = vec![0u8; 11];
-            let mut read = 0;
-            while read < 11 {
-                let n = poll_fn(|cx| Pin::new(&mut server).poll_read(cx, &mut buf[read..]))
-                    .await
-                    .unwrap();
-                read += n;
-            }
-            assert_eq!(&buf, b"hello world");
-        });
-    }
-
-    #[test]
-    fn sleep_completes() {
-        smol::block_on(async {
-            let start = std::time::Instant::now();
-            <SmolRuntime as Runtime>::sleep(Duration::from_millis(10)).await;
-            assert!(start.elapsed() >= Duration::from_millis(10));
-        });
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn connect_unix_succeeds() {
-        smol::block_on(async {
-            let dir = std::env::temp_dir().join("aioduct_smol_rt_unix_test");
-            let _ = std::fs::create_dir_all(&dir);
-            let sock_path = dir.join("rt_test.sock");
-            let _ = std::fs::remove_file(&sock_path);
-
-            let _listener = smol::net::unix::UnixListener::bind(&sock_path).unwrap();
-            let stream = SmolRuntime::connect_unix(&sock_path).await.unwrap();
-            drop(stream);
-
-            let _ = std::fs::remove_file(&sock_path);
-            let _ = std::fs::remove_dir(&dir);
-        });
-    }
 
     // ── New trait tests (v0.2) ──────────────────────────────────────────────
 
@@ -574,18 +460,6 @@ mod tests {
         use crate::runtime::RuntimeCompletion;
         let result = SmolRuntime::block_on(async { 42 }).unwrap();
         assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn set_keepalive_interval_none() {
-        smol::block_on(async {
-            let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let stream = SmolRuntime::connect(addr).await.unwrap();
-            let result =
-                SmolRuntime::set_tcp_keepalive(&stream, Duration::from_secs(60), None, None);
-            assert!(result.is_ok());
-        });
     }
 
     #[test]
@@ -797,7 +671,7 @@ mod tests {
     fn smol_sleep_new_completes() {
         smol::block_on(async {
             let timer = async_io::Timer::after(Duration::from_millis(5));
-            let sleep = SmolSleep::new(timer);
+            let sleep = SmolSleep { inner: timer };
             let start = std::time::Instant::now();
             sleep.await;
             assert!(start.elapsed() >= Duration::from_millis(5));

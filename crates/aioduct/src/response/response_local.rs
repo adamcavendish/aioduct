@@ -14,7 +14,6 @@ impl Response {
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
-            timings: self.timings,
             observer_ctx: self.observer_ctx,
         }
     }
@@ -32,7 +31,6 @@ impl Response {
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
-            timings: self.timings,
             observer_ctx: self.observer_ctx,
         }
     }
@@ -54,7 +52,6 @@ impl Response<crate::body::ResponseBodyLocal> {
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
-            timings: self.timings,
             observer_ctx: self.observer_ctx,
         }
     }
@@ -95,7 +92,6 @@ mod tests {
             url: "http://example.com/".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         }
     }
