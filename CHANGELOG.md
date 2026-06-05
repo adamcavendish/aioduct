@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.6] - 2026-06-05
+
+### Fixed
+- HTTP proxy for plain HTTP targets uses CONNECT tunnel instead of plaintext
+  forwarding, fixing 400 errors on pooled connection reuse
+- Proxy-Authorization header no longer leaks through CONNECT tunnel to target
+- CONNECT handshake hang on compio runtime: missing `poll_flush` after write
+- h2c prior-knowledge now honored through CONNECT tunnel proxy
+
+### Removed
+- Legacy `Runtime` trait and runtime implementations (tokio/smol/compio legacy)
+- `TimingCollector` from hot path; `Response::timings()` accessor and field
+- Deprecated type aliases: `RequestBuilder`, `OwnedRequestBuilder`
+
+### Changed
+- HTTP proxy + HTTP target path unified to CONNECT tunnel across all runtimes
+- Proxy tests rewritten for CONNECT behavior with separate proxy and target servers
+- `RequestObserver` is the recommended replacement for request timing data
+
 ## [0.2.0-alpha.5] - 2026-06-04
 
 ### Added
