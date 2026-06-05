@@ -410,13 +410,6 @@ fn tls_info_initially_none_and_remote_addr_none() {
     assert!(resp.remote_addr().is_none());
 }
 
-#[allow(deprecated)]
-#[test]
-fn timings_initially_none() {
-    let resp = make_response(200);
-    assert!(resp.timings().is_none());
-}
-
 #[cfg(feature = "charset")]
 #[tokio::test]
 async fn text_with_charset_latin1() {
@@ -563,7 +556,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         }
     }
@@ -625,7 +617,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         };
         assert_eq!(resp.content_length(), Some(42));
@@ -663,7 +654,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         };
         let bytes = resp.bytes().await.unwrap();
@@ -680,7 +670,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         };
         let text = resp.text().await.unwrap();
@@ -698,7 +687,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         };
         let result: Result<serde_json::Value, _> = resp.json().await;
@@ -717,7 +705,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         };
         let result: Result<serde_json::Value, _> = resp.json().await;
@@ -756,7 +743,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         };
         resp.set_observer_ctx(super::BodyObserverCtx {
@@ -814,7 +800,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         };
         resp.set_observer_ctx(super::BodyObserverCtx {

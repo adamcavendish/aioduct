@@ -93,8 +93,6 @@ pub struct Response<B = ResponseBodySend> {
     url: Uri,
     remote_addr: Option<SocketAddr>,
     tls_info: Option<crate::tls::TlsInfo>,
-    #[allow(deprecated)]
-    timings: Option<crate::timing::RequestTimings>,
     observer_ctx: Option<BodyObserverCtx>,
 }
 
@@ -123,7 +121,6 @@ impl Response {
             url,
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         }
     }
@@ -135,7 +132,6 @@ impl Response {
             url,
             remote_addr: None,
             tls_info: None,
-            timings: None,
             observer_ctx: None,
         }
     }
@@ -156,11 +152,6 @@ impl<B> Response<B> {
         self.observer_ctx = Some(ctx);
     }
 
-    #[allow(deprecated)]
-    pub(crate) fn set_timings(&mut self, timings: Option<crate::timing::RequestTimings>) {
-        self.timings = timings;
-    }
-
     /// Returns the final URL of this response, after any redirects.
     pub fn url(&self) -> &Uri {
         &self.url
@@ -174,16 +165,6 @@ impl<B> Response<B> {
     /// Returns TLS handshake info (peer certificate), if the connection used TLS.
     pub fn tls_info(&self) -> Option<&crate::tls::TlsInfo> {
         self.tls_info.as_ref()
-    }
-
-    /// Returns per-request timing breakdown (DNS, TCP, TLS, TTFB, total).
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `RequestObserver` for detailed per-phase timing"
-    )]
-    #[allow(deprecated)]
-    pub fn timings(&self) -> Option<&crate::timing::RequestTimings> {
-        self.timings.as_ref()
     }
 
     /// Returns the HTTP status code.

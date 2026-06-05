@@ -762,66 +762,7 @@ async fn observer_reports_stale_retry_on_rst() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 10. HTTPS request without TLS handshake duration (edge case)
-//     Exercises dispatch_send.rs:807-819 (no tls_dur fallback).
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Note: this is hard to trigger with rustls since connect_tls always sets
-// tls_handshake_duration. The else-branch at line 807 is defensive code.
-// We instead verify the timings structure is correctly populated.
-
-#[cfg(feature = "rustls")]
-#[tokio::test]
-async fn https_request_populates_timings() {
-    aioduct_test_server::tls::install_crypto_provider();
-
-    let (addr, cert_der, _counter) = aioduct_test_server::tls::tls_h2_server().await;
-
-    let cert = aioduct::tls::Certificate::from_der(cert_der.to_vec());
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .add_root_certificates(&[cert])
-        .danger_accept_invalid_hostnames(true)
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("https://localhost:{}/", addr.port()))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), 200);
-
-    // Verify timings are populated for HTTPS
-    #[allow(deprecated)]
-    let timings = resp.timings();
-    assert!(timings.is_some(), "HTTPS response should have timings");
-    #[allow(deprecated)]
-    let t = timings.unwrap();
-    assert!(
-        t.tls_handshake().is_some(),
-        "HTTPS timings should include TLS handshake duration"
-    );
-    assert!(
-        t.tcp_connect().is_some(),
-        "HTTPS timings should include TCP connect duration"
-    );
-    assert!(
-        t.total() > Duration::ZERO,
-        "HTTPS timings should have positive total duration"
-    );
-
-    // Verify TLS info is available
-    let tls_info = resp.tls_info();
-    assert!(tls_info.is_some(), "HTTPS response should have TLS info");
-
-    let _ = resp.text().await.unwrap();
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 11. SOCKS5 proxy with keepalive and fast_open
+// 10. SOCKS5 proxy with keepalive and fast_open
 //     Exercises connect.rs:40-51 through SOCKS5 path.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

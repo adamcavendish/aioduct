@@ -5,17 +5,14 @@ use http::Uri;
 use http::header::HeaderMap;
 use std::time::Duration;
 
+use super::dispatch::H2ConnectGuard;
+use super::{HttpEngineCore, HttpEngineSend};
 use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::observer::{self, RequestPhase, RetryKind};
 use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
-#[allow(deprecated)]
-use crate::timing::TimingCollector;
-
-use super::dispatch::H2ConnectGuard;
-use super::{HttpEngineCore, HttpEngineSend};
 
 use super::extract_headers;
 
@@ -47,7 +44,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         .await
     }
 
-    #[allow(deprecated, clippy::too_many_arguments)] // TimingCollector usage — will be removed when observer replaces it
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute_single_with_hint(
         &self,
         mut request: http::Request<RequestBodySend>,
@@ -59,8 +56,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
-        #[allow(deprecated)]
-        let timing_start = std::time::Instant::now();
 
         if let Some(ref limiter) = self.core.rate_limiter {
             while !limiter.try_acquire() {
@@ -169,10 +164,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     );
                     resp.set_remote_addr(conn.remote_addr);
                     resp.set_tls_info(conn.tls_info.clone());
-                    resp.set_timings(Some(
-                        TimingCollector::default()
-                            .into_timings(Some(transfer), timing_start.elapsed()),
-                    ));
                     self.core
                         .attach_observer(&mut resp, &req_method, original_uri);
                     if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
@@ -312,10 +303,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         );
                         resp.set_remote_addr(conn.remote_addr);
                         resp.set_tls_info(conn.tls_info.clone());
-                        resp.set_timings(Some(
-                            TimingCollector::default()
-                                .into_timings(Some(transfer), timing_start.elapsed()),
-                        ));
                         self.core
                             .attach_observer(&mut resp, &req_method, original_uri);
                         if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
@@ -503,14 +490,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 );
                 resp.set_remote_addr(pooled.remote_addr);
                 resp.set_tls_info(pooled.tls_info.clone());
-                resp.set_timings(Some(
-                    TimingCollector {
-                        dns: Some(dns_start.elapsed()),
-                        tcp_connect: Some(tcp_start.elapsed()),
-                        ..TimingCollector::default()
-                    }
-                    .into_timings(Some(transfer), request_start.elapsed()),
-                ));
                 self.core
                     .attach_observer(&mut resp, &req_method, original_uri);
                 if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
@@ -602,10 +581,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             );
                             resp.set_remote_addr(conn.remote_addr);
                             resp.set_tls_info(conn.tls_info.clone());
-                            resp.set_timings(Some(
-                                TimingCollector::default()
-                                    .into_timings(Some(transfer), timing_start.elapsed()),
-                            ));
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
                             if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
@@ -682,8 +657,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         #[cfg(not(unix))]
         let unix_socket: Option<&std::path::PathBuf> = None;
 
-        let mut timing = TimingCollector::default();
-
         if !self.core.pool.can_connect(&pool_key) {
             return Err(Error::Other(
                 "max active connections per host reached".into(),
@@ -691,8 +664,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         }
 
         let mut pooled = if let Some(unix_path) = unix_socket {
-            let _ = &proxy; // suppress unused warning when unix_socket is set
-            let _ = unix_path; // suppress unused warning during v0.2 migration
+            let _ = &proxy;
+            // unix_path is unused on non-unix or when neither tokio nor smol is active
+            #[cfg(not(all(unix, any(feature = "tokio", feature = "smol"))))]
+            let _ = unix_path;
             #[cfg(unix)]
             {
                 #[allow(unreachable_code)]
@@ -749,7 +724,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             } else {
                 self.core.resolve_all_authority_raw(host, port).await?
             };
-            timing.dns = Some(dns_start.elapsed());
             self.core.notify(
                 request.method(),
                 original_uri,
@@ -919,8 +893,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             if is_https {
                 if let Some(tls_dur) = conn.tls_handshake_duration {
-                    timing.tls_handshake = Some(tls_dur);
-                    timing.tcp_connect = Some(tcp_tls_elapsed.saturating_sub(tls_dur));
                     let tcp_dur = tcp_tls_elapsed.saturating_sub(tls_dur);
                     if let Some(addr) = conn.remote_addr {
                         self.core.notify(
@@ -952,7 +924,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         },
                     );
                 } else {
-                    timing.tcp_connect = Some(tcp_tls_elapsed);
                     if let Some(addr) = conn.remote_addr {
                         self.core.notify(
                             request.method(),
@@ -966,7 +937,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     }
                 }
             } else {
-                timing.tcp_connect = Some(tcp_tls_elapsed);
                 if let Some(addr) = conn.remote_addr {
                     self.core.notify(
                         request.method(),
@@ -1046,9 +1016,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         );
         resp.set_remote_addr(pooled.remote_addr);
         resp.set_tls_info(pooled.tls_info.clone());
-        resp.set_timings(Some(
-            timing.into_timings(Some(transfer), timing_start.elapsed()),
-        ));
         self.core
             .attach_observer(&mut resp, &req_method, original_uri);
         if !self.core.no_connection_reuse

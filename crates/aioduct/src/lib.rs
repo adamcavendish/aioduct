@@ -67,10 +67,6 @@ pub mod retry;
 pub mod sse;
 /// Token-bucket rate limiter for throttling requests.
 pub mod throttle;
-/// Per-request timing breakdown (DNS, TCP, TLS, TTFB).
-///
-/// Deprecated: Use [`observer::RequestObserver`] for detailed per-phase timing.
-pub mod timing;
 /// Consumer-facing client trait and extension traits.
 pub mod traits;
 
@@ -178,8 +174,6 @@ pub use retry::{RetryBudget, RetryConfig};
 pub use sse::SseStreamLocal;
 pub use sse::{SseDecoder, SseEvent, SseMessage, SseStream, SseStreamSend};
 pub use throttle::RateLimiter;
-#[allow(deprecated)]
-pub use timing::RequestTimings;
 pub use traits::{HttpClient, RequestBuilderExt, ResponseExt};
 
 #[cfg(feature = "json")]
@@ -212,14 +206,7 @@ pub use request::RequestBuilderLocal;
 pub use request::RequestBuilderSend;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[deprecated(since = "0.2.0", note = "Renamed to `RequestBuilderSend`")]
-/// Deprecated alias for [`RequestBuilderSend`].
-pub type RequestBuilder<'a, R, C> = RequestBuilderSend<'a, R, C>;
-#[cfg(not(target_arch = "wasm32"))]
 pub use response::Response;
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(deprecated)]
-pub use runtime::Runtime;
 #[cfg(any(feature = "tokio", feature = "smol", feature = "compio"))]
 pub use runtime::SystemResolver;
 #[cfg(not(target_arch = "wasm32"))]
@@ -234,10 +221,6 @@ pub use traits::OwnedWasmRequestBuilder;
 #[cfg(not(target_arch = "wasm32"))]
 pub use traits::{OwnedRequestBuilderLocal, OwnedRequestBuilderSend};
 
-#[cfg(not(target_arch = "wasm32"))]
-#[deprecated(since = "0.2.0", note = "Renamed to `OwnedRequestBuilderSend`")]
-/// Deprecated alias for [`OwnedRequestBuilderSend`].
-pub type OwnedRequestBuilder<R, C> = OwnedRequestBuilderSend<R, C>;
 #[cfg(not(target_arch = "wasm32"))]
 pub use upgrade::Upgraded;
 #[cfg(not(target_arch = "wasm32"))]

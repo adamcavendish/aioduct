@@ -30,7 +30,6 @@
 - [Request Forwarding](request_forwarding.md)
 - [Link Headers](link_headers.md)
 - [Forwarded Header](forwarded.md)
-- [Request Timings](timings.md)
 - [Problem Details](problem_details.md)
 - [CLI Tools](cli/index.md)
   - [aioduct http](cli/http.md)

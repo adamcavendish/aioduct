@@ -17,10 +17,8 @@ use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
-use aioduct_test_server::TokioExec;
 use aioduct_test_server::h1::{h1_server, h1_server_with, hello};
 use aioduct_test_server::h2::h2_server_with;
-use aioduct_test_server::tls::{crypto_provider, install_crypto_provider};
 
 #[tokio::test]
 async fn test_custom_resolver() {
@@ -346,135 +344,6 @@ async fn test_happy_eyeballs_multi_addrs_integration() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "he-ok");
-}
-#[tokio::test]
-#[allow(deprecated)]
-async fn test_timings_http_direct() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
-            tokio::spawn(async move {
-                server_http1::Builder::new()
-                    .serve_connection(io, service_fn(hello))
-                    .await
-                    .ok();
-            });
-        }
-    });
-
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> =
-        HttpEngineSend::builder().build().unwrap();
-    let resp = client
-        .get(&format!("http://{addr}/"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-
-    let timings = resp.timings().expect("timings should be present");
-    assert!(timings.dns().is_some(), "DNS duration should be present");
-    assert!(
-        timings.tcp_connect().is_some(),
-        "TCP connect duration should be present"
-    );
-    assert!(
-        timings.tls_handshake().is_none(),
-        "TLS should be None for HTTP"
-    );
-    assert!(
-        timings.transfer().is_some(),
-        "transfer duration should be present"
-    );
-    assert!(!timings.total().is_zero(), "total should be non-zero");
-}
-#[cfg(feature = "rustls")]
-#[tokio::test]
-#[allow(deprecated)]
-async fn test_timings_https_with_tls() {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
-    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
-
-    let server_config = {
-        install_crypto_provider();
-        let mut cfg = rustls::ServerConfig::builder_with_provider(crypto_provider())
-            .with_safe_default_protocol_versions()
-            .expect("configured rustls provider does not support the default TLS versions")
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der.clone()], key_der)
-            .unwrap();
-        cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        Arc::new(cfg)
-    };
-    let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let acc = acceptor.clone();
-            tokio::spawn(async move {
-                let tls_stream = match acc.accept(stream).await {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
-                let io = aioduct::runtime::tokio_rt::TokioIo::new(tls_stream);
-
-                let builder = hyper::server::conn::http2::Builder::new(TokioExec);
-                builder.serve_connection(io, service_fn(hello)).await.ok();
-            });
-        }
-    });
-
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.add(cert_der).unwrap();
-    let mut client_tls_config = rustls::ClientConfig::builder_with_provider(crypto_provider())
-        .with_safe_default_protocol_versions()
-        .expect("configured rustls provider does not support the default TLS versions")
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_tls_config));
-    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
-        .tls(connector)
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("https://localhost:{}/", addr.port()))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-
-    let timings = resp.timings().expect("timings should be present");
-    assert!(timings.dns().is_some(), "DNS duration should be present");
-    assert!(
-        timings.tcp_connect().is_some(),
-        "TCP connect duration should be present"
-    );
-    assert!(
-        timings.tls_handshake().is_some(),
-        "TLS handshake duration should be present for HTTPS"
-    );
-    assert!(
-        timings.transfer().is_some(),
-        "transfer duration should be present"
-    );
-    assert!(!timings.total().is_zero(), "total should be non-zero");
-    assert!(
-        timings.total() >= timings.dns().unwrap() + timings.tcp_connect().unwrap(),
-        "total should be >= dns + tcp"
-    );
 }
 #[tokio::test]
 async fn h2_concurrent_requests() {

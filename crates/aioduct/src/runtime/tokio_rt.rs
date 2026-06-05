@@ -268,13 +268,6 @@ impl Future for TokioSleep {
     }
 }
 
-impl TokioSleep {
-    /// Create a new sleep future from a tokio sleep.
-    pub(crate) fn new(inner: tokio::time::Sleep) -> Self {
-        Self { inner }
-    }
-}
-
 // -- TokioIo: bridges tokio::io::{AsyncRead, AsyncWrite} to hyper::rt::{Read, Write} --
 
 pin_project! {
@@ -362,86 +355,6 @@ where
 #[allow(deprecated)]
 mod tests {
     use super::*;
-    use crate::runtime::Runtime;
-
-    #[tokio::test]
-    async fn resolve_all_localhost() {
-        let addrs = TokioRuntime::resolve_all("localhost", 80).await.unwrap();
-        assert!(!addrs.is_empty());
-    }
-
-    #[tokio::test]
-    async fn connect_and_set_keepalive_with_interval_retries() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let stream = TokioRuntime::connect(addr).await.unwrap();
-        let result = TokioRuntime::set_tcp_keepalive(
-            &stream,
-            Duration::from_secs(60),
-            Some(Duration::from_secs(10)),
-            Some(3),
-        );
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn from_std_tcp_succeeds() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let std_stream = std::net::TcpStream::connect(addr).unwrap();
-        let tokio_stream = TokioRuntime::from_std_tcp(std_stream).unwrap();
-        assert!(tokio_stream.inner().peer_addr().is_ok());
-    }
-
-    #[tokio::test]
-    async fn is_write_vectored_returns_true() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let stream = TokioRuntime::connect(addr).await.unwrap();
-        assert!(Write::is_write_vectored(&stream));
-    }
-
-    #[tokio::test]
-    async fn write_vectored_delivers_data() {
-        use std::future::poll_fn;
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let mut client = TokioRuntime::connect(addr).await.unwrap();
-        let (mut server, _) = listener.accept().await.unwrap();
-
-        let bufs = [
-            io::IoSlice::new(b"hello"),
-            io::IoSlice::new(b" "),
-            io::IoSlice::new(b"world"),
-        ];
-        let n = poll_fn(|cx| Pin::new(&mut client).poll_write_vectored(cx, &bufs))
-            .await
-            .unwrap();
-        assert_eq!(n, 11);
-
-        let mut buf = vec![0u8; 11];
-        use tokio::io::AsyncReadExt;
-        server.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, b"hello world");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn connect_unix_succeeds() {
-        let dir = std::env::temp_dir().join("aioduct_rt_unix_test");
-        let _ = std::fs::create_dir_all(&dir);
-        let sock_path = dir.join("rt_test.sock");
-        let _ = std::fs::remove_file(&sock_path);
-
-        let _listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
-        let stream = TokioRuntime::connect_unix(&sock_path).await.unwrap();
-        drop(stream);
-
-        let _ = std::fs::remove_file(&sock_path);
-        let _ = std::fs::remove_dir(&dir);
-    }
 
     // ── New trait tests (v0.2) ──────────────────────────────────────────────
 
