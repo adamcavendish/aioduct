@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
-use super::execute::{CacheLookupOutcome, PostExecuteAction};
+use super::request_flow::{CacheLookupOutcome, PostExecuteAction};
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     #[allow(clippy::too_many_arguments)]

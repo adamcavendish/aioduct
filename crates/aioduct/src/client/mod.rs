@@ -1,19 +1,21 @@
 mod builder;
-mod builder_build;
 mod builder_build_local;
+mod builder_build_send;
 mod builder_setters;
 mod connect_handshake;
 mod connect_protocol_local;
 mod connect_protocol_send;
-mod dispatch;
+mod connection_lifecycle;
+mod dispatch_local;
 mod dispatch_send;
 mod engine_local;
 mod engine_send;
-mod execute;
 mod execute_local;
 mod execute_send;
 mod proxy_connect_local;
 mod proxy_connect_send;
+mod request_flow;
+mod request_replay_send;
 mod resolve;
 
 pub use builder::HttpEngineBuilder;

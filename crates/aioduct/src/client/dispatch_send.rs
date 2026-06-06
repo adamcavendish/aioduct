@@ -5,7 +5,7 @@ use http::Uri;
 use http::header::HeaderMap;
 use std::time::Duration;
 
-use super::dispatch::H2ConnectGuard;
+use super::connection_lifecycle::H2ConnectGuard;
 use super::{HttpEngineCore, HttpEngineSend};
 use crate::body::RequestBodySend;
 use crate::error::Error;
@@ -15,10 +15,7 @@ use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 
 use super::extract_headers;
-
-mod retry;
-
-use retry::retry_request_from_parts;
+use super::request_replay_send::retry_request_from_parts;
 
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
 

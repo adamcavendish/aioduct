@@ -1568,7 +1568,10 @@ mod builder_tests {
         let action = core
             .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
             .unwrap();
-        assert!(matches!(action, super::execute::PostExecuteAction::Done));
+        assert!(matches!(
+            action,
+            super::request_flow::PostExecuteAction::Done
+        ));
     }
 
     #[test]
@@ -1593,7 +1596,10 @@ mod builder_tests {
         let action = core
             .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
             .unwrap();
-        assert!(matches!(action, super::execute::PostExecuteAction::Done));
+        assert!(matches!(
+            action,
+            super::request_flow::PostExecuteAction::Done
+        ));
     }
 
     #[test]
@@ -1607,12 +1613,12 @@ mod builder_tests {
             .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
             .unwrap();
         match action {
-            super::execute::PostExecuteAction::Redirect { uri, method, body } => {
+            super::request_flow::PostExecuteAction::Redirect { uri, method, body } => {
                 assert_eq!(uri.path(), "/new");
                 assert_eq!(method, Method::GET);
                 assert!(body.is_none());
             }
-            super::execute::PostExecuteAction::Done => {
+            super::request_flow::PostExecuteAction::Done => {
                 panic!("expected Redirect action");
             }
         }
@@ -1652,7 +1658,10 @@ mod builder_tests {
         let action = core
             .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
             .unwrap();
-        assert!(matches!(action, super::execute::PostExecuteAction::Done));
+        assert!(matches!(
+            action,
+            super::request_flow::PostExecuteAction::Done
+        ));
 
         assert!(
             store.should_upgrade("secure.example.com"),
@@ -1747,7 +1756,7 @@ mod builder_tests {
             .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
             .unwrap();
         match action {
-            super::execute::PostExecuteAction::Redirect { uri, .. } => {
+            super::request_flow::PostExecuteAction::Redirect { uri, .. } => {
                 assert_eq!(
                     uri.scheme_str(),
                     Some("https"),
@@ -1795,7 +1804,7 @@ mod builder_tests {
             .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
             .unwrap();
         assert!(
-            matches!(action, super::execute::PostExecuteAction::Done),
+            matches!(action, super::request_flow::PostExecuteAction::Done),
             "should return Done when redirect policy is None"
         );
     }
