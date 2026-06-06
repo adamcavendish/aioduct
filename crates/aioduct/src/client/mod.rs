@@ -5,6 +5,8 @@ mod builder_setters;
 mod connect;
 mod connect_handshake;
 mod connect_local;
+mod connect_protocol_local;
+mod connect_protocol_send;
 mod dispatch;
 mod dispatch_send;
 mod engine_local;
