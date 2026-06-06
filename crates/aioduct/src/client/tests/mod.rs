@@ -1,3 +1,11 @@
+mod connect_handshake_tests;
+mod connect_protocol_local_tests;
+mod connect_protocol_send_tests;
+mod engine_local_tests;
+mod engine_send_tests;
+mod proxy_connect_send_tests;
+mod resolve_tests;
+
 use super::*;
 use super::{DEFAULT_USER_AGENT, resolve_redirect};
 
