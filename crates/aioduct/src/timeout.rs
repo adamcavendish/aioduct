@@ -39,6 +39,34 @@ where
     }
 }
 
+/// Race a future against an optional connect timeout using the runtime's sleep.
+///
+/// Maps `Error::Timeout` to `Error::ConnectTimeout` so proxy handshake timeouts
+/// are classified correctly by `is_connect()`.
+pub(crate) async fn connect_timeout<R, F, T>(
+    future: F,
+    timeout: Option<Duration>,
+) -> Result<T, crate::error::Error>
+where
+    R: crate::runtime::RuntimeCompletion,
+    F: Future<Output = Result<T, crate::error::Error>>,
+{
+    match timeout {
+        Some(duration) => {
+            match (Timeout::WithTimeout {
+                future,
+                sleep: R::sleep(duration),
+            })
+            .await
+            {
+                Err(crate::error::Error::Timeout) => Err(crate::error::Error::ConnectTimeout),
+                other => other,
+            }
+        }
+        None => future.await,
+    }
+}
+
 pin_project! {
     /// Body wrapper that enforces a timeout between data chunks.
     ///
