@@ -2,9 +2,7 @@ mod builder;
 mod builder_build;
 mod builder_build_local;
 mod builder_setters;
-mod connect;
 mod connect_handshake;
-mod connect_local;
 mod connect_protocol_local;
 mod connect_protocol_send;
 mod dispatch;
@@ -14,6 +12,8 @@ mod engine_send;
 mod execute;
 mod execute_local;
 mod execute_send;
+mod proxy_connect_local;
+mod proxy_connect_send;
 mod resolve;
 
 pub use builder::HttpEngineBuilder;
