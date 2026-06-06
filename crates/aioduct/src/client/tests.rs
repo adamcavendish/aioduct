@@ -644,7 +644,7 @@ mod builder_tests {
             .build()
             .unwrap();
         let result = client
-            .execute(
+            .execute_send(
                 Method::GET,
                 "http://example.com".parse().unwrap(),
                 http::HeaderMap::new(),
@@ -668,7 +668,7 @@ mod builder_tests {
             .build()
             .unwrap();
         let result = client
-            .execute(
+            .execute_send(
                 Method::GET,
                 "https://example.com".parse().unwrap(),
                 http::HeaderMap::new(),

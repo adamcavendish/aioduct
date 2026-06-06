@@ -20,7 +20,7 @@ use super::request_replay_send::retry_request_from_parts;
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
-    pub(crate) async fn execute_single(
+    pub(crate) async fn execute_single_send(
         &self,
         request: http::Request<RequestBodySend>,
         original_uri: &Uri,
@@ -29,7 +29,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         connect_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
-        self.execute_single_with_hint(
+        self.execute_single_with_hint_send(
             request,
             original_uri,
             ProtocolHint::Auto,
@@ -42,7 +42,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn execute_single_with_hint(
+    pub(crate) async fn execute_single_with_hint_send(
         &self,
         mut request: http::Request<RequestBodySend>,
         original_uri: &Uri,
@@ -705,10 +705,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             #[cfg(not(unix))]
             unreachable!()
         } else if let Some(ref chain) = self.core.proxy_chain {
-            self.connect_via_proxy_chain(chain, authority, is_https, connect_timeout)
+            self.connect_via_proxy_chain_send(chain, authority, is_https, connect_timeout)
                 .await?
         } else if let Some(ref proxy) = proxy {
-            self.connect_via_proxy(proxy, authority, is_https, connect_timeout)
+            self.connect_via_proxy_send(proxy, authority, is_https, connect_timeout)
                 .await?
         } else {
             let default_port = if is_https { 443 } else { 80 };

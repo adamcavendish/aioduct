@@ -14,7 +14,7 @@ use super::request_flow::{CacheLookupOutcome, PostExecuteAction};
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn execute(
+    pub(crate) async fn execute_send(
         &self,
         method: Method,
         original_uri: Uri,
@@ -123,7 +123,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             };
 
             let resp = match self
-                .execute_single(
+                .execute_single_send(
                     request,
                     &current_uri,
                     replay_bytes_for_stale,
@@ -196,7 +196,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         return Ok(Response::from_boxed(http_resp, current_uri));
                     }
                     return self
-                        .finalize_response(resp, &current_method, current_uri, &current_headers)
+                        .finalize_response_send(
+                            resp,
+                            &current_method,
+                            current_uri,
+                            &current_headers,
+                        )
                         .await;
                 }
                 PostExecuteAction::Redirect { uri, method, body } => {
@@ -269,7 +274,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         retry_request
             .headers_mut()
             .remove(http::header::CONTENT_LENGTH);
-        self.execute_single(
+        self.execute_single_send(
             retry_request,
             uri,
             replay_for_stale,
@@ -280,7 +285,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         .await
     }
 
-    pub(super) async fn finalize_response(
+    pub(super) async fn finalize_response_send(
         &self,
         resp: Response,
         method: &Method,

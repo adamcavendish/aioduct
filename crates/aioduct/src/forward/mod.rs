@@ -313,7 +313,7 @@ where
         let request = http::Request::from_parts(parts, boxed_body);
 
         // 10. Send via execute_single_with_hint (bypasses redirects, cookies, cache, decompression)
-        let send_fut = self.client.execute_single_with_hint(
+        let send_fut = self.client.execute_single_with_hint_send(
             request,
             &full_uri,
             self.protocol_hint,

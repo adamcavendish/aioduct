@@ -387,7 +387,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             .or(self.client.default_connect_timeout());
         let method = self.method.clone();
         let uri = self.uri.clone();
-        let execute_fut = self.client.execute(
+        let execute_fut = self.client.execute_send(
             self.method,
             self.uri,
             self.headers,
@@ -446,7 +446,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 None => None,
             };
 
-            let execute_fut = self.client.execute(
+            let execute_fut = self.client.execute_send(
                 self.method.clone(),
                 self.uri.clone(),
                 self.headers.clone(),
