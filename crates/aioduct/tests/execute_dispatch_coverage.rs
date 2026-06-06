@@ -3,7 +3,7 @@
 //! Integration tests targeting specific uncovered lines in:
 //! - client/execute_send.rs (stale-if-error, digest retry, HSTS, finalize_response)
 //! - client/execute_local.rs (mirrors execute_send)
-//! - client/dispatch.rs (connection_protocol, fire_connection_metrics, checkin)
+//! - client/connection_lifecycle.rs (connection_protocol, fire_connection_metrics, checkin)
 //! - client/dispatch_send.rs (stale retry, pool hit, H2 multiplex)
 
 use std::convert::Infallible;
@@ -693,7 +693,7 @@ async fn stale_if_error_serves_stale_on_connection_failure() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 12. Observer receives connection metrics on pool checkin
-//     Exercises dispatch.rs:44-61 (fire_connection_metrics).
+//     Exercises connection_lifecycle.rs:44-61 (fire_connection_metrics).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test]

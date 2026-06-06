@@ -304,3 +304,7 @@ impl<B: 'static> HttpEngineCore<B> {
         result
     }
 }
+
+#[cfg(test)]
+#[path = "dispatch/tests.rs"]
+mod tests;
