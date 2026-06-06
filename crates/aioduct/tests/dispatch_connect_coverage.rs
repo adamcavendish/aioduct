@@ -2,7 +2,7 @@
 
 //! Integration tests targeting uncovered lines in:
 //! - client/dispatch_send.rs — observer TLS timing, H2 multiplex checkout, stale retry observer
-//! - client/connect.rs — CONNECT tunnel success, proxy keepalive/fast_open, SOCKS4 proxy
+//! - client/proxy_connect_send.rs — CONNECT tunnel success, proxy keepalive/fast_open, SOCKS4 proxy
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -367,7 +367,7 @@ async fn concurrent_h2_multiplex_exercises_checkout_path() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 5. Successful HTTP CONNECT tunnel
-//    Exercises connect.rs:87-149 (full connect_tunnel success path).
+//    Exercises <proxy_connect_send.rs> (full connect_tunnel success path).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[cfg(feature = "rustls")]
@@ -456,7 +456,7 @@ async fn connect_tunnel_succeeds_through_proxy() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 6. Proxy connection with tcp_keepalive configured
-//    Exercises connect.rs:40-48 (keepalive on proxy connections).
+//    Exercises <proxy_connect_send.rs> (keepalive on proxy connections).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test]
@@ -517,7 +517,7 @@ async fn proxy_connection_with_keepalive() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 7. Proxy connection with tcp_fast_open enabled
-//    Exercises connect.rs:49-51 (fast_open on proxy connections).
+//    Exercises <proxy_connect_send.rs> (fast_open on proxy connections).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test]
@@ -576,7 +576,7 @@ async fn proxy_connection_with_fast_open() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 8. SOCKS4 proxy test
-//    Exercises connect.rs:66-78 (SOCKS4 proxy path).
+//    Exercises <proxy_connect_send.rs> (SOCKS4 proxy path).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -763,7 +763,7 @@ async fn observer_reports_stale_retry_on_rst() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 10. SOCKS5 proxy with keepalive and fast_open
-//     Exercises connect.rs:40-51 through SOCKS5 path.
+//     Exercises <proxy_connect_send.rs> through SOCKS5 path.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -849,7 +849,7 @@ async fn socks5_proxy_with_keepalive_and_fast_open() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 12. Successful CONNECT tunnel with proxy auth
-//     Exercises connect.rs:97-99 (connect_tunnel auth header).
+//     Exercises <proxy_connect_send.rs> (connect_tunnel auth header).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[cfg(feature = "rustls")]
