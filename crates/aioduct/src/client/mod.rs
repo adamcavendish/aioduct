@@ -3,6 +3,7 @@ mod builder_build;
 mod builder_build_local;
 mod builder_setters;
 mod connect;
+mod connect_handshake;
 mod connect_local;
 mod dispatch;
 mod dispatch_send;

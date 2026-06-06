@@ -146,7 +146,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     // HTTPS proxy for HTTP target: CONNECT through TLS pipe.
                     let port = target_authority.port_u16().unwrap_or(80);
                     let target = format!("{}:{port}", target_authority.host());
-                    let tunnel_stream = do_connect_handshake(tls_stream, proxy, &target).await?;
+                    let tunnel_stream =
+                        super::connect_handshake::do_connect_handshake(tls_stream, proxy, &target)
+                            .await?;
                     if self.core.http2_prior_knowledge {
                         self.connect_h2_prior_knowledge(tunnel_stream).await
                     } else {
@@ -167,7 +169,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             // HTTP proxy for HTTP target: CONNECT to create a raw pipe.
             let port = target_authority.port_u16().unwrap_or(80);
             let target = format!("{}:{port}", target_authority.host());
-            let tunnel_stream = do_connect_handshake(tcp_stream, proxy, &target).await?;
+            let tunnel_stream =
+                super::connect_handshake::do_connect_handshake(tcp_stream, proxy, &target).await?;
             if self.core.http2_prior_knowledge {
                 self.connect_h2_prior_knowledge(tunnel_stream).await
             } else {
@@ -190,7 +193,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     {
         let port = target_authority.port_u16().unwrap_or(443);
         let target = format!("{}:{port}", target_authority.host());
-        let tunnel_stream = do_connect_handshake(stream, proxy, &target).await?;
+        let tunnel_stream =
+            super::connect_handshake::do_connect_handshake(stream, proxy, &target).await?;
         #[cfg(feature = "rustls")]
         {
             let stream = tunnel_stream;
@@ -401,7 +405,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     second_authority.host(),
                     second_authority.port_u16().unwrap_or(second.default_port())
                 );
-                let stream = do_connect_handshake(tls_stream, first, &second_target).await?;
+                let stream = super::connect_handshake::do_connect_handshake(
+                    tls_stream,
+                    first,
+                    &second_target,
+                )
+                .await?;
                 if is_https {
                     self.connect_tunnel(stream, second, target_authority, connect_timeout)
                         .await
@@ -422,7 +431,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 second_authority.host(),
                 second_authority.port_u16().unwrap_or(second.default_port())
             );
-            let stream = do_connect_handshake(tcp_stream, first, &second_target).await?;
+            let stream =
+                super::connect_handshake::do_connect_handshake(tcp_stream, first, &second_target)
+                    .await?;
             self.connect_second_hop_send(
                 stream,
                 second,
@@ -734,169 +745,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         Err(Error::Tls(
             "HTTPS requires the `rustls` TLS backend feature".into(),
         ))
-    }
-}
-
-/// Perform an HTTP CONNECT handshake through `stream` to `target`.
-///
-/// Sends `CONNECT target HTTP/1.1`, reads the response, validates HTTP 200,
-/// and returns the stream unchanged on success. Type-preserving: the returned
-/// stream is the same `S` that was passed in, making it reusable for proxy
-/// chaining.
-async fn do_connect_handshake<S>(
-    mut stream: S,
-    proxy: &ProxyConfig,
-    target: &str,
-) -> Result<S, Error>
-where
-    S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
-{
-    let mut connect_msg = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
-    if let Some(auth_value) = proxy.connect_header(target) {
-        connect_msg.push_str(&format!("Proxy-Authorization: {auth_value}\r\n"));
-    }
-    connect_msg.push_str("\r\n");
-
-    let buf = connect_msg.into_bytes();
-    let mut written = 0;
-    while written < buf.len() {
-        let n = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_write(cx, &buf[written..]))
-            .await
-            .map_err(Error::Io)?;
-        if n == 0 {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::WriteZero,
-                "proxy closed connection during CONNECT handshake",
-            )));
-        }
-        written += n;
-    }
-
-    // Flush after write: completion-based runtimes may buffer writes
-    // internally; poll_flush ensures bytes reach the proxy before we
-    // start reading the CONNECT response.
-    std::future::poll_fn(|cx| Pin::new(&mut stream).poll_flush(cx))
-        .await
-        .map_err(Error::Io)?;
-
-    let mut resp_buf = Vec::with_capacity(256);
-    loop {
-        let mut one = [0u8; 1];
-        let mut read_buf = hyper::rt::ReadBuf::new(&mut one);
-        std::future::poll_fn(|cx| Pin::new(&mut stream).poll_read(cx, read_buf.unfilled()))
-            .await
-            .map_err(Error::Io)?;
-
-        if read_buf.filled().is_empty() {
-            return Err(Error::Other("proxy closed connection".into()));
-        }
-        resp_buf.push(one[0]);
-
-        if resp_buf.len() >= 4 && resp_buf[resp_buf.len() - 4..] == *b"\r\n\r\n" {
-            break;
-        }
-
-        if resp_buf.len() > 8192 {
-            return Err(Error::Other("CONNECT response too large".into()));
-        }
-    }
-
-    let resp_str = String::from_utf8_lossy(&resp_buf);
-    let status_line = resp_str
-        .lines()
-        .next()
-        .ok_or_else(|| Error::Other("empty CONNECT response".into()))?;
-
-    let status_code = parse_connect_status(status_line)?;
-    if status_code != 200 {
-        return Err(Error::Other(
-            format!("CONNECT tunnel failed: {status_line}").into(),
-        ));
-    }
-
-    Ok(stream)
-}
-
-pub(super) fn parse_connect_status(status_line: &str) -> Result<u16, Error> {
-    status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| Error::Other(format!("malformed CONNECT status line: {status_line}").into()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_connect_status;
-
-    #[test]
-    fn parse_200_ok() {
-        assert_eq!(parse_connect_status("HTTP/1.1 200 OK").unwrap(), 200);
-    }
-
-    #[test]
-    fn parse_200_connection_established() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 200 Connection Established").unwrap(),
-            200
-        );
-    }
-
-    #[test]
-    fn parse_407_proxy_auth_required() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 407 Proxy Authentication Required").unwrap(),
-            407
-        );
-    }
-
-    #[test]
-    fn parse_403_forbidden() {
-        assert_eq!(parse_connect_status("HTTP/1.1 403 Forbidden").unwrap(), 403);
-    }
-
-    #[test]
-    fn malformed_status_line_returns_error() {
-        assert!(parse_connect_status("garbage").is_err());
-    }
-
-    #[test]
-    fn empty_status_line_returns_error() {
-        assert!(parse_connect_status("").is_err());
-    }
-
-    #[test]
-    fn status_with_200_in_reason_is_not_200() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 403 Contains 200 in text").unwrap(),
-            403
-        );
-    }
-
-    #[test]
-    fn parse_non_numeric_status_code_returns_error() {
-        assert!(parse_connect_status("HTTP/1.1 abc Forbidden").is_err());
-    }
-
-    #[test]
-    fn parse_no_second_token_returns_error() {
-        assert!(parse_connect_status("HTTP/1.1").is_err());
-    }
-
-    #[test]
-    fn parse_301_redirect() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 301 Moved Permanently").unwrap(),
-            301
-        );
-    }
-
-    #[test]
-    fn parse_503_service_unavailable() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 503 Service Unavailable").unwrap(),
-            503
-        );
     }
 }
 
@@ -1679,107 +1527,6 @@ mod tokio_tests {
             err.contains("too large"),
             "error should mention response too large, got: {err}"
         );
-    }
-
-    // --- do_connect_handshake tests ---
-
-    #[tokio::test]
-    async fn do_connect_handshake_succeeds_with_200() {
-        let (client_io, mut server_io) = tokio::io::duplex(8192);
-        let target = "target.example.com:443".to_string();
-
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut buf = [0u8; 4096];
-            let n = server_io.read(&mut buf).await.unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]);
-            assert!(
-                req.starts_with("CONNECT target.example.com:443"),
-                "got: {req}"
-            );
-            assert!(req.contains("Host: target.example.com:443"), "got: {req}");
-            server_io
-                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                .await
-                .unwrap();
-        });
-
-        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
-        let stream = TokioIo::new(client_io);
-        let result = super::do_connect_handshake(stream, &proxy, &target).await;
-        assert!(result.is_ok(), "handshake should succeed");
-    }
-
-    #[tokio::test]
-    async fn do_connect_handshake_fails_on_407() {
-        let (client_io, mut server_io) = tokio::io::duplex(8192);
-        let target = "target.example.com:443".to_string();
-
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut buf = [0u8; 4096];
-            let _ = server_io.read(&mut buf).await.unwrap();
-            server_io
-                .write_all(
-                    b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n",
-                )
-                .await
-                .unwrap();
-        });
-
-        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
-        let stream = TokioIo::new(client_io);
-        let result = super::do_connect_handshake(stream, &proxy, &target).await;
-        assert!(result.is_err());
-        let err = format!("{}", result.err().unwrap());
-        assert!(err.contains("407"), "error should contain 407, got: {err}");
-    }
-
-    #[tokio::test]
-    async fn do_connect_handshake_fails_on_malformed_response() {
-        let (client_io, mut server_io) = tokio::io::duplex(8192);
-        let target = "target.example.com:443".to_string();
-
-        tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt;
-            server_io
-                .write_all(b"garbage without status\r\n\r\n")
-                .await
-                .unwrap();
-        });
-
-        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
-        let stream = TokioIo::new(client_io);
-        let result = super::do_connect_handshake(stream, &proxy, &target).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn do_connect_handshake_includes_proxy_auth() {
-        let (client_io, mut server_io) = tokio::io::duplex(8192);
-        let target = "target.example.com:443".to_string();
-
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut buf = [0u8; 4096];
-            let n = server_io.read(&mut buf).await.unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]);
-            assert!(
-                req.contains("Proxy-Authorization:"),
-                "should include auth header, got: {req}"
-            );
-            server_io
-                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                .await
-                .unwrap();
-        });
-
-        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080")
-            .unwrap()
-            .basic_auth("user", "pass");
-        let stream = TokioIo::new(client_io);
-        let result = super::do_connect_handshake(stream, &proxy, &target).await;
-        assert!(result.is_ok());
     }
 
     // --- connect_via_proxy_chain tests ---
