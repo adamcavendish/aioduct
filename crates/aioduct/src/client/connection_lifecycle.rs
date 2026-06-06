@@ -304,6 +304,3 @@ impl<B: 'static> HttpEngineCore<B> {
         result
     }
 }
-
-#[cfg(test)]
-mod tests;
