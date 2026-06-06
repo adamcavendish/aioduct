@@ -64,26 +64,60 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             } else {
                 crate::socks5::Socks5Dns::Local
             };
-            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-            }
-            crate::socks5::socks5_handshake(&mut std_stream, host, port, proxy.auth.as_ref(), dns)
-                .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
-            }
-            let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            if is_https {
-                self.connect_tls(tcp_stream, host).await
+            // Pre-resolve for Socks5Dns::Local
+            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
+                let addr = self.core.resolve_authority(target_authority, port).await?;
+                Some(addr.ip())
             } else {
-                self.connect_h1(tcp_stream).await
+                None
+            };
+            let mut stream = tcp_stream;
+            if let Some(timeout) = connect_timeout {
+                let handshake = crate::socks5::socks5_handshake_async(
+                    &mut stream,
+                    host,
+                    port,
+                    proxy.auth.as_ref(),
+                    dns,
+                    resolved_addr,
+                );
+                #[cfg(feature = "tokio")]
+                {
+                    tokio::time::timeout(timeout, handshake)
+                        .await
+                        .map_err(|_| {
+                            Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "SOCKS5 handshake timed out",
+                            ))
+                        })?
+                        .map_err(Error::Io)?;
+                }
+                #[cfg(not(feature = "tokio"))]
+                {
+                    // TODO: use a runtime-generic timeout (R::sleep + select)
+                    // instead of silently dropping connect_timeout on smol/compio builds.
+                    let _ = timeout;
+                    handshake.await.map_err(Error::Io)?;
+                }
+            } else {
+                crate::socks5::socks5_handshake_async(
+                    &mut stream,
+                    host,
+                    port,
+                    proxy.auth.as_ref(),
+                    dns,
+                    resolved_addr,
+                )
+                .await
+                .map_err(Error::Io)?;
+            }
+            if is_https {
+                self.connect_tls(stream, host).await
+            } else if self.core.http2_prior_knowledge {
+                self.connect_h2_prior_knowledge(stream).await
+            } else {
+                self.connect_h1(stream).await
             }
         } else if proxy.scheme == crate::proxy::ProxyScheme::Socks4 {
             let host = target_authority.host();
@@ -108,6 +142,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
                 self.connect_tls(tcp_stream, host).await
+            } else if self.core.http2_prior_knowledge {
+                self.connect_h2_prior_knowledge(tcp_stream).await
             } else {
                 self.connect_h1(tcp_stream).await
             }
@@ -304,28 +340,56 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             } else {
                 crate::socks5::Socks5Dns::Local
             };
-            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
+            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
+                let addr = self
+                    .core
+                    .resolve_authority(second_authority, second_default_port)
+                    .await?;
+                Some(addr.ip())
+            } else {
+                None
+            };
+            let mut stream = tcp_stream;
             if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
+                let handshake = crate::socks5::socks5_handshake_async(
+                    &mut stream,
+                    second_host,
+                    second_port,
+                    first.auth.as_ref(),
+                    dns,
+                    resolved_addr,
+                );
+                #[cfg(feature = "tokio")]
+                {
+                    tokio::time::timeout(timeout, handshake)
+                        .await
+                        .map_err(|_| {
+                            Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "SOCKS5 handshake timed out",
+                            ))
+                        })?
+                        .map_err(Error::Io)?;
+                }
+                #[cfg(not(feature = "tokio"))]
+                {
+                    // TODO: use a runtime-generic timeout (R::sleep + select)
+                    // instead of silently dropping connect_timeout on smol/compio builds.
+                    let _ = timeout;
+                    handshake.await.map_err(Error::Io)?;
+                }
+            } else {
+                crate::socks5::socks5_handshake_async(
+                    &mut stream,
+                    second_host,
+                    second_port,
+                    first.auth.as_ref(),
+                    dns,
+                    resolved_addr,
+                )
+                .await
+                .map_err(Error::Io)?;
             }
-            crate::socks5::socks5_handshake(
-                &mut std_stream,
-                second_host,
-                second_port,
-                first.auth.as_ref(),
-                dns,
-            )
-            .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
-            }
-            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             self.connect_second_hop_send(
                 stream,
                 second,
@@ -441,32 +505,62 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             } else {
                 crate::socks5::Socks5Dns::Local
             };
-            let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
-            if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-            }
-            crate::socks5::socks5_handshake(
-                &mut std_stream,
-                target_host,
-                target_port,
-                second.auth.as_ref(),
-                dns,
-            )
-            .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
-            }
-            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            if is_https {
-                self.connect_tls(stream, target_host).await
+            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
+                let addr = self
+                    .core
+                    .resolve_authority(target_authority, target_port)
+                    .await?;
+                Some(addr.ip())
             } else {
-                self.connect_plaintext(stream).await
+                None
+            };
+            let mut s = stream;
+            if let Some(timeout) = connect_timeout {
+                let handshake = crate::socks5::socks5_handshake_async(
+                    &mut s,
+                    target_host,
+                    target_port,
+                    second.auth.as_ref(),
+                    dns,
+                    resolved_addr,
+                );
+                #[cfg(feature = "tokio")]
+                {
+                    tokio::time::timeout(timeout, handshake)
+                        .await
+                        .map_err(|_| {
+                            Error::Io(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "SOCKS5 handshake timed out",
+                            ))
+                        })?
+                        .map_err(Error::Io)?;
+                }
+                #[cfg(not(feature = "tokio"))]
+                {
+                    // TODO: use a runtime-generic timeout (R::sleep + select)
+                    // instead of silently dropping connect_timeout on smol/compio builds.
+                    let _ = timeout;
+                    handshake.await.map_err(Error::Io)?;
+                }
+            } else {
+                crate::socks5::socks5_handshake_async(
+                    &mut s,
+                    target_host,
+                    target_port,
+                    second.auth.as_ref(),
+                    dns,
+                    resolved_addr,
+                )
+                .await
+                .map_err(Error::Io)?;
+            }
+            if is_https {
+                self.connect_tls(s, target_host).await
+            } else if self.core.http2_prior_knowledge {
+                self.connect_h2_prior_knowledge(s).await
+            } else {
+                self.connect_h1(s).await
             }
         } else if second.scheme == crate::proxy::ProxyScheme::Socks4 {
             let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
