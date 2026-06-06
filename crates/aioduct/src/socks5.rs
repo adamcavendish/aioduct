@@ -1,5 +1,9 @@
-use std::io::{self, Read, Write};
-use std::net::{IpAddr, TcpStream, ToSocketAddrs};
+use std::io::{self};
+#[cfg(test)]
+use std::io::{Read, Write};
+use std::net::IpAddr;
+#[cfg(test)]
+use std::net::{TcpStream, ToSocketAddrs};
 
 use crate::proxy::ProxyAuth;
 
@@ -23,6 +27,7 @@ pub(crate) enum Socks5Dns {
     Remote,
 }
 
+#[cfg(test)]
 pub(crate) fn socks5_handshake(
     stream: &mut TcpStream,
     host: &str,
@@ -187,6 +192,227 @@ pub(crate) fn socks5_handshake(
     Ok(())
 }
 
+/// Async version of [`socks5_handshake`] that works on any hyper-compatible stream.
+///
+/// Unlike the blocking version, this avoids `into_std_tcp`/`from_std_tcp` round-trips
+/// that can cause TCP resets with some SOCKS5 proxies (e.g., Clash).
+///
+/// For `Socks5Dns::Local`, the caller must pre-resolve and pass `Some(addr)`.
+pub(crate) async fn socks5_handshake_async<S>(
+    stream: &mut S,
+    host: &str,
+    port: u16,
+    auth: Option<&ProxyAuth>,
+    dns: Socks5Dns,
+    resolved_addr: Option<IpAddr>,
+) -> io::Result<()>
+where
+    S: hyper::rt::Read + hyper::rt::Write + Unpin,
+{
+    use std::future::poll_fn;
+    use std::pin::Pin;
+
+    // Helper: async write_all
+    async fn write_all<S: hyper::rt::Write + Unpin>(stream: &mut S, buf: &[u8]) -> io::Result<()> {
+        let mut written = 0;
+        while written < buf.len() {
+            let n = poll_fn(|cx| Pin::new(&mut *stream).poll_write(cx, &buf[written..])).await?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "SOCKS5: proxy closed connection",
+                ));
+            }
+            written += n;
+        }
+        poll_fn(|cx| Pin::new(&mut *stream).poll_flush(cx)).await?;
+        Ok(())
+    }
+
+    // Helper: async read_exact
+    async fn read_exact<S: hyper::rt::Read + Unpin>(
+        stream: &mut S,
+        buf: &mut [u8],
+    ) -> io::Result<()> {
+        let mut read = 0;
+        while read < buf.len() {
+            let mut remaining = hyper::rt::ReadBuf::new(&mut buf[read..]);
+            poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, remaining.unfilled())).await?;
+            let n = remaining.filled().len();
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "SOCKS5: proxy closed connection",
+                ));
+            }
+            read += n;
+        }
+        Ok(())
+    }
+
+    // 1. Method negotiation
+    let methods: Vec<u8> = if auth.is_some() {
+        vec![SOCKS5_VERSION, 2, AUTH_NONE, AUTH_USERNAME_PASSWORD]
+    } else {
+        vec![SOCKS5_VERSION, 1, AUTH_NONE]
+    };
+    write_all(stream, &methods).await?;
+
+    let mut resp = [0u8; 2];
+    read_exact(stream, &mut resp).await?;
+
+    if resp[0] != SOCKS5_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("SOCKS5: unexpected version {}", resp[0]),
+        ));
+    }
+
+    match resp[1] {
+        AUTH_NONE => {}
+        AUTH_USERNAME_PASSWORD => {
+            let auth = auth.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "SOCKS5: server requires auth but none provided",
+                )
+            })?;
+            let mut auth_msg = Vec::with_capacity(3 + auth.username.len() + auth.password.len());
+            auth_msg.push(USERNAME_PASSWORD_VERSION);
+            if auth.username.len() > 255 || auth.password.len() > 255 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "SOCKS5: username and password must be at most 255 bytes",
+                ));
+            }
+            auth_msg.push(auth.username.len() as u8);
+            auth_msg.extend_from_slice(auth.username.as_bytes());
+            auth_msg.push(auth.password.len() as u8);
+            auth_msg.extend_from_slice(auth.password.as_bytes());
+            write_all(stream, &auth_msg).await?;
+
+            let mut auth_resp = [0u8; 2];
+            read_exact(stream, &mut auth_resp).await?;
+            if auth_resp[1] != 0x00 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "SOCKS5: authentication failed",
+                ));
+            }
+        }
+        AUTH_NO_ACCEPTABLE => {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "SOCKS5: no acceptable authentication method",
+            ));
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("SOCKS5: unsupported auth method {other}"),
+            ));
+        }
+    }
+
+    // 2. CONNECT request
+    let mut connect_msg = Vec::with_capacity(32);
+    connect_msg.push(SOCKS5_VERSION);
+    connect_msg.push(CMD_CONNECT);
+    connect_msg.push(0x00);
+
+    match dns {
+        Socks5Dns::Local => {
+            let addr = resolved_addr.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "SOCKS5: resolved_addr required for Socks5Dns::Local",
+                )
+            })?;
+            match addr {
+                IpAddr::V4(v4) => {
+                    connect_msg.push(ATYP_IPV4);
+                    connect_msg.extend_from_slice(&v4.octets());
+                }
+                IpAddr::V6(v6) => {
+                    connect_msg.push(ATYP_IPV6);
+                    connect_msg.extend_from_slice(&v6.octets());
+                }
+            }
+        }
+        Socks5Dns::Remote => {
+            let host_bytes = host.as_bytes();
+            if host_bytes.len() > 255 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "SOCKS5: hostname too long",
+                ));
+            }
+            connect_msg.push(ATYP_DOMAIN);
+            connect_msg.push(host_bytes.len() as u8);
+            connect_msg.extend_from_slice(host_bytes);
+        }
+    }
+    connect_msg.push((port >> 8) as u8);
+    connect_msg.push(port as u8);
+    write_all(stream, &connect_msg).await?;
+
+    // 3. Read reply
+    let mut reply_header = [0u8; 4];
+    read_exact(stream, &mut reply_header).await?;
+
+    if reply_header[0] != SOCKS5_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("SOCKS5: unexpected reply version {}", reply_header[0]),
+        ));
+    }
+
+    if reply_header[1] != REPLY_SUCCESS {
+        let msg = match reply_header[1] {
+            0x01 => "general failure",
+            0x02 => "connection not allowed by ruleset",
+            0x03 => "network unreachable",
+            0x04 => "host unreachable",
+            0x05 => "connection refused",
+            0x06 => "TTL expired",
+            0x07 => "command not supported",
+            0x08 => "address type not supported",
+            _ => "unknown error",
+        };
+        return Err(io::Error::other(format!(
+            "SOCKS5: {msg} (code 0x{:02x})",
+            reply_header[1]
+        )));
+    }
+
+    // Read and discard the bound address
+    match reply_header[3] {
+        0x01 => {
+            let mut buf = [0u8; 6];
+            read_exact(stream, &mut buf).await?;
+        }
+        0x03 => {
+            let mut len_buf = [0u8; 1];
+            read_exact(stream, &mut len_buf).await?;
+            let mut buf = vec![0u8; len_buf[0] as usize + 2];
+            read_exact(stream, &mut buf).await?;
+        }
+        0x04 => {
+            let mut buf = [0u8; 18];
+            read_exact(stream, &mut buf).await?;
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("SOCKS5: unknown address type {other}"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
 fn resolve_host(host: &str, port: u16) -> io::Result<IpAddr> {
     let addr = (host, port)
         .to_socket_addrs()?

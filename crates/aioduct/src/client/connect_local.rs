@@ -64,26 +64,32 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             } else {
                 crate::socks5::Socks5Dns::Local
             };
-            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-            }
-            crate::socks5::socks5_handshake(&mut std_stream, host, port, proxy.auth.as_ref(), dns)
-                .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
-            }
-            let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            if is_https {
-                self.connect_tls_local(tcp_stream, host).await
+            // Pre-resolve for Socks5Dns::Local
+            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
+                let addr = self.core.resolve_authority(target_authority, port).await?;
+                Some(addr.ip())
             } else {
-                self.connect_h1_local(tcp_stream).await
+                None
+            };
+            let mut stream = tcp_stream;
+            // TODO: wrap with connect_timeout using a runtime-generic timeout
+            // abstraction (like the send path's tokio::time::timeout with cfg gate).
+            crate::socks5::socks5_handshake_async(
+                &mut stream,
+                host,
+                port,
+                proxy.auth.as_ref(),
+                dns,
+                resolved_addr,
+            )
+            .await
+            .map_err(Error::Io)?;
+            if is_https {
+                self.connect_tls_local(stream, host).await
+            } else if self.core.http2_prior_knowledge {
+                self.connect_h2_prior_knowledge_local(stream).await
+            } else {
+                self.connect_h1_local(stream).await
             }
         } else if proxy.scheme == crate::proxy::ProxyScheme::Socks4 {
             let host = target_authority.host();
@@ -108,6 +114,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
                 self.connect_tls_local(tcp_stream, host).await
+            } else if self.core.http2_prior_knowledge {
+                self.connect_h2_prior_knowledge_local(tcp_stream).await
             } else {
                 self.connect_h1_local(tcp_stream).await
             }
@@ -319,28 +327,26 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             } else {
                 crate::socks5::Socks5Dns::Local
             };
-            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-            }
-            crate::socks5::socks5_handshake(
-                &mut std_stream,
+            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
+                let addr = self
+                    .core
+                    .resolve_authority(second_authority, second_default_port)
+                    .await?;
+                Some(addr.ip())
+            } else {
+                None
+            };
+            let mut stream = tcp_stream;
+            crate::socks5::socks5_handshake_async(
+                &mut stream,
                 second_host,
                 second_port,
                 first.auth.as_ref(),
                 dns,
+                resolved_addr,
             )
+            .await
             .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
-            }
-            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             self.connect_second_hop_local(
                 stream,
                 second,
@@ -457,32 +463,32 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             } else {
                 crate::socks5::Socks5Dns::Local
             };
-            let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
-            if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-            }
-            crate::socks5::socks5_handshake(
-                &mut std_stream,
+            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
+                let addr = self
+                    .core
+                    .resolve_authority(target_authority, target_port)
+                    .await?;
+                Some(addr.ip())
+            } else {
+                None
+            };
+            let mut s = stream;
+            crate::socks5::socks5_handshake_async(
+                &mut s,
                 target_host,
                 target_port,
                 second.auth.as_ref(),
                 dns,
+                resolved_addr,
             )
+            .await
             .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
-            }
-            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
-                self.connect_tls_local(stream, target_host).await
+                self.connect_tls_local(s, target_host).await
+            } else if self.core.http2_prior_knowledge {
+                self.connect_h2_prior_knowledge_local(s).await
             } else {
-                self.connect_plaintext_local(stream).await
+                self.connect_h1_local(s).await
             }
         } else if second.scheme == crate::proxy::ProxyScheme::Socks4 {
             let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
