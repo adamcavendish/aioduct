@@ -9,7 +9,7 @@ use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 use super::HttpEngineSend;
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
-    pub(super) async fn connect_via_proxy(
+    pub(super) async fn connect_via_proxy_send(
         &self,
         proxy: &ProxyConfig,
         target_authority: &http::uri::Authority,
@@ -138,7 +138,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .await
                 .map_err(|e| Error::Tls(Box::new(e)))?;
                 if is_https {
-                    self.connect_tunnel(tls_stream, proxy, target_authority, connect_timeout)
+                    self.connect_tunnel_send(tls_stream, proxy, target_authority, connect_timeout)
                         .await
                 } else {
                     // HTTPS proxy for HTTP target: CONNECT through TLS pipe.
@@ -161,7 +161,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 ))
             }
         } else if is_https {
-            self.connect_tunnel(tcp_stream, proxy, target_authority, connect_timeout)
+            self.connect_tunnel_send(tcp_stream, proxy, target_authority, connect_timeout)
                 .await
         } else {
             // HTTP proxy for HTTP target: CONNECT to create a raw pipe.
@@ -179,7 +179,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
     /// Perform an HTTP CONNECT handshake through `stream` to `target`.
     /// Returns the stream unchanged on success (type-preserving for chaining).
-    async fn connect_tunnel<S>(
+    async fn connect_tunnel_send<S>(
         &self,
         stream: S,
         proxy: &ProxyConfig,
@@ -410,7 +410,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 )
                 .await?;
                 if is_https {
-                    self.connect_tunnel(stream, second, target_authority, connect_timeout)
+                    self.connect_tunnel_send(stream, second, target_authority, connect_timeout)
                         .await
                 } else {
                     self.connect_plaintext(stream).await
@@ -544,7 +544,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .await
                 .map_err(|e| Error::Tls(Box::new(e)))?;
                 if is_https {
-                    self.connect_tunnel(tls_stream, second, target_authority, connect_timeout)
+                    self.connect_tunnel_send(tls_stream, second, target_authority, connect_timeout)
                         .await
                 } else {
                     self.connect_plaintext(tls_stream).await
@@ -559,7 +559,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         } else {
             // HTTP: CONNECT through second to reach target
             if is_https {
-                self.connect_tunnel(stream, second, target_authority, connect_timeout)
+                self.connect_tunnel_send(stream, second, target_authority, connect_timeout)
                     .await
             } else {
                 self.connect_plaintext(stream).await
@@ -567,7 +567,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         }
     }
 
-    pub(super) async fn connect_via_proxy_chain(
+    pub(super) async fn connect_via_proxy_chain_send(
         &self,
         chain: &crate::proxy::ProxyChain,
         target_authority: &http::uri::Authority,
@@ -577,7 +577,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         match chain.len() {
             0 => Err(Error::Other("empty proxy chain".into())),
             1 => {
-                self.connect_via_proxy(
+                self.connect_via_proxy_send(
                     &chain.proxies[0],
                     target_authority,
                     is_https,
@@ -672,7 +672,7 @@ mod tokio_tests {
         // connect_tunnel will succeed the CONNECT handshake but then try TLS
         // which will fail since no TLS connector is configured (make_engine() has no TLS)
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
         assert!(
             result.is_err(),
@@ -720,7 +720,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
         match result {
             Err(crate::Error::Tls(err)) => {
@@ -787,7 +787,7 @@ mod tokio_tests {
         // handshake should succeed and the capture should show the target
         // includes :443.
         let _result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
 
         let captured = captured_rx.try_recv().unwrap();
@@ -843,7 +843,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "[::1]".parse().unwrap();
 
         let _result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
 
         let captured = captured_rx.try_recv().unwrap();
@@ -899,7 +899,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "example.com:8443".parse().unwrap();
 
         let _result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
 
         let captured = captured_rx.try_recv().unwrap();
@@ -949,7 +949,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1001,7 +1001,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1063,7 +1063,7 @@ mod tokio_tests {
         // connect_tunnel will succeed the CONNECT handshake, send auth header,
         // then TLS fails because no TLS connector configured
         let _result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
 
         // Verify the captured request contains the Proxy-Authorization header
@@ -1117,7 +1117,7 @@ mod tokio_tests {
         let target_authority: http::uri::Authority = "target.example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_tunnel(tcp_stream, &proxy, &target_authority, None)
+            .connect_tunnel_send(tcp_stream, &proxy, &target_authority, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1135,7 +1135,7 @@ mod tokio_tests {
         let chain = crate::proxy::ProxyChain::new(vec![]);
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
         let result = engine
-            .connect_via_proxy_chain(&chain, &authority, true, None)
+            .connect_via_proxy_chain_send(&chain, &authority, true, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1154,7 +1154,7 @@ mod tokio_tests {
         let chain = crate::proxy::ProxyChain::new(vec![p1, p2, p3]);
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
         let result = engine
-            .connect_via_proxy_chain(&chain, &authority, true, None)
+            .connect_via_proxy_chain_send(&chain, &authority, true, None)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -1237,7 +1237,7 @@ mod tokio_tests {
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_via_proxy_chain(&chain, &authority, true, None)
+            .connect_via_proxy_chain_send(&chain, &authority, true, None)
             .await;
         // Should open both tunnels then fail at TLS to the target
         assert!(result.is_err());
