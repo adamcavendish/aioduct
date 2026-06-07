@@ -25,7 +25,7 @@ use aioduct_test_server::h1::h1_server_with;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 1. HSTS upgrade during execute loop
 //    Exercises execute_send.rs:30 (maybe_upgrade_hsts on the original URI)
-//    and execute.rs:22-36 (maybe_upgrade_hsts implementation).
+//    and execute_send.rs:22-36 (maybe_upgrade_hsts implementation).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test]
