@@ -1088,7 +1088,7 @@ async fn redirect_stop_policy_allows_invalid_location() {
 // Tests below expose real bugs or verify subtle edge cases in redirect handling.
 
 // BUG: 307 redirect with streaming body silently drops the body.
-// execute.rs:121-122 returns (current_method, body_for_replay) where body_for_replay
+// execute_send.rs:121-122 returns (current_method, body_for_replay) where body_for_replay
 // is None for streaming bodies — the redirect follows as POST with an empty body.
 #[tokio::test]
 async fn redirect_307_streaming_body_should_not_silently_lose_body() {
@@ -2205,7 +2205,7 @@ async fn https_only_should_block_http_redirect_target() {
     // This is documented in execute_send.rs:24 — only original_uri is checked.
 }
 
-// BUG: execute.rs:141-145 sets Referer unconditionally, even on HTTPS→HTTP redirect.
+// BUG: execute_send.rs:141-145 sets Referer unconditionally, even on HTTPS→HTTP redirect.
 // Per RFC 7231 §5.5.2, Referer MUST NOT be sent when going from HTTPS to HTTP.
 #[tokio::test]
 async fn referer_should_not_leak_on_https_to_http_downgrade() {
@@ -2268,14 +2268,14 @@ async fn referer_should_not_leak_on_https_to_http_downgrade() {
     let _ = resp.text().await.unwrap();
 
     // For HTTP→HTTP redirects, Referer is fine. But the code sets it unconditionally
-    // (execute.rs:141-145), including on HTTPS→HTTP downgrades.
+    // (execute_send.rs:141-145), including on HTTPS→HTTP downgrades.
     // This test documents the behavior: Referer IS set on redirects.
     let referer = captured_referer.lock().unwrap().clone();
     assert!(
         referer.is_some(),
         "Referer should be set on same-scheme redirect (confirming referer(true) works)"
     );
-    // The real bug: execute.rs:141-145 doesn't check if current scheme is HTTPS
+    // The real bug: execute_send.rs:141-145 doesn't check if current scheme is HTTPS
     // and next scheme is HTTP. It sets Referer unconditionally.
 }
 
@@ -2337,7 +2337,7 @@ async fn custom_redirect_policy_infinite_loop_protection() {
     );
 }
 
-// BUG: execute.rs:137 strips Cookie on cross-origin redirect, but doesn't strip
+// BUG: execute_send.rs:137 strips Cookie on cross-origin redirect, but doesn't strip
 // all sensitive headers. For instance, custom Authorization-like headers set by
 // the user (e.g., X-Api-Key) are preserved across origins.
 // This documents the feature gap of not having a configurable sensitive-header list.
@@ -2406,7 +2406,7 @@ async fn redirect_cross_origin_preserves_custom_sensitive_headers() {
         api_key.is_none(),
         "FEATURE GAP: Custom sensitive headers like X-Api-Key are leaked across \
          cross-origin redirects. Only Authorization, Cookie, and Proxy-Authorization \
-         are stripped (execute.rs:136-138). Got X-Api-Key={} on cross-origin target.",
+         are stripped (execute_send.rs:136-138). Got X-Api-Key={} on cross-origin target.",
         api_key.unwrap_or_default()
     );
 }
