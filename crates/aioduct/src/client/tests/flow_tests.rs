@@ -1,6 +1,7 @@
 #![cfg(feature = "tokio")]
 
 use super::super::*;
+#[cfg(feature = "rustls")]
 use super::builder_tests::install_crypto;
 use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 #[cfg(all(feature = "http3", feature = "rustls", feature = "tokio"))]
