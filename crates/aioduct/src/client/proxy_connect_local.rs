@@ -70,22 +70,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 None
             };
             let mut stream = tcp_stream;
-            crate::timeout::connect_timeout::<R, _, _>(
-                async {
-                    crate::socks5::socks5_handshake_async(
-                        &mut stream,
-                        host,
-                        port,
-                        proxy.auth.as_ref(),
-                        dns,
-                        resolved_addr,
-                    )
-                    .await
-                    .map_err(Error::Io)
-                },
-                connect_timeout,
+            crate::socks5::socks5_handshake_async(
+                &mut stream,
+                host,
+                port,
+                proxy.auth.as_ref(),
+                dns,
+                resolved_addr,
             )
-            .await?;
+            .await
+            .map_err(Error::Io)?;
             if is_https {
                 self.connect_tls_local(stream, host).await
             } else if self.core.http2_prior_knowledge {
@@ -342,22 +336,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 None
             };
             let mut stream = tcp_stream;
-            crate::timeout::connect_timeout::<R, _, _>(
-                async {
-                    crate::socks5::socks5_handshake_async(
-                        &mut stream,
-                        second_host,
-                        second_port,
-                        first.auth.as_ref(),
-                        dns,
-                        resolved_addr,
-                    )
-                    .await
-                    .map_err(Error::Io)
-                },
-                connect_timeout,
+            crate::socks5::socks5_handshake_async(
+                &mut stream,
+                second_host,
+                second_port,
+                first.auth.as_ref(),
+                dns,
+                resolved_addr,
             )
-            .await?;
+            .await
+            .map_err(Error::Io)?;
             self.connect_second_hop_local(
                 stream,
                 second,
@@ -491,22 +479,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 None
             };
             let mut s = stream;
-            crate::timeout::connect_timeout::<R, _, _>(
-                async {
-                    crate::socks5::socks5_handshake_async(
-                        &mut s,
-                        target_host,
-                        target_port,
-                        second.auth.as_ref(),
-                        dns,
-                        resolved_addr,
-                    )
-                    .await
-                    .map_err(Error::Io)
-                },
-                connect_timeout,
+            crate::socks5::socks5_handshake_async(
+                &mut s,
+                target_host,
+                target_port,
+                second.auth.as_ref(),
+                dns,
+                resolved_addr,
             )
-            .await?;
+            .await
+            .map_err(Error::Io)?;
             if is_https {
                 self.connect_tls_local(s, target_host).await
             } else if self.core.http2_prior_knowledge {

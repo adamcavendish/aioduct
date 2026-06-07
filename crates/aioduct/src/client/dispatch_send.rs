@@ -434,16 +434,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .await
                     }
                 };
-                let (mut pooled, addr) = match connect_timeout {
-                    Some(duration) => {
-                        crate::timeout::Timeout::WithTimeout {
-                            future: h3_connect_fut,
-                            sleep: R::sleep(duration),
-                        }
-                        .await?
-                    }
-                    None => h3_connect_fut.await?,
-                };
+                let (mut pooled, addr) =
+                    crate::timeout::connect_timeout::<R, _, _>(h3_connect_fut, connect_timeout)
+                        .await?;
                 self.core.notify(
                     request.method(),
                     original_uri,
@@ -691,16 +684,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         "unix socket support requires tokio or smol feature".into(),
                     ))
                 };
-                match connect_timeout {
-                    Some(duration) => {
-                        crate::timeout::Timeout::WithTimeout {
-                            future: connect_fut,
-                            sleep: R::sleep(duration),
-                        }
-                        .await?
-                    }
-                    None => connect_fut.await?,
-                }
+                crate::timeout::connect_timeout::<R, _, _>(connect_fut, connect_timeout).await?
             }
             #[cfg(not(unix))]
             unreachable!()
@@ -877,16 +861,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 Ok::<(PooledConnection<RequestBodySend>, Instant), Error>((conn, Instant::now()))
             };
 
-            let (conn, connect_done) = match connect_timeout {
-                Some(duration) => {
-                    crate::timeout::Timeout::WithTimeout {
-                        future: connect_fut,
-                        sleep: R::sleep(duration),
-                    }
-                    .await?
-                }
-                None => connect_fut.await?,
-            };
+            let (conn, connect_done) =
+                crate::timeout::connect_timeout::<R, _, _>(connect_fut, connect_timeout).await?;
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             if is_https {
                 if let Some(tls_dur) = conn.tls_handshake_duration {

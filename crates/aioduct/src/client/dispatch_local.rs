@@ -381,16 +381,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 Ok::<(PooledConnection<RequestBodyLocal>, Instant), Error>((conn, Instant::now()))
             };
 
-            let (conn, connect_done) = match connect_timeout {
-                Some(duration) => {
-                    crate::timeout::Timeout::WithTimeout {
-                        future: connect_fut,
-                        sleep: R::sleep(duration),
-                    }
-                    .await?
-                }
-                None => connect_fut.await?,
-            };
+            let (conn, connect_done) =
+                crate::timeout::connect_timeout::<R, _, _>(connect_fut, connect_timeout).await?;
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             if is_https {
                 if let Some(tls_dur) = conn.tls_handshake_duration {
