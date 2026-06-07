@@ -31,11 +31,7 @@ mod tokio_tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
@@ -53,11 +49,7 @@ mod tokio_tests {
 
             // Respond with 200
             server_io
-                .write_all(
-                    b"HTTP/1.1 200 Connection Established
-
-",
-                )
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
 
@@ -102,11 +94,7 @@ mod tokio_tests {
                     return;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
@@ -114,11 +102,7 @@ mod tokio_tests {
             let req_str = String::from_utf8_lossy(&request);
             assert!(req_str.starts_with("CONNECT target.example.com:443 "));
             server_io
-                .write_all(
-                    b"HTTP/1.1 200 Connection Established
-
-",
-                )
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
         });
@@ -171,11 +155,7 @@ mod tokio_tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
@@ -184,11 +164,7 @@ mod tokio_tests {
             let _ = captured_tx.send(req_str);
 
             server_io
-                .write_all(
-                    b"HTTP/1.1 200 Connection Established
-
-",
-                )
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
             drop(server_io);
@@ -239,11 +215,7 @@ mod tokio_tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
@@ -252,11 +224,7 @@ mod tokio_tests {
             let _ = captured_tx.send(req_str);
 
             server_io
-                .write_all(
-                    b"HTTP/1.1 200 Connection Established
-
-",
-                )
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
             drop(server_io);
@@ -303,11 +271,7 @@ mod tokio_tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
@@ -316,11 +280,7 @@ mod tokio_tests {
             let _ = captured_tx.send(req_str);
 
             server_io
-                .write_all(
-                    b"HTTP/1.1 200 Connection Established
-
-",
-                )
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
             drop(server_io);
@@ -364,22 +324,14 @@ mod tokio_tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
 
             // Respond with 403 Forbidden
             server_io
-                .write_all(
-                    b"HTTP/1.1 403 Forbidden
-
-",
-                )
+                .write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                 .await
                 .unwrap();
         });
@@ -427,11 +379,7 @@ mod tokio_tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
@@ -481,11 +429,7 @@ mod tokio_tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
@@ -495,11 +439,7 @@ mod tokio_tests {
 
             // Respond with 200
             server_io
-                .write_all(
-                    b"HTTP/1.1 200 Connection Established
-
-",
-                )
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
             // Drop to trigger TLS failure
@@ -554,11 +494,7 @@ mod tokio_tests {
                     break;
                 }
                 request.extend_from_slice(&buf[..n]);
-                if request.windows(4).any(|w| {
-                    w == b"
-
-"
-                }) {
+                if request.windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
@@ -652,11 +588,7 @@ mod tokio_tests {
                 "proxy2 should see CONNECT to target, got: {req}"
             );
             stream
-                .write_all(
-                    b"HTTP/1.1 200 Connection Established
-
-",
-                )
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -694,11 +626,7 @@ mod tokio_tests {
                 }
             };
             client
-                .write_all(
-                    b"HTTP/1.1 200 Connection Established
-
-",
-                )
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await
                 .unwrap();
 
