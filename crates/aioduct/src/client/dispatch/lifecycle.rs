@@ -9,10 +9,10 @@ use crate::observer::{self, RequestEvent, RequestPhase};
 use crate::pool::{HttpConnection, PooledConnection};
 use crate::response::{BodyObserverCtx, Response};
 
-pub(super) struct H2ConnectGuard<'a, B: 'static> {
-    pub(super) pool: &'a crate::pool::ConnectionPool<B>,
-    pub(super) key: &'a crate::pool::PoolKey,
-    pub(super) active: bool,
+pub(crate) struct H2ConnectGuard<'a, B: 'static> {
+    pub(crate) pool: &'a crate::pool::ConnectionPool<B>,
+    pub(crate) key: &'a crate::pool::PoolKey,
+    pub(crate) active: bool,
 }
 
 impl<B: 'static> Drop for H2ConnectGuard<'_, B> {
@@ -23,7 +23,7 @@ impl<B: 'static> Drop for H2ConnectGuard<'_, B> {
     }
 }
 
-use super::HttpEngineCore;
+use super::super::HttpEngineCore;
 
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
@@ -42,7 +42,7 @@ impl<B: 'static> HttpEngineCore<B> {
     fn populate_sans(_conn: &mut PooledConnection<B>) {}
 
     /// Returns true if the response indicates the connection should not be reused.
-    pub(super) fn should_skip_checkin(resp: &Response) -> bool {
+    pub(crate) fn should_skip_checkin(resp: &Response) -> bool {
         if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
             return true;
         }
@@ -52,7 +52,7 @@ impl<B: 'static> HttpEngineCore<B> {
             .is_some_and(|v| v.eq_ignore_ascii_case("close"))
     }
 
-    pub(super) fn checkin_connection(
+    pub(crate) fn checkin_connection(
         &self,
         key: crate::pool::PoolKey,
         mut conn: PooledConnection<B>,
@@ -77,7 +77,7 @@ impl<B: 'static> HttpEngineCore<B> {
     ///
     /// The background task times out after the pool's idle timeout — if the
     /// body isn't consumed by then, the connection is dropped.
-    pub(super) fn checkin_when_ready<R, F, S>(
+    pub(crate) fn checkin_when_ready<R, F, S>(
         &self,
         key: crate::pool::PoolKey,
         mut conn: PooledConnection<B>,
@@ -115,7 +115,7 @@ impl<B: 'static> HttpEngineCore<B> {
 
     /// Like [`checkin_when_ready`](Self::checkin_when_ready) but for the Local
     /// (`!Send`) path. The spawn closure accepts a non-Send future.
-    pub(super) fn checkin_when_ready_local<R, F, S>(
+    pub(crate) fn checkin_when_ready_local<R, F, S>(
         &self,
         key: crate::pool::PoolKey,
         mut conn: PooledConnection<B>,
@@ -151,7 +151,7 @@ impl<B: 'static> HttpEngineCore<B> {
         }));
     }
 
-    pub(super) fn fire_connection_metrics(&self, conn: &PooledConnection<B>, closed: bool) {
+    pub(crate) fn fire_connection_metrics(&self, conn: &PooledConnection<B>, closed: bool) {
         if let Some(ref obs) = self.observer
             && let Some(remote_addr) = conn.remote_addr
         {
@@ -171,7 +171,7 @@ impl<B: 'static> HttpEngineCore<B> {
     }
 
     #[inline]
-    pub(super) fn notify(&self, method: &http::Method, uri: &Uri, phase: RequestPhase) {
+    pub(crate) fn notify(&self, method: &http::Method, uri: &Uri, phase: RequestPhase) {
         if let Some(ref obs) = self.observer {
             obs.on_event(&RequestEvent {
                 method: method.clone(),
@@ -182,7 +182,7 @@ impl<B: 'static> HttpEngineCore<B> {
         }
     }
 
-    pub(super) fn attach_observer(&self, resp: &mut Response, method: &http::Method, uri: &Uri) {
+    pub(crate) fn attach_observer(&self, resp: &mut Response, method: &http::Method, uri: &Uri) {
         if let Some(ref obs) = self.observer {
             resp.set_observer_ctx(BodyObserverCtx {
                 observer: obs.clone(),
@@ -193,7 +193,7 @@ impl<B: 'static> HttpEngineCore<B> {
         }
     }
 
-    pub(super) fn connection_protocol(conn: &PooledConnection<B>) -> observer::NegotiatedProtocol {
+    pub(crate) fn connection_protocol(conn: &PooledConnection<B>) -> observer::NegotiatedProtocol {
         match &conn.conn {
             HttpConnection::H1(_) => observer::NegotiatedProtocol::Http1,
             HttpConnection::H2(_) => observer::NegotiatedProtocol::Http2,
@@ -202,7 +202,7 @@ impl<B: 'static> HttpEngineCore<B> {
         }
     }
 
-    pub(super) fn is_stale_connection_error(err: &Error) -> bool {
+    pub(crate) fn is_stale_connection_error(err: &Error) -> bool {
         match err {
             Error::Hyper(e) => {
                 if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
@@ -234,7 +234,7 @@ impl<B: 'static> HttpEngineCore<B> {
         Self::is_stale_connection_error(err)
     }
 
-    pub(super) async fn send_on_connection(
+    pub(crate) async fn send_on_connection(
         conn: &mut PooledConnection<B>,
         request: http::Request<B>,
         url: Uri,
@@ -306,5 +306,5 @@ impl<B: 'static> HttpEngineCore<B> {
 }
 
 #[cfg(test)]
-#[path = "dispatch/tests.rs"]
+#[path = "tests.rs"]
 mod tests;

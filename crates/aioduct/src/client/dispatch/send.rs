@@ -5,8 +5,8 @@ use http::Uri;
 use http::header::HeaderMap;
 use std::time::Duration;
 
-use super::connection_lifecycle::H2ConnectGuard;
-use super::{HttpEngineCore, HttpEngineSend};
+use super::super::{HttpEngineCore, HttpEngineSend};
+use super::lifecycle::H2ConnectGuard;
 use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::observer::{self, RequestPhase, RetryKind};
@@ -14,8 +14,8 @@ use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 
-use super::extract_headers;
-use super::request_replay_send::retry_request_from_parts;
+use super::super::extract_headers;
+use super::replay_send::retry_request_from_parts;
 
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
 

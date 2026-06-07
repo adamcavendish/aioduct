@@ -4,8 +4,8 @@ use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use super::connection_lifecycle::H2ConnectGuard;
-use super::{HttpEngineCore, HttpEngineLocal, extract_headers};
+use super::super::{HttpEngineCore, HttpEngineLocal, extract_headers};
+use super::lifecycle::H2ConnectGuard;
 use crate::body::RequestBodyLocal;
 use crate::clock::Instant;
 use crate::error::Error;
