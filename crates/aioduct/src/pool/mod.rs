@@ -6,7 +6,7 @@ pub(crate) use connection::{HttpConnection, PooledConnection};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -101,6 +101,106 @@ impl PoolKey {
     }
 }
 
+/// Pool diagnostic counters. All counters are monotonic since engine creation.
+/// Uses atomics so the hot checkout/checkin path avoids extra mutex contention.
+struct PoolCounters {
+    checkout_hits: AtomicU64,
+    checkout_coalesced_hits: AtomicU64,
+    checkout_misses: AtomicU64,
+    stale_reuse_retries: AtomicU64,
+    idle_timeout_evictions: AtomicU64,
+    max_lifetime_evictions: AtomicU64,
+    checkout_not_ready_evictions: AtomicU64,
+    capacity_evictions: AtomicU64,
+}
+
+impl PoolCounters {
+    fn new() -> Self {
+        Self {
+            checkout_hits: AtomicU64::new(0),
+            checkout_coalesced_hits: AtomicU64::new(0),
+            checkout_misses: AtomicU64::new(0),
+            stale_reuse_retries: AtomicU64::new(0),
+            idle_timeout_evictions: AtomicU64::new(0),
+            max_lifetime_evictions: AtomicU64::new(0),
+            checkout_not_ready_evictions: AtomicU64::new(0),
+            capacity_evictions: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> PoolStatsCounters {
+        PoolStatsCounters {
+            checkout_hits: self.checkout_hits.load(Ordering::Relaxed),
+            checkout_coalesced_hits: self.checkout_coalesced_hits.load(Ordering::Relaxed),
+            checkout_misses: self.checkout_misses.load(Ordering::Relaxed),
+            stale_reuse_retries: self.stale_reuse_retries.load(Ordering::Relaxed),
+            idle_timeout_evictions: self.idle_timeout_evictions.load(Ordering::Relaxed),
+            max_lifetime_evictions: self.max_lifetime_evictions.load(Ordering::Relaxed),
+            checkout_not_ready_evictions: self.checkout_not_ready_evictions.load(Ordering::Relaxed),
+            capacity_evictions: self.capacity_evictions.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Non-atomic snapshot of pool counters (loaded under mutex during snapshot).
+struct PoolStatsCounters {
+    checkout_hits: u64,
+    checkout_coalesced_hits: u64,
+    checkout_misses: u64,
+    stale_reuse_retries: u64,
+    idle_timeout_evictions: u64,
+    max_lifetime_evictions: u64,
+    checkout_not_ready_evictions: u64,
+    capacity_evictions: u64,
+}
+
+/// Snapshot of pool connection statistics. All counters are monotonic since
+/// engine creation. Counts reflect pool-internal handle tracking, which may
+/// differ from physical connection counts for H2/H3 multiplexed transports.
+#[derive(Clone, Debug)]
+pub struct PoolStats {
+    /// Checkouts that found an idle connection in the pool.
+    pub checkout_hits: u64,
+    /// Checkouts that reused an H2/H3 connection via SAN-based coalescing
+    /// (RFC 7540 §9.1.1). Always 0 on Local engines.
+    pub checkout_coalesced_hits: u64,
+    /// Requests that exhausted all pool paths and required a fresh connection.
+    pub checkout_misses: u64,
+    /// Connections detected as stale mid-request and transparently retried.
+    pub stale_reuse_retries: u64,
+    /// Connections evicted due to idle timeout expiry.
+    pub idle_timeout_evictions: u64,
+    /// Connections evicted due to exceeding their maximum lifetime.
+    pub max_lifetime_evictions: u64,
+    /// Connections discarded at checkout because `is_ready()` returned false.
+    pub checkout_not_ready_evictions: u64,
+    /// Connections evicted because the per-host idle queue was at capacity.
+    pub capacity_evictions: u64,
+    /// Number of idle pool handles across all hosts.
+    pub idle_pool_entries: usize,
+    /// Number of checked-out pool handles across all hosts.
+    pub checked_out_pool_handles: usize,
+    /// Per-host breakdown, sorted by (scheme, authority).
+    pub hosts: Vec<PoolHostStats>,
+}
+
+/// Per-host pool inventory snapshot.
+#[derive(Clone, Debug)]
+pub struct PoolHostStats {
+    /// URI scheme (http or https).
+    pub scheme: String,
+    /// URI authority (host and optional port).
+    pub authority: String,
+    /// Protocol hint used as pool key discriminator (Auto/H2c/AdaptiveH2c).
+    pub protocol_hint: String,
+    /// Proxy route identifier: "direct" if no proxy, otherwise an opaque label.
+    pub route: String,
+    /// Idle pool handles for this host.
+    pub idle: usize,
+    /// Checked-out pool handles for this host.
+    pub active: usize,
+}
+
 struct IdleConnection<B> {
     connection: PooledConnection<B>,
     idle_since: Instant,
@@ -125,6 +225,9 @@ pub(crate) struct PoolInner<B> {
 pub(crate) struct ConnectionPool<B> {
     inner: Arc<Mutex<PoolInner<B>>>,
     reaper_spawned: Arc<AtomicBool>,
+    /// Pool-level diagnostic counters. Atomically updated outside the mutex
+    /// so the hot checkout/checkin path avoids extra contention.
+    counters: Arc<PoolCounters>,
 }
 
 impl<B> Clone for ConnectionPool<B> {
@@ -132,6 +235,7 @@ impl<B> Clone for ConnectionPool<B> {
         Self {
             inner: Arc::clone(&self.inner),
             reaper_spawned: Arc::clone(&self.reaper_spawned),
+            counters: Arc::clone(&self.counters),
         }
     }
 }
@@ -152,6 +256,7 @@ impl<B: 'static> ConnectionPool<B> {
                 active: HashMap::new(),
             })),
             reaper_spawned: Arc::new(AtomicBool::new(false)),
+            counters: Arc::new(PoolCounters::new()),
         }
     }
 
@@ -278,9 +383,15 @@ impl<B: 'static> ConnectionPool<B> {
 
             while let Some(entry) = queue.pop_back() {
                 if now.duration_since(entry.idle_since) >= idle_timeout {
+                    self.counters
+                        .idle_timeout_evictions
+                        .fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
                 if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
+                    self.counters
+                        .max_lifetime_evictions
+                        .fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
                 if entry.connection.is_ready() {
@@ -312,6 +423,9 @@ impl<B: 'static> ConnectionPool<B> {
                     result = Some(conn);
                     break;
                 }
+                self.counters
+                    .checkout_not_ready_evictions
+                    .fetch_add(1, Ordering::Relaxed);
             }
 
             if result.is_none() {
@@ -358,6 +472,9 @@ impl<B: 'static> ConnectionPool<B> {
         }
 
         if !Self::connection_within_lifetime(&connection, inner.max_lifetime) {
+            self.counters
+                .max_lifetime_evictions
+                .fetch_add(1, Ordering::Relaxed);
             return;
         }
 
@@ -377,11 +494,108 @@ impl<B: 'static> ConnectionPool<B> {
 
         if queue.len() >= max {
             queue.pop_front();
+            self.counters
+                .capacity_evictions
+                .fetch_add(1, Ordering::Relaxed);
         }
         queue.push_back(IdleConnection {
             connection,
             idle_since: Instant::now(),
         });
+    }
+
+    /// Record a checkout hit (pool reuse) at the request level.
+    pub(crate) fn record_checkout_hit(&self) {
+        self.counters.checkout_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a coalesced checkout hit at the request level.
+    pub(crate) fn record_checkout_coalesced_hit(&self) {
+        self.counters
+            .checkout_coalesced_hits
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a checkout miss (fresh connection required) at the request level.
+    pub(crate) fn record_checkout_miss(&self) {
+        self.counters
+            .checkout_misses
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a stale reuse retry at the request level.
+    pub(crate) fn record_stale_reuse_retry(&self) {
+        self.counters
+            .stale_reuse_retries
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Take a snapshot of pool statistics.
+    pub(crate) fn snapshot(&self) -> PoolStats {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let counters = self.counters.snapshot();
+        let idle_pool_entries: usize = inner.idle.values().map(|q| q.len()).sum();
+        let checked_out_pool_handles: usize = inner.active.values().sum();
+
+        let mut hosts: Vec<PoolHostStats> = inner
+            .idle
+            .iter()
+            .map(|(key, queue)| {
+                let active = inner.active.get(key).copied().unwrap_or(0);
+                let route = if key.proxy_route.0 == 0 {
+                    "direct".to_owned()
+                } else {
+                    format!("{:x}", key.proxy_route.0)
+                };
+                PoolHostStats {
+                    scheme: key.scheme.to_string(),
+                    authority: key.authority.to_string(),
+                    protocol_hint: format!("{:?}", key.protocol),
+                    route,
+                    idle: queue.len(),
+                    active,
+                }
+            })
+            .collect();
+
+        // Include hosts that only have active connections (no idle queue).
+        for (key, &active) in &inner.active {
+            if !inner.idle.contains_key(key) && active > 0 {
+                let route = if key.proxy_route.0 == 0 {
+                    "direct".to_owned()
+                } else {
+                    format!("{:x}", key.proxy_route.0)
+                };
+                hosts.push(PoolHostStats {
+                    scheme: key.scheme.to_string(),
+                    authority: key.authority.to_string(),
+                    protocol_hint: format!("{:?}", key.protocol),
+                    route,
+                    idle: 0,
+                    active,
+                });
+            }
+        }
+
+        hosts.sort_by(|a, b| {
+            a.scheme
+                .cmp(&b.scheme)
+                .then_with(|| a.authority.cmp(&b.authority))
+        });
+
+        PoolStats {
+            checkout_hits: counters.checkout_hits,
+            checkout_coalesced_hits: counters.checkout_coalesced_hits,
+            checkout_misses: counters.checkout_misses,
+            stale_reuse_retries: counters.stale_reuse_retries,
+            idle_timeout_evictions: counters.idle_timeout_evictions,
+            max_lifetime_evictions: counters.max_lifetime_evictions,
+            checkout_not_ready_evictions: counters.checkout_not_ready_evictions,
+            capacity_evictions: counters.capacity_evictions,
+            idle_pool_entries,
+            checked_out_pool_handles,
+            hosts,
+        }
     }
 
     /// Evict all idle connections for a pool key.
@@ -552,6 +766,7 @@ impl<B: 'static> ConnectionPool<B> {
         B: Send,
     {
         let inner = Arc::clone(&self.inner);
+        let counters = Arc::clone(&self.counters);
         R::spawn_send(async move {
             loop {
                 let timeout = {
@@ -570,8 +785,19 @@ impl<B: 'static> ConnectionPool<B> {
                 let max_lifetime = guard.max_lifetime;
                 guard.idle.retain(|_, queue| {
                     queue.retain(|entry| {
-                        now.duration_since(entry.idle_since) < idle_timeout
-                            && Self::connection_within_lifetime(&entry.connection, max_lifetime)
+                        if now.duration_since(entry.idle_since) >= idle_timeout {
+                            counters
+                                .idle_timeout_evictions
+                                .fetch_add(1, Ordering::Relaxed);
+                            return false;
+                        }
+                        if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
+                            counters
+                                .max_lifetime_evictions
+                                .fetch_add(1, Ordering::Relaxed);
+                            return false;
+                        }
+                        true
                     });
                     !queue.is_empty()
                 });
@@ -593,6 +819,7 @@ impl<B: 'static> ConnectionPool<B> {
 
     fn spawn_reaper_local<R: crate::runtime::RuntimeLocal>(&self) {
         let inner = Arc::clone(&self.inner);
+        let counters = Arc::clone(&self.counters);
         R::spawn_local(async move {
             loop {
                 let timeout = {
@@ -611,8 +838,19 @@ impl<B: 'static> ConnectionPool<B> {
                 let max_lifetime = guard.max_lifetime;
                 guard.idle.retain(|_, queue| {
                     queue.retain(|entry| {
-                        now.duration_since(entry.idle_since) < idle_timeout
-                            && Self::connection_within_lifetime(&entry.connection, max_lifetime)
+                        if now.duration_since(entry.idle_since) >= idle_timeout {
+                            counters
+                                .idle_timeout_evictions
+                                .fetch_add(1, Ordering::Relaxed);
+                            return false;
+                        }
+                        if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
+                            counters
+                                .max_lifetime_evictions
+                                .fetch_add(1, Ordering::Relaxed);
+                            return false;
+                        }
+                        true
                     });
                     !queue.is_empty()
                 });
