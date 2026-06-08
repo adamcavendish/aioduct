@@ -29,7 +29,26 @@ pub(crate) enum ProtocolHint {
     AdaptiveH2c,
 }
 
-/// Connection pool key identifying a (scheme, authority, protocol) triple.
+/// Stable identity for a proxy route, used to segregate pooled connections
+/// that reach the same origin through different proxy configurations.
+///
+/// 0 means direct (no proxy). Non-zero is a hash of the proxy chain or
+/// per-request proxy config.
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Default)]
+pub(crate) struct ProxyRoute(u64);
+
+impl ProxyRoute {
+    /// Sentinel value for direct (non-proxied) connections.
+    pub(crate) const DIRECT: Self = Self(0);
+
+    /// Build a route identity from a pre-computed hash.
+    pub(crate) fn from_hash(hash: u64) -> Self {
+        Self(hash)
+    }
+}
+
+/// Connection pool key identifying a (scheme, authority, protocol, proxy-route)
+/// quadruple.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub(crate) struct PoolKey {
     /// The URI scheme (http or https).
@@ -38,24 +57,46 @@ pub(crate) struct PoolKey {
     pub(crate) authority: Authority,
     /// Protocol hint for pool segregation.
     pub(crate) protocol: ProtocolHint,
+    /// Proxy route identity: DIRECT for no proxy, hashed from the effective
+    /// proxy configuration otherwise.
+    pub(crate) proxy_route: ProxyRoute,
 }
 
 impl PoolKey {
-    /// Create a new pool key with the default protocol hint (Auto).
+    /// Create a new pool key with the default protocol hint (Auto) and direct route.
+    #[allow(dead_code)]
     pub(crate) fn new(scheme: Scheme, authority: Authority) -> Self {
         Self {
             scheme,
             authority,
             protocol: ProtocolHint::Auto,
+            proxy_route: ProxyRoute::DIRECT,
         }
     }
 
-    /// Create a pool key that forces HTTP/2 prior knowledge.
+    /// Create a pool key with a protocol hint and direct route.
+    #[allow(dead_code)]
     pub(crate) fn with_hint(scheme: Scheme, authority: Authority, protocol: ProtocolHint) -> Self {
         Self {
             scheme,
             authority,
             protocol,
+            proxy_route: ProxyRoute::DIRECT,
+        }
+    }
+
+    /// Create a pool key with both a protocol hint and a proxy route identity.
+    pub(crate) fn with_hint_and_route(
+        scheme: Scheme,
+        authority: Authority,
+        protocol: ProtocolHint,
+        proxy_route: ProxyRoute,
+    ) -> Self {
+        Self {
+            scheme,
+            authority,
+            protocol,
+            proxy_route,
         }
     }
 }

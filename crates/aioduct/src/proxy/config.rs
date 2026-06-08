@@ -2,7 +2,7 @@ use http::Uri;
 
 use crate::error::Error;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum ProxyScheme {
     Http,
     Https,
@@ -29,6 +29,18 @@ impl std::fmt::Debug for ProxyConfig {
     }
 }
 
+impl ProxyConfig {
+    /// Stable hash of this proxy config for pool-key route segregation.
+    pub(crate) fn route_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.scheme.hash(&mut h);
+        self.uri.hash(&mut h);
+        self.auth.hash(&mut h);
+        h.finish()
+    }
+}
+
 /// Wrapper that redacts userinfo when debug-printing a URI.
 struct ProxyUriDebug<'a>(&'a Uri);
 
@@ -52,7 +64,7 @@ impl std::fmt::Debug for ProxyUriDebug<'_> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Hash)]
 pub(crate) struct ProxyAuth {
     pub username: String,
     pub password: String,

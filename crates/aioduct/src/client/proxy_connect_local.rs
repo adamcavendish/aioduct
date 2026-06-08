@@ -428,12 +428,50 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     &second_target,
                 )
                 .await?;
-                if is_https {
-                    self.connect_tunnel_local(stream, second, target_authority, connect_timeout)
+                if second.scheme == crate::proxy::ProxyScheme::Https {
+                    // TLS-wrap to the second proxy through the first proxy's
+                    // tunnel, then dispatch based on target scheme and h2c flag.
+                    let tls_stream =
+                        <crate::tls::RustlsConnector as TlsConnectLocal<_>>::connect_local(
+                            tls_connector,
+                            second_authority.host(),
+                            stream,
+                        )
                         .await
+                        .map_err(|e| Error::Tls(Box::new(e)))?;
+                    if is_https {
+                        self.connect_tunnel_local(
+                            tls_stream,
+                            second,
+                            target_authority,
+                            connect_timeout,
+                        )
+                        .await
+                    } else if force_h2c {
+                        let port = target_authority.port_u16().unwrap_or(80);
+                        let target = format!("{}:{port}", target_authority.host());
+                        let tunnel_stream = super::connect_handshake::do_connect_handshake(
+                            tls_stream, second, &target,
+                        )
+                        .await?;
+                        self.connect_h2_prior_knowledge_local(tunnel_stream).await
+                    } else {
+                        self.connect_h1_local(tls_stream).await
+                    }
                 } else {
-                    self.connect_plaintext_local_with_hint(stream, force_h2c)
-                        .await
+                    if is_https {
+                        self.connect_tunnel_local(stream, second, target_authority, connect_timeout)
+                            .await
+                    } else if force_h2c {
+                        let port = target_authority.port_u16().unwrap_or(80);
+                        let target = format!("{}:{port}", target_authority.host());
+                        let tunnel_stream =
+                            super::connect_handshake::do_connect_handshake(stream, second, &target)
+                                .await?;
+                        self.connect_h2_prior_knowledge_local(tunnel_stream).await
+                    } else {
+                        self.connect_h1_local(stream).await
+                    }
                 }
             }
             #[cfg(not(all(feature = "rustls", feature = "compio")))]
@@ -570,6 +608,15 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 if is_https {
                     self.connect_tunnel_local(tls_stream, second, target_authority, connect_timeout)
                         .await
+                } else if force_h2c {
+                    // H2 prior-knowledge through an HTTPS proxy: CONNECT first
+                    // to create a raw pipe to the target, then send the preface.
+                    let port = target_authority.port_u16().unwrap_or(80);
+                    let target = format!("{}:{port}", target_authority.host());
+                    let tunnel_stream =
+                        super::connect_handshake::do_connect_handshake(tls_stream, second, &target)
+                            .await?;
+                    self.connect_h2_prior_knowledge_local(tunnel_stream).await
                 } else {
                     self.connect_plaintext_local_with_hint(tls_stream, force_h2c)
                         .await
@@ -586,6 +633,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             if is_https {
                 self.connect_tunnel_local(stream, second, target_authority, connect_timeout)
                     .await
+            } else if force_h2c {
+                // H2 prior-knowledge through an HTTP proxy: CONNECT first
+                // to create a raw pipe to the target, then send the preface.
+                let port = target_authority.port_u16().unwrap_or(80);
+                let target = format!("{}:{port}", target_authority.host());
+                let tunnel_stream =
+                    super::connect_handshake::do_connect_handshake(stream, second, &target).await?;
+                self.connect_h2_prior_knowledge_local(tunnel_stream).await
             } else {
                 self.connect_plaintext_local_with_hint(stream, force_h2c)
                     .await

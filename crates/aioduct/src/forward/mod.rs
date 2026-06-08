@@ -288,13 +288,20 @@ where
             hook(&mut parts);
         }
 
-        // 8. Build the request URI for hyper (path-only for HTTP/1, full for HTTP/2)
-        if is_h2_extended_connect
-            || matches!(
-                self.protocol_hint,
-                ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
-            )
-        {
+        // 8. Build the request URI for hyper.
+        // H2 extended CONNECT uses absolute URI.
+        // RFC 7540 §8.3: ordinary CONNECT over h2c uses authority form.
+        // Other h2c requests use absolute URI.
+        // AdaptiveH2c uses path-only form because the dispatch layer may fall back
+        // to H1, and absolute-form URIs confuse many origin servers.
+        if is_h2_extended_connect {
+            parts.uri = full_uri.clone();
+        } else if self.protocol_hint == ProtocolHint::H2c && parts.method == http::Method::CONNECT {
+            parts.uri = upstream_authority
+                .as_str()
+                .parse()
+                .map_err(|e| Error::Other(Box::new(e)))?;
+        } else if self.protocol_hint == ProtocolHint::H2c {
             parts.uri = full_uri.clone();
         } else {
             let request_uri: Uri = full_uri

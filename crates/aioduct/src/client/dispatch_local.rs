@@ -50,7 +50,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         let is_https = scheme == &http::uri::Scheme::HTTPS;
 
         // Resolve AdaptiveH2c via the probe cache, matching the send-path behavior.
-        let effective_hint = match protocol_hint {
+        let mut effective_hint = match protocol_hint {
             crate::pool::ProtocolHint::AdaptiveH2c => {
                 match self.core.h2c_probe_cache.lookup(authority) {
                     Some(true) => crate::pool::ProtocolHint::H2c,
@@ -60,18 +60,56 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             }
             other => other,
         };
+
+        // Through proxies, uncached AdaptiveH2c resolves to Auto (H1):
+        // probing requires re-establishing the proxy tunnel on failure,
+        // which is disproportionate. Use .h2c() to force h2c through proxies.
+        // Must resolve BEFORE pool-key construction so the guard and mark
+        // are keyed correctly.
+        let through_proxy = self.core.proxy_chain.is_some()
+            || self
+                .core
+                .proxy
+                .as_ref()
+                .and_then(|s| s.proxy_for(original_uri))
+                .is_some();
+        if through_proxy && effective_hint == crate::pool::ProtocolHint::AdaptiveH2c {
+            effective_hint = crate::pool::ProtocolHint::Auto;
+        }
+
         let force_h2c = matches!(
             effective_hint,
             crate::pool::ProtocolHint::H2c | crate::pool::ProtocolHint::AdaptiveH2c
         );
+
+        // Compute a stable proxy route identity for pool-key segregation.
+        let proxy_route = if let Some(ref chain) = self.core.proxy_chain {
+            crate::pool::ProxyRoute::from_hash(chain.route_hash())
+        } else if let Some(ref config) = self
+            .core
+            .proxy
+            .as_ref()
+            .and_then(|s| s.proxy_for(original_uri))
+        {
+            crate::pool::ProxyRoute::from_hash(config.route_hash())
+        } else {
+            crate::pool::ProxyRoute::DIRECT
+        };
+
         let mut pool_key = if force_h2c {
-            crate::pool::PoolKey::with_hint(
+            crate::pool::PoolKey::with_hint_and_route(
                 scheme.clone(),
                 authority.clone(),
                 crate::pool::ProtocolHint::H2c,
+                proxy_route,
             )
         } else {
-            crate::pool::PoolKey::new(scheme.clone(), authority.clone())
+            crate::pool::PoolKey::with_hint_and_route(
+                scheme.clone(),
+                authority.clone(),
+                crate::pool::ProtocolHint::Auto,
+                proxy_route,
+            )
         };
         let may_h2 = is_https || force_h2c;
 
@@ -313,15 +351,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             .as_ref()
             .and_then(|settings| settings.proxy_for(original_uri));
 
-        // Through proxies, uncached AdaptiveH2c resolves to Auto (H1):
-        // probing requires re-establishing the proxy tunnel on failure,
-        // which is disproportionate. Use .h2c() to force h2c through proxies.
-        let through_proxy = proxy.is_some() || self.core.proxy_chain.is_some();
-        let proxy_force_h2c = if through_proxy {
-            force_h2c && effective_hint != crate::pool::ProtocolHint::AdaptiveH2c
-        } else {
-            force_h2c
-        };
+        // Through proxies, AdaptiveH2c was already resolved to Auto above
+        // (before pool-key construction). proxy_force_h2c is just force_h2c.
+        let proxy_force_h2c = force_h2c;
 
         if !self.core.pool.can_connect(&pool_key) {
             return Err(Error::Other(
@@ -422,10 +454,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     self.connect_tls_local(tcp_stream, authority.host()).await?
                 } else if force_h2c && effective_hint == crate::pool::ProtocolHint::AdaptiveH2c {
                     // Adaptive h2c: try h2c, fall back to H1, cache the result.
+                    // Poll readiness over 200ms to tolerate slow SETTINGS
+                    // exchanges and scheduler delays.
                     let h2c_ok = match self.connect_h2_prior_knowledge_local(tcp_stream).await {
                         Ok(c) => {
-                            R::sleep(std::time::Duration::from_millis(50)).await;
-                            if c.is_ready() { Some(c) } else { None }
+                            let mut ready = false;
+                            for _ in 0..8 {
+                                R::sleep(std::time::Duration::from_millis(25)).await;
+                                if c.is_ready() {
+                                    ready = true;
+                                    break;
+                                }
+                            }
+                            if ready { Some(c) } else { None }
                         }
                         Err(_) => None,
                     };
@@ -563,10 +604,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         h2_guard.active = false;
         drop(h2_guard);
 
-        // Adjust pool key if adaptive probe fell back to h1
+        // Adjust pool key if adaptive probe fell back to h1.
+        // Unmark the H2c key BEFORE mutating so the guard state is cleaned
+        // up under the original key — not the mutated Auto key.
         if matches!(protocol_hint, crate::pool::ProtocolHint::AdaptiveH2c)
             && matches!(pooled.conn, crate::pool::HttpConnection::H1(_))
         {
+            self.core.pool.unmark_connecting_h2(&pool_key);
             pool_key.protocol = crate::pool::ProtocolHint::Auto;
         }
 

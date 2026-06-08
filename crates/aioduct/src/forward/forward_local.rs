@@ -157,6 +157,15 @@ where
             parts.version = http::Version::HTTP_11;
         }
 
+        if parts.method == http::Method::CONNECT
+            && parts.extensions.get::<crate::Protocol>().is_some()
+        {
+            parts.version = http::Version::HTTP_2;
+        }
+        if self.protocol_hint == ProtocolHint::H2c {
+            parts.version = http::Version::HTTP_2;
+        }
+
         let forwarded_values: Vec<(HeaderName, HeaderValue)> = self
             .forward_headers
             .iter()
@@ -237,15 +246,21 @@ where
             hook(&mut parts);
         }
 
-        // H2 extended CONNECT or h2c uses the full URI (authority form)
+        // H2 extended CONNECT uses absolute URI.
+        // RFC 7540 §8.3: ordinary CONNECT over h2c uses authority form.
+        // Other h2c requests use absolute URI.
+        // AdaptiveH2c uses path-only form because the dispatch layer may fall back
+        // to H1, and absolute-form URIs confuse many origin servers.
         let is_h2_extended_connect = parts.method == http::Method::CONNECT
             && parts.extensions.get::<crate::Protocol>().is_some();
-        if is_h2_extended_connect
-            || matches!(
-                self.protocol_hint,
-                ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
-            )
-        {
+        if is_h2_extended_connect {
+            parts.uri = full_uri.clone();
+        } else if self.protocol_hint == ProtocolHint::H2c && parts.method == http::Method::CONNECT {
+            parts.uri = upstream_authority
+                .as_str()
+                .parse()
+                .map_err(|e| Error::Other(Box::new(e)))?;
+        } else if self.protocol_hint == ProtocolHint::H2c {
             parts.uri = full_uri.clone();
         } else {
             let request_uri: Uri = full_uri
