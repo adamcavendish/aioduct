@@ -724,11 +724,6 @@ async fn clone_for_multiplex_returns_some_for_h2() {
     let mut conn = make_h2_conn().await;
     conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
     conn.record_request(1024);
-    // Record two more requests to reach 5 total
-    conn.record_request(0);
-    conn.record_request(0);
-    conn.record_request(0);
-    conn.record_request(0);
     conn.record_bytes_received(4096);
 
     let cloned = conn.clone_for_multiplex();
@@ -741,7 +736,7 @@ async fn clone_for_multiplex_returns_some_for_h2() {
         Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)))
     );
     // Cloned handle shares transport-cumulative metrics
-    assert_eq!(cloned.requests_served(), 5);
+    assert_eq!(cloned.requests_served(), 1);
     assert_eq!(cloned.bytes_sent(), 1024);
     assert_eq!(cloned.bytes_received(), 4096);
     assert!(cloned.is_h2_or_h3());

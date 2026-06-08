@@ -237,7 +237,18 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     *retry_req.version_mut() = version;
                     request = retry_req;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    self.core.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::Failed {
+                            error: e.to_string(),
+                            retry: RetryKind::None,
+                            elapsed: request_start.elapsed(),
+                        },
+                    );
+                    return Err(e);
+                }
             }
         }
 

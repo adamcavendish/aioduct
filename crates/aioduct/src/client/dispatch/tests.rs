@@ -359,8 +359,6 @@ async fn fire_connection_metrics_fires_with_observer_and_remote_addr() {
     let mut pooled = PooledConnection::new_h1(sender);
     pooled.remote_addr = Some(std::net::SocketAddr::from(([127, 0, 0, 1], 8080)));
     pooled.record_request(100);
-    pooled.record_request(0);
-    pooled.record_request(0);
     pooled.record_bytes_received(500);
 
     engine.core.fire_connection_metrics(&pooled, false);

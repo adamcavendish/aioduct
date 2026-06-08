@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::io::{self, IsTerminal, stdout};
 use std::time::{Duration, Instant};
 
+use aioduct::PoolStats;
 use aioduct::observer::{RequestEvent, RequestPhase, RetryKind, TransferDirection};
 
 use crate::common::copy_to_clipboard;
@@ -14,6 +15,7 @@ pub enum TuiMessage {
     BodyChunk(String),
     BodyDone,
     FatalError(String),
+    PoolStats(PoolStats),
     Quit,
 }
 use crossterm::ExecutableCommand;
@@ -90,6 +92,12 @@ impl VerboseTui {
     pub fn send_fatal_error(&self, error: String) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(TuiMessage::FatalError(error));
+        }
+    }
+
+    pub fn send_pool_stats(&self, stats: PoolStats) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(TuiMessage::PoolStats(stats));
         }
     }
 
@@ -187,6 +195,7 @@ struct TuiState {
     body_bytes_received: usize,
     transfer_start_at: Option<Instant>,
     transfer_end_at: Option<Instant>,
+    pool_stats: Option<PoolStats>,
 }
 
 struct PhaseEntry {
@@ -253,6 +262,7 @@ impl TuiState {
             body_bytes_received: 0,
             transfer_start_at: None,
             transfer_end_at: None,
+            pool_stats: None,
         }
     }
 
@@ -820,6 +830,7 @@ async fn run_tui_inner(
                 }
                 TuiMessage::BodyChunk(text) => state.apply_body_chunk(&text, tick_time),
                 TuiMessage::BodyDone => state.apply_body_done(),
+                TuiMessage::PoolStats(stats) => state.pool_stats = Some(stats),
                 TuiMessage::FatalError(error) => state.apply_fatal_error(error),
                 TuiMessage::Quit => {
                     force_quit = true;
