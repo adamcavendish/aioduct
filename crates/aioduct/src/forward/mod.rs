@@ -47,6 +47,11 @@ where
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     pub(crate) fn new(client: &'a HttpEngineSend<R, C>, request: http::Request<B>) -> Self {
+        let protocol_hint = request
+            .extensions()
+            .get::<ProtocolHint>()
+            .copied()
+            .unwrap_or(ProtocolHint::Auto);
         Self {
             client,
             request,
@@ -57,7 +62,7 @@ where
             extra_headers: HeaderMap::new(),
             remove_headers: Vec::new(),
             forward_headers: Vec::new(),
-            protocol_hint: ProtocolHint::Auto,
+            protocol_hint,
             on_request: None,
             on_response: None,
         }

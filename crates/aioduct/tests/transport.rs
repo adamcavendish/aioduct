@@ -143,13 +143,13 @@ async fn test_h2_prior_knowledge() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -172,7 +172,6 @@ async fn test_h2_prior_knowledge_multiple_requests() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
@@ -180,6 +179,7 @@ async fn test_h2_prior_knowledge_multiple_requests() {
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
+            .h2c_prior_knowledge()
             .send()
             .await
             .unwrap();
@@ -360,7 +360,6 @@ async fn h2_concurrent_requests() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
@@ -369,7 +368,13 @@ async fn h2_concurrent_requests() {
         let client = client.clone();
         let url = format!("http://{addr}/");
         handles.push(tokio::spawn(async move {
-            let resp = client.get(&url).unwrap().send().await.unwrap();
+            let resp = client
+                .get(&url)
+                .unwrap()
+                .h2c_prior_knowledge()
+                .send()
+                .await
+                .unwrap();
             assert_eq!(resp.status(), http::StatusCode::OK);
             resp.text().await.unwrap()
         }));
@@ -394,13 +399,13 @@ async fn h2_basic_request() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -424,13 +429,13 @@ async fn h2_post_with_body() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
     let resp = client
         .post(&format!("http://{addr}/"))
         .unwrap()
+        .h2c_prior_knowledge()
         .body("h2 body data")
         .send()
         .await
@@ -455,7 +460,6 @@ async fn h2_connection_reuse() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
@@ -463,6 +467,7 @@ async fn h2_connection_reuse() {
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
+            .h2c_prior_knowledge()
             .send()
             .await
             .unwrap();
@@ -483,7 +488,6 @@ async fn h2_connect_guard_cleans_up_on_failure() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(2))
         .build()
         .unwrap();
@@ -497,6 +501,7 @@ async fn h2_connect_guard_cleans_up_on_failure() {
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();

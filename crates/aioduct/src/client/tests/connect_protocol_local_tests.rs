@@ -9,10 +9,9 @@ mod compio_tests {
         HttpEngineLocal::<CompioRuntime, TcpConnector>::new()
     }
 
-    /// Helper: build an HttpEngineLocal with http2_prior_knowledge = true.
+    /// Helper: build an HttpEngineLocal with h2c enabled.
     fn make_h2_local_engine() -> HttpEngineLocal<CompioRuntime, TcpConnector> {
         HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .build_local()
             .unwrap()
     }
@@ -124,7 +123,7 @@ mod compio_tests {
 
             let io = CompioIo::new(client_tcp);
             let engine = make_local_engine();
-            let result = engine.connect_plaintext_local(io).await;
+            let result = engine.connect_plaintext_local_with_hint(io, false).await;
             assert!(result.is_ok());
             let pooled = result.unwrap();
             assert!(matches!(pooled.conn, crate::pool::HttpConnection::H1(_)));
@@ -243,7 +242,7 @@ mod compio_tests {
             let io = CompioIo::new(client_tcp);
             let engine = make_h2_local_engine();
             // http2_prior_knowledge is true, so connect_plaintext_local uses h2
-            let result = engine.connect_plaintext_local(io).await;
+            let result = engine.connect_plaintext_local_with_hint(io, true).await;
             assert!(result.is_ok());
             let pooled = result.unwrap();
             assert!(matches!(pooled.conn, crate::pool::HttpConnection::H2(_)));

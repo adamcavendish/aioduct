@@ -15,6 +15,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         target_authority: &http::uri::Authority,
         is_https: bool,
         connect_timeout: Option<Duration>,
+        force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
@@ -88,7 +89,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             .await?;
             if is_https {
                 self.connect_tls_local(stream, host).await
-            } else if self.core.http2_prior_knowledge {
+            } else if force_h2c {
                 self.connect_h2_prior_knowledge_local(stream).await
             } else {
                 self.connect_h1_local(stream).await
@@ -116,7 +117,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
                 self.connect_tls_local(tcp_stream, host).await
-            } else if self.core.http2_prior_knowledge {
+            } else if force_h2c {
                 self.connect_h2_prior_knowledge_local(tcp_stream).await
             } else {
                 self.connect_h1_local(tcp_stream).await
@@ -148,7 +149,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     let tunnel_stream =
                         super::connect_handshake::do_connect_handshake(tls_stream, proxy, &target)
                             .await?;
-                    if self.core.http2_prior_knowledge {
+                    if force_h2c {
                         self.connect_h2_prior_knowledge_local(tunnel_stream).await
                     } else {
                         self.connect_h1_local(tunnel_stream).await
@@ -170,7 +171,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             let target = format!("{}:{port}", target_authority.host());
             let tunnel_stream =
                 super::connect_handshake::do_connect_handshake(tcp_stream, proxy, &target).await?;
-            if self.core.http2_prior_knowledge {
+            if force_h2c {
                 self.connect_h2_prior_knowledge_local(tunnel_stream).await
             } else {
                 self.connect_h1_local(tunnel_stream).await
@@ -283,6 +284,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         target_authority: &http::uri::Authority,
         is_https: bool,
         connect_timeout: Option<Duration>,
+        force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         let second_authority = second.authority()?;
         let second_default_port = second.default_port();
@@ -364,6 +366,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 target_authority,
                 is_https,
                 connect_timeout,
+                force_h2c,
             )
             .await
         } else if first.scheme == crate::proxy::ProxyScheme::Socks4 {
@@ -394,6 +397,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 target_authority,
                 is_https,
                 connect_timeout,
+                force_h2c,
             )
             .await
         } else if first.scheme == crate::proxy::ProxyScheme::Https {
@@ -428,7 +432,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     self.connect_tunnel_local(stream, second, target_authority, connect_timeout)
                         .await
                 } else {
-                    self.connect_plaintext_local(stream).await
+                    self.connect_plaintext_local_with_hint(stream, force_h2c)
+                        .await
                 }
             }
             #[cfg(not(all(feature = "rustls", feature = "compio")))]
@@ -453,6 +458,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 target_authority,
                 is_https,
                 connect_timeout,
+                force_h2c,
             )
             .await
         }
@@ -467,6 +473,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         target_authority: &http::uri::Authority,
         is_https: bool,
         connect_timeout: Option<Duration>,
+        force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         let target_host = target_authority.host();
         let target_port = target_authority
@@ -509,7 +516,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             .await?;
             if is_https {
                 self.connect_tls_local(s, target_host).await
-            } else if self.core.http2_prior_knowledge {
+            } else if force_h2c {
                 self.connect_h2_prior_knowledge_local(s).await
             } else {
                 self.connect_h1_local(s).await
@@ -539,7 +546,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             if is_https {
                 self.connect_tls_local(stream, target_host).await
             } else {
-                self.connect_plaintext_local(stream).await
+                self.connect_plaintext_local_with_hint(stream, force_h2c)
+                    .await
             }
         } else if second.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(all(feature = "rustls", feature = "compio"))]
@@ -563,7 +571,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     self.connect_tunnel_local(tls_stream, second, target_authority, connect_timeout)
                         .await
                 } else {
-                    self.connect_plaintext_local(tls_stream).await
+                    self.connect_plaintext_local_with_hint(tls_stream, force_h2c)
+                        .await
                 }
             }
             #[cfg(not(all(feature = "rustls", feature = "compio")))]
@@ -578,7 +587,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 self.connect_tunnel_local(stream, second, target_authority, connect_timeout)
                     .await
             } else {
-                self.connect_plaintext_local(stream).await
+                self.connect_plaintext_local_with_hint(stream, force_h2c)
+                    .await
             }
         }
     }
@@ -589,6 +599,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         target_authority: &http::uri::Authority,
         is_https: bool,
         connect_timeout: Option<Duration>,
+        force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         match chain.len() {
             0 => Err(Error::Other("empty proxy chain".into())),
@@ -598,6 +609,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     target_authority,
                     is_https,
                     connect_timeout,
+                    force_h2c,
                 )
                 .await
             }
@@ -608,6 +620,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     target_authority,
                     is_https,
                     connect_timeout,
+                    force_h2c,
                 )
                 .await
             }

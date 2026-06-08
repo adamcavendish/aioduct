@@ -477,7 +477,6 @@ async fn h2_connection_reuse_multiplexes() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -487,6 +486,7 @@ async fn h2_connection_reuse_multiplexes() {
         let resp = client
             .get(&format!("http://{addr}/req{i}"))
             .unwrap()
+            .h2c_prior_knowledge()
             .send()
             .await
             .unwrap();

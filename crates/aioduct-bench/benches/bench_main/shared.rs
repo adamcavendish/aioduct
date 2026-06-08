@@ -35,7 +35,6 @@ pub static AIODUCT_H1: LazyLock<AioductClient> = LazyLock::new(aioduct::HttpEngi
 
 pub static AIODUCT_H2: LazyLock<AioductClient> = LazyLock::new(|| {
     aioduct::HttpEngineSend::builder()
-        .http2_prior_knowledge()
         .http2(
             aioduct::Http2Config::new()
                 .initial_stream_window_size(2 * 1024 * 1024)

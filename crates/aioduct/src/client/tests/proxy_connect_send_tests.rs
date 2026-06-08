@@ -4,7 +4,7 @@ mod tokio_tests {
     use crate::client::HttpEngineSend;
     use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 
-    /// Helper: build an HttpEngineSend with default http2_prior_knowledge = false.
+    /// Helper: build an HttpEngineSend with default settings (no h2c).
     fn make_engine() -> HttpEngineSend<TokioRuntime, TcpConnector> {
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
@@ -533,7 +533,7 @@ mod tokio_tests {
         let chain = crate::proxy::ProxyChain::new(vec![]);
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
         let result = engine
-            .connect_via_proxy_chain_send(&chain, &authority, true, None)
+            .connect_via_proxy_chain_send(&chain, &authority, true, None, false)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -552,7 +552,7 @@ mod tokio_tests {
         let chain = crate::proxy::ProxyChain::new(vec![p1, p2, p3]);
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
         let result = engine
-            .connect_via_proxy_chain_send(&chain, &authority, true, None)
+            .connect_via_proxy_chain_send(&chain, &authority, true, None, false)
             .await;
         assert!(result.is_err());
         let err = format!("{}", result.err().unwrap());
@@ -641,7 +641,7 @@ mod tokio_tests {
         let authority: http::uri::Authority = "example.com:443".parse().unwrap();
 
         let result = engine
-            .connect_via_proxy_chain_send(&chain, &authority, true, None)
+            .connect_via_proxy_chain_send(&chain, &authority, true, None, false)
             .await;
         // Should open both tunnels then fail at TLS to the target
         assert!(result.is_err());

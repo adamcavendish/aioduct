@@ -23,6 +23,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         version: Option<http::Version>,
         connect_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
+        protocol_hint: crate::pool::ProtocolHint,
     ) -> Result<Response, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
@@ -123,9 +124,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             };
 
             let resp = match self
-                .execute_single_send(
+                .execute_single_with_hint_send(
                     request,
                     &current_uri,
+                    protocol_hint,
                     replay_bytes_for_stale,
                     stale_headers,
                     connect_timeout,
@@ -178,6 +180,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     replay_bytes,
                     connect_timeout,
                     force_addr,
+                    protocol_hint,
                 )
                 .await?;
 
@@ -228,6 +231,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         body_for_replay: Option<Bytes>,
         connect_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
+        protocol_hint: crate::pool::ProtocolHint,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -274,9 +278,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         retry_request
             .headers_mut()
             .remove(http::header::CONTENT_LENGTH);
-        self.execute_single_send(
+        self.execute_single_with_hint_send(
             retry_request,
             uri,
+            protocol_hint,
             replay_for_stale,
             Some(headers),
             connect_timeout,

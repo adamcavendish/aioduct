@@ -128,6 +128,7 @@ fn bench_h2_concurrent_10(c: &mut Criterion) {
                         tokio::spawn(async move {
                             c.get(&u)
                                 .unwrap()
+                                .h2c_prior_knowledge()
                                 .send()
                                 .await
                                 .unwrap()
@@ -162,6 +163,7 @@ fn bench_h2_concurrent_50(c: &mut Criterion) {
                         tokio::spawn(async move {
                             c.get(&u)
                                 .unwrap()
+                                .h2c_prior_knowledge()
                                 .send()
                                 .await
                                 .unwrap()

@@ -8,6 +8,7 @@ use http::{Method, Uri, Version};
 use crate::body::{RequestBody, RequestBodySend};
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
+use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 use crate::timeout::Timeout;
@@ -25,6 +26,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
     force_addr: Option<std::net::SocketAddr>,
+    protocol_hint: ProtocolHint,
 }
 
 impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for RequestBuilderLocal<'_, R, C> {
@@ -48,6 +50,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             timeout: None,
             connect_timeout: None,
             force_addr: None,
+            protocol_hint: ProtocolHint::Auto,
         }
     }
 
@@ -62,6 +65,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             timeout: None,
             connect_timeout: None,
             force_addr: None,
+            protocol_hint: ProtocolHint::Auto,
         }
     }
 
@@ -259,6 +263,12 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         self
     }
 
+    /// Use HTTP/2 prior knowledge (h2c) for this request.
+    pub fn h2c_prior_knowledge(mut self) -> Self {
+        self.protocol_hint = ProtocolHint::H2c;
+        self
+    }
+
     /// Force this request to connect to a specific address, bypassing DNS
     /// resolution.
     ///
@@ -312,7 +322,11 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         for (name, value) in &self.headers {
             builder = builder.header(name, value);
         }
-        builder.body(body).map_err(Error::Http)
+        let mut req = builder.body(body).map_err(Error::Http)?;
+        if self.protocol_hint != ProtocolHint::Auto {
+            req.extensions_mut().insert(self.protocol_hint);
+        }
+        Ok(req)
     }
 
     /// Clone this request builder if the body is buffered.
@@ -331,6 +345,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
             force_addr: self.force_addr,
+            protocol_hint: self.protocol_hint,
         })
     }
 
@@ -347,6 +362,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             self.version,
             effective_connect_timeout,
             self.force_addr,
+            self.protocol_hint,
         );
 
         match effective_timeout {

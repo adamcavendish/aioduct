@@ -36,7 +36,6 @@ fn install_provider() {
 fn h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap()
@@ -319,7 +318,13 @@ async fn h2_goaway_during_concurrent_requests() {
     let url = format!("http://{addr}/");
 
     // Warm the connection so it is pooled.
-    let warm = client.get(&url).unwrap().send().await.unwrap();
+    let warm = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(warm.status(), 200);
     let _ = warm.text().await.unwrap();
 
@@ -339,11 +344,11 @@ async fn h2_goaway_during_concurrent_requests() {
     let u5 = url.clone();
 
     let (r1, r2, r3, r4, r5) = tokio::join!(
-        async { c1.get(&u1).unwrap().send().await },
-        async { c2.get(&u2).unwrap().send().await },
-        async { c3.get(&u3).unwrap().send().await },
-        async { c4.get(&u4).unwrap().send().await },
-        async { c5.get(&u5).unwrap().send().await },
+        async { c1.get(&u1).unwrap().h2c_prior_knowledge().send().await },
+        async { c2.get(&u2).unwrap().h2c_prior_knowledge().send().await },
+        async { c3.get(&u3).unwrap().h2c_prior_knowledge().send().await },
+        async { c4.get(&u4).unwrap().h2c_prior_knowledge().send().await },
+        async { c5.get(&u5).unwrap().h2c_prior_knowledge().send().await },
     );
 
     let mut success = 0u32;

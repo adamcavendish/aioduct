@@ -3,10 +3,16 @@ use aioduct::TokioClient;
 async fn main() -> Result<(), aioduct::Error> {
     // Force HTTP/2 without TLS upgrade negotiation (h2c)
     // This is useful for local services that speak HTTP/2 directly
-    let _client = TokioClient::builder()
-        .http2_prior_knowledge()
-        .build()
-        .unwrap();
+    let client = TokioClient::builder().build().unwrap();
+
+    // Per-request h2c: use .h2c_prior_knowledge() on the request builder
+    // to send HTTP/2 preface bytes on plaintext connections.
+    // Only use when the target server is known to support cleartext HTTP/2.
+    let _resp = client
+        .get("http://localhost:8080/")?
+        .h2c_prior_knowledge()
+        .send()
+        .await?;
 
     // Note: most public servers don't support h2c, so we only demonstrate the API.
     // Use the h2c client with a local server that supports cleartext HTTP/2.

@@ -118,13 +118,18 @@ async fn h2_reuse_across_sequential() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..5 {
-        let resp = client.get(&url).unwrap().send().await.unwrap();
+        let resp = client
+            .get(&url)
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
         let _ = resp.text().await.unwrap();
     }
@@ -141,13 +146,18 @@ async fn h2_multiplex_concurrent() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
     // Establish the H2 connection first so it's in the pool.
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
@@ -157,7 +167,13 @@ async fn h2_multiplex_concurrent() {
         let client = client.clone();
         let url = url.clone();
         handles.push(tokio::spawn(async move {
-            let resp = client.get(&url).unwrap().send().await.unwrap();
+            let resp = client
+                .get(&url)
+                .unwrap()
+                .h2c_prior_knowledge()
+                .send()
+                .await
+                .unwrap();
             assert_eq!(resp.status(), 200);
             let _ = resp.text().await.unwrap();
         }));
@@ -199,18 +215,29 @@ async fn h2_large_body_then_reuse() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.bytes().await.unwrap();
     assert_eq!(body.len(), body_size);
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.bytes().await.unwrap();
 
@@ -469,13 +496,18 @@ async fn h2_connection_reuse_verified() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..5 {
-        let resp = client.get(&url).unwrap().send().await.unwrap();
+        let resp = client
+            .get(&url)
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
         let _ = resp.text().await.unwrap();
     }
@@ -568,13 +600,18 @@ async fn h2_concurrent_should_multiplex_single_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
     assert_eq!(counter.connections(), 1, "warmup should use 1 connection");
@@ -584,7 +621,13 @@ async fn h2_concurrent_should_multiplex_single_connection() {
         let client = client.clone();
         let url = url.clone();
         handles.push(tokio::spawn(async move {
-            let resp = client.get(&url).unwrap().send().await.unwrap();
+            let resp = client
+                .get(&url)
+                .unwrap()
+                .h2c_prior_knowledge()
+                .send()
+                .await
+                .unwrap();
             assert_eq!(resp.status(), 200);
             let _ = resp.text().await.unwrap();
         }));
@@ -613,13 +656,18 @@ async fn h2_slow_body_concurrent_should_still_multiplex() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
@@ -628,7 +676,7 @@ async fn h2_slow_body_concurrent_should_still_multiplex() {
         let client = client.clone();
         let url = url.clone();
         handles.push(tokio::spawn(async move {
-            client.get(&url).unwrap().send().await
+            client.get(&url).unwrap().h2c_prior_knowledge().send().await
         }));
     }
 
@@ -658,7 +706,6 @@ async fn h2_parallel_downloads_single_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
@@ -669,7 +716,13 @@ async fn h2_parallel_downloads_single_connection() {
         let client = client.clone();
         let url = url.clone();
         handles.push(tokio::spawn(async move {
-            let resp = client.get(&url).unwrap().send().await.unwrap();
+            let resp = client
+                .get(&url)
+                .unwrap()
+                .h2c_prior_knowledge()
+                .send()
+                .await
+                .unwrap();
             assert_eq!(resp.status(), 200);
             let _ = resp.text().await.unwrap();
         }));
@@ -752,14 +805,19 @@ async fn h2_pool_eviction_should_not_discard_active_connections() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .pool_max_idle_per_host(2)
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
     for _ in 0..5 {
-        let resp = client.get(&url).unwrap().send().await.unwrap();
+        let resp = client
+            .get(&url)
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
         let _ = resp.text().await.unwrap();
     }
@@ -850,19 +908,30 @@ async fn h2_goaway_after_n_forces_new_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_goaway_after(1).await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
@@ -986,14 +1055,19 @@ async fn h2_sequential_200_requests_reuse_one_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(30))
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
     for i in 0..200 {
-        let resp = client.get(&url).unwrap().send().await.unwrap();
+        let resp = client
+            .get(&url)
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200, "request {i} failed");
         let _ = resp.text().await.unwrap();
     }
@@ -1632,7 +1706,6 @@ async fn h2_multiplex_wait_timeout_mark_stays_set() {
     let connector_ref = connector.clone();
     let client =
         HttpEngineSend::<TokioRuntime, SlowFirstConnector>::builder_with_connector(connector)
-            .http2_prior_knowledge()
             .timeout(Duration::from_secs(5))
             .pool_idle_timeout(Duration::from_secs(60))
             .build()
@@ -1648,7 +1721,7 @@ async fn h2_multiplex_wait_timeout_mark_stays_set() {
         let client = client.clone();
         let url = format!("http://{addr}/");
         handles.push(tokio::spawn(async move {
-            client.get(&url).unwrap().send().await
+            client.get(&url).unwrap().h2c_prior_knowledge().send().await
         }));
     }
 

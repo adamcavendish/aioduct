@@ -625,13 +625,13 @@ async fn h2c_prior_knowledge_works() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -699,7 +699,6 @@ async fn h2_pool_hit_reuses_connection() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap();
@@ -708,6 +707,7 @@ async fn h2_pool_hit_reuses_connection() {
     let resp = client
         .get(&format!("http://{addr}/first"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -718,6 +718,7 @@ async fn h2_pool_hit_reuses_connection() {
     let resp = client
         .get(&format!("http://{addr}/second"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -748,7 +749,6 @@ async fn h2_concurrent_requests_multiplex_single_connection() {
 
     let client = Arc::new(
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .pool_idle_timeout(Duration::from_secs(60))
             .build()
             .unwrap(),
@@ -760,7 +760,7 @@ async fn h2_concurrent_requests_multiplex_single_connection() {
         let client = client.clone();
         let url = format!("http://{addr}/req{i}");
         handles.push(tokio::spawn(async move {
-            client.get(&url).unwrap().send().await
+            client.get(&url).unwrap().h2c_prior_knowledge().send().await
         }));
     }
 
@@ -1068,7 +1068,6 @@ async fn h2_pool_hit_observer_reports_hit() {
     let obs = TestObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .pool_idle_timeout(Duration::from_secs(60))
         .request_observer(obs.clone())
         .build()
@@ -1078,6 +1077,7 @@ async fn h2_pool_hit_observer_reports_hit() {
     let resp = client
         .get(&format!("http://{addr}/first"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -1088,6 +1088,7 @@ async fn h2_pool_hit_observer_reports_hit() {
     let resp = client
         .get(&format!("http://{addr}/second"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -1116,7 +1117,6 @@ async fn no_connection_reuse_prevents_pool_checkin_h2() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .no_connection_reuse()
         .build()
         .unwrap();
@@ -1126,6 +1126,7 @@ async fn no_connection_reuse_prevents_pool_checkin_h2() {
         let resp = client
             .get(&format!("http://{addr}/req{i}"))
             .unwrap()
+            .h2c_prior_knowledge()
             .send()
             .await
             .unwrap();
@@ -1259,7 +1260,6 @@ async fn h2_goaway_triggers_fresh_connection() {
     let (addr, counter) = aioduct_test_server::h2::h2_goaway_after(2).await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -1270,6 +1270,7 @@ async fn h2_goaway_triggers_fresh_connection() {
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
+            .h2c_prior_knowledge()
             .send()
             .await
             .unwrap();
@@ -1284,6 +1285,7 @@ async fn h2_goaway_triggers_fresh_connection() {
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -1436,7 +1438,6 @@ async fn h2_pool_hit_after_concurrent_establishment() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap();
@@ -1445,6 +1446,7 @@ async fn h2_pool_hit_after_concurrent_establishment() {
     let resp = client
         .get(&format!("http://{addr}/setup"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -1458,7 +1460,7 @@ async fn h2_pool_hit_after_concurrent_establishment() {
         let client = client.clone();
         let url = format!("http://{addr}/concurrent{i}");
         handles.push(tokio::spawn(async move {
-            client.get(&url).unwrap().send().await
+            client.get(&url).unwrap().h2c_prior_knowledge().send().await
         }));
     }
 
@@ -1692,7 +1694,6 @@ async fn observer_fires_connection_metrics_on_h2_multiplex_clone() {
 
     let client = Arc::new(
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .pool_idle_timeout(Duration::from_secs(60))
             .request_observer(obs.clone())
             .build()
@@ -1703,6 +1704,7 @@ async fn observer_fires_connection_metrics_on_h2_multiplex_clone() {
     let resp = client
         .get(&format!("http://{addr}/first"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -1711,6 +1713,7 @@ async fn observer_fires_connection_metrics_on_h2_multiplex_clone() {
     let resp = client
         .get(&format!("http://{addr}/second"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -2800,7 +2803,6 @@ async fn h2_multiplex_wait_spin_loop_many_concurrent() {
 
     let client = Arc::new(
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .pool_idle_timeout(Duration::from_secs(60))
             .timeout(Duration::from_secs(10))
             .build()
@@ -2813,7 +2815,7 @@ async fn h2_multiplex_wait_spin_loop_many_concurrent() {
         let client = client.clone();
         let url = format!("http://{addr}/spinwait{i}");
         handles.push(tokio::spawn(async move {
-            client.get(&url).unwrap().send().await
+            client.get(&url).unwrap().h2c_prior_knowledge().send().await
         }));
     }
 
@@ -3088,7 +3090,6 @@ async fn h2_discards_redundant_connection_on_race() {
 
     let client = Arc::new(
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .pool_idle_timeout(Duration::from_secs(60))
             .timeout(Duration::from_secs(10))
             .build()
@@ -3100,7 +3101,7 @@ async fn h2_discards_redundant_connection_on_race() {
         let client = client.clone();
         let url = format!("http://{addr}/race{i}");
         handles.push(tokio::spawn(async move {
-            client.get(&url).unwrap().send().await
+            client.get(&url).unwrap().h2c_prior_knowledge().send().await
         }));
     }
 
@@ -4464,15 +4465,14 @@ async fn h2_multiplex_concurrent_requests_dedup() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
     let url = format!("http://{addr}/resource");
     let (r1, r2, r3) = tokio::join!(
-        client.get(&url).unwrap().send(),
-        client.get(&url).unwrap().send(),
-        client.get(&url).unwrap().send(),
+        client.get(&url).unwrap().h2c_prior_knowledge().send(),
+        client.get(&url).unwrap().h2c_prior_knowledge().send(),
+        client.get(&url).unwrap().h2c_prior_knowledge().send(),
     );
 
     assert_eq!(r1.unwrap().status(), http::StatusCode::OK);

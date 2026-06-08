@@ -9,16 +9,6 @@ use crate::runtime::{ConnectorSend, RuntimePoll};
 use super::HttpEngineSend;
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
-    pub(crate) fn connect_plaintext<S>(
-        &self,
-        stream: S,
-    ) -> Pin<Box<dyn Future<Output = Result<PooledConnection<RequestBodySend>, Error>> + Send + '_>>
-    where
-        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
-    {
-        self.connect_plaintext_with_hint(stream, false)
-    }
-
     pub(crate) fn connect_plaintext_with_hint<S>(
         &self,
         stream: S,
@@ -27,7 +17,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     where
         S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
-        if self.core.http2_prior_knowledge || force_h2c {
+        if force_h2c {
             Box::pin(self.connect_h2_prior_knowledge(stream))
         } else {
             Box::pin(self.connect_h1(stream))

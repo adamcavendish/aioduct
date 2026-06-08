@@ -14,6 +14,9 @@ pub async fn execute(
     })?;
 
     let mut req = client.request(method, &cli.url)?;
+    if cli.http2 {
+        req = req.h2c_prior_knowledge();
+    }
     req = apply_headers(cli, req);
     req = apply_auth(cli, req);
     req = apply_body(cli, req)?;

@@ -301,7 +301,6 @@ async fn concurrent_h2_multiplex_exercises_checkout_path() {
 
     let client = Arc::new(
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .request_observer(obs.clone())
             .timeout(Duration::from_secs(5))
             .build()
@@ -312,6 +311,7 @@ async fn concurrent_h2_multiplex_exercises_checkout_path() {
     let resp = client
         .get(&format!("http://{addr}/first"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();
@@ -329,6 +329,7 @@ async fn concurrent_h2_multiplex_exercises_checkout_path() {
             let resp = c
                 .get(&format!("http://{a}/concurrent-{i}"))
                 .unwrap()
+                .h2c_prior_knowledge()
                 .send()
                 .await
                 .unwrap();

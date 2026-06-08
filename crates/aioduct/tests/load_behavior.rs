@@ -74,7 +74,6 @@ async fn h2_concurrent_100_requests() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
@@ -85,7 +84,13 @@ async fn h2_concurrent_100_requests() {
         let client = client.clone();
         let url = url.clone();
         handles.push(tokio::spawn(async move {
-            let resp = client.get(&url).unwrap().send().await.unwrap();
+            let resp = client
+                .get(&url)
+                .unwrap()
+                .h2c_prior_knowledge()
+                .send()
+                .await
+                .unwrap();
             assert_eq!(resp.status(), 200);
             let _ = resp.text().await.unwrap();
         }));
@@ -339,14 +344,19 @@ async fn h2_sequential_50_requests() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
     let url = format!("http://{addr}/");
 
     for i in 0..50 {
-        let resp = client.get(&url).unwrap().send().await.unwrap();
+        let resp = client
+            .get(&url)
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200, "request {i} failed");
         let _ = resp.text().await.unwrap();
     }

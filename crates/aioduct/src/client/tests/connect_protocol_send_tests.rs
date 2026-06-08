@@ -4,17 +4,16 @@ mod tokio_tests {
     use crate::client::HttpEngineSend;
     use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
 
-    /// Helper: build an HttpEngineSend with default http2_prior_knowledge = false.
+    /// Helper: build an HttpEngineSend with default settings (no h2c).
     fn make_engine() -> HttpEngineSend<TokioRuntime, TcpConnector> {
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .build()
             .unwrap()
     }
 
-    /// Helper: build an HttpEngineSend with http2_prior_knowledge = true.
+    /// Helper: build an HttpEngineSend with h2c enabled.
     fn make_h2_engine() -> HttpEngineSend<TokioRuntime, TcpConnector> {
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .build()
             .unwrap()
     }
@@ -93,7 +92,7 @@ mod tokio_tests {
 
         let io = TokioIo::new(client_io);
         let engine = make_engine();
-        let result = engine.connect_plaintext(io).await;
+        let result = engine.connect_plaintext_with_hint(io, false).await;
         assert!(result.is_ok());
         let pooled = result.unwrap();
         assert!(matches!(pooled.conn, crate::pool::HttpConnection::H1(_)));
@@ -177,7 +176,7 @@ mod tokio_tests {
         let io = TokioIo::new(client_io);
         let engine = make_h2_engine();
         // http2_prior_knowledge = true means connect_plaintext should use h2
-        let result = engine.connect_plaintext(io).await;
+        let result = engine.connect_plaintext_with_hint(io, true).await;
         assert!(result.is_ok());
         let pooled = result.unwrap();
         assert!(matches!(pooled.conn, crate::pool::HttpConnection::H2(_)));
@@ -255,7 +254,7 @@ mod tokio_tests {
         let io = TokioIo::new(client_io);
         let engine = make_engine();
         // connect_plaintext with default engine (no http2_prior_knowledge) should use H1
-        let result = engine.connect_plaintext(io).await;
+        let result = engine.connect_plaintext_with_hint(io, false).await;
         assert!(result.is_ok());
         let pooled = result.unwrap();
         assert!(

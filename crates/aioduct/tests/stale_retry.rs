@@ -43,7 +43,6 @@ fn make_h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
-        .http2_prior_knowledge()
         .build()
         .unwrap()
 }
@@ -110,14 +109,26 @@ async fn h2_goaway_detected_as_stale() {
     let client = make_h2_client();
     let url = format!("http://{addr}/");
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
     // Allow GOAWAY frame to propagate through the connection.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "ok");
 
@@ -577,7 +588,13 @@ async fn retry_h2_goaway_with_post_body() {
     let url = format!("http://{addr}/");
 
     // First request to trigger GOAWAY.
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
@@ -589,6 +606,7 @@ async fn retry_h2_goaway_with_post_body() {
         .post(&url)
         .unwrap()
         .body("h2-post-body")
+        .h2c_prior_knowledge()
         .send()
         .await
         .expect("H2 GOAWAY with POST body must be retried on new connection");
