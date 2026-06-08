@@ -237,6 +237,24 @@ fn render_facts_panel(f: &mut Frame, area: Rect, state: &TuiState) {
         ));
     }
 
+    if let Some(ref pool) = state.pool_stats {
+        lines.push(Line::raw(""));
+        let total_hits = pool.checkout_hits + pool.checkout_coalesced_hits;
+        let total_requests = total_hits + pool.checkout_misses;
+        let hit_rate = if total_requests > 0 {
+            format!("{:.0}%", total_hits as f64 / total_requests as f64 * 100.0)
+        } else {
+            "-".into()
+        };
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "Pool: {} idle, {} active, {} hit rate",
+                pool.idle_pool_entries, pool.checked_out_pool_handles, hit_rate,
+            ),
+            Style::default().fg(Color::DarkGray),
+        )]));
+    }
+
     if let Some(last) = state.event_lines.back() {
         lines.push(Line::raw(""));
         lines.push(Line::styled("Latest", Style::default().fg(Color::DarkGray)));
@@ -879,6 +897,69 @@ fn render_summary_page(f: &mut Frame, area: Rect, state: &TuiState) {
         for (name, value) in &state.trailers {
             lines.push(Line::raw(format!("  {name}: {value}")));
         }
+    }
+
+    if let Some(ref pool) = state.pool_stats {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled("Pool", Style::default().fg(Color::Cyan)));
+        lines.push(fact_line(
+            "Hit rate",
+            {
+                let total_hits = pool.checkout_hits + pool.checkout_coalesced_hits;
+                let total_requests = total_hits + pool.checkout_misses;
+                if total_requests > 0 {
+                    let pct = total_hits as f64 / total_requests as f64 * 100.0;
+                    format!("{pct:.0}%")
+                } else {
+                    "-".into()
+                }
+            },
+            Color::Yellow,
+        ));
+        lines.push(fact_line(
+            "Hits / misses / coalesced",
+            format!(
+                "{} / {} / {}",
+                pool.checkout_hits, pool.checkout_misses, pool.checkout_coalesced_hits
+            ),
+            Color::White,
+        ));
+        lines.push(fact_line(
+            "Stale retries",
+            pool.stale_reuse_retries.to_string(),
+            if pool.stale_reuse_retries > 0 {
+                Color::Red
+            } else {
+                Color::DarkGray
+            },
+        ));
+        let total_evictions = pool.idle_timeout_evictions
+            + pool.max_lifetime_evictions
+            + pool.checkout_not_ready_evictions
+            + pool.capacity_evictions;
+        lines.push(fact_line(
+            "Evictions (idle/life/ready/cap)",
+            format!(
+                "{} / {} / {} / {}",
+                pool.idle_timeout_evictions,
+                pool.max_lifetime_evictions,
+                pool.checkout_not_ready_evictions,
+                pool.capacity_evictions,
+            ),
+            if total_evictions > 0 {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            },
+        ));
+        lines.push(fact_line(
+            "Idle / active handles",
+            format!(
+                "{} / {}",
+                pool.idle_pool_entries, pool.checked_out_pool_handles
+            ),
+            Color::White,
+        ));
     }
 
     let block = Block::default().borders(Borders::ALL).title("Summary");

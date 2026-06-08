@@ -27,7 +27,12 @@ pub async fn run(cli: HttpArgs) -> ExitCode {
     };
 
     let resp = match request::execute(&cli, &http_client).await {
-        Ok(r) => r,
+        Ok(r) => {
+            if let Some(ref tui) = tui_handle {
+                tui.send_pool_stats(http_client.pool_stats());
+            }
+            r
+        }
         Err(e) => {
             if let Some(mut tui) = tui_handle {
                 tui.send_fatal_error(e.to_string());

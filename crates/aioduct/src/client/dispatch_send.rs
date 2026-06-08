@@ -341,7 +341,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             "connection.pool.coalesced.stale — retrying on fresh connection"
                         );
                         if conn.is_h2_or_h3() {
-                            self.core.pool.evict(&pool_key);
+                            let evict_key = conn.key.as_ref().unwrap_or(&pool_key);
+                            self.core.pool.evict(evict_key);
                         }
                         self.core.pool.record_stale_reuse_retry();
                         self.core.fire_connection_metrics(&conn, true);
