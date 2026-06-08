@@ -41,6 +41,40 @@ All backends support setting headers per-request and configuring default headers
 on the client builder. WASM: `wasm.rs` lines 185-194 (set), 92-96 (default).
 WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 
+### Authentication
+
+| Feature | tokio | smol | compio | wasm | wasi-p2 |
+|---------|-------|------|--------|------|---------|
+| Bearer token | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✓ `wasm` | ✓ `wasi-p2` |
+| Basic auth | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✓ `wasm` | ✓ `wasi-p2` |
+| Digest auth | ✓ | ✓ | ✓ | ✗ | ✗ |
+| Netrc | ✓ | ✓ | ✓ | ✗ | ✗ |
+
+WASM: `wasm.rs` `bearer_auth()` at line 203 and `basic_auth()` at line 215 set
+the `Authorization` header with Bearer/Basic credentials. `basic_auth()` uses
+base64 encoding (matching the native implementation).
+
+WASI-P2: `wasi_p2.rs` `bearer_auth()` at line 197 and `basic_auth()` at line
+210 set the `Authorization` header identically.
+
+Digest auth and netrc-based auth are not integrated into WASM or WASI-P2 clients
+— the portable types compile but are not wired into the request flow.
+
+### URL Query Parameters
+
+| Feature | tokio | smol | compio | wasm | wasi-p2 |
+|---------|-------|------|--------|------|---------|
+| `query()` (string pairs) | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✓ `wasm` | ✓ `wasi-p2` |
+| `query_serde()` (serialize) | ✓ `json` | ✓ `json` | ✓ `json` | ✗ | ✗ |
+
+WASM: `wasm.rs` `query()` percent-encodes key/value pairs and appends them to
+the request URI, matching the native implementation. `query_serde()` is not
+available — the `serde_urlencoded` crate is not a dependency in the wasm target
+configuration.
+
+WASI-P2: `wasi_p2.rs` `query()` percent-encodes and appends pairs identically.
+`query_serde()` is likewise not available.
+
 ### Request Body
 
 | Feature | tokio | smol | compio | wasm | wasi-p2 |

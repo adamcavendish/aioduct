@@ -213,6 +213,52 @@ impl<'a> WasmRequestBuilder<'a> {
         self
     }
 
+    /// Set a Basic Authorization header.
+    ///
+    /// If the username or password produce an invalid header value, this is a no-op.
+    pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
+        use base64::engine::{Engine, general_purpose::STANDARD};
+        let credentials = match password {
+            Some(pw) => format!("{username}:{pw}"),
+            None => format!("{username}:"),
+        };
+        let encoded = STANDARD.encode(credentials);
+        let Ok(value) = HeaderValue::from_str(&format!("Basic {encoded}")) else {
+            return self;
+        };
+        self.headers.insert(http::header::AUTHORIZATION, value);
+        self
+    }
+
+    /// Append URL query parameters from string pairs.
+    pub fn query(mut self, params: &[(&str, &str)]) -> Self {
+        use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+        use std::fmt::Write;
+        const QUERY_ENCODE: &AsciiSet = &CONTROLS
+            .add(b' ')
+            .add(b'"')
+            .add(b'#')
+            .add(b'<')
+            .add(b'>')
+            .add(b'&')
+            .add(b'=')
+            .add(b'+')
+            .add(b'%');
+
+        let mut uri_str = self.uri.to_string();
+        let has_query = self.uri.query().is_some();
+        for (i, (key, val)) in params.iter().enumerate() {
+            let sep = if i == 0 && !has_query { '?' } else { '&' };
+            let key = utf8_percent_encode(key, QUERY_ENCODE);
+            let val = utf8_percent_encode(val, QUERY_ENCODE);
+            let _ = write!(uri_str, "{sep}{key}={val}");
+        }
+        if let Ok(new_uri) = uri_str.parse() {
+            self.uri = new_uri;
+        }
+        self
+    }
+
     /// Set the body as JSON.
     #[cfg(feature = "json")]
     pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self, Error> {
@@ -680,6 +726,68 @@ mod tests {
             .unwrap()
             .timeout(Duration::from_secs(5));
         assert_eq!(req.timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn request_builder_basic_auth_with_password() {
+        let client = WasmClient::new();
+        let req = client
+            .get("https://example.com")
+            .unwrap()
+            .basic_auth("user", Some("pass"));
+        let auth = req
+            .headers
+            .get(http::header::AUTHORIZATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth.starts_with("Basic "));
+        use base64::engine::{Engine, general_purpose::STANDARD};
+        let decoded = STANDARD.decode(&auth[6..]).unwrap();
+        assert_eq!(decoded, b"user:pass");
+    }
+
+    #[test]
+    fn request_builder_basic_auth_without_password() {
+        let client = WasmClient::new();
+        let req = client
+            .get("https://example.com")
+            .unwrap()
+            .basic_auth("user", None);
+        let auth = req
+            .headers
+            .get(http::header::AUTHORIZATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth.starts_with("Basic "));
+        use base64::engine::{Engine, general_purpose::STANDARD};
+        let decoded = STANDARD.decode(&auth[6..]).unwrap();
+        assert_eq!(decoded, b"user:");
+    }
+
+    #[test]
+    fn request_builder_query_appends_params() {
+        let client = WasmClient::new();
+        let req = client
+            .get("https://example.com/path")
+            .unwrap()
+            .query(&[("key", "value"), ("foo", "bar")]);
+        let uri = req.uri.to_string();
+        assert!(uri.contains("?key=value"));
+        assert!(uri.contains("&foo=bar"));
+    }
+
+    #[test]
+    fn request_builder_query_appends_to_existing() {
+        let client = WasmClient::new();
+        let req = client
+            .get("https://example.com/path?a=1")
+            .unwrap()
+            .query(&[("b", "2")]);
+        let uri = req.uri.to_string();
+        assert!(uri.contains("a=1"));
+        assert!(uri.contains("b=2"));
     }
 
     #[test]
