@@ -689,9 +689,9 @@ async fn pooled_connection_new_h1_defaults() {
     assert!(conn.tls_info.is_none());
     assert!(conn.tls_handshake_duration.is_none());
     assert!(conn.sans.is_empty());
-    assert_eq!(conn.requests_served, 0);
-    assert_eq!(conn.bytes_sent, 0);
-    assert_eq!(conn.bytes_received, 0);
+    assert_eq!(conn.requests_served(), 0);
+    assert_eq!(conn.bytes_sent(), 0);
+    assert_eq!(conn.bytes_received(), 0);
     assert!(!conn.is_multiplex_clone);
     assert!(!conn.is_h2_or_h3());
     // Note: is_ready() for h1 depends on the background connection driver timing;
@@ -705,9 +705,9 @@ async fn pooled_connection_new_h2_defaults() {
     assert!(conn.tls_info.is_none());
     assert!(conn.tls_handshake_duration.is_none());
     assert!(conn.sans.is_empty());
-    assert_eq!(conn.requests_served, 0);
-    assert_eq!(conn.bytes_sent, 0);
-    assert_eq!(conn.bytes_received, 0);
+    assert_eq!(conn.requests_served(), 0);
+    assert_eq!(conn.bytes_sent(), 0);
+    assert_eq!(conn.bytes_received(), 0);
     assert!(!conn.is_multiplex_clone);
     assert!(conn.is_h2_or_h3());
     assert!(conn.is_ready());
@@ -723,9 +723,13 @@ async fn clone_for_multiplex_returns_none_for_h1() {
 async fn clone_for_multiplex_returns_some_for_h2() {
     let mut conn = make_h2_conn().await;
     conn.remote_addr = Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)));
-    conn.requests_served = 5;
-    conn.bytes_sent = 1024;
-    conn.bytes_received = 4096;
+    conn.record_request(1024);
+    // Record two more requests to reach 5 total
+    conn.record_request(0);
+    conn.record_request(0);
+    conn.record_request(0);
+    conn.record_request(0);
+    conn.record_bytes_received(4096);
 
     let cloned = conn.clone_for_multiplex();
     assert!(cloned.is_some());
@@ -736,10 +740,10 @@ async fn clone_for_multiplex_returns_some_for_h2() {
         cloned.remote_addr,
         Some(std::net::SocketAddr::from(([10, 0, 0, 1], 443)))
     );
-    // Cloned handle resets counters
-    assert_eq!(cloned.requests_served, 0);
-    assert_eq!(cloned.bytes_sent, 0);
-    assert_eq!(cloned.bytes_received, 0);
+    // Cloned handle shares transport-cumulative metrics
+    assert_eq!(cloned.requests_served(), 5);
+    assert_eq!(cloned.bytes_sent(), 1024);
+    assert_eq!(cloned.bytes_received(), 4096);
     assert!(cloned.is_h2_or_h3());
 }
 
