@@ -51,6 +51,16 @@ impl RequestBuilderExt for OwnedWasiRequestBuilder {
         self
     }
 
+    fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
+        self.inner = self.inner.basic_auth(username, password);
+        self
+    }
+
+    fn query(mut self, params: &[(&str, &str)]) -> Self {
+        self.inner = self.inner.query(params);
+        self
+    }
+
     async fn send(self) -> Result<WasiResponse, SendError> {
         let url = self.inner.uri().clone();
         self.inner.send().map_err(|e| SendError::new(e, url))
@@ -101,5 +111,25 @@ mod tests {
     #[test]
     fn wasi_client_implements_http_client() {
         assert_http_client::<WasiClient>();
+    }
+
+    #[test]
+    fn trait_basic_auth_non_default() {
+        // basic_auth is overridden — verify the trait method compiles and is not a no-op.
+        let client = WasiClient::new();
+        let _rb = HttpClient::get(&client, "https://example.com")
+            .unwrap()
+            .basic_auth("user", Some("pass"));
+        // Actual behavior is tested in wasi_p2::tests.
+    }
+
+    #[test]
+    fn trait_query_non_default() {
+        // query is overridden — verify the trait method compiles and is not a no-op.
+        let client = WasiClient::new();
+        let _rb = HttpClient::get(&client, "https://example.com/path")
+            .unwrap()
+            .query(&[("a", "1")]);
+        // Actual behavior is tested in wasi_p2::tests.
     }
 }

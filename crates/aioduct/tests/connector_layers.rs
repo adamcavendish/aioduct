@@ -255,3 +255,86 @@ async fn delay_layer_within_timeout_succeeds() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
+
+/// Verifies that the `ConnectInfo` passed to a tower service contains the
+/// correct URI. This guards against regressions where the connector layer loses
+/// the request URI before reaching the service.
+#[tokio::test]
+async fn connector_layer_uri_visibility() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let uri_seen: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let uri_seen_clone = uri_seen.clone();
+
+    #[derive(Clone)]
+    struct UriCheckLayer {
+        flag: Arc<AtomicBool>,
+    }
+
+    impl<S: Clone> Layer<S> for UriCheckLayer {
+        type Service = UriCheckService<S>;
+        fn layer(&self, inner: S) -> UriCheckService<S> {
+            UriCheckService {
+                inner,
+                flag: self.flag.clone(),
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct UriCheckService<S> {
+        inner: S,
+        flag: Arc<AtomicBool>,
+    }
+
+    impl<S> Service<ConnectInfo> for UriCheckService<S>
+    where
+        S: Service<ConnectInfo, Error = std::io::Error> + Clone + Send + Sync + 'static,
+        S::Future: Send + 'static,
+        S::Response: Send + 'static,
+    {
+        type Response = S::Response;
+        type Error = std::io::Error;
+        type Future = Pin<Box<dyn Future<Output = Result<S::Response, std::io::Error>> + Send>>;
+
+        fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.inner.poll_ready(cx)
+        }
+
+        fn call(&mut self, req: ConnectInfo) -> Self::Future {
+            let uri_str = req.uri.to_string();
+            assert!(!uri_str.is_empty(), "ConnectInfo URI should not be empty");
+            assert!(
+                uri_str.starts_with("http://") || uri_str.starts_with("https://"),
+                "ConnectInfo URI should start with http:// or https://, got: {uri_str}"
+            );
+            self.flag.store(true, Ordering::SeqCst);
+
+            let mut inner = self.inner.clone();
+            Box::pin(async move { inner.call(req).await })
+        }
+    }
+
+    let (addr, _counter) = h1_server().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .connector_layer(UriCheckLayer {
+            flag: uri_seen_clone,
+        })
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert!(
+        uri_seen.load(Ordering::SeqCst),
+        "Connector service should have received the URI"
+    );
+}
