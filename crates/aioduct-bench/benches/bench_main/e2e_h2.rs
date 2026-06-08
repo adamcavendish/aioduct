@@ -15,6 +15,7 @@ fn bench_h2_get(c: &mut Criterion) {
             AIODUCT_H2
                 .get(&url)
                 .unwrap()
+                .h2c_prior_knowledge()
                 .send()
                 .await
                 .unwrap()
@@ -52,6 +53,7 @@ fn bench_h2_post_4k(c: &mut Criterion) {
                     .post(&url)
                     .unwrap()
                     .body(p)
+                    .h2c_prior_knowledge()
                     .send()
                     .await
                     .unwrap()
@@ -74,6 +76,7 @@ fn bench_h2_download_64k(c: &mut Criterion) {
             AIODUCT_H2
                 .get(&url)
                 .unwrap()
+                .h2c_prior_knowledge()
                 .send()
                 .await
                 .unwrap()
@@ -109,6 +112,7 @@ fn bench_h2_download_1m(c: &mut Criterion) {
             AIODUCT_H2
                 .get(&url)
                 .unwrap()
+                .h2c_prior_knowledge()
                 .send()
                 .await
                 .unwrap()

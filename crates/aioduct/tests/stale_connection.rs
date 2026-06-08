@@ -216,13 +216,18 @@ async fn stale_h2_goaway_retries_transparently() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
     let url = format!("http://{addr}/");
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
@@ -230,7 +235,13 @@ async fn stale_h2_goaway_retries_transparently() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // With transparent retry, this succeeds on a new H2 connection.
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "ok");
 }
@@ -723,14 +734,19 @@ async fn stale_h2_multiplex_wait_retries_on_goaway() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
     let url = format!("http://{addr}/");
 
     // First request establishes H2 connection. Server GOAWAYs after.
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
@@ -739,7 +755,13 @@ async fn stale_h2_multiplex_wait_retries_on_goaway() {
 
     // Second request: the pooled H2 connection is stale (GOAWAY received).
     // The stale retry must reconnect and succeed.
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "ok");
 

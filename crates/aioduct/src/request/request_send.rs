@@ -11,6 +11,7 @@ use crate::body::RequestBodySend;
 use crate::client::HttpEngineSend;
 use crate::error::{Error, SendError};
 use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
+use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::retry::RetryConfig;
 use crate::runtime::{ConnectorSend, RuntimePoll};
@@ -30,6 +31,7 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     connect_timeout: Option<Duration>,
     retry: Option<RetryConfig>,
     force_addr: Option<std::net::SocketAddr>,
+    protocol_hint: ProtocolHint,
     _runtime: PhantomData<(R, C)>,
 }
 
@@ -55,6 +57,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             connect_timeout: None,
             retry: None,
             force_addr: None,
+            protocol_hint: ProtocolHint::Auto,
             _runtime: PhantomData,
         }
     }
@@ -71,6 +74,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             connect_timeout: None,
             retry: None,
             force_addr: None,
+            protocol_hint: ProtocolHint::Auto,
             _runtime: PhantomData,
         }
     }
@@ -293,6 +297,12 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         self
     }
 
+    /// Use HTTP/2 prior knowledge (h2c) for this request.
+    pub fn h2c_prior_knowledge(mut self) -> Self {
+        self.protocol_hint = ProtocolHint::H2c;
+        self
+    }
+
     /// Set a retry configuration for this request.
     pub fn retry(mut self, config: RetryConfig) -> Self {
         self.retry = Some(config);
@@ -338,7 +348,11 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         for (name, value) in &self.headers {
             builder = builder.header(name, value);
         }
-        builder.body(body).map_err(Error::Http)
+        let mut req = builder.body(body).map_err(Error::Http)?;
+        if self.protocol_hint != ProtocolHint::Auto {
+            req.extensions_mut().insert(self.protocol_hint);
+        }
+        Ok(req)
     }
 
     /// Clone this request builder if the body is cloneable (buffered).
@@ -359,6 +373,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             connect_timeout: self.connect_timeout,
             retry: self.retry.clone(),
             force_addr: self.force_addr,
+            protocol_hint: self.protocol_hint,
             _runtime: PhantomData,
         })
     }
@@ -395,6 +410,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             self.version,
             effective_connect_timeout,
             self.force_addr,
+            self.protocol_hint,
         );
 
         let result = match effective_timeout {
@@ -454,6 +470,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 self.version,
                 effective_connect_timeout,
                 self.force_addr,
+                self.protocol_hint,
             );
 
             let result = match effective_timeout {

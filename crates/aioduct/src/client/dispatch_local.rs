@@ -25,6 +25,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         replay_body: Option<Bytes>,
         connect_timeout: Option<Duration>,
         force_addr: Option<SocketAddr>,
+        protocol_hint: crate::pool::ProtocolHint,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
 
@@ -48,8 +49,31 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
         let is_https = scheme == &http::uri::Scheme::HTTPS;
 
-        let pool_key = crate::pool::PoolKey::new(scheme.clone(), authority.clone());
-        let may_h2 = is_https || self.core.http2_prior_knowledge;
+        // Resolve AdaptiveH2c via the probe cache, matching the send-path behavior.
+        let effective_hint = match protocol_hint {
+            crate::pool::ProtocolHint::AdaptiveH2c => {
+                match self.core.h2c_probe_cache.lookup(authority) {
+                    Some(true) => crate::pool::ProtocolHint::H2c,
+                    Some(false) => crate::pool::ProtocolHint::Auto,
+                    None => crate::pool::ProtocolHint::AdaptiveH2c,
+                }
+            }
+            other => other,
+        };
+        let force_h2c = matches!(
+            effective_hint,
+            crate::pool::ProtocolHint::H2c | crate::pool::ProtocolHint::AdaptiveH2c
+        );
+        let mut pool_key = if force_h2c {
+            crate::pool::PoolKey::with_hint(
+                scheme.clone(),
+                authority.clone(),
+                crate::pool::ProtocolHint::H2c,
+            )
+        } else {
+            crate::pool::PoolKey::new(scheme.clone(), authority.clone())
+        };
+        let may_h2 = is_https || force_h2c;
 
         let can_stale_retry = !self.core.no_connection_reuse
             && (http_body::Body::is_end_stream(request.body()) || replay_body.is_some());
@@ -289,6 +313,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             .as_ref()
             .and_then(|settings| settings.proxy_for(original_uri));
 
+        // Through proxies, uncached AdaptiveH2c resolves to Auto (H1):
+        // probing requires re-establishing the proxy tunnel on failure,
+        // which is disproportionate. Use .h2c() to force h2c through proxies.
+        let through_proxy = proxy.is_some() || self.core.proxy_chain.is_some();
+        let proxy_force_h2c = if through_proxy {
+            force_h2c && effective_hint != crate::pool::ProtocolHint::AdaptiveH2c
+        } else {
+            force_h2c
+        };
+
         if !self.core.pool.can_connect(&pool_key) {
             return Err(Error::Other(
                 "max active connections per host reached".into(),
@@ -296,11 +330,23 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         }
 
         let mut pooled = if let Some(ref chain) = self.core.proxy_chain {
-            self.connect_via_proxy_chain_local(chain, authority, is_https, connect_timeout)
-                .await?
+            self.connect_via_proxy_chain_local(
+                chain,
+                authority,
+                is_https,
+                connect_timeout,
+                proxy_force_h2c,
+            )
+            .await?
         } else if let Some(ref proxy) = proxy {
-            self.connect_via_proxy_local(proxy, authority, is_https, connect_timeout)
-                .await?
+            self.connect_via_proxy_local(
+                proxy,
+                authority,
+                is_https,
+                connect_timeout,
+                proxy_force_h2c,
+            )
+            .await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
             let host = authority.host();
@@ -374,10 +420,70 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
                 let mut conn = if is_https {
                     self.connect_tls_local(tcp_stream, authority.host()).await?
+                } else if force_h2c && effective_hint == crate::pool::ProtocolHint::AdaptiveH2c {
+                    // Adaptive h2c: try h2c, fall back to H1, cache the result.
+                    let h2c_ok = match self.connect_h2_prior_knowledge_local(tcp_stream).await {
+                        Ok(c) => {
+                            R::sleep(std::time::Duration::from_millis(50)).await;
+                            if c.is_ready() { Some(c) } else { None }
+                        }
+                        Err(_) => None,
+                    };
+                    match h2c_ok {
+                        Some(c) => {
+                            self.core.h2c_probe_cache.record_h2c(authority.clone());
+                            let mut c = c;
+                            c.remote_addr = Some(addr);
+                            c
+                        }
+                        None => {
+                            self.core.h2c_probe_cache.record_h1_only(authority.clone());
+                            let (stream2, fallback_addr) = if addrs.len() > 1 {
+                                let (s, a) = crate::happy_eyeballs::connect_happy_eyeballs_local::<
+                                    R,
+                                    C,
+                                >(
+                                    &self.connector, &addrs, local_address
+                                )
+                                .await
+                                .map_err(Error::Io)?;
+                                (s, a)
+                            } else if let Some(local_addr) = local_address {
+                                let s = self
+                                    .connector
+                                    .connect_bound(addrs[0], local_addr)
+                                    .await
+                                    .map_err(Error::Io)?;
+                                (s, addrs[0])
+                            } else {
+                                let s =
+                                    self.connector.connect(addrs[0]).await.map_err(Error::Io)?;
+                                (s, addrs[0])
+                            };
+                            if let Some(time) = self.core.tcp_keepalive {
+                                stream2
+                                    .set_keepalive(
+                                        time,
+                                        self.core.tcp_keepalive_interval,
+                                        self.core.tcp_keepalive_retries,
+                                    )
+                                    .map_err(Error::Io)?;
+                            }
+                            if self.core.tcp_fast_open {
+                                let _ = stream2.set_fast_open();
+                            }
+                            let mut c = self.connect_h1_local(stream2).await?;
+                            c.remote_addr = Some(fallback_addr);
+                            c
+                        }
+                    }
                 } else {
-                    self.connect_plaintext_local(tcp_stream).await?
+                    self.connect_plaintext_local_with_hint(tcp_stream, force_h2c)
+                        .await?
                 };
-                conn.remote_addr = Some(addr);
+                if conn.remote_addr.is_none() {
+                    conn.remote_addr = Some(addr);
+                }
                 Ok::<(PooledConnection<RequestBodyLocal>, Instant), Error>((conn, Instant::now()))
             };
 
@@ -456,6 +562,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         // H2 multiplexing: deactivate the guard and handle connection sharing
         h2_guard.active = false;
         drop(h2_guard);
+
+        // Adjust pool key if adaptive probe fell back to h1
+        if matches!(protocol_hint, crate::pool::ProtocolHint::AdaptiveH2c)
+            && matches!(pooled.conn, crate::pool::HttpConnection::H1(_))
+        {
+            pool_key.protocol = crate::pool::ProtocolHint::Auto;
+        }
 
         let is_multiplex = pooled.is_h2_or_h3() && !self.core.no_connection_reuse;
         if is_multiplex {

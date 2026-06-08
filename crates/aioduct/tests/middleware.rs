@@ -707,7 +707,6 @@ async fn middleware_with_h2_transport() {
     let on_response_count = Arc::new(AtomicU32::new(0));
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .middleware(TransportCountingMiddleware {
             on_request_count: on_request_count.clone(),
             on_response_count: on_response_count.clone(),
@@ -718,6 +717,7 @@ async fn middleware_with_h2_transport() {
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
+        .h2c_prior_knowledge()
         .send()
         .await
         .unwrap();

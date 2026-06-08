@@ -15,6 +15,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         target_authority: &http::uri::Authority,
         is_https: bool,
         connect_timeout: Option<Duration>,
+        force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
@@ -88,7 +89,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .await?;
             if is_https {
                 self.connect_tls(stream, host).await
-            } else if self.core.http2_prior_knowledge {
+            } else if force_h2c {
                 self.connect_h2_prior_knowledge(stream).await
             } else {
                 self.connect_h1(stream).await
@@ -116,7 +117,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
             if is_https {
                 self.connect_tls(tcp_stream, host).await
-            } else if self.core.http2_prior_knowledge {
+            } else if force_h2c {
                 self.connect_h2_prior_knowledge(tcp_stream).await
             } else {
                 self.connect_h1(tcp_stream).await
@@ -147,7 +148,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     let tunnel_stream =
                         super::connect_handshake::do_connect_handshake(tls_stream, proxy, &target)
                             .await?;
-                    if self.core.http2_prior_knowledge {
+                    if force_h2c {
                         self.connect_h2_prior_knowledge(tunnel_stream).await
                     } else {
                         self.connect_h1(tunnel_stream).await
@@ -169,7 +170,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let target = format!("{}:{port}", target_authority.host());
             let tunnel_stream =
                 super::connect_handshake::do_connect_handshake(tcp_stream, proxy, &target).await?;
-            if self.core.http2_prior_knowledge {
+            if force_h2c {
                 self.connect_h2_prior_knowledge(tunnel_stream).await
             } else {
                 self.connect_h1(tunnel_stream).await
@@ -269,6 +270,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         target_authority: &http::uri::Authority,
         is_https: bool,
         connect_timeout: Option<Duration>,
+        force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         let second_authority = second.authority()?;
         let second_default_port = second.default_port();
@@ -350,6 +352,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 target_authority,
                 is_https,
                 connect_timeout,
+                force_h2c,
             )
             .await
         } else if first.scheme == crate::proxy::ProxyScheme::Socks4 {
@@ -380,6 +383,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 target_authority,
                 is_https,
                 connect_timeout,
+                force_h2c,
             )
             .await
         } else if first.scheme == crate::proxy::ProxyScheme::Https {
@@ -413,7 +417,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     self.connect_tunnel_send(stream, second, target_authority, connect_timeout)
                         .await
                 } else {
-                    self.connect_plaintext(stream).await
+                    self.connect_plaintext_with_hint(stream, force_h2c).await
                 }
             }
             #[cfg(not(feature = "rustls"))]
@@ -438,6 +442,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 target_authority,
                 is_https,
                 connect_timeout,
+                force_h2c,
             )
             .await
         }
@@ -452,6 +457,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         target_authority: &http::uri::Authority,
         is_https: bool,
         connect_timeout: Option<Duration>,
+        force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         let target_host = target_authority.host();
         let target_port = target_authority
@@ -494,7 +500,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .await?;
             if is_https {
                 self.connect_tls(s, target_host).await
-            } else if self.core.http2_prior_knowledge {
+            } else if force_h2c {
                 self.connect_h2_prior_knowledge(s).await
             } else {
                 self.connect_h1(s).await
@@ -524,7 +530,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             if is_https {
                 self.connect_tls(stream, target_host).await
             } else {
-                self.connect_plaintext(stream).await
+                self.connect_plaintext_with_hint(stream, force_h2c).await
             }
         } else if second.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(feature = "rustls")]
@@ -547,7 +553,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     self.connect_tunnel_send(tls_stream, second, target_authority, connect_timeout)
                         .await
                 } else {
-                    self.connect_plaintext(tls_stream).await
+                    self.connect_plaintext_with_hint(tls_stream, force_h2c)
+                        .await
                 }
             }
             #[cfg(not(feature = "rustls"))]
@@ -562,7 +569,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 self.connect_tunnel_send(stream, second, target_authority, connect_timeout)
                     .await
             } else {
-                self.connect_plaintext(stream).await
+                self.connect_plaintext_with_hint(stream, force_h2c).await
             }
         }
     }
@@ -573,6 +580,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         target_authority: &http::uri::Authority,
         is_https: bool,
         connect_timeout: Option<Duration>,
+        force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         match chain.len() {
             0 => Err(Error::Other("empty proxy chain".into())),
@@ -582,6 +590,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     target_authority,
                     is_https,
                     connect_timeout,
+                    force_h2c,
                 )
                 .await
             }
@@ -592,6 +601,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     target_authority,
                     is_https,
                     connect_timeout,
+                    force_h2c,
                 )
                 .await
             }

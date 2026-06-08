@@ -34,11 +34,11 @@ use aioduct::{TokioClient, Protocol};
 
 # async fn example() -> Result<(), aioduct::Error> {
 let client = TokioClient::builder()
-    .http2_prior_knowledge()
     .build()?;
 
 let mut req = client
     .get("http://example.com/ws/chat")?
+    .h2c_prior_knowledge()
     .build();
 *req.method_mut() = http::Method::CONNECT;
 req.extensions_mut().insert(Protocol::from_static("websocket"));

@@ -124,7 +124,6 @@ use http_body_util::Full;
 
 # async fn example() -> Result<(), aioduct::Error> {
 let client = TokioClient::builder()
-    .http2_prior_knowledge()
     .build()?;
 
 let mut req = http::Request::builder()
@@ -137,6 +136,7 @@ req.extensions_mut().insert(Protocol::from_static("websocket"));
 let resp = client
     .forward(req)
     .upstream("http://h2-backend:8080".parse::<http::Uri>().unwrap())
+    .h2c()
     .send()
     .await?;
 

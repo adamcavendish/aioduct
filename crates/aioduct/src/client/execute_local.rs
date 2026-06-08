@@ -26,6 +26,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         version: Option<http::Version>,
         connect_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
+        protocol_hint: crate::pool::ProtocolHint,
     ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
@@ -124,6 +125,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     replay_bytes_for_stale,
                     connect_timeout,
                     force_addr,
+                    protocol_hint,
                 )
                 .await
             {
@@ -172,6 +174,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     replay_bytes,
                     connect_timeout,
                     force_addr,
+                    protocol_hint,
                 )
                 .await?;
 
@@ -222,6 +225,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         body_for_replay: Option<Bytes>,
         connect_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
+        protocol_hint: crate::pool::ProtocolHint,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -274,6 +278,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             replay_for_stale,
             connect_timeout,
             force_addr,
+            protocol_hint,
         )
         .await
     }

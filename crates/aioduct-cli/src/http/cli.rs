@@ -222,10 +222,6 @@ impl HttpArgs {
             builder = builder.danger_accept_invalid_certs();
         }
 
-        if self.http2 {
-            builder = builder.http2_prior_knowledge();
-        }
-
         if let Some(rate) = self.limit_rate {
             builder = builder.max_download_speed(rate);
         }

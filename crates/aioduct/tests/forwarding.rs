@@ -864,7 +864,6 @@ async fn forward_h2_extended_connect() {
     });
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .build()
         .unwrap();
 
@@ -884,6 +883,7 @@ async fn forward_h2_extended_connect() {
                 .parse::<http::Uri>()
                 .unwrap(),
         )
+        .h2c()
         .send()
         .await
         .unwrap();

@@ -84,10 +84,7 @@ fn main() -> Result<(), aioduct::Error> {
         println!("H2 WebSocket upstream running on {upstream_addr}");
 
         // Client must use H2 prior knowledge since we're connecting plaintext H2
-        let client = SmolClient::builder()
-            .http2_prior_knowledge()
-            .build()
-            .unwrap();
+        let client = SmolClient::builder().build().unwrap();
 
         // Build an H2 extended CONNECT request (RFC 8441)
         let mut incoming_req = http::Request::builder()
@@ -108,6 +105,7 @@ fn main() -> Result<(), aioduct::Error> {
                     .parse::<http::Uri>()
                     .unwrap(),
             )
+            .h2c()
             .send()
             .await?;
 

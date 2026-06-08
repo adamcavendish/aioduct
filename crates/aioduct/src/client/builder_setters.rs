@@ -186,12 +186,6 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
-    /// Use HTTP/2 prior knowledge (h2c) — send HTTP/2 over plaintext without upgrade.
-    pub fn http2_prior_knowledge(mut self) -> Self {
-        self.http2_prior_knowledge = true;
-        self
-    }
-
     /// Disable automatic response body decompression.
     pub fn no_decompression(mut self) -> Self {
         self.accept_encoding = crate::decompress::AcceptEncoding::none();

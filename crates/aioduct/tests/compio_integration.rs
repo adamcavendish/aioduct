@@ -229,12 +229,12 @@ fn test_compio_h2_prior_knowledge() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .build_local()
             .unwrap();
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
+            .h2c_prior_knowledge()
             .send()
             .await
             .unwrap();
@@ -3976,7 +3976,6 @@ fn test_compio_h2_multiplexing_reuses_connection() {
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .build_local()
             .unwrap();
 
@@ -3984,6 +3983,7 @@ fn test_compio_h2_multiplexing_reuses_connection() {
             let resp = client
                 .get_local(&format!("http://{addr}/req{i}"))
                 .unwrap()
+                .h2c_prior_knowledge()
                 .send()
                 .await
                 .unwrap();

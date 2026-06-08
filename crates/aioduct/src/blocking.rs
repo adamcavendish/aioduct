@@ -320,7 +320,6 @@ mod tests {
         use crate::runtime::tokio_rt::TcpConnector;
 
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .http2_keep_alive_interval(Duration::from_secs(30))
             .http2_keep_alive_timeout(Duration::from_secs(10))
             .http2_keep_alive_while_idle(true)
@@ -330,7 +329,6 @@ mod tests {
 
         let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
         let config = client.inner.core.http2.as_ref().expect("http2 config");
-        assert!(client.inner.core.http2_prior_knowledge);
         assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
         assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
         assert_eq!(config.keep_alive_timeout, Some(Duration::from_secs(10)));
@@ -343,7 +341,6 @@ mod tests {
         use crate::runtime::smol_rt::TcpConnector;
 
         let engine = crate::HttpEngineSend::<crate::runtime::SmolRuntime, TcpConnector>::builder()
-            .http2_prior_knowledge()
             .http2_keep_alive_interval(Duration::from_secs(30))
             .http2_keep_alive_timeout(Duration::from_secs(10))
             .http2_keep_alive_while_idle(true)
@@ -353,7 +350,6 @@ mod tests {
 
         let client = BlockingClient::<_, crate::runtime::SmolRuntime>::new(engine);
         let config = client.inner.core.http2.as_ref().expect("http2 config");
-        assert!(client.inner.core.http2_prior_knowledge);
         assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
         assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
         assert_eq!(config.keep_alive_timeout, Some(Duration::from_secs(10)));
@@ -367,7 +363,6 @@ mod tests {
 
         let engine =
             crate::HttpEngineLocal::<crate::runtime::CompioRuntime, TcpConnector>::builder()
-                .http2_prior_knowledge()
                 .http2_keep_alive_interval(Duration::from_secs(30))
                 .http2_keep_alive_timeout(Duration::from_secs(10))
                 .http2_keep_alive_while_idle(true)
@@ -377,7 +372,6 @@ mod tests {
 
         let client = BlockingClient::<_, crate::runtime::CompioRuntime>::new(engine);
         let config = client.inner.core.http2.as_ref().expect("http2 config");
-        assert!(client.inner.core.http2_prior_knowledge);
         assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
         assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
         assert_eq!(config.keep_alive_timeout, Some(Duration::from_secs(10)));

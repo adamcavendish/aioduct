@@ -67,7 +67,6 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
         aioduct::runtime::TokioRuntime,
         aioduct::runtime::tokio_rt::TcpConnector,
     >::builder()
-    .http2_prior_knowledge()
     .http2(
         aioduct::Http2Config::new()
             .initial_stream_window_size(2 * 1024 * 1024)
@@ -87,6 +86,7 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
             AIODUCT_H2
                 .get(&url)
                 .unwrap()
+                .h2c_prior_knowledge()
                 .send()
                 .await
                 .unwrap()
@@ -106,6 +106,7 @@ fn bench_h2_pool_vs_no_pool(c: &mut Criterion) {
                     client
                         .get(&u)
                         .unwrap()
+                        .h2c_prior_knowledge()
                         .send()
                         .await
                         .unwrap()

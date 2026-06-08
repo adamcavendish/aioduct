@@ -19,7 +19,6 @@ fn h1_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
 fn h2_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap()
@@ -269,14 +268,20 @@ async fn h1_read_until_close() {
 // HTTP/2 Specifics
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Verify h2c (HTTP/2 cleartext) works with `.http2_prior_knowledge()`.
+/// Verify h2c (HTTP/2 cleartext) works with ``.
 #[tokio::test]
 async fn h2_prior_knowledge_cleartext() {
     let (addr, counter) = aioduct_test_server::h2::h2_server().await;
     let client = h2_client();
     let url = format!("http://{addr}/");
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(
         resp.version(),
@@ -298,7 +303,13 @@ async fn h2_goaway_graceful_in_flight() {
     let url = format!("http://{addr}/");
 
     // First request completes normally (then server sends GOAWAY)
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "ok");
@@ -307,7 +318,13 @@ async fn h2_goaway_graceful_in_flight() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Second request should still succeed (client opens new connection after GOAWAY)
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "ok");
@@ -328,7 +345,13 @@ async fn h2_stream_count_sequential() {
     let url = format!("http://{addr}/");
 
     for i in 0..10 {
-        let resp = client.get(&url).unwrap().send().await.unwrap();
+        let resp = client
+            .get(&url)
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200, "request {i} should succeed");
         let _ = resp.text().await.unwrap();
     }
@@ -349,7 +372,13 @@ async fn h2_stream_count_concurrent() {
     let url = format!("http://{addr}/");
 
     // Warm the connection first
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
@@ -359,7 +388,13 @@ async fn h2_stream_count_concurrent() {
         let c = client.clone();
         let u = url.clone();
         handles.push(tokio::spawn(async move {
-            let resp = c.get(&u).unwrap().send().await.unwrap();
+            let resp = c
+                .get(&u)
+                .unwrap()
+                .h2c_prior_knowledge()
+                .send()
+                .await
+                .unwrap();
             assert_eq!(resp.status(), 200);
             let _ = resp.text().await.unwrap();
         }));
@@ -382,7 +417,13 @@ async fn h2_goaway_immediate_still_responds() {
 
     // The server serves requests, then sends GOAWAY after connection completes.
     // The first request should still get a valid response.
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "ok");
@@ -397,7 +438,7 @@ async fn h2_prior_knowledge_against_h1_server_fails() {
     let url = format!("http://{addr}/");
 
     // H2 client sending preface to an H1 server should fail
-    let result = client.get(&url).unwrap().send().await;
+    let result = client.get(&url).unwrap().h2c_prior_knowledge().send().await;
     assert!(
         result.is_err(),
         "h2 prior knowledge against h1 server should fail"
@@ -411,7 +452,13 @@ async fn h2_response_version_is_h2() {
     let client = h2_client();
     let url = format!("http://{addr}/");
 
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(
         resp.version(),
         http::Version::HTTP_2,
@@ -670,7 +717,13 @@ async fn h2_goaway_with_concurrent_streams() {
     let url = format!("http://{addr}/");
 
     // Warm the connection so it is pooled
-    let warm = client.get(&url).unwrap().send().await.unwrap();
+    let warm = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(warm.status(), 200);
     let _ = warm.text().await.unwrap();
 
@@ -683,7 +736,13 @@ async fn h2_goaway_with_concurrent_streams() {
         let c = client.clone();
         let u = url.clone();
         handles.push(tokio::spawn(async move {
-            let resp = c.get(&u).unwrap().send().await.unwrap();
+            let resp = c
+                .get(&u)
+                .unwrap()
+                .h2c_prior_knowledge()
+                .send()
+                .await
+                .unwrap();
             assert_eq!(resp.status(), 200, "concurrent request should succeed");
             let body = resp.text().await.unwrap();
             assert_eq!(body, "ok");
@@ -715,7 +774,6 @@ async fn h2_goaway_with_retry() {
     let (addr, counter) = aioduct_test_server::h2::h2_goaway_after(1).await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .timeout(Duration::from_secs(5))
         .retry(
             RetryConfig::default()
@@ -729,7 +787,13 @@ async fn h2_goaway_with_retry() {
     let url = format!("http://{addr}/");
 
     // First request succeeds normally
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "ok");
@@ -738,7 +802,13 @@ async fn h2_goaway_with_retry() {
     // connection, in which case the request fails and retry opens a new one.
     // If the pool already discarded the GOAWAY'd connection, the second request
     // simply opens a new connection. Either way, it succeeds.
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(
         resp.status(),
         200,
@@ -849,7 +919,6 @@ async fn http2_config_keep_alive_applied() {
     // keep_alive_interval is omitted — aioduct does not set timer() on the hyper
     // builder, causing "You must supply a timer." panic at connection time.
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .http2_prior_knowledge()
         .http2_keep_alive_while_idle(true)
         .http2_keep_alive_timeout(Duration::from_secs(10))
         .pool_idle_timeout(Duration::from_secs(60))
@@ -860,7 +929,13 @@ async fn http2_config_keep_alive_applied() {
     let url = format!("http://{addr}/");
 
     // First request
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "hello aioduct");
@@ -869,7 +944,13 @@ async fn http2_config_keep_alive_applied() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Second request reuses the same connection
-    let resp = client.get(&url).unwrap().send().await.unwrap();
+    let resp = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "hello aioduct");

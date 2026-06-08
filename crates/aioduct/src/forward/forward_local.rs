@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::body::RequestBodyLocal;
 use crate::client::HttpEngineLocal;
 use crate::error::Error;
+use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 use bytes::Bytes;
@@ -30,6 +31,7 @@ pub struct ForwardBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B
     extra_headers: HeaderMap,
     remove_headers: Vec<HeaderName>,
     forward_headers: Vec<HeaderName>,
+    protocol_hint: ProtocolHint,
     on_request: Option<RequestHook>,
     on_response: Option<ResponseHook>,
 }
@@ -40,6 +42,11 @@ where
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     pub(crate) fn new(client: &'a HttpEngineLocal<R, C>, request: http::Request<B>) -> Self {
+        let protocol_hint = request
+            .extensions()
+            .get::<ProtocolHint>()
+            .copied()
+            .unwrap_or(ProtocolHint::Auto);
         Self {
             client,
             request,
@@ -50,6 +57,7 @@ where
             extra_headers: HeaderMap::new(),
             remove_headers: Vec::new(),
             forward_headers: Vec::new(),
+            protocol_hint,
             on_request: None,
             on_response: None,
         }
@@ -118,6 +126,18 @@ where
     pub fn upgrade(mut self) -> Self {
         self.forward_headers.push(http::header::CONNECTION);
         self.forward_headers.push(http::header::UPGRADE);
+        self
+    }
+
+    /// Force HTTP/2 prior knowledge (h2c) on this forward.
+    pub fn h2c(mut self) -> Self {
+        self.protocol_hint = ProtocolHint::H2c;
+        self
+    }
+
+    /// Probe h2c, fall back to H1; result cached per-authority.
+    pub fn adaptive_h2c(mut self) -> Self {
+        self.protocol_hint = ProtocolHint::AdaptiveH2c;
         self
     }
 
@@ -217,13 +237,25 @@ where
             hook(&mut parts);
         }
 
-        let request_uri: Uri = full_uri
-            .path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/")
-            .parse()
-            .map_err(|e| Error::Other(Box::new(e)))?;
-        parts.uri = request_uri;
+        // H2 extended CONNECT or h2c uses the full URI (authority form)
+        let is_h2_extended_connect = parts.method == http::Method::CONNECT
+            && parts.extensions.get::<crate::Protocol>().is_some();
+        if is_h2_extended_connect
+            || matches!(
+                self.protocol_hint,
+                ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
+            )
+        {
+            parts.uri = full_uri.clone();
+        } else {
+            let request_uri: Uri = full_uri
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/")
+                .parse()
+                .map_err(|e| Error::Other(Box::new(e)))?;
+            parts.uri = request_uri;
+        }
 
         let boxed_body: RequestBodyLocal = Box::pin(body.map_err(|e| {
             let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();
@@ -232,9 +264,14 @@ where
 
         let request = http::Request::from_parts(parts, boxed_body);
 
-        let send_fut = self
-            .client
-            .execute_single_local(request, &full_uri, None, None, None);
+        let send_fut = self.client.execute_single_local(
+            request,
+            &full_uri,
+            None,
+            None,
+            None,
+            self.protocol_hint,
+        );
 
         let mut resp = if let Some(duration) = self.timeout {
             crate::timeout::Timeout::WithTimeout {

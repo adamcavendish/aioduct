@@ -235,13 +235,13 @@ fn test_smol_h2_prior_knowledge() {
 
         let client =
             HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder()
-                .http2_prior_knowledge()
                 .build()
                 .unwrap();
 
         let resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
+            .h2c_prior_knowledge()
             .send()
             .await
             .unwrap();
@@ -261,16 +261,27 @@ fn test_smol_h2_multiple_requests() {
 
         let client =
             HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder()
-                .http2_prior_knowledge()
                 .build()
                 .unwrap();
         let url = format!("http://{addr}/");
 
-        let resp1 = client.get(&url).unwrap().send().await.unwrap();
+        let resp1 = client
+            .get(&url)
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp1.status(), http::StatusCode::OK);
         assert_eq!(resp1.text().await.unwrap(), "h2 ok");
 
-        let resp2 = client.get(&url).unwrap().send().await.unwrap();
+        let resp2 = client
+            .get(&url)
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp2.status(), http::StatusCode::OK);
         assert_eq!(resp2.text().await.unwrap(), "h2 ok");
     });
@@ -313,13 +324,13 @@ fn test_smol_h2_large_body() {
 
         let client =
             HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder()
-                .http2_prior_knowledge()
                 .build()
                 .unwrap();
         let payload = "x".repeat(1024 * 1024);
         let resp = client
             .post(&format!("http://{addr}/"))
             .unwrap()
+            .h2c_prior_knowledge()
             .body(payload)
             .send()
             .await

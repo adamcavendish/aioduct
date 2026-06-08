@@ -249,7 +249,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 referer: self.referer,
                 no_connection_reuse: self.no_connection_reuse,
                 tcp_fast_open: self.tcp_fast_open,
-                http2_prior_knowledge: self.http2_prior_knowledge,
                 accept_encoding_header: self.accept_encoding.header_value(),
                 accept_encoding: self.accept_encoding,
                 default_headers: Arc::new(self.default_headers),

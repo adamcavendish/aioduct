@@ -20,27 +20,6 @@ use super::request_replay_send::retry_request_from_parts;
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
-    pub(crate) async fn execute_single_send(
-        &self,
-        request: http::Request<RequestBodySend>,
-        original_uri: &Uri,
-        replay_body: Option<Bytes>,
-        stale_retry_headers: Option<&HeaderMap>,
-        connect_timeout: Option<Duration>,
-        force_addr: Option<std::net::SocketAddr>,
-    ) -> Result<Response, Error> {
-        self.execute_single_with_hint_send(
-            request,
-            original_uri,
-            ProtocolHint::Auto,
-            replay_body,
-            stale_retry_headers,
-            connect_timeout,
-            force_addr,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute_single_with_hint_send(
         &self,
@@ -74,7 +53,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
         let is_https = scheme == &http::uri::Scheme::HTTPS;
 
-        // Resolve AdaptiveH2c via the probe cache
+        // Resolve AdaptiveH2c via the probe cache.
         let effective_protocol = match protocol {
             ProtocolHint::AdaptiveH2c => {
                 match self.core.h2c_probe_cache.lookup(authority) {
@@ -513,7 +492,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         // H2/H3 multiplexing: if another task is already establishing an H2
         // connection for this key, wait briefly and retry checkout instead of
         // opening a redundant connection.
-        let may_h2 = force_h2c || is_https || self.core.http2_prior_knowledge;
+        let may_h2 = force_h2c || is_https;
         if may_h2 && !self.core.no_connection_reuse && self.core.pool.mark_connecting_h2(&pool_key)
         {
             let wait_budget = connect_timeout.unwrap_or(std::time::Duration::from_secs(5));
@@ -660,6 +639,16 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ));
         }
 
+        // Through proxies, uncached AdaptiveH2c resolves to Auto (H1):
+        // probing requires re-establishing the proxy tunnel on failure,
+        // which is disproportionate. Use .h2c() to force h2c through proxies.
+        let through_proxy = proxy.is_some() || self.core.proxy_chain.is_some();
+        let proxy_force_h2c = if through_proxy {
+            force_h2c && effective_protocol != ProtocolHint::AdaptiveH2c
+        } else {
+            force_h2c
+        };
+
         let mut pooled = if let Some(unix_path) = unix_socket {
             let _ = &proxy;
             // unix_path is unused on non-unix or when neither tokio nor smol is active
@@ -705,11 +694,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             #[cfg(not(unix))]
             unreachable!()
         } else if let Some(ref chain) = self.core.proxy_chain {
-            self.connect_via_proxy_chain_send(chain, authority, is_https, connect_timeout)
-                .await?
+            self.connect_via_proxy_chain_send(
+                chain,
+                authority,
+                is_https,
+                connect_timeout,
+                proxy_force_h2c,
+            )
+            .await?
         } else if let Some(ref proxy) = proxy {
-            self.connect_via_proxy_send(proxy, authority, is_https, connect_timeout)
-                .await?
+            self.connect_via_proxy_send(
+                proxy,
+                authority,
+                is_https,
+                connect_timeout,
+                proxy_force_h2c,
+            )
+            .await?
         } else {
             let default_port = if is_https { 443 } else { 80 };
             let host = authority.host();
