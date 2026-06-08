@@ -358,9 +358,10 @@ async fn fire_connection_metrics_fires_with_observer_and_remote_addr() {
 
     let mut pooled = PooledConnection::new_h1(sender);
     pooled.remote_addr = Some(std::net::SocketAddr::from(([127, 0, 0, 1], 8080)));
-    pooled.bytes_sent = 100;
-    pooled.bytes_received = 500;
-    pooled.requests_served = 3;
+    pooled.record_request(100);
+    pooled.record_request(0);
+    pooled.record_request(0);
+    pooled.record_bytes_received(500);
 
     engine.core.fire_connection_metrics(&pooled, false);
     assert_eq!(conn_events.load(Ordering::Relaxed), 1);
@@ -623,7 +624,8 @@ async fn bytes_sent_uses_content_length_header_for_streaming_body() {
     let _ = Core::send_on_connection(&mut pooled, request, uri).await;
 
     assert_eq!(
-        pooled.bytes_sent, 21,
+        pooled.bytes_sent(),
+        21,
         "bytes_sent should use Content-Length header value for streaming bodies"
     );
 }

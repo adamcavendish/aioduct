@@ -159,10 +159,10 @@ impl<B: 'static> HttpEngineCore<B> {
                 phase: observer::ConnectionPhase::Metrics {
                     remote_addr,
                     protocol: Self::connection_protocol(conn),
-                    bytes_sent: conn.bytes_sent,
-                    bytes_received: conn.bytes_received,
+                    bytes_sent: conn.bytes_sent(),
+                    bytes_received: conn.bytes_received(),
                     connection_age: conn.created_at.elapsed(),
-                    requests_served: conn.requests_served,
+                    requests_served: conn.requests_served(),
                     closed,
                 },
                 at: observer::Instant::now(),
@@ -263,8 +263,7 @@ impl<B: 'static> HttpEngineCore<B> {
             .and_then(|s| s.parse::<u64>().ok())
             .or_else(|| http_body::Body::size_hint(request.body()).exact())
             .unwrap_or(0);
-        conn.bytes_sent += body_size;
-        conn.requests_served += 1;
+        conn.record_request(body_size);
 
         let result = match &mut conn.conn {
             HttpConnection::H1(sender) => {
@@ -293,7 +292,7 @@ impl<B: 'static> HttpEngineCore<B> {
         if let Ok(ref resp) = result
             && let Some(len) = resp.content_length()
         {
-            conn.bytes_received += len;
+            conn.record_bytes_received(len);
         }
 
         #[cfg(feature = "tracing")]

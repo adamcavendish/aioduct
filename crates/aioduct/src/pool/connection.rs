@@ -1,11 +1,33 @@
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::clock::Instant;
+
+/// Per-transport cumulative metrics shared across H2/H3 multiplex clones.
+///
+/// For H2/H3 connections, every `clone_for_multiplex_with_limit` handle shares
+/// the same `ConnectionMetrics` so observer events report transport-cumulative
+/// values, not per-clone values. H1 connections also use this type but never
+/// share the `Arc` (each H1 handle owns its own).
+pub(crate) struct ConnectionMetrics {
+    pub(crate) requests_served: AtomicU32,
+    pub(crate) bytes_sent: AtomicU64,
+    pub(crate) bytes_received: AtomicU64,
+}
+
+impl ConnectionMetrics {
+    fn new() -> Self {
+        Self {
+            requests_served: AtomicU32::new(0),
+            bytes_sent: AtomicU64::new(0),
+            bytes_received: AtomicU64::new(0),
+        }
+    }
+}
 
 /// An established HTTP connection at a specific protocol version.
 pub(crate) enum HttpConnection<B> {
@@ -28,12 +50,9 @@ pub(crate) struct PooledConnection<B> {
     pub(crate) sans: Arc<[String]>,
     /// When this connection was established.
     pub(crate) created_at: Instant,
-    /// Number of request/response cycles served on this connection.
-    pub(crate) requests_served: u32,
-    /// Cumulative bytes sent (request bodies) on this connection.
-    pub(crate) bytes_sent: u64,
-    /// Cumulative bytes received (response bodies) on this connection.
-    pub(crate) bytes_received: u64,
+    /// Per-transport cumulative metrics. Shared across H2/H3 multiplex clones
+    /// so observer events report transport totals, not per-handle values.
+    pub(crate) metrics: Arc<ConnectionMetrics>,
     /// True when this is a cloned handle for H2/H3 multiplexing.
     pub(crate) is_multiplex_clone: bool,
     /// Shared active stream count for H2/H3 multiplex clones.
@@ -68,9 +87,7 @@ impl<B> PooledConnection<B> {
             tls_handshake_duration: None,
             sans: Arc::from([]),
             created_at: Instant::now(),
-            requests_served: 0,
-            bytes_sent: 0,
-            bytes_received: 0,
+            metrics: Arc::new(ConnectionMetrics::new()),
             is_multiplex_clone: false,
             active_streams: None,
             _active_stream_permit: None,
@@ -89,9 +106,7 @@ impl<B> PooledConnection<B> {
             tls_handshake_duration: None,
             sans: Arc::from([]),
             created_at: Instant::now(),
-            requests_served: 0,
-            bytes_sent: 0,
-            bytes_received: 0,
+            metrics: Arc::new(ConnectionMetrics::new()),
             is_multiplex_clone: false,
             active_streams: Some(Arc::new(AtomicUsize::new(0))),
             _active_stream_permit: None,
@@ -113,9 +128,7 @@ impl<B> PooledConnection<B> {
             tls_handshake_duration: None,
             sans: Arc::from([]),
             created_at: Instant::now(),
-            requests_served: 0,
-            bytes_sent: 0,
-            bytes_received: 0,
+            metrics: Arc::new(ConnectionMetrics::new()),
             is_multiplex_clone: false,
             active_streams: Some(Arc::new(AtomicUsize::new(0))),
             _active_stream_permit: None,
@@ -208,6 +221,36 @@ impl<B> PooledConnection<B> {
             .as_ref()
             .map(|active| active.load(Ordering::Acquire))
     }
+
+    /// Record a completed request with the given body size.
+    pub(crate) fn record_request(&self, body_size: u64) {
+        self.metrics
+            .bytes_sent
+            .fetch_add(body_size, Ordering::Relaxed);
+        self.metrics.requests_served.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record bytes received from the response body.
+    pub(crate) fn record_bytes_received(&self, len: u64) {
+        self.metrics
+            .bytes_received
+            .fetch_add(len, Ordering::Relaxed);
+    }
+
+    /// Return cumulative requests served on this transport.
+    pub(crate) fn requests_served(&self) -> u32 {
+        self.metrics.requests_served.load(Ordering::Relaxed)
+    }
+
+    /// Return cumulative bytes sent on this transport.
+    pub(crate) fn bytes_sent(&self) -> u64 {
+        self.metrics.bytes_sent.load(Ordering::Relaxed)
+    }
+
+    /// Return cumulative bytes received on this transport.
+    pub(crate) fn bytes_received(&self) -> u64 {
+        self.metrics.bytes_received.load(Ordering::Relaxed)
+    }
 }
 
 impl<B> Drop for PooledConnection<B> {
@@ -256,9 +299,7 @@ impl<B: 'static> PooledConnection<B> {
             tls_handshake_duration: self.tls_handshake_duration,
             sans: self.sans.clone(),
             created_at: self.created_at,
-            requests_served: 0,
-            bytes_sent: 0,
-            bytes_received: 0,
+            metrics: Arc::clone(&self.metrics),
             is_multiplex_clone: true,
             active_streams: self.active_streams.clone(),
             _active_stream_permit: Some(active_stream_permit),
