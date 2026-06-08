@@ -9,7 +9,7 @@ use super::{HttpEngineCore, HttpEngineLocal, extract_headers};
 use crate::body::RequestBodyLocal;
 use crate::clock::Instant;
 use crate::error::Error;
-use crate::observer::{self, RequestPhase};
+use crate::observer::{self, RequestPhase, RetryKind};
 use crate::pool::PooledConnection;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal, SocketConfig};
@@ -190,10 +190,33 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     if saved_parts.is_some()
                         && HttpEngineCore::<RequestBodyLocal>::is_stale_connection_error(&e) =>
                 {
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        host = authority.host(),
+                        error = %e,
+                        "connection.pool.stale — retrying on fresh connection"
+                    );
                     if conn.is_h2_or_h3() {
                         self.core.pool.evict(&pool_key);
                     }
                     self.core.fire_connection_metrics(&conn, true);
+                    self.core.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::Failed {
+                            error: e.to_string(),
+                            retry: RetryKind::StaleConnection,
+                            elapsed: request_start.elapsed(),
+                        },
+                    );
+                    self.core.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::PoolCheckoutComplete {
+                            outcome: observer::PoolOutcome::StaleRetry,
+                            blocked_duration: pool_checkout_start.elapsed(),
+                        },
+                    );
                     // saved_parts is guaranteed Some by the match arm guard.
                     let Some((method, uri, headers, version)) = saved_parts else {
                         return Err(e);
@@ -307,10 +330,33 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                     &e,
                                 ) =>
                         {
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!(
+                                host = authority.host(),
+                                error = %e,
+                                "connection.pool.stale (h2 wait path) — retrying on fresh connection"
+                            );
                             if conn.is_h2_or_h3() {
                                 self.core.pool.evict(&pool_key);
                             }
                             self.core.fire_connection_metrics(&conn, true);
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::Failed {
+                                    error: e.to_string(),
+                                    retry: RetryKind::StaleConnection,
+                                    elapsed: request_start.elapsed(),
+                                },
+                            );
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::PoolCheckoutComplete {
+                                    outcome: observer::PoolOutcome::StaleRetry,
+                                    blocked_duration: pool_checkout_start.elapsed(),
+                                },
+                            );
                             let Some((method, uri, headers, version)) = saved_parts else {
                                 return Err(e);
                             };
