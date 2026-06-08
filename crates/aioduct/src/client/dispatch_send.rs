@@ -628,6 +628,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                     elapsed: request_start.elapsed(),
                                 },
                             );
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::PoolCheckoutComplete {
+                                    outcome: observer::PoolOutcome::StaleRetry,
+                                    blocked_duration: pool_checkout_start.elapsed(),
+                                },
+                            );
                             let Some((method, uri, version)) = saved_parts else {
                                 return Err(e);
                             };
