@@ -68,7 +68,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.0-alpha.6", features = ["tokio"] }
+aioduct = { version = "0.2.0-alpha.7", features = ["tokio"] }
 ```
 
 ```rust
@@ -93,19 +93,19 @@ async fn main() -> Result<(), aioduct::Error> {
 Enable the `rustls` TLS backend plus exactly one rustls crypto provider:
 
 ```toml
-aioduct = { version = "0.2.0-alpha.6", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.0-alpha.7", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 To use rustls with AWS-LC instead of ring, select the AWS-LC provider:
 
 ```toml
-aioduct = { version = "0.2.0-alpha.6", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0-alpha.7", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 To use the OS certificate store, add `rustls-native-roots` alongside either TLS provider:
 
 ```toml
-aioduct = { version = "0.2.0-alpha.6", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0-alpha.7", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ```rust

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0-alpha.7] - 2026-06-08
+
+### Added
+- Per-request h2c prior knowledge via `RequestBuilder::h2c_prior_knowledge()` — replaces the global `http2_prior_knowledge` engine flag with per-request protocol control, letting a single client request both h1 and h2c targets
+- `ForwardBuilderLocal::h2c()` and `::adaptive_h2c()` for local-path parity with the send-path forward builder
+- `PoolKey` proxy route segregation — connections through different proxy configurations are no longer incorrectly shared
+
+### Fixed
+- SOCKS5 handshake race: changed sync `TcpStream::connect` to async connect to eliminate TCP reset
+- h2c pool-key timing: unmark `connecting_h2` on the original pool key before mutating it to `Auto` during adaptive fallback, preventing a stale guard leak
+- AdaptiveH2c resolution downgrades to `Auto` before pool key construction when routing through proxies, avoiding H1/H2 pool-key contamination
+- Authority-form URI for ordinary CONNECT over h2c (RFC 7540 §8.3) in forward builders — absolute URI now used only for extended CONNECT
+- HTTPS second proxy in two-hop HTTPS-first-proxy paths now TLS-wraps the stream before dispatching
+
+### Changed
+- `http2_prior_knowledge` removed from `HttpEngineCore` and builder — migrate to per-request `.h2c_prior_knowledge()`
+- H2c readiness probe: 8×25ms polling loop replaces single 50ms sleep (~25ms median faster)
+- Test modules reorganized: split `tests/mod.rs` into per-domain files under `tests/`, inline test modules extracted to separate files
+- Send-path methods suffixed with `_send` for consistency
+- Proxy connect modules renamed: `connect.rs` → `proxy_connect_send.rs`, `connect_local.rs` → `proxy_connect_local.rs`
+- Protocol framing extracted into `connect_protocol_send/local.rs`, shared CONNECT handshake into `connect_handshake.rs`
+
 ## [0.2.0-alpha.6] - 2026-06-05
 
 ### Fixed
