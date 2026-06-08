@@ -54,7 +54,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let is_https = scheme == &http::uri::Scheme::HTTPS;
 
         // Resolve AdaptiveH2c via the probe cache.
-        let effective_protocol = match protocol {
+        let mut effective_protocol = match protocol {
             ProtocolHint::AdaptiveH2c => {
                 match self.core.h2c_probe_cache.lookup(authority) {
                     Some(true) => ProtocolHint::H2c,
@@ -64,12 +64,45 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
             other => other,
         };
+
+        // Through proxies, uncached AdaptiveH2c resolves to Auto (H1):
+        // probing requires re-establishing the proxy tunnel on failure,
+        // which is disproportionate. Use .h2c() to force h2c through proxies.
+        // Must resolve BEFORE pool-key construction so the guard and mark
+        // are keyed correctly.
+        let through_proxy = self.core.proxy_chain.is_some()
+            || self
+                .core
+                .proxy
+                .as_ref()
+                .and_then(|s| s.proxy_for(original_uri))
+                .is_some();
+        if through_proxy && effective_protocol == ProtocolHint::AdaptiveH2c {
+            effective_protocol = ProtocolHint::Auto;
+        }
+
         let force_h2c = matches!(
             effective_protocol,
             ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
         );
 
-        let mut pool_key = crate::pool::PoolKey::with_hint(
+        // Compute a stable proxy route identity for pool-key segregation.
+        // Requests through different proxies (or direct vs proxied) must not
+        // share connections.
+        let proxy_route = if let Some(ref chain) = self.core.proxy_chain {
+            crate::pool::ProxyRoute::from_hash(chain.route_hash())
+        } else if let Some(ref config) = self
+            .core
+            .proxy
+            .as_ref()
+            .and_then(|s| s.proxy_for(original_uri))
+        {
+            crate::pool::ProxyRoute::from_hash(config.route_hash())
+        } else {
+            crate::pool::ProxyRoute::DIRECT
+        };
+
+        let mut pool_key = crate::pool::PoolKey::with_hint_and_route(
             scheme.clone(),
             authority.clone(),
             if force_h2c {
@@ -77,6 +110,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             } else {
                 ProtocolHint::Auto
             },
+            proxy_route,
         );
 
         let can_stale_retry = !self.core.no_connection_reuse
@@ -639,15 +673,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ));
         }
 
-        // Through proxies, uncached AdaptiveH2c resolves to Auto (H1):
-        // probing requires re-establishing the proxy tunnel on failure,
-        // which is disproportionate. Use .h2c() to force h2c through proxies.
-        let through_proxy = proxy.is_some() || self.core.proxy_chain.is_some();
-        let proxy_force_h2c = if through_proxy {
-            force_h2c && effective_protocol != ProtocolHint::AdaptiveH2c
-        } else {
-            force_h2c
-        };
+        // Through proxies, AdaptiveH2c was already resolved to Auto above
+        // (before pool-key construction). proxy_force_h2c is just force_h2c.
+        let proxy_force_h2c = force_h2c;
 
         let mut pooled = if let Some(unix_path) = unix_socket {
             let _ = &proxy;
@@ -800,12 +828,19 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     // Probe: try h2c, fall back to h1 on failure.
                     // The h2 handshake can "succeed" even against an h1 server
                     // because hyper returns the sender before the server processes
-                    // the preface. Wait briefly for the connection driver to detect
-                    // a close, then check readiness.
+                    // the preface. Poll readiness over 200ms to tolerate slow
+                    // SETTINGS exchanges and scheduler delays.
                     let h2c_ok = match self.connect_h2_prior_knowledge(tcp_stream).await {
                         Ok(c) => {
-                            R::sleep(std::time::Duration::from_millis(50)).await;
-                            if c.is_ready() { Some(c) } else { None }
+                            let mut ready = false;
+                            for _ in 0..8 {
+                                R::sleep(std::time::Duration::from_millis(25)).await;
+                                if c.is_ready() {
+                                    ready = true;
+                                    break;
+                                }
+                            }
+                            if ready { Some(c) } else { None }
                         }
                         Err(_) => None,
                     };
@@ -874,7 +909,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     self.connect_plaintext_with_hint(tcp_stream, force_h2c)
                         .await?
                 };
-                conn.remote_addr = Some(addr);
+                if conn.remote_addr.is_none() {
+                    conn.remote_addr = Some(addr);
+                }
                 Ok::<(PooledConnection<RequestBodySend>, Instant), Error>((conn, Instant::now()))
             };
 
@@ -955,10 +992,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         h2_guard.active = false;
         drop(h2_guard);
 
-        // Adjust pool key if adaptive probe fell back to h1
+        // Adjust pool key if adaptive probe fell back to h1.
+        // Unmark the H2c key BEFORE mutating so the guard state is cleaned
+        // up under the original key — not the mutated Auto key.
         if matches!(protocol, ProtocolHint::AdaptiveH2c)
             && matches!(pooled.conn, HttpConnection::H1(_))
         {
+            self.core.pool.unmark_connecting_h2(&pool_key);
             pool_key.protocol = ProtocolHint::Auto;
         }
 
