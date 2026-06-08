@@ -166,6 +166,8 @@ pub use observer::{
     ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
     RequestObserver, RequestPhase, RetryKind, TransferDirection,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use pool::{PoolHostStats, PoolStats};
 pub use proxy::{NoProxy, ProxyChain, ProxyConfig, ProxySettings};
 pub use proxy_credential::{CompositeResolver, CredentialResolver, EnvCredentialResolver};
 pub use redirect::{RedirectAction, RedirectPolicy};

@@ -233,6 +233,29 @@ impl<R, C> std::fmt::Debug for HttpEngineLocal<R, C> {
     }
 }
 
+// ── Pool diagnostics ──────────────────────────────────────────────────────────
+
+impl<B: 'static> HttpEngineCore<B> {
+    /// Take a snapshot of connection pool statistics.
+    pub fn pool_stats(&self) -> crate::pool::PoolStats {
+        self.pool.snapshot()
+    }
+}
+
+impl<R, C> HttpEngineSend<R, C> {
+    /// Take a snapshot of connection pool statistics.
+    pub fn pool_stats(&self) -> crate::pool::PoolStats {
+        self.core.pool_stats()
+    }
+}
+
+impl<R, C> HttpEngineLocal<R, C> {
+    /// Take a snapshot of connection pool statistics.
+    pub fn pool_stats(&self) -> crate::pool::PoolStats {
+        self.core.pool_stats()
+    }
+}
+
 // ── Shared free functions ────────────────────────────────────────────────────
 
 fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {

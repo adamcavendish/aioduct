@@ -118,6 +118,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         if !self.core.no_connection_reuse
             && let Some(mut conn) = self.core.pool.checkout(&pool_key)
         {
+            self.core.pool.record_checkout_hit();
             self.core.notify(
                 request.method(),
                 original_uri,
@@ -199,6 +200,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     if conn.is_h2_or_h3() {
                         self.core.pool.evict(&pool_key);
                     }
+                    self.core.pool.record_stale_reuse_retry();
                     self.core.fire_connection_metrics(&conn, true);
                     self.core.notify(
                         &req_method,
@@ -257,6 +259,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             for _ in 0..max_polls {
                 R::sleep(poll_interval).await;
                 if let Some(mut conn) = self.core.pool.checkout(&pool_key) {
+                    self.core.pool.record_checkout_hit();
                     self.core.notify(
                         request.method(),
                         original_uri,
@@ -339,6 +342,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             if conn.is_h2_or_h3() {
                                 self.core.pool.evict(&pool_key);
                             }
+                            self.core.pool.record_stale_reuse_retry();
                             self.core.fire_connection_metrics(&conn, true);
                             self.core.notify(
                                 &req_method,
@@ -384,6 +388,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             // Just ensure the mark is set; don't unmark first (avoids TOCTOU race).
             self.core.pool.mark_connecting_h2(&pool_key);
         }
+
+        self.core.pool.record_checkout_miss();
 
         let mut h2_guard = H2ConnectGuard {
             pool: &self.core.pool,
