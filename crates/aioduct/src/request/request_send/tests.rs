@@ -593,7 +593,7 @@ async fn force_addr_setter() {
 async fn build_constructs_valid_request() {
     let client = test_client();
     let uri: Uri = "http://example.com/path?q=1".parse().unwrap();
-    let req = RequestBuilderSend::new(&client, Method::POST, uri)
+    let req = RequestBuilderSend::new(&client, Method::POST, uri, None)
         .header(
             HeaderName::from_static("x-custom"),
             HeaderValue::from_static("value"),
@@ -732,7 +732,7 @@ async fn build_with_streaming_body() {
 async fn new_owned_creates_valid_request() {
     let client = test_client();
     let uri: Uri = "http://example.com/path".parse().unwrap();
-    let req = RequestBuilderSend::new_owned(client, Method::GET, uri)
+    let req = RequestBuilderSend::new_owned(client, Method::GET, uri, None)
         .header_str("x-custom", "value")
         .unwrap()
         .build()

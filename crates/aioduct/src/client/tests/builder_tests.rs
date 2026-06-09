@@ -559,6 +559,7 @@ async fn execute_rejects_http_when_https_only() {
             None,
             None,
             crate::pool::ProtocolHint::Auto,
+            None,
         )
         .await;
     let err = result.unwrap_err();
@@ -584,6 +585,7 @@ async fn execute_allows_https_when_https_only() {
             None,
             None,
             crate::pool::ProtocolHint::Auto,
+            None,
         )
         .await;
     // Will fail with connection error, not HttpsOnly

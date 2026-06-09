@@ -36,6 +36,7 @@ impl Response {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             observer_ctx: self.observer_ctx,
+            fragment: self.fragment,
         }
     }
 
@@ -53,6 +54,7 @@ impl Response {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             observer_ctx: self.observer_ctx,
+            fragment: self.fragment,
         }
     }
 
@@ -70,6 +72,7 @@ impl Response {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             observer_ctx: self.observer_ctx,
+            fragment: self.fragment,
         }
     }
 }

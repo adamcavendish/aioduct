@@ -27,6 +27,9 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     connect_timeout: Option<Duration>,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
+    /// Original URL fragment from the user-provided URL string.
+    /// Preserved across redirects per RFC 7231 Section 7.1.2.
+    fragment: Option<String>,
 }
 
 impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for RequestBuilderLocal<'_, R, C> {
@@ -39,7 +42,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for RequestBuil
 }
 
 impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, C> {
-    pub(crate) fn new(client: &'a HttpEngineLocal<R, C>, method: Method, uri: Uri) -> Self {
+    pub(crate) fn new(
+        client: &'a HttpEngineLocal<R, C>,
+        method: Method,
+        uri: Uri,
+        fragment: Option<String>,
+    ) -> Self {
         Self {
             client: EngineRef::Borrowed(client),
             method,
@@ -51,10 +59,16 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             connect_timeout: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            fragment,
         }
     }
 
-    pub(crate) fn new_owned(client: HttpEngineLocal<R, C>, method: Method, uri: Uri) -> Self {
+    pub(crate) fn new_owned(
+        client: HttpEngineLocal<R, C>,
+        method: Method,
+        uri: Uri,
+        fragment: Option<String>,
+    ) -> Self {
         Self {
             client: EngineRef::Owned(Box::new(client)),
             method,
@@ -66,6 +80,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             connect_timeout: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            fragment,
         }
     }
 
@@ -346,6 +361,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             connect_timeout: self.connect_timeout,
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
+            fragment: self.fragment.clone(),
         })
     }
 
@@ -363,6 +379,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             effective_connect_timeout,
             self.force_addr,
             self.protocol_hint,
+            self.fragment,
         );
 
         match effective_timeout {

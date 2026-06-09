@@ -15,6 +15,7 @@ impl Response {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             observer_ctx: self.observer_ctx,
+            fragment: self.fragment,
         }
     }
 
@@ -32,6 +33,7 @@ impl Response {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             observer_ctx: self.observer_ctx,
+            fragment: self.fragment,
         }
     }
 }
@@ -53,6 +55,7 @@ impl Response<crate::body::ResponseBodyLocal> {
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
             observer_ctx: self.observer_ctx,
+            fragment: self.fragment,
         }
     }
 
@@ -93,6 +96,7 @@ mod tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         }
     }
 
