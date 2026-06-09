@@ -669,8 +669,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             self.core.pool.mark_connecting_h2(&pool_key);
         }
 
-        self.core.pool.record_checkout_miss();
-
         let mut h2_guard = H2ConnectGuard {
             pool: &self.core.pool,
             key: &pool_key,
@@ -693,6 +691,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 "max active connections per host reached".into(),
             ));
         }
+
+        self.core.pool.record_checkout_miss();
 
         // Through proxies, AdaptiveH2c was already resolved to Auto above
         // (before pool-key construction). proxy_force_h2c is just force_h2c.
