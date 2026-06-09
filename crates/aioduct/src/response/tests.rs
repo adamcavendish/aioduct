@@ -557,6 +557,7 @@ mod local_tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         }
     }
 
@@ -618,6 +619,7 @@ mod local_tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         };
         assert_eq!(resp.content_length(), Some(42));
     }
@@ -655,6 +657,7 @@ mod local_tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         };
         let bytes = resp.bytes().await.unwrap();
         assert_eq!(&bytes[..], b"hello");
@@ -671,6 +674,7 @@ mod local_tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         };
         let text = resp.text().await.unwrap();
         assert_eq!(text, "world");
@@ -688,6 +692,7 @@ mod local_tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         };
         let result: Result<serde_json::Value, _> = resp.json().await;
         assert!(result.is_ok());
@@ -706,6 +711,7 @@ mod local_tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         };
         let result: Result<serde_json::Value, _> = resp.json().await;
         assert!(result.is_err());
@@ -744,6 +750,7 @@ mod local_tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         };
         resp.set_observer_ctx(super::BodyObserverCtx {
             observer: Arc::new(RecordingObserver {
@@ -801,6 +808,7 @@ mod local_tests {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         };
         resp.set_observer_ctx(super::BodyObserverCtx {
             observer: Arc::new(RecordingObserver {

@@ -174,9 +174,9 @@ fn process_redirect_301_changes_method_to_get() {
     let mut headers = HeaderMap::new();
 
     let result = core
-        .process_redirect(&resp, &uri, Method::POST, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::POST, None, &mut headers, None)
         .unwrap();
-    let (next_uri, next_method, next_body) = result.unwrap();
+    let (next_uri, next_method, next_body, _frag) = result.unwrap();
     assert_eq!(next_uri.path(), "/new");
     assert_eq!(next_method, Method::GET);
     assert!(next_body.is_none());
@@ -190,9 +190,9 @@ fn process_redirect_302_changes_method_to_get() {
     let mut headers = HeaderMap::new();
 
     let result = core
-        .process_redirect(&resp, &uri, Method::PUT, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::PUT, None, &mut headers, None)
         .unwrap();
-    let (next_uri, next_method, _) = result.unwrap();
+    let (next_uri, next_method, _, _frag) = result.unwrap();
     assert_eq!(next_uri.path(), "/found");
     assert_eq!(next_method, Method::GET);
 }
@@ -205,9 +205,9 @@ fn process_redirect_303_changes_method_to_get() {
     let mut headers = HeaderMap::new();
 
     let result = core
-        .process_redirect(&resp, &uri, Method::POST, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::POST, None, &mut headers, None)
         .unwrap();
-    let (_, next_method, _) = result.unwrap();
+    let (_, next_method, _, _frag) = result.unwrap();
     assert_eq!(next_method, Method::GET);
 }
 
@@ -220,9 +220,9 @@ fn process_redirect_307_preserves_method_and_body() {
     let body = crate::body::RequestBody::Buffered(bytes::Bytes::from("hello"));
 
     let result = core
-        .process_redirect(&resp, &uri, Method::POST, Some(body), &mut headers)
+        .process_redirect(&resp, &uri, Method::POST, Some(body), &mut headers, None)
         .unwrap();
-    let (next_uri, next_method, next_body) = result.unwrap();
+    let (next_uri, next_method, next_body, _frag) = result.unwrap();
     assert_eq!(next_uri.path(), "/temp");
     assert_eq!(next_method, Method::POST);
     assert!(next_body.is_some(), "body should be replayed on 307");
@@ -237,9 +237,9 @@ fn process_redirect_308_preserves_method_and_body() {
     let body = crate::body::RequestBody::Buffered(bytes::Bytes::from("data"));
 
     let result = core
-        .process_redirect(&resp, &uri, Method::PUT, Some(body), &mut headers)
+        .process_redirect(&resp, &uri, Method::PUT, Some(body), &mut headers, None)
         .unwrap();
-    let (_, next_method, next_body) = result.unwrap();
+    let (_, next_method, next_body, _frag) = result.unwrap();
     assert_eq!(next_method, Method::PUT);
     assert!(next_body.is_some());
 }
@@ -253,9 +253,9 @@ fn process_redirect_307_get_without_body_succeeds() {
 
     // GET without body on 307 should succeed (no body needed)
     let result = core
-        .process_redirect(&resp, &uri, Method::GET, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
         .unwrap();
-    let (_, next_method, next_body) = result.unwrap();
+    let (_, next_method, next_body, _frag) = result.unwrap();
     assert_eq!(next_method, Method::GET);
     assert!(next_body.is_none());
 }
@@ -268,9 +268,9 @@ fn process_redirect_307_head_without_body_succeeds() {
     let mut headers = HeaderMap::new();
 
     let result = core
-        .process_redirect(&resp, &uri, Method::HEAD, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::HEAD, None, &mut headers, None)
         .unwrap();
-    let (_, next_method, _) = result.unwrap();
+    let (_, next_method, _, _frag) = result.unwrap();
     assert_eq!(next_method, Method::HEAD);
 }
 
@@ -282,7 +282,7 @@ fn process_redirect_307_post_without_body_fails() {
     let mut headers = HeaderMap::new();
 
     // POST without body on 307 - cannot replay streaming body
-    let result = core.process_redirect(&resp, &uri, Method::POST, None, &mut headers);
+    let result = core.process_redirect(&resp, &uri, Method::POST, None, &mut headers, None);
     let err = result.unwrap_err();
     match err {
         crate::error::Error::Redirect(msg) => {
@@ -314,7 +314,7 @@ fn process_redirect_unexpected_status_returns_error() {
     let uri: Uri = "http://origin.com/old".parse().unwrap();
     let mut headers = HeaderMap::new();
 
-    let result = core.process_redirect(&resp, &uri, Method::GET, None, &mut headers);
+    let result = core.process_redirect(&resp, &uri, Method::GET, None, &mut headers, None);
     let err = result.unwrap_err();
     match err {
         crate::error::Error::Redirect(msg) => {
@@ -345,7 +345,7 @@ fn process_redirect_cross_origin_strips_sensitive_headers() {
     );
 
     let result = core
-        .process_redirect(&resp, &uri, Method::GET, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
         .unwrap();
     assert!(result.is_some());
     // Sensitive headers should be stripped on cross-origin redirect
@@ -374,7 +374,7 @@ fn process_redirect_same_origin_preserves_sensitive_headers() {
     headers.insert(http::header::AUTHORIZATION, "Bearer token".parse().unwrap());
 
     let result = core
-        .process_redirect(&resp, &uri, Method::GET, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
         .unwrap();
     assert!(result.is_some());
     // Same-origin redirect should keep Authorization
@@ -392,9 +392,9 @@ fn process_redirect_sets_host_header() {
     let mut headers = HeaderMap::new();
 
     let result = core
-        .process_redirect(&resp, &uri, Method::GET, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
         .unwrap();
-    let (next_uri, _, _) = result.unwrap();
+    let (next_uri, _, _, _frag) = result.unwrap();
     assert_eq!(next_uri.host(), Some("newhost.com"));
     // Host header should be set to new authority
     assert_eq!(headers.get(http::header::HOST).unwrap(), "newhost.com");
@@ -412,7 +412,7 @@ fn process_redirect_with_referer_enabled() {
     let mut headers = HeaderMap::new();
 
     let _ = core
-        .process_redirect(&resp, &uri, Method::GET, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
         .unwrap();
     // Referer should be set to the current URI
     let referer = headers
@@ -444,7 +444,7 @@ fn process_redirect_missing_location_returns_error() {
     let uri: Uri = "http://origin.com/old".parse().unwrap();
     let mut headers = HeaderMap::new();
 
-    let result = core.process_redirect(&resp, &uri, Method::GET, None, &mut headers);
+    let result = core.process_redirect(&resp, &uri, Method::GET, None, &mut headers, None);
     let err = result.unwrap_err();
     match err {
         crate::error::Error::Redirect(msg) => {
@@ -482,7 +482,7 @@ fn process_redirect_middleware_notified() {
     let mut headers = HeaderMap::new();
 
     let _ = core
-        .process_redirect(&resp, &uri, Method::GET, None, &mut headers)
+        .process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
         .unwrap();
     assert!(
         called.load(Ordering::SeqCst),
@@ -575,7 +575,7 @@ fn post_execute_done_on_non_redirect() {
     let mut headers = HeaderMap::new();
 
     let action = core
-        .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+        .post_execute(&resp, &Method::GET, &uri, &mut headers, None, None)
         .unwrap();
     assert!(matches!(
         action,
@@ -601,7 +601,7 @@ fn post_execute_done_on_not_modified() {
     let mut headers = HeaderMap::new();
 
     let action = core
-        .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+        .post_execute(&resp, &Method::GET, &uri, &mut headers, None, None)
         .unwrap();
     assert!(matches!(
         action,
@@ -617,10 +617,15 @@ fn post_execute_redirect_on_302() {
     let mut headers = HeaderMap::new();
 
     let action = core
-        .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+        .post_execute(&resp, &Method::GET, &uri, &mut headers, None, None)
         .unwrap();
     match action {
-        super::request_flow::PostExecuteAction::Redirect { uri, method, body } => {
+        super::request_flow::PostExecuteAction::Redirect {
+            uri,
+            method,
+            body,
+            fragment: _,
+        } => {
             assert_eq!(uri.path(), "/new");
             assert_eq!(method, Method::GET);
             assert!(body.is_none());
@@ -663,7 +668,7 @@ fn post_execute_stores_cookies_and_learns_hsts() {
     let mut headers = HeaderMap::new();
 
     let action = core
-        .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+        .post_execute(&resp, &Method::GET, &uri, &mut headers, None, None)
         .unwrap();
     assert!(matches!(
         action,
@@ -727,7 +732,7 @@ fn post_execute_invalidates_cache_on_non_safe_method() {
     let mut headers = HeaderMap::new();
 
     let _ = core
-        .post_execute(&resp, &Method::POST, &uri, &mut headers, None)
+        .post_execute(&resp, &Method::POST, &uri, &mut headers, None, None)
         .unwrap();
 
     let lookup_headers = HeaderMap::new();
@@ -759,7 +764,7 @@ fn post_execute_redirect_applies_hsts_upgrade() {
     let mut headers = HeaderMap::new();
 
     let action = core
-        .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+        .post_execute(&resp, &Method::GET, &uri, &mut headers, None, None)
         .unwrap();
     match action {
         super::request_flow::PostExecuteAction::Redirect { uri, .. } => {
@@ -786,7 +791,7 @@ fn post_execute_redirect_https_only_rejects_http_target() {
     let uri: Uri = "https://origin.com/start".parse().unwrap();
     let mut headers = HeaderMap::new();
 
-    let result = core.post_execute(&resp, &Method::GET, &uri, &mut headers, None);
+    let result = core.post_execute(&resp, &Method::GET, &uri, &mut headers, None, None);
     let err = result.unwrap_err();
     assert!(
         matches!(err, crate::error::Error::HttpsOnly(_)),
@@ -807,7 +812,7 @@ fn post_execute_done_when_redirect_policy_none() {
     let mut headers = HeaderMap::new();
 
     let action = core
-        .post_execute(&resp, &Method::GET, &uri, &mut headers, None)
+        .post_execute(&resp, &Method::GET, &uri, &mut headers, None, None)
         .unwrap();
     assert!(
         matches!(action, super::request_flow::PostExecuteAction::Done),

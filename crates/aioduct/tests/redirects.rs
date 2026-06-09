@@ -1846,9 +1846,9 @@ async fn redirect_multi_hop_chain_completes() {
     );
 }
 
-// BUG: resolve_redirect strips fragment unconditionally (mod.rs:216).
-// RFC 7231: if Location has no fragment, the original request's fragment
-// should be inherited.
+// RFC 7231 Section 7.1.2: if the Location header has no fragment, the original
+// request's fragment MUST be inherited. Fragments are not sent to the server in
+// HTTP, so we verify the final URL on the response side.
 #[tokio::test]
 async fn redirect_should_preserve_fragment_when_location_has_none() {
     let (addr, _) = h1_server_with(|req| async move {
@@ -1875,9 +1875,8 @@ async fn redirect_should_preserve_fragment_when_location_has_none() {
         .build()
         .unwrap();
 
-    // Request with a fragment: http://addr/page#section1
-    // After redirect to /target, the fragment #section1 should be preserved
-    // (since the Location header has no fragment of its own).
+    // Request with a fragment: the fragment #section1 should be inherited
+    // by the redirect target since Location has no fragment of its own.
     let resp = client
         .get(&format!("http://{addr}/page#section1"))
         .unwrap()
@@ -1886,11 +1885,58 @@ async fn redirect_should_preserve_fragment_when_location_has_none() {
         .unwrap();
 
     assert_eq!(resp.status(), 200);
-    // Note: fragments are not sent to the server in HTTP, so we can't verify
-    // server-side. But we can check the response's URL to see if the fragment
-    // was preserved in the final URI.
-    // This is a documentation test — the resolve_redirect strips fragments
-    // unconditionally, which violates RFC 7231 Section 7.1.2.
+    // Fragments are client-side (not part of http::Uri), so verify via
+    // Response::fragment() rather than url().to_string().
+    assert_eq!(
+        resp.fragment(),
+        Some("section1"),
+        "original fragment should be preserved across redirects"
+    );
+    assert!(
+        resp.url().to_string().ends_with("/target"),
+        "should redirect to /target"
+    );
+}
+
+// RFC 7231 Section 7.1.2: when Location has its own fragment, that fragment
+// takes priority over the original request's fragment.
+#[tokio::test]
+async fn redirect_location_fragment_overrides_original() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        if path == "/page" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("Location", "/target#newsection")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            Ok(Response::new(Full::new(Bytes::from("ok"))))
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/page#oldsection"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    // Location fragment takes priority over original fragment.
+    assert_eq!(
+        resp.fragment(),
+        Some("newsection"),
+        "Location fragment should override original fragment"
+    );
 }
 
 // BUG: Referer header leaks HTTPS URL on HTTPS→HTTP redirect.

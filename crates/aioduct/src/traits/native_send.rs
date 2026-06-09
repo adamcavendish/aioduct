@@ -6,6 +6,7 @@ use std::time::Duration;
 use super::{ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt};
 use crate::body::BodyStreamSend;
 use crate::client::HttpEngineSend;
+use crate::client::extract_fragment;
 use crate::error::{Error, SendError};
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
@@ -23,9 +24,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpClient for HttpEngineSend<R, C> {
     type RequestBuilder = OwnedRequestBuilderSend<R, C>;
 
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {
+        let fragment = extract_fragment(uri);
         let uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(OwnedRequestBuilderSend {
-            inner: crate::request::RequestBuilderSend::new_owned(self.clone(), method, uri),
+            inner: crate::request::RequestBuilderSend::new_owned(
+                self.clone(),
+                method,
+                uri,
+                fragment,
+            ),
         })
     }
 }

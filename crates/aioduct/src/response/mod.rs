@@ -94,6 +94,7 @@ pub struct Response<B = ResponseBodySend> {
     remote_addr: Option<SocketAddr>,
     tls_info: Option<crate::tls::TlsInfo>,
     observer_ctx: Option<BodyObserverCtx>,
+    fragment: Option<String>,
 }
 
 #[derive(Clone)]
@@ -122,6 +123,7 @@ impl Response {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         }
     }
 
@@ -133,6 +135,7 @@ impl Response {
             remote_addr: None,
             tls_info: None,
             observer_ctx: None,
+            fragment: None,
         }
     }
 }
@@ -155,6 +158,19 @@ impl<B> Response<B> {
     /// Returns the final URL of this response, after any redirects.
     pub fn url(&self) -> &Uri {
         &self.url
+    }
+
+    /// Returns the original URL fragment preserved across redirects.
+    ///
+    /// Per RFC 7231 Section 7.1.2, if the Location header in a redirect has no
+    /// fragment, the original request's fragment MUST be inherited. This method
+    /// returns that fragment, if one was present in the original URL.
+    pub fn fragment(&self) -> Option<&str> {
+        self.fragment.as_deref()
+    }
+
+    pub(crate) fn set_fragment(&mut self, fragment: Option<String>) {
+        self.fragment = fragment;
     }
 
     /// Returns the remote socket address of the server.

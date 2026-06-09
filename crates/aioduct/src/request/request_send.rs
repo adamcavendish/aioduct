@@ -32,6 +32,9 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     retry: Option<RetryConfig>,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
+    /// Original URL fragment from the user-provided URL string.
+    /// Preserved across redirects per RFC 7231 Section 7.1.2.
+    fragment: Option<String>,
     _runtime: PhantomData<(R, C)>,
 }
 
@@ -45,7 +48,12 @@ impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilderSend<'_
 }
 
 impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
-    pub(crate) fn new(client: &'a HttpEngineSend<R, C>, method: Method, uri: Uri) -> Self {
+    pub(crate) fn new(
+        client: &'a HttpEngineSend<R, C>,
+        method: Method,
+        uri: Uri,
+        fragment: Option<String>,
+    ) -> Self {
         Self {
             client: EngineRef::Borrowed(client),
             method,
@@ -58,11 +66,17 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            fragment,
             _runtime: PhantomData,
         }
     }
 
-    pub(crate) fn new_owned(client: HttpEngineSend<R, C>, method: Method, uri: Uri) -> Self {
+    pub(crate) fn new_owned(
+        client: HttpEngineSend<R, C>,
+        method: Method,
+        uri: Uri,
+        fragment: Option<String>,
+    ) -> Self {
         Self {
             client: EngineRef::Owned(Box::new(client)),
             method,
@@ -75,6 +89,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            fragment,
             _runtime: PhantomData,
         }
     }
@@ -374,6 +389,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: self.retry.clone(),
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
+            fragment: self.fragment.clone(),
             _runtime: PhantomData,
         })
     }
@@ -411,6 +427,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             effective_connect_timeout,
             self.force_addr,
             self.protocol_hint,
+            self.fragment,
         );
 
         let result = match effective_timeout {
@@ -471,6 +488,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 effective_connect_timeout,
                 self.force_addr,
                 self.protocol_hint,
+                self.fragment.clone(),
             );
 
             let result = match effective_timeout {

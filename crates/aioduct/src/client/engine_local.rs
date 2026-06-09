@@ -2,6 +2,7 @@ use http::{Method, Uri};
 
 use super::HttpEngineLocal;
 use super::builder::HttpEngineBuilder;
+use super::extract_fragment;
 use crate::error::Error;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
@@ -58,11 +59,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         &self,
         uri: &str,
     ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
+        let fragment = extract_fragment(uri);
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(crate::request::RequestBuilderLocal::new(
             self,
             Method::GET,
             uri,
+            fragment,
         ))
     }
 
@@ -71,11 +74,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         &self,
         uri: &str,
     ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
+        let fragment = extract_fragment(uri);
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(crate::request::RequestBuilderLocal::new(
             self,
             Method::POST,
             uri,
+            fragment,
         ))
     }
 
@@ -85,8 +90,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         method: Method,
         uri: &str,
     ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
+        let fragment = extract_fragment(uri);
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        Ok(crate::request::RequestBuilderLocal::new(self, method, uri))
+        Ok(crate::request::RequestBuilderLocal::new(
+            self, method, uri, fragment,
+        ))
     }
 
     /// Start a parallel chunk download for the given URL.

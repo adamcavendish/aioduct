@@ -258,20 +258,50 @@ impl<R, C> HttpEngineLocal<R, C> {
 
 // ── Shared free functions ────────────────────────────────────────────────────
 
-fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
+/// Extract the URL fragment from a raw URL string.
+///
+/// Uses `url::Url` because `http::Uri` strips fragments per RFC 7230.
+/// Returns `None` if parsing fails or the URL has no fragment.
+pub(crate) fn extract_fragment(raw_url: &str) -> Option<String> {
+    url::Url::parse(raw_url)
+        .ok()
+        .and_then(|u| u.fragment().map(|f| f.to_owned()))
+}
+
+fn resolve_redirect(
+    base: &Uri,
+    location: &str,
+    original_fragment: Option<&str>,
+) -> Result<(Uri, Option<String>), Error> {
     base.scheme_str()
         .ok_or_else(|| Error::InvalidUrl("missing scheme in base".into()))?;
     base.authority()
         .ok_or_else(|| Error::InvalidUrl("missing authority in base".into()))?;
 
+    // Use url::Url for fragment-aware resolution. http::Uri strips fragments
+    // per RFC 7230, so we pass the original fragment explicitly for the RFC 7231
+    // Section 7.1.2 requirement: if the Location header has no fragment, the
+    // original request's fragment MUST be inherited.
     let base_url =
         url::Url::parse(&base.to_string()).map_err(|e| Error::InvalidUrl(e.to_string()))?;
-    let next = base_url
+    let mut next = base_url
         .join(location)
         .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))?;
-    next.as_str()
+
+    // Preserve original fragment when Location has none (RFC 7231 7.1.2).
+    if next.fragment().is_none()
+        && let Some(frag) = original_fragment
+        && !frag.is_empty()
+    {
+        next.set_fragment(Some(frag));
+    }
+
+    let effective_fragment = next.fragment().map(|f| f.to_owned());
+    let uri: Uri = next
+        .as_str()
         .parse()
-        .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))
+        .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))?;
+    Ok((uri, effective_fragment))
 }
 
 fn boxed_response_from_bytes(

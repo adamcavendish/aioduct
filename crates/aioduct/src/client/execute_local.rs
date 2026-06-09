@@ -27,6 +27,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         connect_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
+        mut original_fragment: Option<String>,
     ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
@@ -184,28 +185,40 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 &current_uri,
                 &mut current_headers,
                 body_for_replay,
+                original_fragment.as_deref(),
             )? {
                 PostExecuteAction::Done => {
                     if resp.status() == StatusCode::NOT_MODIFIED
                         && let Some(cached) = cache_entry
                     {
                         let http_resp = cached.into_http_response();
-                        return Ok(Response::from_boxed(http_resp, current_uri).into_local());
+                        let mut final_resp =
+                            Response::from_boxed(http_resp, current_uri).into_local();
+                        final_resp.set_fragment(original_fragment);
+                        return Ok(final_resp);
                     }
-                    return self
+                    let mut final_resp = self
                         .finalize_response_local(
                             resp,
                             &current_method,
                             current_uri,
                             &current_headers,
                         )
-                        .await;
+                        .await?;
+                    final_resp.set_fragment(original_fragment);
+                    return Ok(final_resp);
                 }
-                PostExecuteAction::Redirect { uri, method, body } => {
+                PostExecuteAction::Redirect {
+                    uri,
+                    method,
+                    body,
+                    fragment,
+                } => {
                     let _ = resp.bytes().await;
                     current_uri = uri;
                     current_method = method;
                     current_body = body;
+                    original_fragment = fragment;
                 }
             }
         }

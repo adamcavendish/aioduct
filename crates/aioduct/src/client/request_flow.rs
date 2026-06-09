@@ -17,12 +17,16 @@ pub(crate) enum CacheLookupOutcome {
     Miss,
 }
 
+pub(super) type RedirectResult = (Uri, Method, Option<RequestBody>, Option<String>);
+
 pub(super) enum PostExecuteAction {
     Done,
     Redirect {
         uri: Uri,
         method: Method,
         body: Option<RequestBody>,
+        /// Effective fragment after this redirect hop (RFC 7231 7.1.2).
+        fragment: Option<String>,
     },
 }
 
@@ -141,6 +145,7 @@ impl<B> HttpEngineCore<B> {
         current_uri: &Uri,
         headers: &mut HeaderMap,
         body_for_replay: Option<RequestBody>,
+        original_fragment: Option<&str>,
     ) -> Result<PostExecuteAction, Error> {
         if let Some(ref cache) = self.cache {
             cache.invalidate(current_method, current_uri);
@@ -172,8 +177,9 @@ impl<B> HttpEngineCore<B> {
             current_method.clone(),
             body_for_replay,
             headers,
+            original_fragment,
         )?;
-        let Some((next_uri, next_method, next_body)) = redirect else {
+        let Some((next_uri, next_method, next_body, effective_fragment)) = redirect else {
             return Ok(PostExecuteAction::Done);
         };
 
@@ -189,6 +195,7 @@ impl<B> HttpEngineCore<B> {
             uri: next_uri,
             method: next_method,
             body: next_body,
+            fragment: effective_fragment,
         })
     }
 
@@ -199,7 +206,8 @@ impl<B> HttpEngineCore<B> {
         current_method: Method,
         body_for_replay: Option<RequestBody>,
         headers: &mut HeaderMap,
-    ) -> Result<Option<(Uri, Method, Option<RequestBody>)>, Error> {
+        original_fragment: Option<&str>,
+    ) -> Result<Option<RedirectResult>, Error> {
         let status = resp.status();
         let location = resp
             .headers()
@@ -209,7 +217,8 @@ impl<B> HttpEngineCore<B> {
             .map_err(|e| Error::Other(Box::new(e)))?
             .to_owned();
 
-        let next_uri = super::resolve_redirect(current_uri, &location)?;
+        let (next_uri, effective_fragment) =
+            super::resolve_redirect(current_uri, &location, original_fragment)?;
         let next_uri = self.maybe_upgrade_hsts(next_uri);
 
         if self
@@ -304,7 +313,7 @@ impl<B> HttpEngineCore<B> {
             }
         }
 
-        Ok(Some((next_uri, next_method, next_body)))
+        Ok(Some((next_uri, next_method, next_body, effective_fragment)))
     }
 }
 
