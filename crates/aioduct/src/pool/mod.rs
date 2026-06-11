@@ -465,6 +465,10 @@ impl<B: 'static> ConnectionPool<B> {
             }
         }
 
+        // Clear pool/key so Drop does not double-decrement.
+        connection.pool = Weak::new();
+        connection.key = None;
+
         let max = inner.max_idle_per_host;
 
         if max == 0 {
@@ -477,10 +481,6 @@ impl<B: 'static> ConnectionPool<B> {
                 .fetch_add(1, Ordering::Relaxed);
             return;
         }
-
-        // Clear pool/key so Drop does not double-decrement.
-        connection.pool = Weak::new();
-        connection.key = None;
 
         for san in connection.sans.iter() {
             inner
