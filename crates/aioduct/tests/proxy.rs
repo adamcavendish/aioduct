@@ -1247,3 +1247,117 @@ async fn connect_tunnel_pooled_reuse() {
     }
     assert!(conns.load(AtomicOrdering::SeqCst) >= 1);
 }
+
+/// A TLS CONNECT proxy: the client establishes a TLS connection TO THE PROXY
+/// (https:// proxy scheme) before any CONNECT request. Mirrors `connect_proxy`
+/// but wraps each accepted connection in a rustls TLS handshake first, so it
+/// exercises aioduct's TLS-to-proxy code path. Returns the proxy address and
+/// the self-signed cert (for `localhost`) the client must trust.
+#[cfg(feature = "rustls")]
+async fn tls_connect_proxy() -> (
+    std::net::SocketAddr,
+    rustls::pki_types::CertificateDer<'static>,
+    Arc<AtomicUsize>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    aioduct_test_server::tls::install_crypto_provider();
+
+    let cert = aioduct_test_server::tls::generate_self_signed(&["localhost"]);
+    let cert_der = cert.cert_der.clone();
+
+    let server_config =
+        rustls::ServerConfig::builder_with_provider(aioduct_test_server::tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.cert_der.clone()], cert.key_der.clone_key())
+            .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+
+    let listener = TcpListener::bind("localhost:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let conn_count = Arc::new(AtomicUsize::new(0));
+    let cc = Arc::clone(&conn_count);
+
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _) = match listener.accept().await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            cc.fetch_add(1, AtomicOrdering::SeqCst);
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                // Client → proxy TLS handshake must complete first.
+                let mut client = match acceptor.accept(tcp).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let mut buf = vec![0u8; 8192];
+                let n = match client.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => n,
+                };
+                let head = String::from_utf8_lossy(&buf[..n]);
+                if !head.starts_with("CONNECT ") {
+                    return;
+                }
+                let target = head.split_whitespace().nth(1).unwrap_or("").to_owned();
+                client
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await
+                    .unwrap();
+                let mut upstream = match TcpStream::connect(&target).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
+
+    (addr, cert_der, conn_count)
+}
+
+/// End-to-end TLS-to-proxy: a plaintext HTTP target reached through an
+/// `https://` proxy. This forces the client to perform a real TLS handshake
+/// to the proxy (SNI = proxy host) and then CONNECT-tunnel over that encrypted
+/// channel. Verifies `ProxyConfig::https()` actually works against a live TLS
+/// proxy, not just that it parses.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_tls_to_proxy_reaches_http_target() {
+    let (target_addr, _counter) = h1_server().await;
+    let (proxy_addr, proxy_cert, conns) = tls_connect_proxy().await;
+
+    // Client must trust the proxy's self-signed cert. The proxy URL uses
+    // `localhost` (the cert's SAN), so SNI verification to the proxy passes.
+    let client_config = aioduct_test_server::tls::make_client_config(&proxy_cert);
+    let connector = aioduct::tls::RustlsConnector::new(client_config);
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap(),
+        )
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{target_addr}/path"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+    assert!(
+        conns.load(AtomicOrdering::SeqCst) >= 1,
+        "the TLS proxy should have accepted at least one connection"
+    );
+}
