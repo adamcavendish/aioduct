@@ -65,6 +65,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `timeout(Duration)`     | None        | Overall request deadline             |
 | `connect_timeout(Duration)` | None   | Connection establishment timeout for TCP/proxy/TLS phases |
 | `read_timeout(Duration)` | None      | Timeout between response body chunks |
+| `write_timeout(Duration)` | None      | Timeout between request body chunks (upload) |
 | `tcp_keepalive(Duration)` | None     | Enable TCP keepalive with given interval |
 | `local_address(IpAddr)`   | None     | Bind outgoing connections to a local IP  |
 | `max_redirects(usize)`  | 10          | Maximum redirect hops (0 = disabled) |
@@ -171,6 +172,7 @@ use std::time::Duration;
 let rb = client.get("http://example.com").unwrap()
     .timeout(Duration::from_secs(5))     // per-request timeout
     .connect_timeout(Duration::from_secs(2)) // per-request connection timeout
+    .write_timeout(Duration::from_secs(10))  // per-request upload timeout
     .version(http::Version::HTTP_11);    // force HTTP version
 
 // HTTP upgrade (WebSocket)
@@ -206,6 +208,7 @@ Timeout helpers distinguish the configured phases:
 | `Timeout` | Overall request deadline from `timeout()` |
 | `ConnectTimeout` | Connection establishment deadline from `connect_timeout()` |
 | `ReadTimeout` | Gap between response body chunks from `read_timeout()` |
+| `WriteTimeout` | Gap between request body chunks from `write_timeout()` |
 
 ## ResponseBodySend / ResponseBodyLocal
 
@@ -428,4 +431,5 @@ use aioduct::Error;
 |-----------------|--------------------------------------------------|
 | `is_closed()`   | Returns `true` if the error is a closed connection |
 | `is_timeout()`  | Returns `true` if the error is a timeout          |
+| `is_write_timeout()` | Returns `true` if the error is an upload timeout |
 | `is_connect()`  | Returns `true` if the error occurred during connect |

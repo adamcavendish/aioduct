@@ -154,7 +154,9 @@ fn sanitize_uri(uri: &Uri) -> String {
 
 fn error_type(error: &Error) -> &'static str {
     match error {
-        Error::Timeout | Error::ConnectTimeout | Error::ReadTimeout => "timeout",
+        Error::Timeout | Error::ConnectTimeout | Error::ReadTimeout | Error::WriteTimeout => {
+            "timeout"
+        }
         Error::Io(_) => "io",
         Error::Hyper(_) => "hyper",
         Error::Tls(_) => "tls",

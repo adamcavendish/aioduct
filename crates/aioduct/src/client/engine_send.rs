@@ -197,6 +197,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         self.core.connect_timeout
     }
 
+    pub(crate) fn default_write_timeout(&self) -> Option<std::time::Duration> {
+        self.core.write_timeout
+    }
+
     pub(crate) fn default_retry(&self) -> Option<&crate::retry::RetryConfig> {
         self.core.retry.as_ref()
     }

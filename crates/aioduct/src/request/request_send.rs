@@ -29,6 +29,8 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     version: Option<Version>,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    write_timeout: Option<Duration>,
+    force_no_timeout: bool,
     retry: Option<RetryConfig>,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
@@ -63,6 +65,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             version: None,
             timeout: None,
             connect_timeout: None,
+            write_timeout: None,
+            force_no_timeout: false,
             retry: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
@@ -86,6 +90,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             version: None,
             timeout: None,
             connect_timeout: None,
+            write_timeout: None,
+            force_no_timeout: false,
             retry: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
@@ -294,6 +300,23 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         self
     }
 
+    /// Set a timeout for writing (uploading) the request body.
+    ///
+    /// This overrides the client's default write timeout.
+    pub fn write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = Some(timeout);
+        self
+    }
+
+    /// Disable the overall request timeout for this specific request.
+    ///
+    /// Use when the client has a default timeout but this request
+    /// (e.g., a long-running upload) should not be bounded.
+    pub fn no_timeout(mut self) -> Self {
+        self.force_no_timeout = true;
+        self
+    }
+
     /// Force this request to connect to a specific address, bypassing DNS
     /// resolution and Happy Eyeballs.
     ///
@@ -386,6 +409,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             version: self.version,
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            write_timeout: self.write_timeout,
+            force_no_timeout: self.force_no_timeout,
             retry: self.retry.clone(),
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
@@ -412,10 +437,15 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     }
 
     async fn send_once(self) -> Result<Response, Error> {
-        let effective_timeout = self.timeout.or(self.client.default_timeout());
+        let effective_timeout = if self.force_no_timeout {
+            None
+        } else {
+            self.timeout.or(self.client.default_timeout())
+        };
         let effective_connect_timeout = self
             .connect_timeout
             .or(self.client.default_connect_timeout());
+        let effective_write_timeout = self.write_timeout.or(self.client.default_write_timeout());
         let method = self.method.clone();
         let uri = self.uri.clone();
         let execute_fut = self.client.execute_send(
@@ -425,6 +455,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             self.body,
             self.version,
             effective_connect_timeout,
+            effective_write_timeout,
             self.force_addr,
             self.protocol_hint,
             self.fragment,
@@ -457,10 +488,15 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     async fn send_with_retry(self, config: RetryConfig) -> Result<Response, Error> {
         let retry_start = crate::clock::Instant::now();
-        let effective_timeout = self.timeout.or(self.client.default_timeout());
+        let effective_timeout = if self.force_no_timeout {
+            None
+        } else {
+            self.timeout.or(self.client.default_timeout())
+        };
         let effective_connect_timeout = self
             .connect_timeout
             .or(self.client.default_connect_timeout());
+        let effective_write_timeout = self.write_timeout.or(self.client.default_write_timeout());
         let mut last_error = None;
         let mut body = self.body;
         let mut retry_after_delay: Option<Duration> = None;
@@ -486,6 +522,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 body_for_attempt,
                 self.version,
                 effective_connect_timeout,
+                effective_write_timeout,
                 self.force_addr,
                 self.protocol_hint,
                 self.fragment.clone(),

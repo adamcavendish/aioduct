@@ -29,6 +29,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         replay_body: Option<Bytes>,
         stale_retry_headers: Option<&HeaderMap>,
         connect_timeout: Option<Duration>,
+        _write_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();

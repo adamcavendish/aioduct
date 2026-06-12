@@ -25,6 +25,8 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     version: Option<Version>,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    write_timeout: Option<Duration>,
+    force_no_timeout: bool,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
     /// Original URL fragment from the user-provided URL string.
@@ -57,6 +59,8 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: None,
             timeout: None,
             connect_timeout: None,
+            write_timeout: None,
+            force_no_timeout: false,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
             fragment,
@@ -78,6 +82,8 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: None,
             timeout: None,
             connect_timeout: None,
+            write_timeout: None,
+            force_no_timeout: false,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
             fragment,
@@ -278,6 +284,20 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         self
     }
 
+    /// Set a timeout for writing (uploading) the request body.
+    ///
+    /// This overrides the client's default write timeout.
+    pub fn write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = Some(timeout);
+        self
+    }
+
+    /// Disable the overall request timeout for this specific request.
+    pub fn no_timeout(mut self) -> Self {
+        self.force_no_timeout = true;
+        self
+    }
+
     /// Use HTTP/2 prior knowledge (h2c) for this request.
     pub fn h2c_prior_knowledge(mut self) -> Self {
         self.protocol_hint = ProtocolHint::H2c;
@@ -359,6 +379,8 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: self.version,
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            write_timeout: self.write_timeout,
+            force_no_timeout: self.force_no_timeout,
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
             fragment: self.fragment.clone(),
@@ -367,8 +389,13 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
 
     /// Send the request and return the response.
     pub async fn send(self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
-        let effective_timeout = self.timeout.or(self.client.core.timeout);
+        let effective_timeout = if self.force_no_timeout {
+            None
+        } else {
+            self.timeout.or(self.client.core.timeout)
+        };
         let effective_connect_timeout = self.connect_timeout.or(self.client.core.connect_timeout);
+        let effective_write_timeout = self.write_timeout.or(self.client.core.write_timeout);
 
         let execute_fut = self.client.execute_local(
             self.method,
@@ -377,6 +404,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             self.body,
             self.version,
             effective_connect_timeout,
+            effective_write_timeout,
             self.force_addr,
             self.protocol_hint,
             self.fragment,

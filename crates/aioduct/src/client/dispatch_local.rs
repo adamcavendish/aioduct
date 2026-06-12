@@ -24,6 +24,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         original_uri: &Uri,
         replay_body: Option<Bytes>,
         connect_timeout: Option<Duration>,
+        _write_timeout: Option<Duration>,
         force_addr: Option<SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
     ) -> Result<Response, Error> {

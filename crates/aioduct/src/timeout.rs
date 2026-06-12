@@ -134,6 +134,78 @@ where
     }
 }
 
+pin_project! {
+    /// Body wrapper that enforces a timeout between data chunks during upload.
+    ///
+    /// Generic over the inner body type `B` — works with both `RequestBodySend`
+    /// (Send path) and `RequestBodyLocal` (Local path).
+    ///
+    /// When the HTTP engine cannot accept more data (flow-control backpressure),
+    /// `poll_frame` returns `Pending` and the sleep timer starts. If the inner
+    /// body remains `Pending` beyond the configured duration, an
+    /// [`Error::WriteTimeout`](crate::error::Error::WriteTimeout) is emitted.
+    pub(crate) struct WriteTimeoutBody<B, S: crate::runtime::RuntimeCompletion> {
+        #[pin]
+        inner: B,
+        duration: Duration,
+        #[pin]
+        sleep: Option<S::Sleep>,
+    }
+}
+
+impl<B, S: crate::runtime::RuntimeCompletion> WriteTimeoutBody<B, S> {
+    pub fn new(inner: B, duration: Duration) -> Self {
+        Self {
+            inner,
+            duration,
+            sleep: None,
+        }
+    }
+}
+
+impl<B, S> http_body::Body for WriteTimeoutBody<B, S>
+where
+    B: http_body::Body<Data = Bytes, Error = crate::error::Error>,
+    S: crate::runtime::RuntimeCompletion,
+{
+    type Data = Bytes;
+    type Error = crate::error::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let mut this = self.project();
+
+        match this.inner.poll_frame(cx) {
+            Poll::Ready(result) => {
+                this.sleep.set(None);
+                Poll::Ready(result)
+            }
+            Poll::Pending => {
+                if this.sleep.as_ref().get_ref().is_none() {
+                    this.sleep.set(Some(S::sleep(*this.duration)));
+                }
+                if let Some(sleep) = this.sleep.as_mut().as_pin_mut()
+                    && let Poll::Ready(()) = sleep.poll(cx)
+                {
+                    this.sleep.set(None);
+                    return Poll::Ready(Some(Err(crate::error::Error::WriteTimeout)));
+                }
+                Poll::Pending
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
     use super::*;
@@ -351,6 +423,75 @@ mod tests {
                 Poll::Ready(Some(Err(crate::error::Error::ReadTimeout)))
             ),
             "expected ReadTimeout on local body, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn write_timeout_body_passes_data() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+        use http_body::Body;
+        use http_body_util::BodyExt;
+
+        let inner: crate::body::RequestBodySend = http_body_util::Full::new(Bytes::from("data"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let body = WriteTimeoutBody::<_, TokioRuntime>::new(inner, Duration::from_secs(1));
+        let mut boxed = Box::pin(body);
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let frame = boxed.as_mut().poll_frame(&mut cx);
+        match frame {
+            Poll::Ready(Some(Ok(f))) => {
+                let data = f.into_data().unwrap();
+                assert_eq!(data, Bytes::from("data"));
+            }
+            other => panic!("expected data frame, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_timeout_body_fires_on_pending() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+        use http_body::Body;
+
+        struct PendingBody;
+
+        impl http_body::Body for PendingBody {
+            type Data = Bytes;
+            type Error = crate::error::Error;
+
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                Poll::Pending
+            }
+
+            fn is_end_stream(&self) -> bool {
+                false
+            }
+        }
+
+        use http_body_util::BodyExt;
+        let inner: crate::body::RequestBodySend = PendingBody.boxed_unsync();
+        let body = WriteTimeoutBody::<_, TokioRuntime>::new(inner, Duration::from_millis(1));
+        let mut boxed = Box::pin(body);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let _ = boxed.as_mut().poll_frame(&mut cx);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let result = boxed.as_mut().poll_frame(&mut cx);
+        assert!(
+            matches!(
+                result,
+                Poll::Ready(Some(Err(crate::error::Error::WriteTimeout)))
+            ),
+            "expected WriteTimeout, got {:?}",
             result
         );
     }
