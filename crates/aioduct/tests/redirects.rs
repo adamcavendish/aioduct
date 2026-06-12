@@ -2325,9 +2325,10 @@ async fn referer_should_not_leak_on_https_to_http_downgrade() {
     // and next scheme is HTTP. It sets Referer unconditionally.
 }
 
-// BUG: redirect.rs:64-68 Custom policy returns usize::MAX for max_redirects().
-// Combined with execute_send.rs:37 `for _ in 0..=max_redirects()`, this creates
-// an effectively infinite loop. The TooManyRedirects error at line 213 is unreachable.
+// Custom redirect policy is bounded: RedirectPolicy::custom() defaults to a
+// max of 10 redirects (redirect.rs:65), and max_redirects() returns it
+// (redirect.rs:80). A custom policy that always follows must still terminate
+// via TooManyRedirects rather than looping unbounded.
 #[tokio::test]
 async fn custom_redirect_policy_infinite_loop_protection() {
     use std::sync::Arc;
@@ -3245,17 +3246,17 @@ async fn redirect_same_origin_different_port_preserves_auth_tokio() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 7. redirect_referer_not_sent_on_https_to_http_downgrade
-//    Per RFC 7231 Section 5.5.2, the Referer header MUST NOT be sent when
-//    redirecting from HTTPS to HTTP. This test verifies that with
-//    referer(true), Referer is STILL sent on same-scheme HTTP→HTTP
-//    redirects (documenting current behavior), while the HTTPS→HTTP
-//    downgrade check remains untestable without TLS infrastructure.
+// 7. redirect_referer_set_on_http_to_http_cross_origin
+//    With referer(true), Referer IS sent on a same-scheme HTTP→HTTP
+//    cross-origin redirect (matching curl's default). The HTTPS→HTTP
+//    downgrade suppression required by RFC 7231 §5.5.2 is covered by the
+//    real TLS-backed test `referer_not_leaked_on_https_to_http_downgrade`
+//    in tests/tls.rs.
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "tokio")]
 #[tokio::test]
-async fn redirect_referer_not_sent_on_https_to_http_downgrade_tokio() {
+async fn redirect_referer_set_on_http_to_http_cross_origin() {
     let captured_referer = Arc::new(Mutex::new(None::<String>));
     let cap = captured_referer.clone();
 
@@ -3292,12 +3293,7 @@ async fn redirect_referer_not_sent_on_https_to_http_downgrade_tokio() {
         .build()
         .unwrap();
 
-    // Use an "https" scheme in the original URL to simulate the downgrade
-    // scenario. Since the server is HTTP-only, the initial connect will
-    // fail — but this documents the concept.
-    //
-    // For the HTTP→HTTP case, Referer IS set (current behavior, same as
-    // curl default). The HTTPS→HTTP case would require a real TLS server.
+    // HTTP→HTTP cross-origin redirect: Referer IS set (curl default behavior).
     let resp = client
         .get(&format!("http://{origin_addr}/secret-path"))
         .unwrap()
@@ -3308,13 +3304,9 @@ async fn redirect_referer_not_sent_on_https_to_http_downgrade_tokio() {
     let _ = resp.text().await.unwrap();
 
     let referer = captured_referer.lock().unwrap().clone();
-    // On HTTP→HTTP cross-origin redirect with referer(true), the library
-    // sets the Referer header (same behavior as curl by default).
-    // The RFC violation (HTTPS→HTTP) is untestable without TLS.
     assert!(
         referer.is_some(),
-        "referer(true) should set Referer on same-scheme redirect \
-         (HTTPS→HTTP downgrade check requires TLS infrastructure)"
+        "referer(true) should set Referer on a same-scheme HTTP→HTTP redirect"
     );
 }
 
