@@ -21,9 +21,9 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 ## Features
 
 - **No hyper-util** — custom IO adapters and executor directly against `hyper::rt` traits
-- **Multi-runtime** — tokio, smol, and compio (io_uring) via feature flags; WASM/browser support
+- **Multi-runtime** — tokio, smol, and compio (io_uring) via feature flags; WASM/browser and WASI Preview 2 support
 - **rustls TLS** — async handshake with ALPN-based HTTP/1.1 and HTTP/2 negotiation
-- **Connection pooling** — keyed by (scheme, authority) with idle timeout and per-host limits
+- **Connection pooling** — keyed by (scheme, authority) with idle timeout and per-host limits, plus `pool_stats()` diagnostics (hit/miss/eviction counters and per-host idle/active inventory)
 - **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping and content header removal
 - **Cookie jar** — automatic cookie storage, domain/path/subdomain matching, Max-Age and Expires expiration, Secure flag enforcement, SameSite (Strict/Lax/None), cookie prefixes (__Host-, __Secure-)
 - **Timeouts** — per-request, client-level, connect, and read timeouts
@@ -43,6 +43,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Blocking client** — synchronous wrapper for non-async contexts (`BlockingTokioClient`, `BlockingSmolClient`, `BlockingCompioClient`)
 - **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration; DNS-over-HTTPS (`doh` feature) and DNS-over-TLS (`dot` feature)
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
+- **Per-request h2c** — `RequestBuilder::h2c_prior_knowledge()` drives h2c prior knowledge per request, and adaptive h2c probes-then-caches per authority, so one client can mix h1 and h2c targets without a global flag
 - **Connection coalescing** — reuses h2/h3 connections whose TLS certificate SANs cover the target domain (RFC 7540 §9.1.1), matching browser behavior
 - **HTTP/3 0-RTT** — opt-in early data for repeat connections to known servers, with automatic fallback on rejection
 - **TCP keepalive** — configurable keepalive interval for long-lived connections
@@ -68,7 +69,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.0-alpha.7", features = ["tokio"] }
+aioduct = { version = "0.2.0", features = ["tokio"] }
 ```
 
 ```rust
@@ -93,19 +94,19 @@ async fn main() -> Result<(), aioduct::Error> {
 Enable the `rustls` TLS backend plus exactly one rustls crypto provider:
 
 ```toml
-aioduct = { version = "0.2.0-alpha.7", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.0", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 To use rustls with AWS-LC instead of ring, select the AWS-LC provider:
 
 ```toml
-aioduct = { version = "0.2.0-alpha.7", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 To use the OS certificate store, add `rustls-native-roots` alongside either TLS provider:
 
 ```toml
-aioduct = { version = "0.2.0-alpha.7", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.0", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ```rust
@@ -459,7 +460,7 @@ pub trait Resolve: Send + Sync + 'static {
 |---|---|---|
 | hyper | 1.x via hyper-util legacy | 1.x direct |
 | hyper-util | Required | Not used |
-| Runtime | tokio only | tokio / smol / compio / wasm |
+| Runtime | tokio only | tokio / smol / compio / wasm / wasi |
 | TLS | rustls or native-tls | rustls (`native-tls` reserved for future support) |
 | HTTP/3 | Experimental | Experimental |
 | io_uring | No | Via compio |

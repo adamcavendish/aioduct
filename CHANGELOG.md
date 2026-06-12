@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-12
+
+First stable release of the 0.2.0 line. Highlights of the full cycle: a unified
+multi-runtime engine over tokio, smol, and compio (plus blocking, WASM, and
+WASI Preview 2); per-request protocol control; HTTP/2, HTTP/3, and h2c support;
+a diagnosable connection pool; and proxy support spanning HTTP, HTTPS, and SOCKS.
+
+Changes since `0.2.0-alpha.7`:
+
+### Added
+- Connection pool diagnostics: `PoolStats` and `PoolHostStats` snapshot types plus `pool_stats()` on `HttpEngineSend`/`HttpEngineLocal`. Exposes monotonic counters (checkout hits/coalesced-hits/misses, stale-reuse retries, idle-timeout/max-lifetime/not-ready/capacity evictions) and a per-host idle/active inventory breakdown. Counters live in `Arc<AtomicU64>` outside the pool mutex so hot-path increments avoid lock contention; `snapshot()` recovers from a poisoned mutex rather than returning all-zero
+- Shared connection metrics across H2/H3 multiplex clones: `requests_served`, `bytes_sent`, and `bytes_received` now accumulate per transport via a shared `Arc`, so multiplexed clones report cumulative transport totals instead of resetting to zero per clone
+- Pool stats surfaced in the CLI: `aioduct http -v` summary and `aioduct download` output now show pool hit/miss/eviction counters and idle/active inventory
+- `basic_auth()` and `query()` on the WASM and WASI Preview 2 request builders (and their owned/`RequestBuilderExt` variants), matching the native builder's base64 and percent-encoding behavior
+
+### Fixed
+- URL fragments are preserved across redirects per RFC 7231 §7.1.2: when a `Location` header has no fragment, the original request's fragment is inherited; a `Location` fragment takes priority. Fragments are tracked separately since `http::Uri` strips them
+- `pool_max_active_per_host` is now wired into the local engine builder (`build_local()`), matching the send path — the per-host active-connection cap was previously silently ignored on local engines
+- `checkout_misses` is recorded only after the `can_connect()` gate, so a request rejected by the per-host cap no longer counts as a pool miss
+- Stale-retry observer parity on the local dispatch path: the local primary and H2-wait stale arms now emit `Failed { retry: StaleConnection }` and `PoolCheckoutComplete { outcome: StaleRetry }`, and the send H2-wait stale arm emits the missing `PoolCheckoutComplete { StaleRetry }`
+- `Failed { retry: None }` observer event is now emitted on H2-wait non-stale errors in both dispatch paths, matching the primary checkout error path
+- `H2ConnectGuard` only unmarks `connecting_h2` when it owns the mark, so a guard dropped after an H2-wait timeout can no longer clear another task's mark and trigger redundant H2 connections
+- `checkin()` clears the connection's pool/key before its early returns, preventing `Drop` from double-decrementing the active count and under-enforcing the `can_connect()` cap
+
+### Changed
+- Added end-to-end TLS-to-proxy integration coverage for HTTPS proxy endpoints (both HTTP-target and double-TLS HTTPS-target paths), and a real TLS-backed test for HTTPS→HTTP `Referer` suppression (RFC 7231 §5.5.2). Test-only; no behavior change
+
 ## [0.2.0-alpha.7] - 2026-06-08
 
 ### Added
