@@ -237,6 +237,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 timeout: self.timeout,
                 connect_timeout: self.connect_timeout,
                 read_timeout: self.read_timeout,
+                write_timeout: self.write_timeout,
                 tcp_keepalive: self.tcp_keepalive,
                 tcp_keepalive_interval: self.tcp_keepalive_interval,
                 tcp_keepalive_retries: self.tcp_keepalive_retries,

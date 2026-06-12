@@ -3,6 +3,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -864,5 +865,129 @@ fn test_smol_system_resolver_resolves_localhost() {
         assert_eq!(resp.status(), http::StatusCode::OK);
         let body = resp.text().await.unwrap();
         assert_eq!(body, "hello aioduct");
+    });
+}
+
+// ── Smol cancellation tests ────────────────────────────────────────────────
+
+#[test]
+fn drop_send_future_after_poll_evicts_connection_smol() {
+    smol::block_on(async {
+        use smol::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let accept_count2 = accept_count.clone();
+
+        let _server = smol::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let n = accept_count2.fetch_add(1, Ordering::SeqCst);
+
+                smol::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+
+                    if n == 0 {
+                        let _ = stream.read(&mut [0u8; 1]).await;
+                    } else {
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                        let _ = stream.write_all(resp).await;
+                    }
+                })
+                .detach();
+            }
+        });
+
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder()
+                .pool_idle_timeout(Duration::from_secs(60))
+                .timeout(Duration::from_millis(200))
+                .build()
+                .unwrap();
+
+        let url = format!("http://{addr}/");
+
+        let result = client.get(&url).unwrap().send().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_timeout());
+
+        smol::Timer::after(Duration::from_millis(100)).await;
+
+        let resp = client.get(&url).unwrap().send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let count = accept_count.load(Ordering::SeqCst);
+        assert!(
+            count >= 2,
+            "expected >= 2 accepted connections, got {count}"
+        );
+    });
+}
+
+#[test]
+fn drop_body_stream_after_one_chunk_no_hang_smol() {
+    smol::block_on(async {
+        use smol::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = smol::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let accept_count = Arc::new(AtomicUsize::new(0));
+        let accept_count2 = accept_count.clone();
+
+        let _server = smol::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let n = accept_count2.fetch_add(1, Ordering::SeqCst);
+
+                smol::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+
+                    if n == 0 {
+                        let resp = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nwiki\r\n5\r\npedia\r\n";
+                        let _ = stream.write_all(resp).await;
+                        let _ = stream.read(&mut [0u8; 1]).await;
+                    } else {
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                        let _ = stream.write_all(resp).await;
+                    }
+                })
+                .detach();
+            }
+        });
+
+        let client =
+            HttpEngineSend::<SmolRuntime, aioduct::runtime::smol_rt::TcpConnector>::builder()
+                .pool_idle_timeout(Duration::from_secs(60))
+                .timeout(Duration::from_secs(3))
+                .build()
+                .unwrap();
+
+        let url = format!("http://{addr}/");
+
+        let resp = client.get(&url).unwrap().send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let mut stream = resp.into_bytes_stream();
+        let chunk = stream.next().await;
+        assert!(chunk.is_some());
+        let data = chunk.unwrap().unwrap();
+        assert_eq!(&data[..], b"wiki");
+
+        drop(stream);
+
+        let resp2 = client.get(&url).unwrap().send().await.unwrap();
+        assert_eq!(resp2.status(), 200);
+        assert_eq!(resp2.text().await.unwrap(), "ok");
+
+        let count = accept_count.load(Ordering::SeqCst);
+        assert!(
+            count >= 2,
+            "expected >= 2 accepted connections, got {count}"
+        );
     });
 }

@@ -22,6 +22,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         body: Option<RequestBody>,
         version: Option<http::Version>,
         connect_timeout: Option<Duration>,
+        write_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
         mut original_fragment: Option<String>,
@@ -63,6 +64,16 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .boxed_unsync();
                     (empty, None)
                 }
+            };
+
+            // Apply write timeout to the request body if configured.
+            let req_body = match write_timeout {
+                Some(duration) => {
+                    let timeout_body =
+                        crate::timeout::WriteTimeoutBody::<_, R>::new(req_body, duration);
+                    timeout_body.map_err(|e| e).boxed_unsync()
+                }
+                None => req_body,
             };
 
             let (cache_state, stale_if_error) =
@@ -132,6 +143,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     replay_bytes_for_stale,
                     stale_headers,
                     connect_timeout,
+                    write_timeout,
                     force_addr,
                 )
                 .await
@@ -180,6 +192,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     &mut current_headers,
                     replay_bytes,
                     connect_timeout,
+                    write_timeout,
                     force_addr,
                     protocol_hint,
                 )
@@ -245,6 +258,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         headers: &mut HeaderMap,
         body_for_replay: Option<Bytes>,
         connect_timeout: Option<Duration>,
+        write_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
     ) -> Result<Response, Error> {
@@ -300,6 +314,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             replay_for_stale,
             Some(headers),
             connect_timeout,
+            write_timeout,
             force_addr,
         )
         .await

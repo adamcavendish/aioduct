@@ -34,6 +34,10 @@ pub enum Error {
     #[error("read timeout")]
     ReadTimeout,
 
+    /// Writing the request body timed out.
+    #[error("write timeout")]
+    WriteTimeout,
+
     /// The URL is invalid or cannot be resolved.
     #[error("invalid URL: {0}")]
     InvalidUrl(String),
@@ -205,7 +209,7 @@ impl Error {
     pub fn is_timeout(&self) -> bool {
         matches!(
             self,
-            Error::Timeout | Error::ConnectTimeout | Error::ReadTimeout
+            Error::Timeout | Error::ConnectTimeout | Error::ReadTimeout | Error::WriteTimeout
         )
     }
 
@@ -292,6 +296,11 @@ impl Error {
             ),
             _ => false,
         }
+    }
+
+    /// Returns `true` if the error is a write timeout during body upload.
+    pub fn is_write_timeout(&self) -> bool {
+        matches!(self, Error::WriteTimeout)
     }
 
     fn hidden_root_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {

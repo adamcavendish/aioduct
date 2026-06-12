@@ -109,6 +109,22 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Set a timeout for writing (uploading) the request body.
+    ///
+    /// This applies **only to request body uploads**, not to waiting for
+    /// response headers or reading the response body. If the HTTP engine
+    /// cannot accept more body data within this duration (e.g., flow-control
+    /// backpressure from a slow server), the request fails with
+    /// [`Error::WriteTimeout`](crate::Error::WriteTimeout).
+    ///
+    /// Use [`timeout()`](Self::timeout) for an overall request deadline that
+    /// covers headers and body, or [`read_timeout()`](Self::read_timeout) for
+    /// the response body.
+    pub fn write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = Some(timeout);
+        self
+    }
+
     /// Enable TCP keepalive with the given idle time before first probe.
     pub fn tcp_keepalive(mut self, interval: Duration) -> Self {
         self.tcp_keepalive = Some(interval);

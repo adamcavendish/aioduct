@@ -4,3 +4,7 @@ slow-timeout = { period = "3s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = "test(bandwidth_limiter_should_not_busy_loop) | test(test_connect_tunnel)"
 slow-timeout = { period = "10s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = "test(write_timeout_triggers_on_slow_server) | test(write_timeout_not_retried) | test(blocking_send_error)"
+slow-timeout = { period = "10s", terminate-after = 2 }
