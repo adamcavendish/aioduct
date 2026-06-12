@@ -1361,3 +1361,69 @@ async fn https_proxy_tls_to_proxy_reaches_http_target() {
         "the TLS proxy should have accepted at least one connection"
     );
 }
+
+/// Build a client TLS config that trusts multiple self-signed certs. The
+/// double-TLS path (https target through https proxy) uses one connector for
+/// both the proxy handshake and the origin handshake, so its root store must
+/// trust both certs.
+#[cfg(feature = "rustls")]
+fn client_config_trusting(
+    certs: &[rustls::pki_types::CertificateDer<'static>],
+) -> std::sync::Arc<rustls::ClientConfig> {
+    let mut root_store = rustls::RootCertStore::empty();
+    for cert in certs {
+        root_store.add(cert.clone()).unwrap();
+    }
+    let mut config =
+        rustls::ClientConfig::builder_with_provider(aioduct_test_server::tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .expect("configured rustls provider does not support the default TLS versions")
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    std::sync::Arc::new(config)
+}
+
+/// End-to-end double-TLS: an HTTPS target reached through an `https://` proxy.
+/// This is the other branch of the HTTPS-proxy connect logic
+/// (`connect_tunnel_send`): client→proxy TLS, then HTTP CONNECT over that pipe,
+/// then a second client→origin TLS handshake *inside* the tunnel. The proxy
+/// relays raw bytes, so the inner origin TLS is opaque to it. The single client
+/// connector must trust both the proxy cert and the origin cert.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_tls_to_proxy_reaches_https_target() {
+    let (origin_addr, origin_cert, _origin_counter) =
+        aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
+    let (proxy_addr, proxy_cert, conns) = tls_connect_proxy().await;
+
+    // One connector trusting both the proxy and the origin certs.
+    let client_config = client_config_trusting(&[proxy_cert, origin_cert]);
+    let connector = aioduct::tls::RustlsConnector::new(client_config);
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap(),
+        )
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    // The origin uses a `localhost` cert, so the CONNECT target and origin SNI
+    // must be `localhost` for verification to pass inside the tunnel.
+    let resp = client
+        .get(&format!("https://localhost:{}/", origin_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello tls");
+    assert!(
+        conns.load(AtomicOrdering::SeqCst) >= 1,
+        "the TLS proxy should have accepted at least one connection"
+    );
+}
