@@ -261,8 +261,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             },
         );
 
-        if may_h2 && !self.core.no_connection_reuse && self.core.pool.mark_connecting_h2(&pool_key)
-        {
+        let mut owns_h2_mark = false;
+        if may_h2 && !self.core.no_connection_reuse && {
+            let already_marked = self.core.pool.mark_connecting_h2(&pool_key);
+            owns_h2_mark = !already_marked;
+            already_marked
+        } {
             let wait_budget = connect_timeout.unwrap_or(std::time::Duration::from_secs(5));
             let poll_interval = std::time::Duration::from_millis(5);
             let max_polls =
@@ -408,13 +412,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             }
             // Timed out waiting — connect ourselves.
             // Just ensure the mark is set; don't unmark first (avoids TOCTOU race).
-            self.core.pool.mark_connecting_h2(&pool_key);
+            owns_h2_mark = !self.core.pool.mark_connecting_h2(&pool_key);
         }
 
         let mut h2_guard = H2ConnectGuard {
             pool: &self.core.pool,
             key: &pool_key,
-            active: may_h2,
+            active: may_h2 && owns_h2_mark,
         };
 
         let proxy = self
