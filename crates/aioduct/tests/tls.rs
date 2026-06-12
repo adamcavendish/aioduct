@@ -486,6 +486,79 @@ async fn hsts_upgrades_redirect_targets() {
     );
 }
 
+// RFC 7231 §5.5.2: a user agent MUST NOT send a Referer header in an
+// unsecured HTTP request if the referring page was transferred with a secure
+// protocol. This is the real HTTPS→HTTP downgrade test that the placeholder in
+// redirects.rs could not express without TLS. The origin is a genuine HTTPS
+// server (trusted self-signed cert) that 302-redirects to a plaintext HTTP
+// target; with referer(true) the HTTP target must still receive NO Referer.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn referer_not_leaked_on_https_to_http_downgrade() {
+    use std::sync::{Arc, Mutex};
+
+    install_crypto_provider();
+
+    // Plain HTTP target: captures whatever Referer header it receives.
+    let captured_referer: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let cap = captured_referer.clone();
+    let (http_addr, _http_counter) = aioduct_test_server::h1::h1_server_with(move |req| {
+        let cap = cap.clone();
+        async move {
+            *cap.lock().unwrap() = req
+                .headers()
+                .get("referer")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("http-target"))))
+        }
+    })
+    .await;
+
+    // HTTPS origin: 302-redirects to the plaintext HTTP target.
+    let (tls_addr, cert_der, _counter) =
+        aioduct_test_server::tls::tls_server_with(&[b"http/1.1"], move |_req| {
+            let target = format!("http://{http_addr}/landing");
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(302)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        })
+        .await;
+
+    let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
+    let connector = aioduct::tls::RustlsConnector::new(client_config);
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .referer(true)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!(
+            "https://localhost:{}/secret-path",
+            tls_addr.port()
+        ))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "http-target");
+
+    let referer = captured_referer.lock().unwrap().clone();
+    assert!(
+        referer.is_none(),
+        "RFC 7231 §5.5.2: Referer MUST NOT be sent on an HTTPS→HTTP downgrade, \
+         but the HTTP target received: {referer:?}"
+    );
+}
+
 // ── TLS Integration Tests ─────────────────────────────────────────────
 
 // Test 1: custom CA trusts end-to-end.
