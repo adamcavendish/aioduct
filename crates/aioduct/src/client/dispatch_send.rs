@@ -660,7 +660,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             );
                             break;
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::Failed {
+                                    error: e.to_string(),
+                                    retry: RetryKind::None,
+                                    elapsed: request_start.elapsed(),
+                                },
+                            );
+                            return Err(e);
+                        }
                     }
                 }
             }
