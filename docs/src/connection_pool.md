@@ -65,6 +65,55 @@ provided by the browser or WASI host rather than by `ConnectionPool`.
 
 On checkout, the pool verifies each candidate connection is still ready using hyper's `SendRequest::is_ready()`. If a connection has been closed by the server (e.g., due to keep-alive timeout), it's discarded and the next pooled connection is tried. If no ready connection is found, a new one is established.
 
+## Diagnostics
+
+`pool_stats()` returns a `PoolStats` snapshot of the pool's lifetime counters and current inventory. It is available on both `HttpEngineSend` and `HttpEngineLocal` (and therefore on the runtime client aliases). Counters are monotonic since engine creation and live in atomics outside the pool mutex, so reading them is cheap and never blocks request hot paths.
+
+```rust,no_run
+use aioduct::TokioClient;
+
+# async fn example() -> Result<(), aioduct::Error> {
+let client = TokioClient::new();
+
+client.get("https://example.com/")?.send().await?;
+client.get("https://example.com/")?.send().await?;
+
+let stats = client.pool_stats();
+println!("hits={} misses={}", stats.checkout_hits, stats.checkout_misses);
+println!("idle={} active={}", stats.idle_pool_entries, stats.checked_out_pool_handles);
+
+for host in &stats.hosts {
+    println!(
+        "{}://{} ({}, route={}): {} idle, {} active",
+        host.scheme, host.authority, host.protocol_hint, host.route, host.idle, host.active,
+    );
+}
+# Ok(())
+# }
+```
+
+### `PoolStats` fields
+
+| Field                          | Type             | Meaning                                                                 |
+|--------------------------------|------------------|-------------------------------------------------------------------------|
+| `checkout_hits`                | `u64`            | Checkouts that found an idle connection in the pool                      |
+| `checkout_coalesced_hits`      | `u64`            | Checkouts reused via SAN-based coalescing (always 0 on local engines)   |
+| `checkout_misses`              | `u64`            | Requests that exhausted all pool paths and required a fresh connection   |
+| `stale_reuse_retries`          | `u64`            | Connections detected as stale mid-request and transparently retried      |
+| `idle_timeout_evictions`       | `u64`            | Connections evicted due to idle timeout expiry                           |
+| `max_lifetime_evictions`       | `u64`            | Connections evicted due to exceeding their maximum lifetime              |
+| `checkout_not_ready_evictions` | `u64`            | Connections discarded at checkout because `is_ready()` returned false    |
+| `capacity_evictions`           | `u64`            | Connections evicted because the per-host idle queue was at capacity      |
+| `idle_pool_entries`            | `usize`          | Idle pool handles across all hosts (current)                            |
+| `checked_out_pool_handles`     | `usize`          | Checked-out pool handles across all hosts (current)                     |
+| `hosts`                        | `Vec<PoolHostStats>` | Per-host breakdown, sorted by `(scheme, authority)`                  |
+
+Each `PoolHostStats` carries `scheme`, `authority`, `protocol_hint` (`Auto`/`H2c`/`AdaptiveH2c`), `route` (`"direct"` or an opaque proxy-route label), and the host's current `idle` / `active` handle counts.
+
+Counts reflect pool-internal handle tracking, which can differ from physical connection counts for H2/H3 multiplexed transports — one transport may back several checked-out handles. `checkout_coalesced_hits` is always 0 on local engines because connection coalescing is a send-path feature.
+
+The CLI surfaces these stats directly: `aioduct http -v` shows a pool summary, and `aioduct download` reports pool counters and inventory alongside its progress output.
+
 ## Connection Coalescing
 
 When enabled (default), aioduct reuses h2/h3 connections for different hostnames that share the same TLS certificate, matching browser behavior per [RFC 7540 §9.1.1](https://www.rfc-editor.org/rfc/rfc7540#section-9.1.1).

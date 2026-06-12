@@ -84,4 +84,14 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
-When enabled, each redirect sets the `Referer` header to the URI of the previous request.
+When enabled, each redirect sets the `Referer` header to the URI of the previous request. For cross-origin hops the `Referer` is reduced to the scheme and authority (no path). Following [RFC 7231 §5.5.2](https://www.rfc-editor.org/rfc/rfc7231#section-5.5.2), aioduct never sends `Referer` on an HTTPS→HTTP downgrade, so a secure source URL is not leaked into a plaintext request.
+
+## URL Fragments
+
+Per [RFC 7231 §7.1.2](https://www.rfc-editor.org/rfc/rfc7231#section-7.1.2), aioduct preserves the URL fragment across redirects:
+
+- If the `Location` header carries its own fragment, that fragment wins.
+- If `Location` has no fragment, the original request's fragment is inherited by the redirect target.
+
+Fragments are not sent to servers (they are client-side per RFC 7230), so `http::Uri` strips them. aioduct tracks the effective fragment separately and exposes it on the final response via `Response::fragment()`.
+
