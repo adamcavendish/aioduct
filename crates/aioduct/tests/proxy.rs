@@ -1,7 +1,11 @@
 #![cfg(feature = "tokio")]
 
 use std::convert::Infallible;
+use std::future::Future;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -11,11 +15,12 @@ use tokio::net::TcpListener;
 use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::runtime::{ConnectorSend, SocketConfig};
 
 use aioduct_test_server::h1::{h1_server, h1_server_with};
 use aioduct_test_server::raw::raw_server;
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
 
 #[tokio::test]
 async fn test_http_proxy() {
@@ -1153,6 +1158,114 @@ async fn proxy_failure_reset_deterministic() {
 
 // ── CONNECT tunnel proxy tests ────────────────────────────────────────────
 
+#[derive(Clone)]
+struct ProxyKeepaliveCountingConnector {
+    inner: TcpConnector,
+    keepalive_calls: Arc<AtomicU32>,
+}
+
+impl ProxyKeepaliveCountingConnector {
+    fn new() -> Self {
+        Self {
+            inner: TcpConnector,
+            keepalive_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn keepalive_calls(&self) -> u32 {
+        self.keepalive_calls.load(AtomicOrdering::SeqCst)
+    }
+}
+
+struct ProxyKeepaliveCountingStream {
+    inner: <TcpConnector as ConnectorSend>::Stream,
+    counter: Arc<AtomicU32>,
+}
+
+impl SocketConfig for ProxyKeepaliveCountingStream {
+    fn set_keepalive(
+        &self,
+        time: Duration,
+        interval: Option<Duration>,
+        retries: Option<u32>,
+    ) -> io::Result<()> {
+        self.counter.fetch_add(1, AtomicOrdering::SeqCst);
+        self.inner.set_keepalive(time, interval, retries)
+    }
+
+    fn set_fast_open(&self) -> io::Result<()> {
+        self.inner.set_fast_open()
+    }
+}
+
+impl hyper::rt::Read for ProxyKeepaliveCountingStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl hyper::rt::Write for ProxyKeepaliveCountingStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+impl Unpin for ProxyKeepaliveCountingStream {}
+
+impl ConnectorSend for ProxyKeepaliveCountingConnector {
+    type Stream = ProxyKeepaliveCountingStream;
+
+    fn connect(&self, addr: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        let inner = self.inner;
+        let counter = Arc::clone(&self.keepalive_calls);
+        async move {
+            let stream = inner.connect(addr).await?;
+            Ok(ProxyKeepaliveCountingStream {
+                inner: stream,
+                counter,
+            })
+        }
+    }
+
+    fn connect_bound(
+        &self,
+        addr: SocketAddr,
+        local: IpAddr,
+    ) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        let inner = self.inner;
+        let counter = Arc::clone(&self.keepalive_calls);
+        async move {
+            let stream = inner.connect_bound(addr, local).await?;
+            Ok(ProxyKeepaliveCountingStream {
+                inner: stream,
+                counter,
+            })
+        }
+    }
+}
+
 /// A real CONNECT proxy: accepts CONNECT, responds 200, then relays bytes
 /// bidirectionally between client and target. Parses the CONNECT target
 /// (`host:port`) to connect to the correct server. Each accepted TCP connection
@@ -1220,6 +1333,39 @@ async fn http_proxy_uses_connect_tunnel() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
     assert!(conns.load(AtomicOrdering::SeqCst) >= 1);
+}
+
+#[tokio::test]
+async fn http_proxy_tunnel_applies_tcp_keepalive_to_proxy_connection() {
+    let (target_addr, _counter) = h1_server().await;
+    let (proxy_addr, _conns) = connect_proxy().await;
+
+    let connector = ProxyKeepaliveCountingConnector::new();
+    let connector_ref = connector.clone();
+
+    let client =
+        HttpEngineSend::<TokioRuntime, ProxyKeepaliveCountingConnector>::builder_with_connector(
+            connector,
+        )
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{target_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    assert_eq!(
+        connector_ref.keepalive_calls(),
+        1,
+        "configured tcp_keepalive should apply to the proxy tunnel TCP stream"
+    );
 }
 
 /// Two sequential requests through the same CONNECT tunnel both succeed.
