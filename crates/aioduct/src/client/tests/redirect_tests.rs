@@ -58,6 +58,31 @@ fn resolve_redirect_preserves_port() {
 }
 
 #[test]
+fn resolve_redirect_inherits_original_fragment_when_location_has_none() {
+    let base: Uri = "http://example.com/dir/page".parse().unwrap();
+    let (result, fragment) = resolve_redirect(&base, "/target", Some("section1")).unwrap();
+    assert_eq!(result.path(), "/target");
+    assert_eq!(fragment.as_deref(), Some("section1"));
+}
+
+#[test]
+fn resolve_redirect_location_fragment_overrides_original_fragment() {
+    let base: Uri = "http://example.com/dir/page".parse().unwrap();
+    let (result, fragment) =
+        resolve_redirect(&base, "/target#newsection", Some("oldsection")).unwrap();
+    assert_eq!(result.path(), "/target");
+    assert_eq!(fragment.as_deref(), Some("newsection"));
+}
+
+#[test]
+fn resolve_redirect_without_fragments_keeps_none() {
+    let base: Uri = "http://example.com/dir/page".parse().unwrap();
+    let (result, fragment) = resolve_redirect(&base, "/target", None).unwrap();
+    assert_eq!(result.to_string(), "http://example.com/target");
+    assert_eq!(fragment, None);
+}
+
+#[test]
 fn resolve_redirect_scheme_without_authority_is_relative() {
     let base: Uri = "http://example.com/".parse().unwrap();
     let (result, _frag) = resolve_redirect(&base, "/path", None).unwrap();
