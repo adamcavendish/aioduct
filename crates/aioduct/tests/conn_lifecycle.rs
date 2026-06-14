@@ -1599,6 +1599,37 @@ impl ConnectorSend for KeepaliveCountingConnector {
     }
 }
 
+#[tokio::test]
+async fn tcp_keepalive_is_disabled_by_default() {
+    let (addr, _counter) = aioduct_test_server::h1::h1_server().await;
+
+    let connector = KeepaliveCountingConnector::new();
+    let connector_ref = connector.clone();
+
+    let client =
+        HttpEngineSend::<TokioRuntime, KeepaliveCountingConnector>::builder_with_connector(
+            connector,
+        )
+        .pool_idle_timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    assert_eq!(
+        connector_ref.keepalive_calls(),
+        0,
+        "tcp_keepalive should be disabled unless configured"
+    );
+}
+
 /// #208: AdaptiveH2c fallback connection must receive socket configuration.
 ///
 /// The h2c probe opens a TCP stream and applies socket config. When the probe
