@@ -221,6 +221,47 @@ pub(crate) struct PoolInner<B> {
     active: HashMap<PoolKey, usize>,
 }
 
+/// Reservation for a fresh connection attempt counted against the per-host
+/// active cap. Dropping it releases the slot unless ownership was transferred
+/// to a [`PooledConnection`].
+pub(crate) struct ActiveReservation<B> {
+    inner: Weak<Mutex<PoolInner<B>>>,
+    key: Option<PoolKey>,
+}
+
+impl<B> ActiveReservation<B> {
+    fn new(inner: Weak<Mutex<PoolInner<B>>>, key: PoolKey) -> Self {
+        Self {
+            inner,
+            key: Some(key),
+        }
+    }
+
+    fn disarm(&mut self) -> Option<PoolKey> {
+        self.key.take()
+    }
+}
+
+impl<B> Drop for ActiveReservation<B> {
+    fn drop(&mut self) {
+        if let Some(ref key) = self.key
+            && let Some(pool_inner) = self.inner.upgrade()
+            && let Ok(mut inner) = pool_inner.lock()
+        {
+            decrement_active(&mut inner, key);
+        }
+    }
+}
+
+pub(crate) fn decrement_active<B>(inner: &mut PoolInner<B>, key: &PoolKey) {
+    if let Some(count) = inner.active.get_mut(key) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            inner.active.remove(key);
+        }
+    }
+}
+
 /// Thread-safe pool of idle HTTP connections keyed by origin.
 pub(crate) struct ConnectionPool<B> {
     inner: Arc<Mutex<PoolInner<B>>>,
@@ -292,11 +333,11 @@ impl<B: 'static> ConnectionPool<B> {
         self
     }
 
-    /// Returns whether a new connection can be created for the given key,
-    /// respecting the configured `max_active_per_host` cap.
-    /// Use `try_reserve_active` when opening a new connection to atomically
-    /// reserve the slot.
-    #[allow(dead_code)]
+    /// Returns whether an active slot is currently available for tests.
+    ///
+    /// Fresh connection attempts must use `try_reserve_active` so checking and
+    /// incrementing the active count happen atomically.
+    #[cfg(test)]
     pub(crate) fn can_connect(&self, key: &PoolKey) -> bool {
         let inner = match self.inner.lock() {
             Ok(guard) => guard,
@@ -307,6 +348,61 @@ impl<B: 'static> ConnectionPool<B> {
             None => return true,
         };
         inner.active.get(key).copied().unwrap_or(0) < max
+    }
+
+    /// Reserve an active slot for a new connection attempt.
+    ///
+    /// Unlike `can_connect`, this is atomic with respect to the active counter,
+    /// so concurrent fresh dials cannot all pass the cap check before any of
+    /// them has been checked into or out of the pool.
+    ///
+    /// Returns a [`PoolLimitError`] when the configured `max_active_per_host`
+    /// cap is already reached for `key`.
+    pub(crate) fn try_reserve_active(
+        &self,
+        key: &PoolKey,
+    ) -> Result<ActiveReservation<B>, crate::error::PoolLimitError> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(max) = inner.max_active_per_host {
+            let active = inner.active.get(key).copied().unwrap_or(0);
+            if active >= max.get() {
+                return Err(crate::error::PoolLimitError::new(
+                    crate::error::PoolLimitKind::MaxActivePerHost,
+                    Some(max.get()),
+                ));
+            }
+        }
+
+        *inner.active.entry(key.clone()).or_insert(0) += 1;
+        Ok(ActiveReservation::new(
+            Arc::downgrade(&self.inner),
+            key.clone(),
+        ))
+    }
+
+    /// Transfer a fresh-connection reservation onto the pooled connection so
+    /// check-in or drop releases the active slot exactly once.
+    pub(crate) fn attach_active_reservation(
+        &self,
+        connection: &mut PooledConnection<B>,
+        reservation: &mut ActiveReservation<B>,
+    ) {
+        if let Some(key) = reservation.disarm() {
+            connection.pool = Arc::downgrade(&self.inner);
+            connection.key = Some(key);
+        }
+    }
+
+    /// Move a connection's active count from one pool key to another.
+    ///
+    /// Used when an adaptive h2c probe falls back to H1: the reservation was
+    /// made under the `H2c` key but the connection ends up on the `Auto` key.
+    /// Without this migration the `H2c` entry leaks and the `Auto` key sees
+    /// an undercount.
+    pub(crate) fn rekey_active(&self, old_key: &PoolKey, new_key: &PoolKey) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        decrement_active(&mut inner, old_key);
+        *inner.active.entry(new_key.clone()).or_insert(0) += 1;
     }
 
     /// Set the maximum active H2/H3 streams allowed per pooled connection.
@@ -369,6 +465,16 @@ impl<B: 'static> ConnectionPool<B> {
     pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection<B>> {
         let pool_weak = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().ok()?;
+
+        // Gate checkout on max_active_per_host before touching the idle queue.
+        // If the cap is reached, return None so the caller falls through to a
+        // fresh dial — which try_reserve_active gates with the typed error.
+        if let Some(max) = inner.max_active_per_host
+            && inner.active.get(key).copied().unwrap_or(0) >= max.get()
+        {
+            return None;
+        }
+
         let idle_timeout = inner.idle_timeout;
         let max_lifetime = inner.max_lifetime;
         let max_active = inner.max_active_streams_per_connection;
@@ -456,13 +562,8 @@ impl<B: 'static> ConnectionPool<B> {
 
         // Decrement the active count tracked for this connection.
         let active_key = connection.key.clone();
-        if let Some(ref k) = active_key
-            && let Some(count) = inner.active.get_mut(k)
-        {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                inner.active.remove(k);
-            }
+        if let Some(ref k) = active_key {
+            decrement_active(&mut inner, k);
         }
 
         // Clear pool/key so Drop does not double-decrement.
@@ -730,6 +831,24 @@ impl<B: 'static> ConnectionPool<B> {
 
         // Increment active count after queue borrows are released.
         if let Some(ref k) = active_key {
+            if let Some(max) = inner.max_active_per_host {
+                let active = inner.active.get(k).copied().unwrap_or(0);
+                if active >= max.get() {
+                    // Gate — put the connection back and return None.
+                    #[allow(clippy::collapsible_if)]
+                    if let Some(ref key) = found_key {
+                        if let Some(queue) = inner.idle.get_mut(key) {
+                            if let Some(conn) = found_conn.take() {
+                                queue.push_back(IdleConnection {
+                                    connection: conn,
+                                    idle_since: Instant::now(),
+                                });
+                            }
+                        }
+                    }
+                    return None;
+                }
+            }
             *inner.active.entry(k.clone()).or_insert(0) += 1;
         }
 

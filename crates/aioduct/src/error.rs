@@ -5,6 +5,7 @@ pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Errors that can occur during HTTP operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// An error from the `http` crate (e.g., invalid headers or status).
     #[error("HTTP error: {0}")]
@@ -62,9 +63,86 @@ pub enum Error {
     #[error("invalid header: {0}")]
     InvalidHeader(String),
 
+    /// A connection pool error, such as a configured limit being reached.
+    #[error(transparent)]
+    Pool(#[from] PoolError),
+
     /// A catch-all for other errors.
     #[error("{0}")]
     Other(#[source] BoxError),
+}
+
+/// Errors originating from the connection pool.
+///
+/// This type is exposed through [`Error::Pool`]. It is `#[non_exhaustive]` so
+/// new pool failure modes (for example acquire timeouts or pool shutdown) can
+/// be added without a breaking change. Match with a wildcard arm.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PoolError {
+    /// A configured pool limit prevented a request from proceeding.
+    #[error(transparent)]
+    Limit(#[from] PoolLimitError),
+}
+
+/// A configured pool limit prevented a request from proceeding.
+///
+/// This is client-side backpressure, not a network failure: it does not
+/// classify as a connect failure or a timeout. Callers can detect it with
+/// [`Error::is_pool_limit`] and respond by queuing, retrying later, or lowering
+/// concurrency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolLimitError {
+    kind: PoolLimitKind,
+    limit: Option<usize>,
+}
+
+impl PoolLimitError {
+    pub(crate) fn new(kind: PoolLimitKind, limit: Option<usize>) -> Self {
+        Self { kind, limit }
+    }
+
+    /// The specific limit that was reached.
+    pub fn kind(&self) -> PoolLimitKind {
+        self.kind
+    }
+
+    /// The configured limit value, when known.
+    pub fn limit(&self) -> Option<usize> {
+        self.limit
+    }
+}
+
+impl std::fmt::Display for PoolLimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let description = match self.kind {
+            PoolLimitKind::MaxActivePerHost => "max active connections per host reached",
+        };
+        match self.limit {
+            Some(limit) => write!(f, "pool limit reached: {description} (limit: {limit})"),
+            None => write!(f, "pool limit reached: {description}"),
+        }
+    }
+}
+
+impl std::error::Error for PoolLimitError {}
+
+/// The specific pool limit that was reached.
+///
+/// `#[non_exhaustive]` so additional limit kinds (for example a global
+/// connection cap or a pending-acquire cap) can be added without a breaking
+/// change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PoolLimitKind {
+    /// The `pool_max_active_per_host` cap was reached for the target pool key.
+    MaxActivePerHost,
+}
+
+impl From<PoolLimitError> for Error {
+    fn from(error: PoolLimitError) -> Self {
+        Error::Pool(PoolError::Limit(error))
+    }
 }
 
 /// An error paired with the URL that was being requested.
@@ -152,6 +230,26 @@ impl SendError {
     /// Returns the status code if the underlying error is a status error.
     pub fn status(&self) -> Option<http::StatusCode> {
         self.error.status()
+    }
+
+    /// Returns `true` if the underlying error originates from the connection pool.
+    pub fn is_pool(&self) -> bool {
+        self.error.is_pool()
+    }
+
+    /// Returns `true` if the underlying error is a connection pool limit.
+    pub fn is_pool_limit(&self) -> bool {
+        self.error.is_pool_limit()
+    }
+
+    /// Returns the [`PoolError`] if the underlying error is a pool error.
+    pub fn pool_error(&self) -> Option<&PoolError> {
+        self.error.pool_error()
+    }
+
+    /// Returns the [`PoolLimitError`] if the underlying error is a pool limit failure.
+    pub fn pool_limit(&self) -> Option<&PoolLimitError> {
+        self.error.pool_limit()
     }
 
     /// Returns the deepest source in the underlying error chain.
@@ -303,6 +401,39 @@ impl Error {
         matches!(self, Error::WriteTimeout)
     }
 
+    /// Returns `true` if the error originates from the connection pool.
+    pub fn is_pool(&self) -> bool {
+        matches!(self, Error::Pool(_))
+    }
+
+    /// Returns `true` if the error is a connection pool limit (client-side
+    /// backpressure), such as `pool_max_active_per_host` being reached.
+    ///
+    /// This is not a network failure: it does not satisfy [`is_connect`] or
+    /// [`is_timeout`]. Use it to queue, retry later, or reduce concurrency.
+    ///
+    /// [`is_connect`]: Error::is_connect
+    /// [`is_timeout`]: Error::is_timeout
+    pub fn is_pool_limit(&self) -> bool {
+        matches!(self, Error::Pool(PoolError::Limit(_)))
+    }
+
+    /// Returns the [`PoolError`] if this is a [`Error::Pool`] variant.
+    pub fn pool_error(&self) -> Option<&PoolError> {
+        match self {
+            Error::Pool(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Returns the [`PoolLimitError`] if this error is a pool limit failure.
+    pub fn pool_limit(&self) -> Option<&PoolLimitError> {
+        match self {
+            Error::Pool(PoolError::Limit(e)) => Some(e),
+            _ => None,
+        }
+    }
+
     fn hidden_root_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
         let mut source = std::error::Error::source(self)?;
         let mut nested = false;
@@ -419,6 +550,50 @@ mod tests {
     fn is_redirect_for_too_many() {
         let err = Error::TooManyRedirects(10);
         assert!(err.is_redirect());
+    }
+
+    #[test]
+    fn pool_limit_error_classification_and_details() {
+        let limit = PoolLimitError::new(PoolLimitKind::MaxActivePerHost, Some(1));
+        let err = Error::from(PoolError::from(limit.clone()));
+
+        assert!(err.is_pool());
+        assert!(err.is_pool_limit());
+        assert!(!err.is_connect());
+        assert!(!err.is_timeout());
+        assert_eq!(
+            err.pool_error().map(|e| e.to_string()),
+            Some(limit.to_string())
+        );
+        assert_eq!(
+            err.pool_limit().map(PoolLimitError::kind),
+            Some(PoolLimitKind::MaxActivePerHost)
+        );
+        assert_eq!(err.pool_limit().and_then(PoolLimitError::limit), Some(1));
+        assert!(
+            err.to_string()
+                .contains("max active connections per host reached")
+        );
+    }
+
+    #[test]
+    fn send_error_pool_limit_delegates_to_inner_error() {
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let err = SendError::new(
+            Error::from(PoolError::from(PoolLimitError::new(
+                PoolLimitKind::MaxActivePerHost,
+                Some(2),
+            ))),
+            uri,
+        );
+
+        assert!(err.is_pool());
+        assert!(err.is_pool_limit());
+        assert_eq!(
+            err.pool_limit().map(PoolLimitError::kind),
+            Some(PoolLimitKind::MaxActivePerHost)
+        );
+        assert_eq!(err.pool_limit().and_then(PoolLimitError::limit), Some(2));
     }
 
     #[test]

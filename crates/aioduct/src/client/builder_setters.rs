@@ -43,9 +43,8 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// Set the max active connections per host.
     ///
     /// When `max` is 0, the cap is disabled (unlimited). Limits the number of
-    /// concurrently checked-out pool handles for the same host. Fresh dials that
-    /// miss the pool entirely (no idle connections) are not counted against this
-    /// limit, so the cap may be exceeded during connection bursts.
+    /// concurrently checked-out pool handles and in-progress fresh connection
+    /// attempts for the same pool key.
     ///
     /// # Panics
     ///

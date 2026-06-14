@@ -32,6 +32,7 @@ let client = TokioClient::builder()
     .pool_idle_timeout(Duration::from_secs(90))
     .pool_max_lifetime(Duration::from_secs(600))
     .pool_max_idle_per_host(10)
+    .pool_max_active_per_host(64)
     .pool_max_active_streams_per_connection(100)
     .build()?;
 ```
@@ -74,6 +75,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `pool_idle_timeout(Duration)` | 90s  | Idle connection lifetime             |
 | `pool_max_lifetime(Duration)` | None | Maximum connection age before reuse stops |
 | `pool_max_idle_per_host(usize)` | 10 | Max idle connections per origin      |
+| `pool_max_active_per_host(usize)` | Unlimited | Max checked-out handles and fresh connection attempts per pool key; 0 disables the cap |
 | `pool_max_active_streams_per_connection(usize)` | Unlimited | Max active HTTP/2 or HTTP/3 streams per pooled connection |
 | `default_headers(HeaderMap)` | User-Agent | Headers applied to every request |
 | `no_default_headers()`  | —           | Remove all default headers           |
@@ -419,7 +421,11 @@ use aioduct::Error;
 // Error::Io(_)           — I/O errors
 // Error::Tls(_)          — TLS errors
 // Error::Pool(_)         — connection pool errors
+// Error::PoolLimitKind   — what pool limit was reached
 // Error::Timeout         — request timed out
+// Error::ConnectTimeout  — connection establishment timed out
+// Error::ReadTimeout     — reading response timed out
+// Error::WriteTimeout    — writing request body timed out
 // Error::InvalidUrl(_)   — URL parse or scheme errors
 // Error::Status(_)       — HTTP 4xx/5xx from error_for_status()
 // Error::Other(_)        — other boxed errors
@@ -433,3 +439,4 @@ use aioduct::Error;
 | `is_timeout()`  | Returns `true` if the error is a timeout          |
 | `is_write_timeout()` | Returns `true` if the error is an upload timeout |
 | `is_connect()`  | Returns `true` if the error occurred during connect |
+| `is_pool_limit()` | Returns `true` if the error is a pool limit (client-side backpressure) |
