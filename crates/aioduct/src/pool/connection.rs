@@ -258,12 +258,8 @@ impl<B> Drop for PooledConnection<B> {
         if let Some(ref key) = self.key
             && let Some(pool_inner) = self.pool.upgrade()
             && let Ok(mut inner) = pool_inner.lock()
-            && let Some(count) = inner.active.get_mut(key)
         {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                inner.active.remove(key);
-            }
+            super::decrement_active(&mut inner, key);
         }
     }
 }

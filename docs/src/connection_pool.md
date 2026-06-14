@@ -6,13 +6,14 @@ aioduct maintains a connection pool to reuse TCP (and TLS) connections across re
 
 ### Pool Key
 
-Connections are keyed by `(scheme, authority)` — for example, `(https, api.example.com:443)`. Two requests to the same origin share pooled connections; requests to different origins use separate pools.
+Connections are keyed by `(scheme, authority, protocol hint, proxy route)` — for example, `(https, api.example.com:443, Auto, direct)`. Two requests share a pooled connection only when all four fields match, except for the explicit h2/h3 coalescing path described below. The proxy route component keeps direct traffic separate from proxied traffic, and also separates different proxy configurations for the same origin.
 
 ### Lifecycle
 
-1. **Checkout**: When a request is made, the pool checks for an existing idle connection to the target origin. It uses LIFO ordering (most recently returned first) to prefer the freshest connections. Each candidate is checked for readiness and maximum lifetime — if a connection is stale, closed, too old, or saturated by the active stream cap, it's skipped or discarded and the next one is tried.
-2. **Send**: The request is sent on the connection (either reused or freshly established).
-3. **Checkin**: After the response headers are received, the connection is returned to the pool. Connections past `pool_max_lifetime` are not checked back in. When at capacity, the oldest idle connection is evicted to make room for the new one.
+1. **Checkout**: When a request is made, the pool checks for an existing idle connection to the target pool key. It uses LIFO ordering (most recently returned first) to prefer the freshest connections. Each candidate is checked for readiness and maximum lifetime — if a connection is stale, closed, too old, or saturated by the active stream cap, it's skipped or discarded and the next one is tried.
+2. **Reserve**: If no reusable connection is available and `pool_max_active_per_host` is configured, a fresh connection attempt atomically reserves an active slot before DNS or TCP dialing. This prevents connection bursts from opening more concurrent fresh sockets than the configured cap. When the cap is reached, the request fails immediately with a typed [`PoolLimitKind::MaxActivePerHost`][pool-limit] error.
+3. **Send**: The request is sent on the connection (either reused or freshly established).
+4. **Checkin**: HTTP/2 and HTTP/3 connections return to the pool immediately because they can multiplex concurrent streams. HTTP/1.1 connections return only after the response body has drained and the sender is ready again. Connections past `pool_max_lifetime` are not checked back in. When the idle queue is at capacity, the oldest idle connection is evicted to make room for the new one.
 
 ### Idle Eviction
 
@@ -20,6 +21,14 @@ Connections are evicted in three ways:
 - **On checkout**: Expired connections (past idle timeout) are discarded while searching for a ready one.
 - **On checkin**: When the per-host queue is full, the oldest connection is evicted.
 - **Background reaper**: A periodic background task runs at the idle timeout interval and removes all expired connections, preventing memory leaks from unused hosts.
+
+### Limits
+
+`pool_max_idle_per_host(n)` controls how many idle handles are retained per pool key after requests complete. It does not limit the number of in-flight requests by itself.
+
+`pool_max_active_per_host(n)` controls currently checked-out handles plus fresh connection attempts for the same pool key. Use it to cap concurrent sockets/handles toward one origin or proxy route. When the cap is reached, new requests fail immediately with a typed [`PoolLimitKind::MaxActivePerHost`][pool-limit] error. A value of `0` disables the active cap and leaves it unlimited.
+
+`pool_max_active_streams_per_connection(n)` is different: it applies only to HTTP/2 and HTTP/3 multiplexed connections and caps how many concurrent stream handles can be cloned from one pooled transport. HTTP/1.1 has no multiplexed streams, so this limit does not affect HTTP/1.1.
 
 ### HTTP/2 Multiplexing
 
@@ -40,8 +49,9 @@ use aioduct::TokioClient;
 let client = TokioClient::builder()
     .pool_idle_timeout(Duration::from_secs(90))  // default: 90s
     .pool_max_lifetime(Duration::from_secs(600)) // default: none
-    .pool_max_idle_per_host(10)                   // default: 10
-    .pool_max_active_streams_per_connection(100)  // default: unlimited
+    .pool_max_idle_per_host(10)                  // default: 10
+    .pool_max_active_per_host(64)                // default: unlimited
+    .pool_max_active_streams_per_connection(100) // default: unlimited
     .build()?;
 ```
 
@@ -55,7 +65,10 @@ The builder methods compose fluently and are applied to the underlying
 | `pool_idle_timeout`                       | 90s       | How long an idle connection is kept before eviction   |
 | `pool_max_lifetime`                       | none      | Maximum connection age before it stops being reused   |
 | `pool_max_idle_per_host`                  | 10        | Maximum idle connections per (scheme, authority)      |
+| `pool_max_active_per_host`                | unlimited | Maximum checked-out handles and fresh connection attempts per pool key; 0 disables the cap |
 | `pool_max_active_streams_per_connection`  | unlimited | Maximum active HTTP/2 or HTTP/3 streams per connection |
+
+[pool-limit]: https://docs.rs/aioduct/latest/aioduct/enum.PoolLimitKind.html
 
 Tokio, smol, compio, and blocking clients use this native pool. Wasm and
 wasi-p2 transports are platform-managed, so pooling and DNS reuse behavior are

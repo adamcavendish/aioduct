@@ -402,6 +402,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     },
                 );
 
+                let mut active_reservation = self
+                    .core
+                    .pool
+                    .try_reserve_active(&pool_key)
+                    .map_err(Error::from)?;
                 self.core.pool.record_checkout_miss();
 
                 let default_port = 443u16;
@@ -478,6 +483,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 );
 
                 pooled.remote_addr = Some(addr);
+                self.core
+                    .pool
+                    .attach_active_reservation(&mut pooled, &mut active_reservation);
                 let req_method = request.method().clone();
                 let transfer_start = Instant::now();
                 self.core.notify(
@@ -702,11 +710,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         #[cfg(not(unix))]
         let unix_socket: Option<&std::path::PathBuf> = None;
 
-        if !self.core.pool.can_connect(&pool_key) {
-            return Err(Error::Other(
-                "max active connections per host reached".into(),
-            ));
-        }
+        let mut active_reservation = self
+            .core
+            .pool
+            .try_reserve_active(&pool_key)
+            .map_err(Error::from)?;
 
         self.core.pool.record_checkout_miss();
 
@@ -1024,6 +1032,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             conn
         };
 
+        self.core
+            .pool
+            .attach_active_reservation(&mut pooled, &mut active_reservation);
+
         // Connection succeeded — deactivate the H2 guard so it won't unmark on
         // drop. The explicit unmark calls below handle the success path.
         h2_guard.active = false;
@@ -1036,6 +1048,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             && matches!(pooled.conn, HttpConnection::H1(_))
         {
             self.core.pool.unmark_connecting_h2(&pool_key);
+            // Move the active reservation from the H2c key to the Auto key
+            // so check-in/drop decrements the correct counter and subsequent
+            // Auto-key requests respect the cap.
+            if let Some(ref old_key) = pooled.key {
+                let mut new_key = old_key.clone();
+                new_key.protocol = ProtocolHint::Auto;
+                self.core.pool.rekey_active(old_key, &new_key);
+                pooled.key = Some(new_key);
+            }
             pool_key.protocol = ProtocolHint::Auto;
         }
 
@@ -1051,6 +1072,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             } else if let Some(cloned) = pooled
                 .clone_for_multiplex_with_limit(self.core.pool.max_active_streams_per_connection())
             {
+                pooled.pool = std::sync::Weak::new();
+                pooled.key = None;
                 self.core.checkin_connection(pool_key.clone(), pooled);
                 pooled = cloned;
             }

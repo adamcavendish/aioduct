@@ -1240,6 +1240,75 @@ async fn h1_sustained_concurrent_load_pool_stability() {
     );
 }
 
+#[tokio::test]
+async fn pool_max_active_per_host_caps_concurrent_fresh_dials() {
+    let (addr, counter) = aioduct_test_server::h1::h1_server().await;
+    let connector = SlowFirstConnector::new(Duration::from_millis(150), 16);
+    let connector_ref = connector.clone();
+
+    let client =
+        HttpEngineSend::<TokioRuntime, SlowFirstConnector>::builder_with_connector(connector)
+            .pool_idle_timeout(Duration::from_secs(60))
+            .pool_max_active_per_host(1)
+            .timeout(Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+    let url = Arc::new(format!("http://{addr}/"));
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let client = client.clone();
+        let url = Arc::clone(&url);
+        handles.push(tokio::spawn(async move {
+            let resp = client.get(url.as_str()).unwrap().send().await?;
+            let status = resp.status();
+            let _ = resp.text().await?;
+            Ok::<_, aioduct::Error>(status)
+        }));
+    }
+
+    let mut successes = 0;
+    let mut cap_errors = 0;
+    for handle in handles {
+        match handle.await.unwrap() {
+            Ok(status) => {
+                assert_eq!(status, 200);
+                successes += 1;
+            }
+            Err(err) => {
+                assert!(err.is_pool_limit(), "expected pool limit error, got: {err}");
+                let limit = err.pool_limit().expect("pool limit details");
+                assert_eq!(
+                    limit.kind(),
+                    aioduct::PoolLimitKind::MaxActivePerHost,
+                    "unexpected pool limit kind"
+                );
+                assert_eq!(limit.limit(), Some(1));
+                assert!(!err.is_connect());
+                assert!(!err.is_timeout());
+                cap_errors += 1;
+            }
+        }
+    }
+
+    assert_eq!(successes, 1, "only one fresh dial may hold the active slot");
+    assert_eq!(
+        cap_errors, 7,
+        "the remaining concurrent dials should be capped"
+    );
+    assert_eq!(
+        connector_ref.connections(),
+        1,
+        "capped requests should fail before opening TCP connections"
+    );
+    assert_eq!(
+        counter.connections(),
+        1,
+        "only the reserved request should reach the server"
+    );
+}
+
 // ── Pool Key Bug-Finding Tests ────────────────────────────────────────
 
 // BUG: pool/mod.rs PoolKey stores raw Authority without normalizing default ports.
