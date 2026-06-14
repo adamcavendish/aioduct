@@ -1939,12 +1939,46 @@ async fn redirect_location_fragment_overrides_original() {
     );
 }
 
-// BUG: Referer header leaks HTTPS URL on HTTPS→HTTP redirect.
-// RFC 7231 Section 5.5.2: "A user agent MUST NOT send a Referer header
-// field in an unsecured HTTP request if the referring page was transferred
-// with a secure protocol."
-// This test verifies the simpler case: referer IS set on same-origin HTTP
-// redirects when enabled. The HTTPS→HTTP leak test requires TLS infrastructure.
+#[tokio::test]
+async fn redirect_no_default_headers_removes_user_agent_on_final_hop() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        if path == "/start" {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("Location", "/final")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        } else {
+            let has_user_agent = req.headers().get("user-agent").is_some();
+            Ok(Response::new(Full::new(Bytes::from(format!(
+                "has_user_agent={has_user_agent}"
+            )))))
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .no_default_headers()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/start"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "has_user_agent=false");
+}
+
+// Referer is intentionally set on HTTP redirects when enabled. The required
+// HTTPS→HTTP downgrade suppression is covered by the TLS-backed test in tls.rs.
 #[tokio::test]
 async fn redirect_referer_set_on_same_origin_when_enabled() {
     let (addr, _) = h1_server_with(|req| async move {
@@ -1991,10 +2025,10 @@ async fn redirect_referer_set_on_same_origin_when_enabled() {
     );
 }
 
-// BUG: Referer should NOT be set on cross-origin HTTP redirects
-// when it would leak the origin URL.
+// Referer is intentionally set on same-scheme HTTP cross-origin redirects
+// when enabled; HTTPS→HTTP downgrade suppression is covered in tls.rs.
 #[tokio::test]
-async fn redirect_referer_not_set_cross_origin() {
+async fn redirect_referer_set_cross_origin_when_enabled() {
     let (target_addr, _) = h1_server_with(|req| async move {
         let referer = req
             .headers()
@@ -2035,11 +2069,14 @@ async fn redirect_referer_not_set_cross_origin() {
         .unwrap();
 
     assert_eq!(resp.status(), 200);
-    let _body = resp.text().await.unwrap();
-    // the library sends Referer even cross-origin. Whether this is a bug
-    // depends on the use case — curl sends it by default too. But the
-    // HTTPS→HTTP case (not tested here) MUST NOT send it.
-    // For HTTP→HTTP cross-origin, behavior is implementation-defined.
+    let body = resp.text().await.unwrap();
+    // Cross-origin HTTP→HTTP Referer must be origin-only (no path).
+    // Use exact equality so a path/query leak fails the test.
+    assert_eq!(
+        body,
+        format!("referer=http://{origin_addr}"),
+        "referer(true) should set origin-only Referer on HTTP→HTTP cross-origin redirect, got: {body}"
+    );
 }
 
 // BUG: Redirect to data: or javascript: scheme should be rejected.
@@ -2249,80 +2286,6 @@ async fn https_only_should_block_http_redirect_target() {
     // The real gap test: if we could start HTTPS and redirect to HTTP,
     // the redirect target would NOT be checked against https_only.
     // This is documented in execute_send.rs:24 — only original_uri is checked.
-}
-
-// BUG: execute_send.rs:141-145 sets Referer unconditionally, even on HTTPS→HTTP redirect.
-// Per RFC 7231 §5.5.2, Referer MUST NOT be sent when going from HTTPS to HTTP.
-#[tokio::test]
-async fn referer_should_not_leak_on_https_to_http_downgrade() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    let captured_referer = Arc::new(std::sync::Mutex::new(None::<String>));
-    let captured_referer_clone = captured_referer.clone();
-    let request_count = Arc::new(AtomicU32::new(0));
-    let request_count_clone = request_count.clone();
-
-    let (addr, _) = h1_server_with(move |req| {
-        let count = request_count_clone.clone();
-        let referer_capture = captured_referer_clone.clone();
-        async move {
-            let n = count.fetch_add(1, Ordering::SeqCst);
-            if n == 0 {
-                // Simulate "came from HTTPS" by redirecting with a scheme change
-                // In reality this would be an HTTPS server redirecting to HTTP.
-                // We simulate by setting up a redirect and checking the Referer header.
-                Ok::<_, Infallible>(
-                    Response::builder()
-                        .status(302)
-                        .header(
-                            "Location",
-                            format!(
-                                "http://{}/final",
-                                req.headers().get("host").unwrap().to_str().unwrap()
-                            ),
-                        )
-                        .body(Full::new(Bytes::new()))
-                        .unwrap(),
-                )
-            } else {
-                // Capture the Referer header on the redirect target
-                let referer = req
-                    .headers()
-                    .get("referer")
-                    .map(|v| v.to_str().unwrap_or("").to_string());
-                *referer_capture.lock().unwrap() = referer;
-                Ok(Response::new(Full::new(Bytes::from("final"))))
-            }
-        }
-    })
-    .await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .referer(true)
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("http://{addr}/start"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let _ = resp.text().await.unwrap();
-
-    // For HTTP→HTTP redirects, Referer is fine. But the code sets it unconditionally
-    // (execute_send.rs:141-145), including on HTTPS→HTTP downgrades.
-    // This test documents the behavior: Referer IS set on redirects.
-    let referer = captured_referer.lock().unwrap().clone();
-    assert!(
-        referer.is_some(),
-        "Referer should be set on same-scheme redirect (confirming referer(true) works)"
-    );
-    // The real bug: execute_send.rs:141-145 doesn't check if current scheme is HTTPS
-    // and next scheme is HTTP. It sets Referer unconditionally.
 }
 
 // Custom redirect policy is bounded: RedirectPolicy::custom() defaults to a
