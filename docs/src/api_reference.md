@@ -346,7 +346,10 @@ impl RequestObserver for MetricsObserver {
     }
 
     fn on_connection_event(&self, event: &ConnectionEvent) {
-        // Connection-level lifecycle (pool checkin / close)
+        // Connection-level metrics fire when a connection is checked back into
+        // the pool or closed. The metrics include protocol, remote address,
+        // approximate bytes sent/received, connection age, requests served, and
+        // whether the connection was closed instead of returned to the pool.
     }
 }
 
@@ -421,7 +424,7 @@ use aioduct::Error;
 // Error::Io(_)           — I/O errors
 // Error::Tls(_)          — TLS errors
 // Error::Pool(_)         — connection pool errors
-// Error::PoolLimitKind   — what pool limit was reached
+// PoolLimitKind          — what pool limit was reached
 // Error::Timeout         — request timed out
 // Error::ConnectTimeout  — connection establishment timed out
 // Error::ReadTimeout     — reading response timed out

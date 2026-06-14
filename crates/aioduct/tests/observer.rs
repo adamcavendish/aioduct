@@ -11,7 +11,8 @@ use aioduct_test_server::h1::h1_server;
 use std::sync::Mutex;
 
 use aioduct::observer::{
-    ConnectionEvent, ConnectionPhase, RequestEvent, RequestObserver, RequestPhase,
+    ConnectionEvent, ConnectionPhase, NegotiatedProtocol, RequestEvent, RequestObserver,
+    RequestPhase,
 };
 
 #[derive(Default, Clone)]
@@ -63,6 +64,10 @@ impl RecordingObserver {
 
     fn has_connection_metrics(&self) -> bool {
         !self.connection_events.lock().unwrap().is_empty()
+    }
+
+    fn connection_phases(&self) -> Vec<ConnectionPhase> {
+        self.connection_events.lock().unwrap().clone()
     }
 }
 
@@ -143,6 +148,104 @@ async fn observer_connection_metrics_fires_on_checkin() {
         obs.has_connection_metrics(),
         "Expected ConnectionMetrics on pool checkin"
     );
+}
+
+#[tokio::test]
+async fn observer_connection_metrics_include_pool_checkin_totals() {
+    let (addr, _counter) = h1_server().await;
+    let obs = RecordingObserver::default();
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .request_observer(obs.clone())
+        .build()
+        .unwrap();
+
+    let resp = client
+        .post(&format!("http://{addr}/metrics"))
+        .unwrap()
+        .body("payload")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    let phases = obs.connection_phases();
+    let metrics = phases
+        .first()
+        .map(|phase| {
+            let ConnectionPhase::Metrics {
+                protocol,
+                bytes_sent,
+                bytes_received,
+                connection_age,
+                requests_served,
+                closed,
+                ..
+            } = phase;
+            (
+                *protocol,
+                *bytes_sent,
+                *bytes_received,
+                *connection_age,
+                *requests_served,
+                *closed,
+            )
+        })
+        .expect("expected connection metrics event");
+
+    assert_eq!(metrics.0, NegotiatedProtocol::Http1);
+    assert_eq!(metrics.1, 7, "request body bytes should be counted");
+    assert_eq!(metrics.2, 13, "response Content-Length should be counted");
+    assert!(
+        metrics.3 <= std::time::Duration::from_secs(5),
+        "connection age should be a bounded elapsed duration, got {:?}",
+        metrics.3
+    );
+    assert_eq!(metrics.4, 1, "first checkin should report one request");
+    assert!(
+        !metrics.5,
+        "pool checkin metrics should not mark closed=true"
+    );
+}
+
+#[tokio::test]
+async fn pool_stats_report_hit_miss_and_inventory() {
+    let (addr, _counter) = h1_server().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+
+    let initial = client.pool_stats();
+    assert_eq!(initial.checkout_hits, 0);
+    assert_eq!(initial.checkout_misses, 0);
+    assert_eq!(initial.idle_pool_entries, 0);
+    assert_eq!(initial.checked_out_pool_handles, 0);
+
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    let after_first = client.pool_stats();
+    assert_eq!(after_first.checkout_misses, 1);
+    assert_eq!(after_first.checkout_hits, 0);
+    assert_eq!(after_first.idle_pool_entries, 1);
+    assert_eq!(after_first.checked_out_pool_handles, 0);
+    assert_eq!(after_first.hosts.len(), 1);
+    assert_eq!(after_first.hosts[0].scheme, "http");
+    assert_eq!(after_first.hosts[0].authority, addr.to_string());
+    assert_eq!(after_first.hosts[0].route, "direct");
+    assert_eq!(after_first.hosts[0].idle, 1);
+    assert_eq!(after_first.hosts[0].active, 0);
+
+    let resp = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    let after_second = client.pool_stats();
+    assert_eq!(after_second.checkout_misses, 1);
+    assert_eq!(after_second.checkout_hits, 1);
+    assert_eq!(after_second.idle_pool_entries, 1);
+    assert_eq!(after_second.checked_out_pool_handles, 0);
 }
 
 #[tokio::test]
