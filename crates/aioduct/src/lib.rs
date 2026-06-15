@@ -171,7 +171,7 @@ pub use pool::{PoolHostStats, PoolStats};
 pub use proxy::{NoProxy, ProxyChain, ProxyConfig, ProxySettings};
 pub use proxy_credential::{CompositeResolver, CredentialResolver, EnvCredentialResolver};
 pub use redirect::{RedirectAction, RedirectPolicy};
-pub use retry::{RetryBudget, RetryConfig};
+pub use retry::{RetryBudget, RetryConfig, RetryContext, RetryDecision, RetryOutcome};
 #[cfg(not(target_arch = "wasm32"))]
 pub use sse::SseStreamLocal;
 pub use sse::{SseDecoder, SseEvent, SseMessage, SseStream, SseStreamSend};
