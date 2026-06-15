@@ -185,6 +185,11 @@ impl BodyStreamSend {
             match self.body.frame().await {
                 Some(Ok(frame)) => match frame.into_data() {
                     Ok(data) => {
+                        // Skip empty data frames: a consumer expects `Some` to
+                        // carry non-empty data and `None` to mean end of stream.
+                        if data.is_empty() {
+                            continue;
+                        }
                         #[cfg(not(target_arch = "wasm32"))]
                         {
                             let chunk_bytes = data.len() as u64;
@@ -348,6 +353,11 @@ impl BodyStreamLocal {
             match Pin::new(&mut self.body).frame().await {
                 Some(Ok(frame)) => match frame.into_data() {
                     Ok(data) => {
+                        // Skip empty data frames: a consumer expects `Some` to
+                        // carry non-empty data and `None` to mean end of stream.
+                        if data.is_empty() {
+                            continue;
+                        }
                         let chunk_bytes = data.len() as u64;
                         self.cumulative_bytes += chunk_bytes;
                         if let Some(ctx) = &self.observer_ctx {
@@ -694,6 +704,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn body_stream_skips_empty_data_frames() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        // A body that emits: empty, "hello", empty, then end. The empty data
+        // frames must not surface as `Some(Ok(b""))` — a consumer expects
+        // `Some` to mean non-empty data and `None` to mean end of stream.
+        struct EmptyThenData {
+            state: u8,
+        }
+
+        impl http_body::Body for EmptyThenData {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                let frame = match self.state {
+                    0 => http_body::Frame::data(Bytes::new()),
+                    1 => http_body::Frame::data(Bytes::from("hello")),
+                    2 => http_body::Frame::data(Bytes::new()),
+                    _ => return Poll::Ready(None),
+                };
+                self.state += 1;
+                Poll::Ready(Some(Ok(frame)))
+            }
+        }
+
+        let hyper_body: RequestBodySend = EmptyThenData { state: 0 }.boxed_unsync();
+        let mut stream = BodyStreamSend::new(hyper_body);
+
+        // Only the non-empty chunk is yielded.
+        let chunk = stream.next().await.unwrap().unwrap();
+        assert_eq!(&chunk[..], b"hello");
+
+        // The trailing empty frame is skipped; stream terminates with None.
+        assert!(
+            stream.next().await.is_none(),
+            "empty data frames must not be yielded as empty chunks"
+        );
+    }
+
+    #[tokio::test]
     async fn body_stream_with_observer_fires_transfer_events() {
         use std::sync::{Arc, Mutex};
 
@@ -993,6 +1047,47 @@ mod tests {
 
             // Then done
             assert!(stream.next().await.is_none());
+        });
+    }
+
+    #[cfg(feature = "compio")]
+    #[test]
+    fn body_stream_local_skips_empty_data_frames() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct EmptyThenData {
+            state: u8,
+        }
+
+        impl http_body::Body for EmptyThenData {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                let frame = match self.state {
+                    0 => http_body::Frame::data(Bytes::new()),
+                    1 => http_body::Frame::data(Bytes::from("hello")),
+                    2 => http_body::Frame::data(Bytes::new()),
+                    _ => return Poll::Ready(None),
+                };
+                self.state += 1;
+                Poll::Ready(Some(Ok(frame)))
+            }
+        }
+
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let local_body: ResponseBodyLocal = Box::pin(EmptyThenData { state: 0 });
+            let mut stream = BodyStreamLocal::with_observer(local_body, None);
+
+            let chunk = stream.next().await.unwrap().unwrap();
+            assert_eq!(&chunk[..], b"hello");
+            assert!(
+                stream.next().await.is_none(),
+                "empty data frames must not be yielded as empty chunks"
+            );
         });
     }
 }
