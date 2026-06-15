@@ -341,6 +341,22 @@ fn resolve_redirect(
         .join(location)
         .map_err(|e| Error::InvalidUrl(format!("invalid redirect URL: {e}")))?;
 
+    // Restrict the resolved target to http/https with a host. Without this, a
+    // redirect to a non-http(s) absolute target (e.g. `ftp://host/path`) parses
+    // into a valid `http::Uri` with an authority that dispatch then treats as
+    // non-HTTPS and sends as cleartext HTTP to port 80.
+    if !matches!(next.scheme(), "http" | "https") {
+        return Err(Error::Redirect(format!(
+            "redirect target scheme must be http or https, got `{}`",
+            next.scheme()
+        )));
+    }
+    if next.host_str().is_none_or(|h| h.is_empty()) {
+        return Err(Error::Redirect(
+            "redirect target must include a host".into(),
+        ));
+    }
+
     // Preserve original fragment when Location has none (RFC 7231 7.1.2).
     if next.fragment().is_none()
         && let Some(frag) = original_fragment
