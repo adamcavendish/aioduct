@@ -240,6 +240,36 @@ Timeout helpers distinguish the configured phases:
 | `ReadTimeout` | Gap between response body chunks from `read_timeout()` |
 | `WriteTimeout` | Gap between request body chunks from `write_timeout()` |
 
+### Reading the body of an error response
+
+`error_for_status()` turns a 4xx/5xx into `Error::Status(code)` and does not
+capture the body, so the error value stays cheap. When you need the error
+payload (an API's JSON error message, for example), read it as a separate stage:
+`status()` is a synchronous, non-consuming check, so gate on it and then read the
+body yourself.
+
+```rust,no_run
+# use aioduct::TokioClient;
+# async fn example() -> Result<(), aioduct::Error> {
+# let client = TokioClient::new();
+let resp = client.get("http://example.com/api")?.send().await?;
+if resp.status().is_client_error() || resp.status().is_server_error() {
+    let status = resp.status();
+    let body = resp.text().await?; // read the error body as its own stage
+    eprintln!("server said {status}: {body}");
+    return Ok(());
+}
+let body = resp.text().await?; // success path
+# let _ = body;
+# Ok(())
+# }
+```
+
+`error_for_status_ref()` borrows instead of consuming, so you can check status
+without giving up ownership of the response, then read the body on either branch.
+Status and body are intentionally decoupled, and reading the body consumes the
+response (no implicit buffering), matching reqwest's and aiohttp's model.
+
 ## ResponseBodySend / ResponseBodyLocal
 
 The response type returned after sending a request. `ResponseBodySend` is returned by `HttpEngineSend`; `ResponseBodyLocal` by `HttpEngineLocal`. Both implement `ResponseExt`.
