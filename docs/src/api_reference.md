@@ -174,6 +174,7 @@ use std::time::Duration;
 let rb = client.get("http://example.com").unwrap()
     .timeout(Duration::from_secs(5))     // per-request timeout
     .connect_timeout(Duration::from_secs(2)) // per-request connection timeout
+    .read_timeout(Duration::from_secs(30))   // per-request response read-gap timeout
     .write_timeout(Duration::from_secs(10))  // per-request upload timeout
     .version(http::Version::HTTP_11);    // force HTTP version
 

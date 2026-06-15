@@ -97,6 +97,14 @@ pub trait RequestBuilderExt: Sized {
         self
     }
 
+    /// Set a per-request read timeout for gaps between response body chunks.
+    ///
+    /// Implementations that cannot control response body reads may ignore this
+    /// option.
+    fn read_timeout(self, _duration: Duration) -> Self {
+        self
+    }
+
     /// Set HTTP Basic auth credentials.
     ///
     /// Implementations that do not support auth headers may ignore this option.

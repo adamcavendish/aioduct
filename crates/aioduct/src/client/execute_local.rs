@@ -26,6 +26,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         version: Option<http::Version>,
         connect_timeout: Option<Duration>,
         write_timeout: Option<Duration>,
+        read_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
         mut original_fragment: Option<String>,
@@ -216,6 +217,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             &current_method,
                             current_uri,
                             &current_headers,
+                            read_timeout,
                         )
                         .await?;
                     final_resp.set_fragment(original_fragment);
@@ -317,6 +319,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         method: &Method,
         uri: Uri,
         request_headers: &HeaderMap,
+        read_timeout: Option<Duration>,
     ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         let mut resp = resp;
         if !self.core.middleware.is_empty() {
@@ -329,7 +332,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             resp
         };
 
-        let resp = if let Some(read_timeout) = self.core.read_timeout {
+        let resp = if let Some(read_timeout) = read_timeout {
             resp.into_local_with_read_timeout::<R>(read_timeout)
         } else {
             resp.into_local()

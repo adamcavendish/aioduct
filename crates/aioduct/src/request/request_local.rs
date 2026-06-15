@@ -25,6 +25,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     version: Option<Version>,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
     force_no_timeout: bool,
     force_addr: Option<std::net::SocketAddr>,
@@ -59,6 +60,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: None,
             timeout: None,
             connect_timeout: None,
+            read_timeout: None,
             write_timeout: None,
             force_no_timeout: false,
             force_addr: None,
@@ -82,6 +84,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: None,
             timeout: None,
             connect_timeout: None,
+            read_timeout: None,
             write_timeout: None,
             force_no_timeout: false,
             force_addr: None,
@@ -292,6 +295,17 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         self
     }
 
+    /// Set a timeout for gaps between response body data chunks.
+    ///
+    /// This overrides the client's default read timeout for this request only.
+    /// It applies to response body reads, not to waiting for response headers.
+    /// If no body data arrives within this duration the request fails with
+    /// [`Error::ReadTimeout`](crate::Error::ReadTimeout).
+    pub fn read_timeout(mut self, timeout: Duration) -> Self {
+        self.read_timeout = Some(timeout);
+        self
+    }
+
     /// Disable the overall request timeout for this specific request.
     pub fn no_timeout(mut self) -> Self {
         self.force_no_timeout = true;
@@ -379,6 +393,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             version: self.version,
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            read_timeout: self.read_timeout,
             write_timeout: self.write_timeout,
             force_no_timeout: self.force_no_timeout,
             force_addr: self.force_addr,
@@ -396,6 +411,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         };
         let effective_connect_timeout = self.connect_timeout.or(self.client.core.connect_timeout);
         let effective_write_timeout = self.write_timeout.or(self.client.core.write_timeout);
+        let effective_read_timeout = self.read_timeout.or(self.client.core.read_timeout);
 
         let execute_fut = self.client.execute_local(
             self.method,
@@ -405,6 +421,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             self.version,
             effective_connect_timeout,
             effective_write_timeout,
+            effective_read_timeout,
             self.force_addr,
             self.protocol_hint,
             self.fragment,
