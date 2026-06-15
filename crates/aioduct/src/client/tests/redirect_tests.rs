@@ -90,6 +90,15 @@ fn resolve_redirect_scheme_without_authority_is_relative() {
 }
 
 #[test]
+fn resolve_redirect_rejects_non_http_scheme_target() {
+    // A redirect to a non-http(s) absolute target must be rejected, not parsed
+    // into a Uri that dispatch would treat as cleartext HTTP to port 80.
+    let base: Uri = "https://example.com/".parse().unwrap();
+    assert!(resolve_redirect(&base, "ftp://example.com/path", None).is_err());
+    assert!(resolve_redirect(&base, "file:///etc/passwd", None).is_err());
+}
+
+#[test]
 fn is_cacheable_method_test() {
     assert!(Method::GET == Method::GET);
 }

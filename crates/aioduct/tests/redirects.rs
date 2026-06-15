@@ -3460,3 +3460,70 @@ fn redirect_rejects_javascript_scheme_location_compio() {
         );
     });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. redirect_rejects_non_http_scheme_location
+//     A redirect to a non-http(s) absolute target (e.g. ftp://) must be
+//     rejected, not dispatched as cleartext HTTP to port 80.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_rejects_ftp_scheme_location_tokio() {
+    let addr = spawn_h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(302)
+                .header("location", "ftp://evil.example.com/path")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let result = client.get(&format!("http://{addr}/")).unwrap().send().await;
+    let err = result.expect_err("redirect to ftp: scheme should be rejected");
+    assert!(
+        err.is_redirect(),
+        "expected a redirect error for the ftp:// target, got: {err:?}"
+    );
+}
+
+#[cfg(feature = "compio")]
+#[test]
+fn redirect_rejects_ftp_scheme_location_compio() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let addr = spawn_h1_server_with(|_req| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", "ftp://evil.example.com/path")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        });
+
+        let client: aioduct::HttpEngineLocal<
+            aioduct::runtime::compio_rt::CompioRuntime,
+            aioduct::runtime::compio_rt::TcpConnector,
+        > = aioduct::HttpEngineLocal::builder()
+            .timeout(Duration::from_secs(5))
+            .build_local()
+            .unwrap();
+
+        let result = client
+            .get_local(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await;
+        let err = result.expect_err("redirect to ftp: scheme should be rejected");
+        assert!(
+            err.is_redirect(),
+            "expected a redirect error for the ftp:// target, got: {err:?}"
+        );
+    });
+}
