@@ -16,6 +16,7 @@ use crate::timeout::Timeout;
 use super::EngineRef;
 
 /// Builder for configuring and sending an HTTP request on a `!Send` runtime.
+#[must_use = "a RequestBuilder does nothing unless you call `.send()` or `.build()`"]
 pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     client: EngineRef<'a, HttpEngineLocal<R, C>>,
     method: Method,
@@ -332,6 +333,24 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         &self.uri
     }
 
+    /// Returns the request method.
+    pub fn method_ref(&self) -> &Method {
+        &self.method
+    }
+
+    /// Returns the request URL, after any base-URL resolution.
+    pub fn url(&self) -> &Uri {
+        &self.uri
+    }
+
+    /// Returns the headers configured on this builder so far.
+    ///
+    /// This reflects headers added via [`header`](Self::header) and friends, not
+    /// the client's default headers (those are merged at send time).
+    pub fn headers_ref(&self) -> &HeaderMap {
+        &self.headers
+    }
+
     /// Set upgrade headers for a WebSocket handshake.
     ///
     /// This sets `Connection: Upgrade`, `Upgrade: websocket`,
@@ -458,6 +477,22 @@ mod tests {
         let rb = rb.header(http::header::ACCEPT, HeaderValue::from_static("text/html"));
         let req = rb.build().unwrap();
         assert_eq!(req.headers().get("accept").unwrap(), "text/html");
+    }
+
+    #[test]
+    fn builder_read_accessors() {
+        let client = test_client();
+        let rb = client
+            .post_local("http://example.com/path?q=1")
+            .unwrap()
+            .header(http::header::ACCEPT, HeaderValue::from_static("text/html"));
+
+        assert_eq!(rb.method_ref(), &http::Method::POST);
+        assert_eq!(rb.url().to_string(), "http://example.com/path?q=1");
+        assert_eq!(
+            rb.headers_ref().get(http::header::ACCEPT).unwrap(),
+            "text/html"
+        );
     }
 
     #[test]
