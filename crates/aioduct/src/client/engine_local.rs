@@ -2,7 +2,7 @@ use http::{Method, Uri};
 
 use super::HttpEngineLocal;
 use super::builder::HttpEngineBuilder;
-use super::extract_fragment;
+use super::resolve_request_url;
 use crate::error::Error;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
@@ -36,6 +36,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         HttpEngineBuilder::new(connector)
     }
 
+    /// Resolve a request input URL against the configured base URL, if any.
+    fn resolve_url(&self, uri: &str) -> Result<(Uri, Option<String>), Error> {
+        resolve_request_url(self.core.base_url.as_deref(), uri)
+    }
+
     /// Create a new client with default settings and a specific connector.
     #[allow(clippy::expect_used)]
     pub fn with_connector(connector: C) -> Self {
@@ -59,8 +64,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         &self,
         uri: &str,
     ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
-        let fragment = extract_fragment(uri);
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        let (uri, fragment) = self.resolve_url(uri)?;
         Ok(crate::request::RequestBuilderLocal::new(
             self,
             Method::GET,
@@ -74,8 +78,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         &self,
         uri: &str,
     ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
-        let fragment = extract_fragment(uri);
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        let (uri, fragment) = self.resolve_url(uri)?;
         Ok(crate::request::RequestBuilderLocal::new(
             self,
             Method::POST,
@@ -90,8 +93,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         method: Method,
         uri: &str,
     ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
-        let fragment = extract_fragment(uri);
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        let (uri, fragment) = self.resolve_url(uri)?;
         Ok(crate::request::RequestBuilderLocal::new(
             self, method, uri, fragment,
         ))

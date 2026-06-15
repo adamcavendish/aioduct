@@ -68,6 +68,25 @@ fn test_compio_get_request() {
 }
 
 #[test]
+fn test_compio_base_url_resolves_relative_path() {
+    let addr = start_server_with_tokio(|req| async move {
+        let path = req.uri().path().to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(path))))
+    });
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .base_url(&format!("http://{addr}/v1/"))
+            .unwrap()
+            .build_local()
+            .unwrap();
+
+        let resp = client.get_local("users").unwrap().send().await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "/v1/users");
+    });
+}
+
+#[test]
 fn test_compio_post_request() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {
