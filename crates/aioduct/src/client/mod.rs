@@ -75,6 +75,7 @@ const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 /// - Local path uses `B = RequestBodyLocal` (inner body may be `!Send`)
 pub struct HttpEngineCore<B> {
     pub(crate) pool: ConnectionPool<B>,
+    pub(crate) base_url: Option<Arc<url::Url>>,
     pub(crate) redirect_policy: RedirectPolicy,
     pub(crate) timeout: Option<Duration>,
     pub(crate) connect_timeout: Option<Duration>,
@@ -127,6 +128,7 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
     fn clone(&self) -> Self {
         Self {
             pool: self.pool.clone(),
+            base_url: self.base_url.clone(),
             redirect_policy: self.redirect_policy.clone(),
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
@@ -268,6 +270,55 @@ pub(crate) fn extract_fragment(raw_url: &str) -> Option<String> {
     url::Url::parse(raw_url)
         .ok()
         .and_then(|u| u.fragment().map(|f| f.to_owned()))
+}
+
+/// Resolve a request input URL against an optional client base URL.
+///
+/// When `base` is `None`, the input is parsed as an absolute URL (existing
+/// behavior). When `base` is `Some`, the input is resolved against it per
+/// RFC 3986: a relative reference (`users`, `/users`, `?q=1`) resolves against
+/// the base, while an absolute URL (with scheme and authority) overrides it.
+///
+/// When a base is set, the resolved URL is validated: its scheme must be
+/// `http` or `https` and it must have a host. This rejects an absolute request
+/// override like `get("ftp://host/path")` that would otherwise be dispatched as
+/// cleartext HTTP. The no-base path is left unchanged.
+///
+/// Returns the resolved [`Uri`] and the fragment (preserved separately because
+/// `http::Uri` strips fragments per RFC 7230).
+pub(crate) fn resolve_request_url(
+    base: Option<&url::Url>,
+    input: &str,
+) -> Result<(Uri, Option<String>), Error> {
+    match base {
+        Some(base) => {
+            let resolved = base
+                .join(input)
+                .map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+            if !matches!(resolved.scheme(), "http" | "https") {
+                return Err(Error::InvalidUrl(format!(
+                    "request URL scheme must be http or https, got `{}`",
+                    resolved.scheme()
+                )));
+            }
+            if resolved.host_str().is_none_or(|h| h.is_empty()) {
+                return Err(Error::InvalidUrl("request URL must include a host".into()));
+            }
+            let fragment = resolved.fragment().map(|f| f.to_owned());
+            let uri: Uri = resolved
+                .as_str()
+                .parse()
+                .map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+            Ok((uri, fragment))
+        }
+        None => {
+            let fragment = extract_fragment(input);
+            let uri: Uri = input
+                .parse()
+                .map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+            Ok((uri, fragment))
+        }
+    }
 }
 
 fn resolve_redirect(

@@ -63,6 +63,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 
 | Method                  | Default      | Description                          |
 |-------------------------|-------------|--------------------------------------|
+| `base_url(&str)`        | None        | Base URL that relative request URLs resolve against (RFC 3986) |
 | `timeout(Duration)`     | None        | Overall request deadline             |
 | `connect_timeout(Duration)` | None   | Connection establishment timeout for TCP/proxy/TLS phases |
 | `read_timeout(Duration)` | None      | Timeout between response body chunks |
@@ -90,6 +91,11 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `cookie_jar(CookieJar)` | None       | Enable automatic cookie management   |
 | `rate_limiter(RateLimiter)` | None   | Token-bucket rate limiter for outgoing requests |
 | `cache(HttpCache)`      | None        | Enable in-memory HTTP response caching |
+
+> `base_url(&str)` returns `Result` because it validates the URL eagerly; the
+> other setters return `Self`. When a base URL is set, a relative request URL
+> (e.g. `client.get("users")`) resolves against it per RFC 3986, while an
+> absolute request URL overrides it.
 
 ## RequestBuilderSend / RequestBuilderLocal
 

@@ -1027,3 +1027,109 @@ async fn response_metadata_on_cached_hit() {
         "cache should prevent second server hit"
     );
 }
+
+// ── Base URL resolution ─────────────────────────────────────────────────────
+
+/// A client base_url lets relative request paths resolve against it. The
+/// server echoes back the request target path so we can assert resolution.
+#[tokio::test]
+async fn base_url_resolves_relative_request_path() {
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(path))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .base_url(&format!("http://{addr}/v1/"))
+        .unwrap()
+        .build()
+        .unwrap();
+
+    // Relative reference resolves under the base path.
+    let resp = client.get("users").unwrap().send().await.unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "/v1/users");
+
+    // Absolute path replaces the base path.
+    let resp = client.get("/health").unwrap().send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "/health");
+}
+
+/// An absolute request URL overrides the configured base entirely, routing to
+/// a different server.
+#[tokio::test]
+async fn base_url_absolute_request_overrides_base() {
+    let (base_addr, base_counter) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("base"))))
+    })
+    .await;
+    let (other_addr, _other_counter) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("other"))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .base_url(&format!("http://{base_addr}/v1/"))
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{other_addr}/x"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "other");
+    // The base server was never contacted for this request.
+    assert_eq!(base_counter.requests(), 0);
+}
+
+/// An invalid base URL is rejected at build time.
+#[tokio::test]
+async fn base_url_invalid_is_rejected() {
+    let result = HttpEngineSend::<TokioRuntime, TcpConnector>::builder().base_url("not a url");
+    assert!(result.is_err());
+}
+
+/// The generic `HttpClient` trait path also honors base_url, matching the
+/// concrete engine methods.
+#[tokio::test]
+async fn base_url_applies_through_httpclient_trait() {
+    use aioduct::{HttpClient, RequestBuilderExt};
+
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(path))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .base_url(&format!("http://{addr}/v1/"))
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let resp = HttpClient::request(&client, http::Method::GET, "users")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "/v1/users");
+}
+
+/// With a base_url set, an absolute non-http(s) request override is rejected
+/// rather than being dispatched as cleartext HTTP.
+#[tokio::test]
+async fn base_url_rejects_non_http_absolute_override() {
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .base_url("https://api.example.com/")
+        .unwrap()
+        .build()
+        .unwrap();
+
+    assert!(client.get("ftp://example.com/path").is_err());
+    assert!(client.get("file:///etc/passwd").is_err());
+}

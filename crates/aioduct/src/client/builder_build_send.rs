@@ -233,6 +233,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         Ok(HttpEngineSend {
             core: HttpEngineCore {
                 pool,
+                base_url: self.base_url,
                 redirect_policy: self.redirect_policy,
                 timeout: self.timeout,
                 connect_timeout: self.connect_timeout,
