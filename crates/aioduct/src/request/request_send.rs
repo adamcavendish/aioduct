@@ -20,6 +20,7 @@ use crate::timeout::Timeout;
 use super::EngineRef;
 
 /// Builder for configuring and sending an HTTP request.
+#[must_use = "a RequestBuilder does nothing unless you call `.send()` or `.build()`"]
 pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     client: EngineRef<'a, HttpEngineSend<R, C>>,
     method: Method,
@@ -286,6 +287,24 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     pub fn version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self
+    }
+
+    /// Returns the request method.
+    pub fn method_ref(&self) -> &Method {
+        &self.method
+    }
+
+    /// Returns the request URL, after any base-URL resolution.
+    pub fn url(&self) -> &Uri {
+        &self.uri
+    }
+
+    /// Returns the headers configured on this builder so far.
+    ///
+    /// This reflects headers added via [`header`](Self::header) and friends, not
+    /// the client's default headers (those are merged at send time).
+    pub fn headers_ref(&self) -> &HeaderMap {
+        &self.headers
     }
 
     /// Set a timeout for this request, overriding the client default.

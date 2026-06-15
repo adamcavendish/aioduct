@@ -23,6 +23,7 @@ use crate::tls::TlsVersion;
 use super::DEFAULT_USER_AGENT;
 
 /// Builder for configuring an [`HttpEngineSend`](super::HttpEngineSend).
+#[must_use = "a HttpEngineBuilder does nothing unless you call `.build()` or `.build_local()`"]
 pub struct HttpEngineBuilder<R, C> {
     pub(super) connector: C,
     pub(super) base_url: Option<Arc<url::Url>>,
