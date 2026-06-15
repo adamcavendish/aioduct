@@ -47,6 +47,20 @@ pub enum Error {
     #[error("HTTP status error: {0}")]
     Status(http::StatusCode),
 
+    /// The response had a 4xx or 5xx status code, with the response body
+    /// captured for inspection (e.g. a JSON error payload from an API).
+    ///
+    /// Produced by
+    /// [`Response::error_for_status_with_body`](crate::Response::error_for_status_with_body).
+    /// Both [`Error::status`] and [`Error::is_status`] recognize this variant.
+    #[error("HTTP status error: {status} (body: {})", body_preview(.body))]
+    StatusWithBody {
+        /// The error status code.
+        status: http::StatusCode,
+        /// The fully-read response body.
+        body: bytes::Bytes,
+    },
+
     /// The redirect did not include a valid Location header.
     #[error("redirect error: {0}")]
     Redirect(String),
@@ -232,6 +246,12 @@ impl SendError {
         self.error.status()
     }
 
+    /// Returns the captured response body if the underlying error is a
+    /// status-with-body error.
+    pub fn status_body(&self) -> Option<&bytes::Bytes> {
+        self.error.status_body()
+    }
+
     /// Returns `true` if the underlying error originates from the connection pool.
     pub fn is_pool(&self) -> bool {
         self.error.is_pool()
@@ -313,13 +333,24 @@ impl Error {
 
     /// Returns `true` if the error is an HTTP status error.
     pub fn is_status(&self) -> bool {
-        matches!(self, Error::Status(_))
+        matches!(self, Error::Status(_) | Error::StatusWithBody { .. })
     }
 
-    /// Returns the status code if this is a [`Error::Status`] variant.
+    /// Returns the status code if this is a status error
+    /// ([`Error::Status`] or [`Error::StatusWithBody`]).
     pub fn status(&self) -> Option<http::StatusCode> {
         match self {
             Error::Status(code) => Some(*code),
+            Error::StatusWithBody { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// Returns the captured response body if this is an
+    /// [`Error::StatusWithBody`], otherwise `None`.
+    pub fn status_body(&self) -> Option<&bytes::Bytes> {
+        match self {
+            Error::StatusWithBody { body, .. } => Some(body),
             _ => None,
         }
     }
@@ -473,6 +504,25 @@ fn redact_url(uri: &Uri) -> String {
     }
 }
 
+/// Render a short, lossy preview of a response body for error display.
+///
+/// Truncates to keep error messages bounded; decodes as UTF-8 lossily so
+/// binary bodies don't produce unreadable output.
+fn body_preview(body: &bytes::Bytes) -> String {
+    const MAX: usize = 256;
+    let slice = if body.len() > MAX {
+        &body[..MAX]
+    } else {
+        &body[..]
+    };
+    let text = String::from_utf8_lossy(slice);
+    if body.len() > MAX {
+        format!("{text}… ({} bytes total)", body.len())
+    } else {
+        text.into_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,6 +588,49 @@ mod tests {
     fn status_returns_none_for_non_status() {
         let err = Error::Timeout;
         assert_eq!(err.status(), None);
+    }
+
+    #[test]
+    fn status_with_body_classification_and_accessors() {
+        let err = Error::StatusWithBody {
+            status: http::StatusCode::BAD_REQUEST,
+            body: bytes::Bytes::from_static(b"{\"error\":\"bad input\"}"),
+        };
+        assert!(err.is_status());
+        assert_eq!(err.status(), Some(http::StatusCode::BAD_REQUEST));
+        assert_eq!(
+            err.status_body().map(|b| b.as_ref()),
+            Some(&b"{\"error\":\"bad input\"}"[..])
+        );
+        // Plain Status has no captured body.
+        assert!(
+            Error::Status(http::StatusCode::BAD_REQUEST)
+                .status_body()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn status_with_body_display_includes_preview() {
+        let err = Error::StatusWithBody {
+            status: http::StatusCode::INTERNAL_SERVER_ERROR,
+            body: bytes::Bytes::from_static(b"boom"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("500"), "got: {msg}");
+        assert!(msg.contains("boom"), "got: {msg}");
+    }
+
+    #[test]
+    fn body_preview_truncates_large_bodies() {
+        let big = bytes::Bytes::from(vec![b'x'; 1000]);
+        let preview = body_preview(&big);
+        assert!(preview.contains("1000 bytes total"), "got: {preview}");
+        assert!(
+            preview.len() < 400,
+            "preview should be bounded, got {}",
+            preview.len()
+        );
     }
 
     #[test]

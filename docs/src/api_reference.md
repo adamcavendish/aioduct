@@ -240,6 +240,33 @@ Timeout helpers distinguish the configured phases:
 | `ReadTimeout` | Gap between response body chunks from `read_timeout()` |
 | `WriteTimeout` | Gap between request body chunks from `write_timeout()` |
 
+### Capturing an error response body
+
+`Response::error_for_status()` turns a 4xx/5xx status into `Error::Status(code)`
+but discards the body. When the body carries the useful detail (a JSON error
+payload, for example), use the async `error_for_status_with_body()` instead: on
+an error status it reads the body into `Error::StatusWithBody { status, body }`,
+and on a success status it returns the response unconsumed so the body is still
+readable. Retrieve the captured bytes with `Error::status_body()` (also on
+`SendError`); `status()` and `is_status()` recognize both variants.
+
+```rust,no_run
+# use aioduct::TokioClient;
+# async fn example() -> Result<(), aioduct::Error> {
+# let client = TokioClient::new();
+let resp = client.get("http://example.com/api")?.send().await?;
+match resp.error_for_status_with_body().await {
+    Ok(resp) => { /* 2xx — body still readable */ let _ = resp; }
+    Err(e) => {
+        if let (Some(status), Some(body)) = (e.status(), e.status_body()) {
+            eprintln!("server said {status}: {}", String::from_utf8_lossy(body));
+        }
+    }
+}
+# Ok(())
+# }
+```
+
 ## ResponseBodySend / ResponseBodyLocal
 
 The response type returned after sending a request. `ResponseBodySend` is returned by `HttpEngineSend`; `ResponseBodyLocal` by `HttpEngineLocal`. Both implement `ResponseExt`.

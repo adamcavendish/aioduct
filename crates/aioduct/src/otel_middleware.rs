@@ -160,7 +160,7 @@ fn error_type(error: &Error) -> &'static str {
         Error::Io(_) => "io",
         Error::Hyper(_) => "hyper",
         Error::Tls(_) => "tls",
-        Error::Status(_) => "status",
+        Error::Status(_) | Error::StatusWithBody { .. } => "status",
         Error::InvalidUrl(_) => "invalid_url",
         _ => "other",
     }

@@ -269,6 +269,23 @@ impl<B> Response<B> {
 // ── Body consumption methods available for all body types ───────────────────
 
 impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
+    /// Like [`error_for_status`](Self::error_for_status), but on a 4xx/5xx
+    /// status the response body is read and captured into the error as
+    /// [`Error::StatusWithBody`].
+    ///
+    /// On a success status the response is returned unconsumed, so the body can
+    /// still be read normally. On an error status the body is consumed to build
+    /// the error; use [`Error::status_body`] to retrieve it.
+    pub async fn error_for_status_with_body(self) -> Result<Self, Error> {
+        let status = self.inner.status();
+        if status.is_client_error() || status.is_server_error() {
+            let body = self.bytes().await?;
+            Err(Error::StatusWithBody { status, body })
+        } else {
+            Ok(self)
+        }
+    }
+
     /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes, Error> {
         use http_body_util::BodyExt;

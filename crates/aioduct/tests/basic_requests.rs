@@ -1133,3 +1133,62 @@ async fn base_url_rejects_non_http_absolute_override() {
     assert!(client.get("ftp://example.com/path").is_err());
     assert!(client.get("file:///etc/passwd").is_err());
 }
+
+// ── error_for_status_with_body ──────────────────────────────────────────────
+
+/// On a 4xx/5xx status, error_for_status_with_body captures the response body
+/// into the error so API error payloads are recoverable.
+#[tokio::test]
+async fn error_for_status_with_body_captures_error_payload() {
+    let (addr, _counter) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(400)
+                .body(Full::new(Bytes::from("{\"error\":\"bad input\"}")))
+                .unwrap(),
+        )
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let err = resp
+        .error_for_status_with_body()
+        .await
+        .expect_err("4xx should produce an error");
+    assert_eq!(err.status(), Some(http::StatusCode::BAD_REQUEST));
+    assert_eq!(
+        err.status_body().map(|b| b.as_ref()),
+        Some(&b"{\"error\":\"bad input\"}"[..])
+    );
+}
+
+/// On a success status, error_for_status_with_body returns the response with the
+/// body still readable.
+#[tokio::test]
+async fn error_for_status_with_body_passes_through_success() {
+    let (addr, _counter) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok body"))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let resp = resp
+        .error_for_status_with_body()
+        .await
+        .expect("2xx should pass through");
+    assert_eq!(resp.text().await.unwrap(), "ok body");
+}
