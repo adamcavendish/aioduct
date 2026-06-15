@@ -2299,6 +2299,49 @@ fn test_compio_read_timeout_with_slow_body() {
 // ── HSTS store from response test ──────────────────────────────────
 
 #[test]
+fn test_compio_per_request_read_timeout_overrides_default() {
+    // Server sends headers + partial body, then stalls.
+    let addr = {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            tx.send(addr).unwrap();
+
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::Write;
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello");
+            let _ = stream.flush();
+            // Never send the remaining 5 bytes.
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        rx.recv().unwrap()
+    };
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        // Generous client default; per-request override is the tight one.
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .read_timeout(Duration::from_secs(5))
+            .build_local()
+            .unwrap();
+        let resp = client
+            .get_local(&format!("http://{addr}/"))
+            .unwrap()
+            .read_timeout(Duration::from_millis(100))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+
+        let err = resp.text().await.unwrap_err();
+        assert!(
+            matches!(err, aioduct::Error::ReadTimeout),
+            "per-request read_timeout should fire on stalled body, got: {err:?}"
+        );
+    });
+}
+
+#[test]
 fn test_compio_hsts_store_from_response_header() {
     // This test verifies that when a response contains Strict-Transport-Security,
     // the HSTS store records it. Since the HSTS store_from_response is only called

@@ -559,6 +559,7 @@ async fn execute_rejects_http_when_https_only() {
             None,
             None,
             None,
+            None,
             crate::pool::ProtocolHint::Auto,
             None,
         )
@@ -581,6 +582,7 @@ async fn execute_allows_https_when_https_only() {
             Method::GET,
             "https://example.com".parse().unwrap(),
             http::HeaderMap::new(),
+            None,
             None,
             None,
             None,

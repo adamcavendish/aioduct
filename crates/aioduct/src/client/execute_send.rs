@@ -23,6 +23,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         version: Option<http::Version>,
         connect_timeout: Option<Duration>,
         write_timeout: Option<Duration>,
+        read_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
         mut original_fragment: Option<String>,
@@ -221,6 +222,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             &current_method,
                             current_uri,
                             &current_headers,
+                            read_timeout,
                         )
                         .await?;
                     final_resp.set_fragment(original_fragment);
@@ -326,6 +328,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         method: &Method,
         uri: Uri,
         request_headers: &HeaderMap,
+        read_timeout: Option<Duration>,
     ) -> Result<Response, Error> {
         #[cfg(all(feature = "http3", feature = "rustls"))]
         if self.core.h3_endpoint.is_some() {
@@ -342,7 +345,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             resp
         };
 
-        let resp = if let Some(read_timeout) = self.core.read_timeout {
+        let resp = if let Some(read_timeout) = read_timeout {
             resp.apply_read_timeout::<R>(read_timeout)
         } else {
             resp

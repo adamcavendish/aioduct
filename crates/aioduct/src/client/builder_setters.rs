@@ -100,6 +100,9 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// response headers. If no body data arrives within this duration the
     /// request fails with [`Error::ReadTimeout`](crate::Error::ReadTimeout).
     ///
+    /// This is the client default and can be overridden per request with
+    /// [`RequestBuilderSend::read_timeout`](crate::request::RequestBuilderSend::read_timeout).
+    ///
     /// Use [`timeout()`](Self::timeout) for an overall request deadline that
     /// covers headers and body, or [`connect_timeout()`](Self::connect_timeout)
     /// for the TCP + TLS handshake phase.

@@ -869,6 +869,179 @@ async fn read_timeout_independent_of_overall_timeout() {
 
 // ── Elapsed-timing discrimination and pool-eviction tests ─────────────────
 
+/// A raw H1 server that sends headers + a partial body and then stalls forever.
+/// Used to exercise response read-timeout behavior deterministically.
+async fn stalling_body_server() -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello")
+                    .await;
+                let _ = stream.flush().await;
+                // Never send the remaining 5 bytes.
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            });
+        }
+    });
+
+    addr
+}
+
+/// Per-request `read_timeout()` overrides the client default. The client default
+/// is generous (5 s) but the per-request override (100 ms) fires on the stalled
+/// body. reqwest #2512.
+#[tokio::test]
+async fn per_request_read_timeout_overrides_client_default() {
+    let addr = stalling_body_server().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .read_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let start = tokio::time::Instant::now();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .read_timeout(Duration::from_millis(100))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    let err = resp.bytes().await.unwrap_err();
+    assert!(
+        matches!(err, aioduct::Error::ReadTimeout),
+        "per-request read_timeout should fire, got: {err:?}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "per-request 100ms read_timeout should fire well before the 5s client default, elapsed {:?}",
+        start.elapsed()
+    );
+}
+
+/// A request with no per-request read_timeout still inherits the client default.
+#[tokio::test]
+async fn per_request_read_timeout_inherits_client_default() {
+    let addr = stalling_body_server().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .read_timeout(Duration::from_millis(100))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    let err = resp.bytes().await.unwrap_err();
+    assert!(
+        matches!(err, aioduct::Error::ReadTimeout),
+        "client default read_timeout should still apply when no per-request override is set, got: {err:?}"
+    );
+}
+
+/// read_timeout is a per-chunk gap, not a one-shot first-read deadline. A body
+/// that keeps trickling chunks just under the read_timeout interval must NOT
+/// time out, even when the total transfer far exceeds a single interval.
+/// reqwest #1380, #231.
+#[tokio::test]
+async fn read_timeout_resets_between_chunks_not_total_transfer() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // 10 chunks, 50ms apart = ~500ms total, well over the 150ms read_timeout
+    // but each gap (50ms) is under it.
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        for i in 0..10u8 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let chunk = format!("1\r\n{}\r\n", (b'0' + i) as char);
+            stream.write_all(chunk.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+        }
+        stream.write_all(b"0\r\n\r\n").await.unwrap();
+        stream.flush().await.unwrap();
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .read_timeout(Duration::from_millis(150))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        body, "0123456789",
+        "steady sub-interval chunks should complete; read_timeout must reset per chunk"
+    );
+}
+
+/// A stalled `.text()` body read with a per-request read_timeout returns an
+/// error promptly instead of hanging indefinitely. reqwest #1604.
+#[tokio::test]
+async fn read_timeout_bounds_stalled_text_read() {
+    let addr = stalling_body_server().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .read_timeout(Duration::from_millis(100))
+        .send()
+        .await
+        .unwrap();
+
+    let start = tokio::time::Instant::now();
+    let err = resp.text().await.unwrap_err();
+    assert!(
+        matches!(err, aioduct::Error::ReadTimeout),
+        "stalled text() read should be bounded by read_timeout, got: {err:?}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "text() must not hang; read_timeout should fire promptly, elapsed {:?}",
+        start.elapsed()
+    );
+}
+
 /// Both per-request timeout and read-timeout surface as `is_timeout()`.
 /// Only elapsed timing distinguishes which one fired: the per-request
 /// timeout fires at 200 ms, while read_timeout would wait 5 s.

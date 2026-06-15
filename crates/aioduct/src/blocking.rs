@@ -154,6 +154,12 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingRequestBuilder<C, R> {
         self
     }
 
+    /// Set a timeout for gaps between response body data chunks.
+    pub fn read_timeout(mut self, timeout: Duration) -> Self {
+        self.inner = self.inner.read_timeout(timeout);
+        self
+    }
+
     /// Set HTTP Basic auth credentials.
     pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         self.inner = self.inner.basic_auth(username, password);

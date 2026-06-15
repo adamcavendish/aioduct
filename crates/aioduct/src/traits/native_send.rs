@@ -70,6 +70,11 @@ impl<R: RuntimePoll, C: ConnectorSend> RequestBuilderExt for OwnedRequestBuilder
         self
     }
 
+    fn read_timeout(mut self, duration: Duration) -> Self {
+        self.inner = self.inner.read_timeout(duration);
+        self
+    }
+
     fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         self.inner = self.inner.basic_auth(username, password);
         self

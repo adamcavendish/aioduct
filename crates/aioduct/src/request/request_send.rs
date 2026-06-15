@@ -29,6 +29,7 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     version: Option<Version>,
     timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
     force_no_timeout: bool,
     retry: Option<RetryConfig>,
@@ -65,6 +66,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             version: None,
             timeout: None,
             connect_timeout: None,
+            read_timeout: None,
             write_timeout: None,
             force_no_timeout: false,
             retry: None,
@@ -90,6 +92,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             version: None,
             timeout: None,
             connect_timeout: None,
+            read_timeout: None,
             write_timeout: None,
             force_no_timeout: false,
             retry: None,
@@ -308,6 +311,17 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         self
     }
 
+    /// Set a timeout for gaps between response body data chunks.
+    ///
+    /// This overrides the client's default read timeout for this request only.
+    /// It applies to response body reads, not to waiting for response headers.
+    /// If no body data arrives within this duration the request fails with
+    /// [`Error::ReadTimeout`](crate::Error::ReadTimeout).
+    pub fn read_timeout(mut self, timeout: Duration) -> Self {
+        self.read_timeout = Some(timeout);
+        self
+    }
+
     /// Disable the overall request timeout for this specific request.
     ///
     /// Use when the client has a default timeout but this request
@@ -409,6 +423,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             version: self.version,
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,
+            read_timeout: self.read_timeout,
             write_timeout: self.write_timeout,
             force_no_timeout: self.force_no_timeout,
             retry: self.retry.clone(),
@@ -446,6 +461,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             .connect_timeout
             .or(self.client.default_connect_timeout());
         let effective_write_timeout = self.write_timeout.or(self.client.default_write_timeout());
+        let effective_read_timeout = self.read_timeout.or(self.client.default_read_timeout());
         let method = self.method.clone();
         let uri = self.uri.clone();
         let execute_fut = self.client.execute_send(
@@ -456,6 +472,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             self.version,
             effective_connect_timeout,
             effective_write_timeout,
+            effective_read_timeout,
             self.force_addr,
             self.protocol_hint,
             self.fragment,
@@ -497,6 +514,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             .connect_timeout
             .or(self.client.default_connect_timeout());
         let effective_write_timeout = self.write_timeout.or(self.client.default_write_timeout());
+        let effective_read_timeout = self.read_timeout.or(self.client.default_read_timeout());
         let mut last_error = None;
         let mut body = self.body;
         let mut retry_after_delay: Option<Duration> = None;
@@ -523,6 +541,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 self.version,
                 effective_connect_timeout,
                 effective_write_timeout,
+                effective_read_timeout,
                 self.force_addr,
                 self.protocol_hint,
                 self.fragment.clone(),
