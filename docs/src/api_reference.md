@@ -189,6 +189,27 @@ let rb = client.get("http://example.com/ws").unwrap()
     .upgrade();  // sets Connection: Upgrade, Upgrade: websocket, HTTP/1.1
 ```
 
+### Inspecting a builder
+
+Read accessors let you inspect a configured request before sending it (e.g. for
+logging, signing, or library wrappers). `method_ref()` returns the method,
+`url()` the resolved URL, and `headers_ref()` the headers added so far (client
+default headers are merged at send time, so they are not reflected here). Call
+`build()` to get the full `http::Request` without sending.
+
+```rust,no_run
+# use aioduct::TokioClient;
+# let client = TokioClient::new();
+let rb = client.post("http://example.com/api").unwrap()
+    .header(http::header::ACCEPT, http::HeaderValue::from_static("application/json"));
+assert_eq!(rb.method_ref(), &http::Method::POST);
+assert_eq!(rb.url().to_string(), "http://example.com/api");
+assert!(rb.headers_ref().contains_key(http::header::ACCEPT));
+```
+
+The builders are `#[must_use]`: a `RequestBuilder` that is never sent or built,
+or a `ClientBuilder` that is never built, produces a compiler warning.
+
 ### Sending
 
 ```rust,no_run

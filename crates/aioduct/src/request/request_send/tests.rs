@@ -17,6 +17,22 @@ async fn header_sets_value() {
 }
 
 #[tokio::test]
+async fn builder_read_accessors() {
+    let client = test_client();
+    let rb = client
+        .post("http://example.com/path?q=1")
+        .unwrap()
+        .header(http::header::ACCEPT, HeaderValue::from_static("text/html"));
+
+    assert_eq!(rb.method_ref(), &http::Method::POST);
+    assert_eq!(rb.url().to_string(), "http://example.com/path?q=1");
+    assert_eq!(
+        rb.headers_ref().get(http::header::ACCEPT).unwrap(),
+        "text/html"
+    );
+}
+
+#[tokio::test]
 async fn headers_extends() {
     let client = test_client();
     let rb = client.get("http://example.com").unwrap();
