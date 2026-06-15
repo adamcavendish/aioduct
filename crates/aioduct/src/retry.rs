@@ -7,7 +7,7 @@ use http::{HeaderMap, StatusCode};
 use crate::error::Error;
 
 /// Configuration for automatic request retry with exponential backoff.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts.
     pub max_retries: u32,
@@ -21,6 +21,79 @@ pub struct RetryConfig {
     pub retry_on_status: bool,
     /// Optional budget limiting total retry rate.
     pub budget: Option<RetryBudget>,
+    /// Optional custom classifier consulted before the built-in retry rules.
+    pub(crate) classifier: Option<Classifier>,
+}
+
+type Classifier = Arc<dyn Fn(&RetryContext<'_>) -> RetryDecision + Send + Sync>;
+
+impl std::fmt::Debug for RetryConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetryConfig")
+            .field("max_retries", &self.max_retries)
+            .field("initial_backoff", &self.initial_backoff)
+            .field("max_backoff", &self.max_backoff)
+            .field("backoff_multiplier", &self.backoff_multiplier)
+            .field("retry_on_status", &self.retry_on_status)
+            .field("budget", &self.budget)
+            .field("classifier", &self.classifier.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
+}
+
+/// What produced a retry decision point: a response status or a transport error.
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum RetryOutcome<'a> {
+    /// The server returned a final response with this status.
+    Status(StatusCode),
+    /// The attempt failed with a transport-level error before a full response.
+    Error(&'a Error),
+}
+
+/// Context passed to a custom retry classifier.
+///
+/// Use the accessors to inspect what happened and decide whether to retry.
+#[derive(Debug)]
+pub struct RetryContext<'a> {
+    outcome: RetryOutcome<'a>,
+    method: &'a http::Method,
+    attempt: u32,
+    max_retries: u32,
+}
+
+impl<'a> RetryContext<'a> {
+    /// What produced this decision point (a status or a transport error).
+    pub fn outcome(&self) -> &RetryOutcome<'a> {
+        &self.outcome
+    }
+
+    /// The request method (useful for idempotency-aware policies).
+    pub fn method(&self) -> &http::Method {
+        self.method
+    }
+
+    /// The zero-based index of the attempt that just finished.
+    pub fn attempt(&self) -> u32 {
+        self.attempt
+    }
+
+    /// The configured maximum number of retries.
+    pub fn max_retries(&self) -> u32 {
+        self.max_retries
+    }
+}
+
+/// A custom classifier's decision for a single retry decision point.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryDecision {
+    /// Retry the request (subject to `max_retries` and any retry budget).
+    Retry,
+    /// Do not retry; return the response or error to the caller.
+    DoNotRetry,
+    /// Defer to the built-in classification rules.
+    UseDefault,
 }
 
 impl Default for RetryConfig {
@@ -32,6 +105,7 @@ impl Default for RetryConfig {
             backoff_multiplier: 2.0,
             retry_on_status: true,
             budget: None,
+            classifier: None,
         }
     }
 }
@@ -78,6 +152,62 @@ impl RetryConfig {
     pub fn budget(mut self, budget: RetryBudget) -> Self {
         self.budget = Some(budget);
         self
+    }
+
+    /// Set a custom classifier consulted before the built-in retry rules.
+    ///
+    /// The closure receives a [`RetryContext`] describing the status or error,
+    /// the request method, and the attempt counters. Return:
+    /// - [`RetryDecision::Retry`] to retry (still bounded by [`max_retries`] and
+    ///   any [`budget`]). This is an explicit opt-in, so it applies even to
+    ///   non-idempotent methods.
+    /// - [`RetryDecision::DoNotRetry`] to stop and return the response or error.
+    /// - [`RetryDecision::UseDefault`] to defer to the built-in classification.
+    ///
+    /// [`max_retries`]: Self::max_retries
+    /// [`budget`]: Self::budget
+    pub fn classify<F>(mut self, classifier: F) -> Self
+    where
+        F: Fn(&RetryContext<'_>) -> RetryDecision + Send + Sync + 'static,
+    {
+        self.classifier = Some(Arc::new(classifier));
+        self
+    }
+
+    /// Evaluate the custom classifier for a status outcome, if one is set.
+    pub(crate) fn classify_status(
+        &self,
+        status: StatusCode,
+        method: &http::Method,
+        attempt: u32,
+    ) -> RetryDecision {
+        match &self.classifier {
+            Some(f) => f(&RetryContext {
+                outcome: RetryOutcome::Status(status),
+                method,
+                attempt,
+                max_retries: self.max_retries,
+            }),
+            None => RetryDecision::UseDefault,
+        }
+    }
+
+    /// Evaluate the custom classifier for an error outcome, if one is set.
+    pub(crate) fn classify_error(
+        &self,
+        error: &Error,
+        method: &http::Method,
+        attempt: u32,
+    ) -> RetryDecision {
+        match &self.classifier {
+            Some(f) => f(&RetryContext {
+                outcome: RetryOutcome::Error(error),
+                method,
+                attempt,
+                max_retries: self.max_retries,
+            }),
+            None => RetryDecision::UseDefault,
+        }
     }
 
     pub(crate) fn delay_for_attempt(&self, attempt: u32) -> Duration {
@@ -262,6 +392,79 @@ mod tests {
         assert!((cfg.backoff_multiplier - 2.0).abs() < f64::EPSILON);
         assert!(cfg.retry_on_status);
         assert!(cfg.budget.is_none());
+        assert!(cfg.classifier.is_none());
+    }
+
+    #[test]
+    fn classifier_status_overrides_default() {
+        // A 404 is normally not retryable; the classifier forces a retry.
+        let cfg = RetryConfig::default().classify(|ctx| match ctx.outcome() {
+            RetryOutcome::Status(s) if *s == StatusCode::NOT_FOUND => RetryDecision::Retry,
+            _ => RetryDecision::UseDefault,
+        });
+        assert_eq!(
+            cfg.classify_status(StatusCode::NOT_FOUND, &http::Method::GET, 0),
+            RetryDecision::Retry
+        );
+        // 500 falls through to UseDefault (built-in rules still apply).
+        assert_eq!(
+            cfg.classify_status(StatusCode::INTERNAL_SERVER_ERROR, &http::Method::GET, 0),
+            RetryDecision::UseDefault
+        );
+    }
+
+    #[test]
+    fn classifier_can_suppress_default_retry() {
+        // 503 is normally retryable; the classifier suppresses it.
+        let cfg = RetryConfig::default().classify(|ctx| match ctx.outcome() {
+            RetryOutcome::Status(s) if *s == StatusCode::SERVICE_UNAVAILABLE => {
+                RetryDecision::DoNotRetry
+            }
+            _ => RetryDecision::UseDefault,
+        });
+        assert_eq!(
+            cfg.classify_status(StatusCode::SERVICE_UNAVAILABLE, &http::Method::GET, 0),
+            RetryDecision::DoNotRetry
+        );
+    }
+
+    #[test]
+    fn classifier_error_outcome_and_context() {
+        let cfg = RetryConfig::default().classify(|ctx| {
+            assert_eq!(ctx.method(), &http::Method::POST);
+            assert_eq!(ctx.max_retries(), 3);
+            match ctx.outcome() {
+                RetryOutcome::Error(e) => {
+                    if e.is_timeout() {
+                        RetryDecision::DoNotRetry
+                    } else {
+                        RetryDecision::Retry
+                    }
+                }
+                RetryOutcome::Status(_) => RetryDecision::UseDefault,
+            }
+        });
+        assert_eq!(
+            cfg.classify_error(&Error::Timeout, &http::Method::POST, 1),
+            RetryDecision::DoNotRetry
+        );
+        assert_eq!(
+            cfg.classify_error(&Error::Other("boom".into()), &http::Method::POST, 1),
+            RetryDecision::Retry
+        );
+    }
+
+    #[test]
+    fn no_classifier_defaults_to_use_default() {
+        let cfg = RetryConfig::default();
+        assert_eq!(
+            cfg.classify_status(StatusCode::OK, &http::Method::GET, 0),
+            RetryDecision::UseDefault
+        );
+        assert_eq!(
+            cfg.classify_error(&Error::Timeout, &http::Method::GET, 0),
+            RetryDecision::UseDefault
+        );
     }
 
     #[test]

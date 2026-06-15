@@ -54,6 +54,42 @@ DELETE, OPTIONS, and TRACE. POST and PATCH are not retried on status by the
 default classifier. Other client errors are never retried. To disable all
 status-based retry, set `retry_on_status(false)`.
 
+## Custom Classifier
+
+For policies the built-in rules do not cover, attach a classifier with
+`classify()`. The closure receives a `RetryContext` describing the outcome (a
+response status or a transport error), the request method, and the attempt
+counters, and returns a `RetryDecision`:
+
+- `RetryDecision::Retry` — retry, still bounded by `max_retries` and any
+  `budget`. This is an explicit opt-in, so it applies even to non-idempotent
+  methods like POST.
+- `RetryDecision::DoNotRetry` — stop and return the response or error.
+- `RetryDecision::UseDefault` — defer to the built-in classification.
+
+```rust,no_run
+use aioduct::{TokioClient, RetryConfig, RetryDecision, RetryOutcome};
+
+# fn build() -> Result<(), aioduct::Error> {
+let client = TokioClient::builder()
+    .retry(RetryConfig::default().classify(|ctx| match ctx.outcome() {
+        // Retry a normally-final 404 (e.g. eventually-consistent resource).
+        RetryOutcome::Status(s) if s.as_u16() == 404 => RetryDecision::Retry,
+        // Never retry 503 for this client.
+        RetryOutcome::Status(s) if s.as_u16() == 503 => RetryDecision::DoNotRetry,
+        // Everything else keeps the built-in behavior.
+        _ => RetryDecision::UseDefault,
+    }))
+    .build()?;
+# let _ = client;
+# Ok(())
+# }
+```
+
+Returning `UseDefault` for every outcome leaves behavior identical to having no
+classifier. The classifier runs before the built-in rules on every attempt, for
+both status responses and transport errors.
+
 ## Retry-After Header
 
 When a server responds with a `Retry-After` header on a retryable status response (common on 429 and 503 responses), aioduct uses the server's requested delay instead of its own exponential backoff for that attempt. Both formats are supported:

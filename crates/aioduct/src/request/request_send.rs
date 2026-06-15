@@ -565,11 +565,16 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
             match result {
                 Ok(resp) => {
-                    if config.retry_on_status
+                    let default_should_retry = config.retry_on_status
                         && crate::retry::is_retryable_status(resp.status())
-                        && attempt < config.max_retries
-                        && crate::retry::is_idempotent(&self.method)
-                    {
+                        && crate::retry::is_idempotent(&self.method);
+                    let should_retry =
+                        match config.classify_status(resp.status(), &self.method, attempt) {
+                            crate::retry::RetryDecision::Retry => true,
+                            crate::retry::RetryDecision::DoNotRetry => false,
+                            crate::retry::RetryDecision::UseDefault => default_should_retry,
+                        };
+                    if should_retry && attempt < config.max_retries {
                         if let Some(ref budget) = config.budget
                             && !budget.try_withdraw()
                         {
@@ -620,10 +625,14 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                     return Ok(resp);
                 }
                 Err(e) => {
-                    if attempt < config.max_retries
-                        && crate::retry::is_retryable_error(&e)
-                        && crate::retry::is_idempotent(&self.method)
-                    {
+                    let default_should_retry = crate::retry::is_retryable_error(&e)
+                        && crate::retry::is_idempotent(&self.method);
+                    let should_retry = match config.classify_error(&e, &self.method, attempt) {
+                        crate::retry::RetryDecision::Retry => true,
+                        crate::retry::RetryDecision::DoNotRetry => false,
+                        crate::retry::RetryDecision::UseDefault => default_should_retry,
+                    };
+                    if should_retry && attempt < config.max_retries {
                         if let Some(ref budget) = config.budget
                             && !budget.try_withdraw()
                         {
