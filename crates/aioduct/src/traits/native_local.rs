@@ -6,7 +6,6 @@ use std::time::Duration;
 use super::{ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt};
 use crate::body::{BodyStreamLocal, ResponseBodyLocal};
 use crate::client::HttpEngineLocal;
-use crate::client::extract_fragment;
 use crate::error::{Error, SendError};
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
@@ -24,8 +23,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpClient for HttpEngineLocal<
     type RequestBuilder = OwnedRequestBuilderLocal<R, C>;
 
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {
-        let fragment = extract_fragment(uri);
-        let uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
+        let (uri, fragment) =
+            crate::client::resolve_request_url(self.core.base_url.as_deref(), uri)?;
         Ok(OwnedRequestBuilderLocal {
             inner: crate::request::RequestBuilderLocal::new_owned(
                 self.clone(),

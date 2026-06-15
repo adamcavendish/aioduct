@@ -19,6 +19,36 @@ use crate::tls::TlsVersion;
 use super::builder::HttpEngineBuilder;
 
 impl<R, C> HttpEngineBuilder<R, C> {
+    /// Set a base URL that relative request URLs resolve against.
+    ///
+    /// When set, request URLs are resolved against this base per RFC 3986:
+    /// - A relative reference (`"users"`, `"/users"`, `"?q=1"`) resolves against
+    ///   the base. A trailing slash matters: base `"https://api.example.com/v1/"`
+    ///   joined with `"users"` yields `"https://api.example.com/v1/users"`, while
+    ///   base `"https://api.example.com/v1"` joined with `"users"` yields
+    ///   `"https://api.example.com/users"`.
+    /// - An absolute URL (with scheme and authority) overrides the base entirely.
+    ///
+    /// Returns an error if the base URL cannot be parsed, is not `http`/`https`,
+    /// or has no authority (host).
+    pub fn base_url(mut self, base: &str) -> Result<Self, crate::error::Error> {
+        let parsed =
+            url::Url::parse(base).map_err(|e| crate::error::Error::InvalidUrl(format!("{e}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(crate::error::Error::InvalidUrl(format!(
+                "base_url scheme must be http or https, got `{}`",
+                parsed.scheme()
+            )));
+        }
+        if parsed.host_str().is_none_or(|h| h.is_empty()) {
+            return Err(crate::error::Error::InvalidUrl(
+                "base_url must include a host".into(),
+            ));
+        }
+        self.base_url = Some(Arc::new(parsed));
+        Ok(self)
+    }
+
     /// Set the idle connection timeout (default: 90s).
     pub fn pool_idle_timeout(mut self, timeout: Duration) -> Self {
         self.pool_idle_timeout = timeout;

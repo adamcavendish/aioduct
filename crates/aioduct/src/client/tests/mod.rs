@@ -6,6 +6,7 @@ mod engine_send_tests;
 mod proxy_connect_send_tests;
 mod resolve_tests;
 
+mod base_url_tests;
 mod builder_tests;
 mod flow_tests;
 mod redirect_tests;
