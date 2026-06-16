@@ -730,6 +730,47 @@ async fn text_part() {
 }
 
 #[tokio::test]
+async fn multipart_custom_boundary_and_subtype() {
+    let form = aioduct::Multipart::new()
+        .with_boundary("WebKitFormBoundaryABC123")
+        .unwrap()
+        .subtype("mixed")
+        .unwrap()
+        .text("foo", "bar");
+    let expected_ct = form.content_type();
+    let expected_body = format!(
+        "--{0}\r\nContent-Disposition: form-data; name=\"foo\"\r\n\r\nbar\r\n--{0}--\r\n",
+        form.boundary()
+    );
+    assert_eq!(
+        expected_ct,
+        "multipart/mixed; boundary=\"WebKitFormBoundaryABC123\""
+    );
+
+    let (addr, _counter) = h1_server_with(move |req| {
+        let ct = expected_ct.clone();
+        let expected_body = expected_body.clone();
+        async move {
+            assert_eq!(req.headers()["content-type"], ct);
+            let full = req.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(full, expected_body.as_bytes());
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .post(&format!("http://{addr}/multipart/custom"))
+        .unwrap()
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+}
+
+#[tokio::test]
 async fn stream_part() {
     let stream_data = "part1 part2";
     let stream_body: aioduct::body::RequestBodySend =
