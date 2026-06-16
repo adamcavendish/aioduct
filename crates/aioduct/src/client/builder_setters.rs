@@ -181,6 +181,24 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Restrict or prefer the IP address family for resolved connections.
+    ///
+    /// Applied to resolver results before Happy Eyeballs racing. The `*Only`
+    /// variants drop the other family (the connection fails if none remain);
+    /// the `Prefer*` variants reorder so the preferred family is tried first
+    /// while keeping the other as fallback. IP-literal request URLs and
+    /// [`force_addr`](crate::request::RequestBuilderSend::force_addr) bypass
+    /// this filter (the address is the caller's deliberate choice). Defaults to
+    /// [`AddressFamily::Any`](crate::AddressFamily::Any).
+    ///
+    /// For HTTP/3, the QUIC endpoint's bound family also constrains reachability:
+    /// an IPv4-bound endpoint cannot reach IPv6 peers, so `Ipv6Only` over such an
+    /// endpoint yields no usable address.
+    pub fn address_family(mut self, family: crate::address_family::AddressFamily) -> Self {
+        self.address_family = family;
+        self
+    }
+
     #[cfg(target_os = "linux")]
     /// Bind outgoing connections to a specific network interface (Linux only).
     pub fn interface(mut self, name: impl Into<String>) -> Self {

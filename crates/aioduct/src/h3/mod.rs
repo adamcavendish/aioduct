@@ -529,8 +529,13 @@ mod tests {
         let ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443);
         let ipv6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
 
+        // interleave_addrs leads with the first address's family, so the input
+        // order is preserved when families alternate.
         let addrs = filter_h3_addrs(&[ipv4, ipv6], None, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+        assert_eq!(addrs, vec![ipv4, ipv6]);
 
+        // When IPv6 leads the input, IPv6 leads the output.
+        let addrs = filter_h3_addrs(&[ipv6, ipv4], None, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
         assert_eq!(addrs, vec![ipv6, ipv4]);
     }
 
