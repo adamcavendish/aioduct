@@ -34,6 +34,8 @@ impl<B> HttpEngineCore<B> {
         port: u16,
     ) -> Result<Vec<std::net::SocketAddr>, Error> {
         if let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() {
+            // IP-literal hosts bypass the address-family filter: an explicit
+            // literal is the caller's deliberate choice.
             return Ok(vec![addr]);
         }
 
@@ -50,6 +52,19 @@ impl<B> HttpEngineCore<B> {
                 "no DNS resolver configured for {host}:{port} — use .resolver() on the builder"
             )))
         };
+
+        // Apply the configured address-family preference to resolver output.
+        let result = result.and_then(|addrs| {
+            let filtered = self.address_family.apply(addrs);
+            if filtered.is_empty() {
+                Err(Error::InvalidUrl(format!(
+                    "no {:?} addresses for {host}:{port}",
+                    self.address_family
+                )))
+            } else {
+                Ok(filtered)
+            }
+        });
 
         #[cfg(feature = "tracing")]
         match &result {
