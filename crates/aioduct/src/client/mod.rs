@@ -76,6 +76,7 @@ const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 pub struct HttpEngineCore<B> {
     pub(crate) pool: ConnectionPool<B>,
     pub(crate) base_url: Option<Arc<url::Url>>,
+    pub(crate) address_family: crate::address_family::AddressFamily,
     pub(crate) redirect_policy: RedirectPolicy,
     pub(crate) timeout: Option<Duration>,
     pub(crate) connect_timeout: Option<Duration>,
@@ -129,6 +130,7 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
         Self {
             pool: self.pool.clone(),
             base_url: self.base_url.clone(),
+            address_family: self.address_family,
             redirect_policy: self.redirect_policy.clone(),
             timeout: self.timeout,
             connect_timeout: self.connect_timeout,

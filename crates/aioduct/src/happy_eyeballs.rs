@@ -3,8 +3,11 @@
 //! When connecting to a host that resolves to multiple addresses (e.g. both IPv6
 //! and IPv4), this module races connections in parallel with staggered starts:
 //!
-//! 1. Addresses are interleaved by family: `[v6, v4, v6, v4, ...]` so neither
-//!    family starves the other.
+//! 1. Addresses are interleaved by family so neither starves the other. The
+//!    family of the first address leads, so a caller preference such as
+//!    [`AddressFamily::PreferIpv4`](crate::AddressFamily::PreferIpv4) (which
+//!    puts IPv4 first) is honored: `[v4, v6, v4, v6, ...]`. Default resolver
+//!    order typically leads with IPv6.
 //! 2. The first connection attempt is spawned immediately.
 //! 3. Every 250 ms (the Connection Attempt Delay), the next address is tried
 //!    while all previous attempts **stay alive**.
@@ -51,13 +54,22 @@ pub(crate) async fn connect_happy_eyeballs<R: RuntimePoll, C: ConnectorSend>(
 }
 
 pub(crate) fn interleave_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    // Interleave by family so neither starves the other. The family of the
+    // first address leads, preserving any caller-expressed preference (e.g.
+    // `AddressFamily::PreferIpv4` puts IPv4 first). RFC 8305 interleaves by
+    // family but does not mandate IPv6-first; leading with the first address's
+    // family keeps the resolver/preference ordering meaningful.
+    let lead_is_v6 = addrs.first().map(|a| a.is_ipv6()).unwrap_or(true);
     let (v6, v4): (Vec<&SocketAddr>, Vec<&SocketAddr>) = addrs.iter().partition(|a| a.is_ipv6());
     let mut result = Vec::with_capacity(addrs.len());
-    let mut i6 = v6.into_iter();
-    let mut i4 = v4.into_iter();
+    let (mut first, mut second) = if lead_is_v6 {
+        (v6.into_iter(), v4.into_iter())
+    } else {
+        (v4.into_iter(), v6.into_iter())
+    };
     loop {
-        let a = i6.next();
-        let b = i4.next();
+        let a = first.next();
+        let b = second.next();
         if a.is_none() && b.is_none() {
             break;
         }
@@ -311,18 +323,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interleave_v6_first() {
+    fn interleave_leads_with_first_family_v6() {
+        // First address is IPv6 → IPv6 leads, families interleaved.
         let addrs = vec![
-            "127.0.0.1:80".parse().unwrap(),
             "[::1]:80".parse().unwrap(),
-            "10.0.0.1:80".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
             "[::2]:80".parse().unwrap(),
+            "10.0.0.1:80".parse().unwrap(),
         ];
         let result = interleave_addrs(&addrs);
         assert!(result[0].is_ipv6());
         assert!(result[1].is_ipv4());
         assert!(result[2].is_ipv6());
         assert!(result[3].is_ipv4());
+    }
+
+    #[test]
+    fn interleave_leads_with_first_family_v4() {
+        // First address is IPv4 (e.g. after AddressFamily::PreferIpv4) → IPv4
+        // leads, so the preference survives interleaving.
+        let addrs = vec![
+            "10.0.0.1:80".parse().unwrap(),
+            "10.0.0.2:80".parse().unwrap(),
+            "[::1]:80".parse().unwrap(),
+            "[::2]:80".parse().unwrap(),
+        ];
+        let result = interleave_addrs(&addrs);
+        assert!(result[0].is_ipv4());
+        assert!(result[1].is_ipv6());
+        assert!(result[2].is_ipv4());
+        assert!(result[3].is_ipv6());
     }
 
     #[test]
@@ -392,8 +422,9 @@ mod tests {
         ];
         let result = interleave_addrs(&addrs);
         assert_eq!(result.len(), 4);
-        assert!(result[0].is_ipv6()); // ::1
-        assert!(result[1].is_ipv4()); // 1.1.1.1
+        // First address is IPv4, so IPv4 leads; the lone IPv6 slots in second.
+        assert!(result[0].is_ipv4()); // 1.1.1.1
+        assert!(result[1].is_ipv6()); // ::1
         assert!(result[2].is_ipv4()); // 2.2.2.2
         assert!(result[3].is_ipv4()); // 3.3.3.3
     }

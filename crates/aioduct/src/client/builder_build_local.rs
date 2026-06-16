@@ -152,6 +152,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
             core: HttpEngineCore {
                 pool,
                 base_url: self.base_url,
+                address_family: self.address_family,
                 redirect_policy: self.redirect_policy,
                 timeout: self.timeout,
                 connect_timeout: self.connect_timeout,

@@ -27,6 +27,7 @@ use super::DEFAULT_USER_AGENT;
 pub struct HttpEngineBuilder<R, C> {
     pub(super) connector: C,
     pub(super) base_url: Option<Arc<url::Url>>,
+    pub(super) address_family: crate::address_family::AddressFamily,
     pub(super) pool_idle_timeout: Duration,
     pub(super) pool_max_lifetime: Option<Duration>,
     pub(super) pool_max_idle_per_host: usize,
@@ -107,6 +108,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
         Self {
             connector,
             base_url: None,
+            address_family: crate::address_family::AddressFamily::Any,
             pool_idle_timeout: Duration::from_secs(90),
             pool_max_lifetime: None,
             pool_max_idle_per_host: 10,

@@ -70,6 +70,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `write_timeout(Duration)` | None      | Timeout between request body chunks (upload) |
 | `tcp_keepalive(Duration)` | None     | Enable TCP keepalive with given interval |
 | `local_address(IpAddr)`   | None     | Bind outgoing connections to a local IP  |
+| `address_family(AddressFamily)` | Any | Restrict/prefer IP family (Ipv4Only, Ipv6Only, PreferIpv4, PreferIpv6) for resolved connections |
 | `max_redirects(usize)`  | 10          | Maximum redirect hops (0 = disabled) |
 | `referer(bool)`         | false       | Set `Referer` header on redirects    |
 | `https_only(bool)`      | false       | Reject non-HTTPS URLs                |

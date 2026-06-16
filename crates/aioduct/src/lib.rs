@@ -25,6 +25,8 @@ compile_error!("aioduct: the `http3` feature currently requires the `rustls` TLS
 
 // ── Portable modules (available on all targets including wasm32) ─────────────
 
+/// Address-family preference for DNS-resolved connections.
+pub mod address_family;
 /// Token-bucket bandwidth limiter for throttling download throughput.
 pub mod bandwidth;
 /// Request and response body types.
@@ -150,6 +152,7 @@ pub mod h3_transport;
 
 // ── Re-exports: portable ─────────────────────────────────────────────────────
 
+pub use address_family::AddressFamily;
 pub use bandwidth::BandwidthLimiter;
 pub use body::{BodyStreamSend, RequestBody};
 pub use cache::{CacheConfig, CacheEntry, CacheStore, HttpCache, InMemoryCacheStore};
