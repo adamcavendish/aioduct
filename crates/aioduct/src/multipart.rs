@@ -1,8 +1,9 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
-/// Builder for multipart/form-data request bodies.
+/// Builder for multipart request bodies (default subtype `form-data`).
 pub struct Multipart {
     boundary: String,
+    subtype: String,
     parts: Vec<Part>,
 }
 
@@ -100,8 +101,44 @@ impl Multipart {
     pub fn new() -> Self {
         Self {
             boundary: generate_boundary(),
+            subtype: "form-data".to_owned(),
             parts: Vec::new(),
         }
+    }
+
+    /// Use a caller-supplied boundary instead of the generated one.
+    ///
+    /// The boundary must be 1–70 characters from the RFC 2046 `bcharsnospace`
+    /// set (alphanumerics and ``'()+_,-./:=?``). Returns an error otherwise.
+    /// Useful for reproducing WebKit-style boundaries or deterministic tests.
+    ///
+    /// # Caller responsibility
+    ///
+    /// Per RFC 2046, the boundary must not appear inside any part body. The
+    /// default generated boundary is random, so collisions are effectively
+    /// impossible; a caller-supplied boundary removes that guarantee. Choose a
+    /// boundary that cannot occur in your part data, or framing will be
+    /// corrupted. This is not validated here (streaming bodies cannot be
+    /// scanned without buffering).
+    pub fn with_boundary(
+        mut self,
+        boundary: impl Into<String>,
+    ) -> Result<Self, crate::error::Error> {
+        let boundary = boundary.into();
+        validate_boundary(&boundary)?;
+        self.boundary = boundary;
+        Ok(self)
+    }
+
+    /// Set the multipart subtype (the part after `multipart/`).
+    ///
+    /// Defaults to `form-data`. Use e.g. `mixed` or `related` for other
+    /// multipart kinds. The subtype must be a non-empty RFC 7230 token.
+    pub fn subtype(mut self, subtype: impl Into<String>) -> Result<Self, crate::error::Error> {
+        let subtype = subtype.into();
+        validate_token(&subtype)?;
+        self.subtype = subtype;
+        Ok(self)
     }
 
     /// Add a text field.
@@ -144,7 +181,7 @@ impl Multipart {
 
     /// Return the full `Content-Type` header value including boundary.
     pub fn content_type(&self) -> String {
-        format!("multipart/form-data; boundary=\"{}\"", self.boundary)
+        format!("multipart/{}; boundary=\"{}\"", self.subtype, self.boundary)
     }
 
     pub(crate) fn into_bytes(self) -> Bytes {
@@ -376,6 +413,68 @@ fn generate_boundary() -> String {
     format!("----aioduct{r1:016x}{r2:016x}")
 }
 
+/// Validate a caller-supplied boundary against RFC 2046 `bcharsnospace`.
+///
+/// `bcharsnospace = DIGIT / ALPHA / "'" / "(" / ")" / "+" / "_" / "," /
+/// "-" / "." / "/" / ":" / "=" / "?"`. A boundary is 1–70 of these
+/// characters (we reject the trailing-space form, which is not useful here).
+fn validate_boundary(boundary: &str) -> Result<(), crate::error::Error> {
+    if boundary.is_empty() || boundary.len() > 70 {
+        return Err(crate::error::Error::InvalidHeader(format!(
+            "multipart boundary must be 1-70 characters, got {}",
+            boundary.len()
+        )));
+    }
+    for c in boundary.chars() {
+        let ok = c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '\'' | '(' | ')' | '+' | '_' | ',' | '-' | '.' | '/' | ':' | '=' | '?'
+            );
+        if !ok {
+            return Err(crate::error::Error::InvalidHeader(format!(
+                "invalid character {c:?} in multipart boundary"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate an RFC 7230 token (used for the multipart subtype).
+fn validate_token(token: &str) -> Result<(), crate::error::Error> {
+    if token.is_empty() {
+        return Err(crate::error::Error::InvalidHeader(
+            "multipart subtype must not be empty".into(),
+        ));
+    }
+    for c in token.chars() {
+        let ok = c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '!' | '#'
+                    | '$'
+                    | '%'
+                    | '&'
+                    | '\''
+                    | '*'
+                    | '+'
+                    | '-'
+                    | '.'
+                    | '^'
+                    | '_'
+                    | '`'
+                    | '|'
+                    | '~'
+            );
+        if !ok {
+            return Err(crate::error::Error::InvalidHeader(format!(
+                "invalid character {c:?} in multipart subtype"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +539,100 @@ mod tests {
         assert!(body.starts_with(&format!("--{boundary}\r\n")));
         assert!(body.ends_with(&format!("--{boundary}--\r\n")));
         assert!(!body.contains("----aioduct<boundary>"));
+    }
+
+    #[test]
+    fn with_boundary_sets_custom_boundary() {
+        let mp = Multipart::new()
+            .with_boundary("WebKitFormBoundary7MA4YWxkTrZu0gW")
+            .unwrap()
+            .text("name", "value");
+        assert_eq!(mp.boundary(), "WebKitFormBoundary7MA4YWxkTrZu0gW");
+        let ct = mp.content_type();
+        assert_eq!(
+            ct,
+            "multipart/form-data; boundary=\"WebKitFormBoundary7MA4YWxkTrZu0gW\""
+        );
+        let body = String::from_utf8(mp.into_bytes().to_vec()).unwrap();
+        assert!(body.starts_with("--WebKitFormBoundary7MA4YWxkTrZu0gW\r\n"));
+        assert!(body.ends_with("--WebKitFormBoundary7MA4YWxkTrZu0gW--\r\n"));
+    }
+
+    #[test]
+    fn with_boundary_rejects_invalid() {
+        // space is not in bcharsnospace
+        assert!(Multipart::new().with_boundary("has space").is_err());
+        // empty
+        assert!(Multipart::new().with_boundary("").is_err());
+        // too long (> 70)
+        assert!(Multipart::new().with_boundary("a".repeat(71)).is_err());
+        // disallowed char
+        assert!(Multipart::new().with_boundary("bad@boundary").is_err());
+    }
+
+    #[test]
+    fn subtype_changes_content_type() {
+        let mp = Multipart::new().subtype("mixed").unwrap();
+        assert!(mp.content_type().starts_with("multipart/mixed; boundary="));
+
+        let mp = Multipart::new().subtype("related").unwrap();
+        assert!(
+            mp.content_type()
+                .starts_with("multipart/related; boundary=")
+        );
+    }
+
+    #[test]
+    fn subtype_rejects_invalid() {
+        assert!(Multipart::new().subtype("").is_err());
+        assert!(Multipart::new().subtype("has space").is_err());
+        assert!(Multipart::new().subtype("bad/slash").is_err());
+        // Header-injection-relevant chars must be rejected: `=` and `;` would
+        // let a subtype smuggle extra Content-Type parameters.
+        assert!(
+            Multipart::new()
+                .subtype("form-data; boundary=evil")
+                .is_err()
+        );
+        assert!(Multipart::new().subtype("a=b").is_err());
+    }
+
+    #[test]
+    fn with_boundary_accepts_allowed_specials_and_max_length() {
+        // An allowed bcharsnospace special set, plus an exactly-70-char boundary.
+        assert!(Multipart::new().with_boundary("a'()+_,-./:=?b").is_ok());
+        assert!(Multipart::new().with_boundary("a".repeat(70)).is_ok());
+    }
+
+    #[test]
+    fn custom_boundary_used_by_streaming_path() {
+        // The streaming path reuses `self.boundary`; a dedicated wire assertion
+        // through `into_streaming_body` lives in the `streaming_tests` module
+        // (gated on the tokio feature). This test pins the buffered framing.
+        let mp = Multipart::new()
+            .with_boundary("CustomStreamBoundary123")
+            .unwrap()
+            .text("field", "v");
+        let body = String::from_utf8(mp.into_bytes().to_vec()).unwrap();
+        assert!(body.starts_with("--CustomStreamBoundary123\r\n"));
+        assert!(body.ends_with("--CustomStreamBoundary123--\r\n"));
+    }
+
+    #[test]
+    fn subtype_does_not_leak_into_body() {
+        let mp = Multipart::new().subtype("mixed").unwrap().text("k", "v");
+        let body = String::from_utf8(mp.into_bytes().to_vec()).unwrap();
+        // The subtype belongs only in the Content-Type header, never the body.
+        assert!(!body.contains("mixed"));
+    }
+
+    #[test]
+    fn default_subtype_is_form_data() {
+        assert!(
+            Multipart::new()
+                .content_type()
+                .starts_with("multipart/form-data; ")
+        );
     }
 
     #[test]
@@ -722,6 +915,24 @@ mod streaming_tests {
         assert!(body.contains("Content-Disposition: form-data; name=\"name\"\r\n"));
         assert!(body.contains("value\r\n"));
         assert!(body.ends_with(&format!("--{boundary}--\r\n")));
+    }
+
+    #[tokio::test]
+    async fn streaming_honors_custom_boundary() {
+        let stream_body: crate::body::RequestBodySend =
+            http_body_util::Full::new(Bytes::from("streamed-value"))
+                .map_err(|never| match never {})
+                .boxed_unsync();
+        let mp = Multipart::new()
+            .with_boundary("CustomStreamBoundary123")
+            .unwrap()
+            .part(Part::stream("field", stream_body));
+        assert!(mp.has_streaming_parts());
+
+        let body = collect_streaming(mp).await;
+        assert!(body.starts_with("--CustomStreamBoundary123\r\n"));
+        assert!(body.ends_with("--CustomStreamBoundary123--\r\n"));
+        assert!(body.contains("streamed-value"));
     }
 
     #[tokio::test]

@@ -154,6 +154,12 @@ let rb = client.post("http://example.com").unwrap()
 // Generated boundaries are RFC 2046-safe and at most 70 bytes.
 // let rb = client.post("http://example.com").unwrap()
 //     .multipart(aioduct::Multipart::new().text("field", "value"));
+//
+// Custom boundary (validated, 1-70 RFC 2046 chars) and subtype:
+// let form = aioduct::Multipart::new()
+//     .with_boundary("WebKitFormBoundaryABC123")?   // Result
+//     .subtype("mixed")?                            // multipart/mixed
+//     .text("field", "value");
 
 // JSON (requires `json` feature)
 // let rb = client.post("http://example.com").unwrap()
