@@ -105,6 +105,13 @@ pub trait RequestBuilderExt: Sized {
         self
     }
 
+    /// Disable automatic response decompression for this request.
+    ///
+    /// Implementations that do not perform decompression may ignore this option.
+    fn no_decompression(self) -> Self {
+        self
+    }
+
     /// Set HTTP Basic auth credentials.
     ///
     /// Implementations that do not support auth headers may ignore this option.
