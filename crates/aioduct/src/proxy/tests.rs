@@ -456,6 +456,7 @@ fn proxy_config_authority_missing() {
         uri: "/just-a-path".parse().unwrap(),
         scheme: ProxyScheme::Http,
         auth: None,
+        connect_headers: Vec::new(),
     };
     assert!(cfg.authority().is_err());
 }
@@ -780,4 +781,78 @@ fn detect_from_url_extracts_auth_socks5h() {
     let auth = cfg.auth.unwrap();
     assert_eq!(auth.username, "a");
     assert_eq!(auth.password, "b");
+}
+
+#[test]
+fn header_appends_connect_headers() {
+    let cfg = ProxyConfig::http("http://proxy:8080")
+        .unwrap()
+        .header(
+            http::header::HeaderName::from_static("x-a"),
+            http::HeaderValue::from_static("1"),
+        )
+        .header(
+            http::header::HeaderName::from_static("x-b"),
+            http::HeaderValue::from_static("2"),
+        );
+    assert_eq!(cfg.connect_headers.len(), 2);
+    assert_eq!(cfg.connect_headers[0].0.as_str(), "x-a");
+    assert_eq!(cfg.connect_headers[1].0.as_str(), "x-b");
+}
+
+#[test]
+fn route_hash_differs_by_connect_headers() {
+    let base = ProxyConfig::http("http://proxy:8080").unwrap();
+    let with_header = ProxyConfig::http("http://proxy:8080").unwrap().header(
+        http::header::HeaderName::from_static("x-token"),
+        http::HeaderValue::from_static("abc"),
+    );
+    // Different CONNECT headers must segregate pooled routes.
+    assert_ne!(base.route_hash(), with_header.route_hash());
+
+    // Same headers hash equally.
+    let with_header2 = ProxyConfig::http("http://proxy:8080").unwrap().header(
+        http::header::HeaderName::from_static("x-token"),
+        http::HeaderValue::from_static("abc"),
+    );
+    assert_eq!(with_header.route_hash(), with_header2.route_hash());
+}
+
+#[test]
+fn route_hash_ignores_headers_for_socks() {
+    // SOCKS proxies don't send CONNECT headers, so header() calls should not
+    // fragment pool keys for otherwise-identical SOCKS configs.
+    let s1 = ProxyConfig::socks5("socks5://proxy:1080").unwrap();
+    let s2 = ProxyConfig::socks5("socks5://proxy:1080").unwrap().header(
+        http::header::HeaderName::from_static("x-irrelevant"),
+        http::HeaderValue::from_static("v"),
+    );
+    assert_eq!(s1.route_hash(), s2.route_hash());
+}
+
+#[test]
+fn route_hash_does_still_hash_headers_for_https_proxy() {
+    let h1 = ProxyConfig::https("https://proxy:443").unwrap();
+    let h2 = ProxyConfig::https("https://proxy:443").unwrap().header(
+        http::header::HeaderName::from_static("x-token"),
+        http::HeaderValue::from_static("secret"),
+    );
+    assert_ne!(h1.route_hash(), h2.route_hash());
+}
+
+#[test]
+fn debug_redacts_connect_header_values() {
+    let cfg = ProxyConfig::http("http://proxy:8080").unwrap().header(
+        http::header::HeaderName::from_static("x-token"),
+        http::HeaderValue::from_static("supersecret"),
+    );
+    let dbg = format!("{cfg:?}");
+    assert!(
+        dbg.contains("x-token"),
+        "header name should be shown: {dbg}"
+    );
+    assert!(
+        !dbg.contains("supersecret"),
+        "header value must not leak in Debug: {dbg}"
+    );
 }

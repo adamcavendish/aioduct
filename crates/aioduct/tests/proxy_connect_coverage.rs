@@ -1132,3 +1132,81 @@ async fn connection_coalescing_reuses_h2_with_sans() {
     // The real assertions above verify both requests succeeded through the
     // SAN-based TLS connection on the same server.
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Custom CONNECT headers: ProxyConfig::header() are sent on the CONNECT line.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[tokio::test]
+async fn proxy_connect_sends_custom_headers() {
+    // Real HTTP target server.
+    let (target_addr, _counter) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("through proxy"))))
+    })
+    .await;
+
+    // CONNECT proxy that captures the request bytes, then relays to the target.
+    let captured = Arc::new(Mutex::new(String::new()));
+    let cap = captured.clone();
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (mut client, _) = proxy_listener.accept().await.unwrap();
+        // Read until \r\n\r\n so a partial read doesn't miss the header.
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 512];
+        loop {
+            let n = client.read(&mut tmp).await.unwrap();
+            buf.extend_from_slice(&tmp[..n]);
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let req_str = String::from_utf8_lossy(&buf).to_string();
+        *cap.lock().unwrap() = req_str.clone();
+
+        let _ = client
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await;
+
+        let actual = format!("127.0.0.1:{}", target_addr.port());
+        if let Ok(mut upstream) = tokio::net::TcpStream::connect(&actual).await {
+            let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        }
+    });
+
+    let proxy = aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+        .unwrap()
+        .header(
+            http::header::HeaderName::from_static("x-proxy-token"),
+            http::HeaderValue::from_static("secret-123"),
+        );
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(proxy)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    // An HTTPS-less target still tunnels via CONNECT because a proxy is set.
+    let resp = client
+        .get(&format!("http://localhost:{}/", target_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+
+    let connect_req = captured.lock().unwrap().clone();
+    assert!(
+        connect_req.starts_with("CONNECT "),
+        "expected a CONNECT request, got: {connect_req}"
+    );
+    assert!(
+        connect_req
+            .to_lowercase()
+            .contains("x-proxy-token: secret-123"),
+        "custom CONNECT header missing, got: {connect_req}"
+    );
+}
