@@ -186,6 +186,29 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
+### Custom CONNECT Headers
+
+For HTTP and HTTPS proxies (which tunnel via `CONNECT`), `header()` attaches
+extra headers to the `CONNECT` request — useful for proxy auth tokens or routing
+headers beyond Basic auth. SOCKS proxies have no header phase and ignore these.
+Different CONNECT headers segregate pooled connections.
+
+```rust,no_run
+use aioduct::{TokioClient, ProxyConfig};
+use http::header::{HeaderName, HeaderValue};
+
+let client = TokioClient::builder()
+    .proxy(
+        ProxyConfig::http("http://proxy.example.com:8080")
+            .unwrap()
+            .header(
+                HeaderName::from_static("x-proxy-token"),
+                HeaderValue::from_static("secret-token"),
+            ),
+    )
+    .build()?;
+```
+
 ### Credential Resolver
 
 The `CredentialResolver` trait allows looking up proxy credentials from
