@@ -1,4 +1,5 @@
 use http::Uri;
+use http::header::{HeaderName, HeaderValue};
 
 use crate::error::Error;
 
@@ -17,6 +18,8 @@ pub struct ProxyConfig {
     pub(crate) uri: Uri,
     pub(crate) scheme: ProxyScheme,
     pub(crate) auth: Option<ProxyAuth>,
+    /// Extra headers sent on the HTTP `CONNECT` request (HTTP/HTTPS proxies).
+    pub(crate) connect_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
 impl std::fmt::Debug for ProxyConfig {
@@ -25,6 +28,14 @@ impl std::fmt::Debug for ProxyConfig {
             .field("scheme", &self.scheme)
             .field("auth", &self.auth)
             .field("uri", &ProxyUriDebug(&self.uri))
+            .field(
+                "connect_headers",
+                &self
+                    .connect_headers
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -37,6 +48,15 @@ impl ProxyConfig {
         self.scheme.hash(&mut h);
         self.uri.hash(&mut h);
         self.auth.hash(&mut h);
+        // Only HTTP/HTTPS proxies send a CONNECT request with headers; SOCKS
+        // proxies never emit them, so ignoring headers for non-CONNECT schemes
+        // avoids unnecessary pool-key fragmentation.
+        if matches!(self.scheme, ProxyScheme::Http | ProxyScheme::Https) {
+            for (name, value) in &self.connect_headers {
+                name.as_str().hash(&mut h);
+                value.as_bytes().hash(&mut h);
+            }
+        }
         h.finish()
     }
 }
@@ -161,6 +181,7 @@ impl ProxyConfig {
             uri,
             scheme: ProxyScheme::Http,
             auth,
+            connect_headers: Vec::new(),
         })
     }
 
@@ -177,6 +198,7 @@ impl ProxyConfig {
             uri,
             scheme: ProxyScheme::Socks5,
             auth,
+            connect_headers: Vec::new(),
         })
     }
 
@@ -196,6 +218,7 @@ impl ProxyConfig {
             uri,
             scheme: ProxyScheme::Socks4,
             auth,
+            connect_headers: Vec::new(),
         })
     }
 
@@ -212,6 +235,7 @@ impl ProxyConfig {
             uri,
             scheme: ProxyScheme::Socks5h,
             auth,
+            connect_headers: Vec::new(),
         })
     }
 
@@ -228,6 +252,7 @@ impl ProxyConfig {
             uri,
             scheme: ProxyScheme::Https,
             auth,
+            connect_headers: Vec::new(),
         })
     }
 
@@ -237,6 +262,16 @@ impl ProxyConfig {
             username: username.to_owned(),
             password: password.to_owned(),
         });
+        self
+    }
+
+    /// Add an extra header to the HTTP `CONNECT` request sent to the proxy.
+    ///
+    /// Applies to HTTP and HTTPS proxies (which tunnel via `CONNECT`); SOCKS
+    /// proxies have no header phase and ignore these. Useful for proxy auth
+    /// tokens or routing headers beyond basic auth. May be called repeatedly.
+    pub fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
+        self.connect_headers.push((name, value));
         self
     }
 
