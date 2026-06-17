@@ -189,6 +189,7 @@ let rb = client.get("http://example.com").unwrap()
     .connect_timeout(Duration::from_secs(2)) // per-request connection timeout
     .read_timeout(Duration::from_secs(30))   // per-request response read-gap timeout
     .write_timeout(Duration::from_secs(10))  // per-request upload timeout
+    .no_decompression()                      // per-request: skip Accept-Encoding + decoding
     .version(http::Version::HTTP_11);    // force HTTP version
 
 // HTTP upgrade (WebSocket)

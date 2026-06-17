@@ -74,6 +74,11 @@ impl<R: RuntimePoll, C: ConnectorSend> RequestBuilderExt for OwnedRequestBuilder
         self
     }
 
+    fn no_decompression(mut self) -> Self {
+        self.inner = self.inner.no_decompression();
+        self
+    }
+
     fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         self.inner = self.inner.basic_auth(username, password);
         self

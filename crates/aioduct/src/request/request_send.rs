@@ -32,6 +32,7 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
+    no_decompression: bool,
     force_no_timeout: bool,
     retry: Option<RetryConfig>,
     force_addr: Option<std::net::SocketAddr>,
@@ -69,6 +70,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             connect_timeout: None,
             read_timeout: None,
             write_timeout: None,
+            no_decompression: false,
             force_no_timeout: false,
             retry: None,
             force_addr: None,
@@ -95,6 +97,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             connect_timeout: None,
             read_timeout: None,
             write_timeout: None,
+            no_decompression: false,
             force_no_timeout: false,
             retry: None,
             force_addr: None,
@@ -341,6 +344,17 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         self
     }
 
+    /// Disable automatic response decompression for this request.
+    ///
+    /// Overrides the client default: the `Accept-Encoding` request header is not
+    /// added and the response body is returned exactly as received (no gzip /
+    /// brotli / zstd / deflate decoding). Useful for proxying or inspecting raw
+    /// compressed bytes.
+    pub fn no_decompression(mut self) -> Self {
+        self.no_decompression = true;
+        self
+    }
+
     /// Disable the overall request timeout for this specific request.
     ///
     /// Use when the client has a default timeout but this request
@@ -444,6 +458,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             connect_timeout: self.connect_timeout,
             read_timeout: self.read_timeout,
             write_timeout: self.write_timeout,
+            no_decompression: self.no_decompression,
             force_no_timeout: self.force_no_timeout,
             retry: self.retry.clone(),
             force_addr: self.force_addr,
@@ -492,6 +507,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             effective_connect_timeout,
             effective_write_timeout,
             effective_read_timeout,
+            self.no_decompression,
             self.force_addr,
             self.protocol_hint,
             self.fragment,
@@ -561,6 +577,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 effective_connect_timeout,
                 effective_write_timeout,
                 effective_read_timeout,
+                self.no_decompression,
                 self.force_addr,
                 self.protocol_hint,
                 self.fragment.clone(),
