@@ -27,6 +27,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         connect_timeout: Option<Duration>,
         write_timeout: Option<Duration>,
         read_timeout: Option<Duration>,
+        no_decompression: bool,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
         mut original_fragment: Option<String>,
@@ -47,7 +48,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         let mut current_body = body;
         let mut current_headers = headers;
 
-        self.core.apply_default_headers(&mut current_headers);
+        self.core
+            .apply_default_headers_with(&mut current_headers, no_decompression);
 
         for _ in 0..=self.core.redirect_policy.max_redirects() {
             self.core.prepare_request_headers(
@@ -218,6 +220,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             current_uri,
                             &current_headers,
                             read_timeout,
+                            no_decompression,
                         )
                         .await?;
                     final_resp.set_fragment(original_fragment);
@@ -320,13 +323,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         uri: Uri,
         request_headers: &HeaderMap,
         read_timeout: Option<Duration>,
+        no_decompression: bool,
     ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         let mut resp = resp;
         if !self.core.middleware.is_empty() {
             resp.apply_middleware(&self.core.middleware, &uri);
         }
 
-        let resp = if !self.core.accept_encoding.is_empty() {
+        let resp = if !no_decompression && !self.core.accept_encoding.is_empty() {
             resp.decompress(&self.core.accept_encoding)
         } else {
             resp

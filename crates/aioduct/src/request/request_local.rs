@@ -28,6 +28,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
+    no_decompression: bool,
     force_no_timeout: bool,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
@@ -63,6 +64,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             connect_timeout: None,
             read_timeout: None,
             write_timeout: None,
+            no_decompression: false,
             force_no_timeout: false,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
@@ -87,6 +89,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             connect_timeout: None,
             read_timeout: None,
             write_timeout: None,
+            no_decompression: false,
             force_no_timeout: false,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
@@ -307,6 +310,16 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         self
     }
 
+    /// Disable automatic response decompression for this request.
+    ///
+    /// Overrides the client default: the `Accept-Encoding` request header is not
+    /// added and the response body is returned exactly as received (no gzip /
+    /// brotli / zstd / deflate decoding).
+    pub fn no_decompression(mut self) -> Self {
+        self.no_decompression = true;
+        self
+    }
+
     /// Disable the overall request timeout for this specific request.
     pub fn no_timeout(mut self) -> Self {
         self.force_no_timeout = true;
@@ -414,6 +427,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             connect_timeout: self.connect_timeout,
             read_timeout: self.read_timeout,
             write_timeout: self.write_timeout,
+            no_decompression: self.no_decompression,
             force_no_timeout: self.force_no_timeout,
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
@@ -441,6 +455,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             effective_connect_timeout,
             effective_write_timeout,
             effective_read_timeout,
+            self.no_decompression,
             self.force_addr,
             self.protocol_hint,
             self.fragment,

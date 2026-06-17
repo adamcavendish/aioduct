@@ -70,11 +70,25 @@ impl<B> HttpEngineCore<B> {
         uri
     }
 
+    #[cfg(test)]
     pub(super) fn apply_default_headers(&self, headers: &mut HeaderMap) {
+        self.apply_default_headers_with(headers, false);
+    }
+
+    /// Apply default headers; when `skip_accept_encoding` is set, the
+    /// `Accept-Encoding` header is not added (per-request `no_decompression`).
+    pub(super) fn apply_default_headers_with(
+        &self,
+        headers: &mut HeaderMap,
+        skip_accept_encoding: bool,
+    ) {
         for (name, value) in self.default_headers.iter() {
             if !headers.contains_key(name) {
                 headers.insert(name, value.clone());
             }
+        }
+        if skip_accept_encoding {
+            return;
         }
         if let Some(ref val) = self.accept_encoding_header
             && !headers.contains_key(http::header::ACCEPT_ENCODING)

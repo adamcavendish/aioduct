@@ -86,6 +86,43 @@ fn test_compio_base_url_resolves_relative_path() {
     });
 }
 
+#[cfg(feature = "gzip")]
+#[test]
+fn test_compio_per_request_no_decompression() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let addr = start_server_with_tokio(|_req| async move {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(b"compio raw gzip").unwrap();
+        let compressed = encoder.finish().unwrap();
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("content-encoding", "gzip")
+                .body(Full::new(Bytes::from(compressed)))
+                .unwrap(),
+        )
+    });
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let resp = client
+            .get_local(&format!("http://{addr}/"))
+            .unwrap()
+            .no_decompression()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.headers().get("content-encoding").unwrap(), "gzip");
+        let raw = resp.bytes().await.unwrap();
+        assert_ne!(
+            raw.as_ref(),
+            b"compio raw gzip",
+            "body must stay compressed"
+        );
+    });
+}
+
 #[test]
 fn test_compio_post_request() {
     let addr = start_server_tokio();
