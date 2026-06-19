@@ -154,6 +154,8 @@ pub mod h3_transport;
 
 pub use address_family::AddressFamily;
 pub use bandwidth::BandwidthLimiter;
+#[cfg(not(target_arch = "wasm32"))]
+pub use body::BodyStreamLocal;
 pub use body::{BodyStreamSend, RequestBody};
 pub use cache::{CacheConfig, CacheEntry, CacheStore, HttpCache, InMemoryCacheStore};
 pub use cookie::{Cookie, CookieJar, SameSite};
