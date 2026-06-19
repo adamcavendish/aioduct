@@ -133,9 +133,9 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// This is the client default and can be overridden per request with
     /// [`RequestBuilderSend::read_timeout`](crate::request::RequestBuilderSend::read_timeout).
     ///
-    /// Use [`timeout()`](Self::timeout) for an overall request deadline that
-    /// covers headers and body, or [`connect_timeout()`](Self::connect_timeout)
-    /// for the TCP + TLS handshake phase.
+    /// Use [`timeout()`](Self::timeout) to bound one request attempt until
+    /// `send()` returns, or [`connect_timeout()`](Self::connect_timeout) for
+    /// the TCP + TLS handshake phase.
     pub fn read_timeout(mut self, timeout: Duration) -> Self {
         self.read_timeout = Some(timeout);
         self
@@ -149,9 +149,9 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// backpressure from a slow server), the request fails with
     /// [`Error::WriteTimeout`](crate::Error::WriteTimeout).
     ///
-    /// Use [`timeout()`](Self::timeout) for an overall request deadline that
-    /// covers headers and body, or [`read_timeout()`](Self::read_timeout) for
-    /// the response body.
+    /// Use [`timeout()`](Self::timeout) to bound one request attempt until
+    /// `send()` returns, or [`read_timeout()`](Self::read_timeout) for the
+    /// response body.
     pub fn write_timeout(mut self, timeout: Duration) -> Self {
         self.write_timeout = Some(timeout);
         self

@@ -127,6 +127,21 @@ async fn test_no_proxy_bare_domain_matches_subdomains() {
     assert!(no_proxy.matches("foo.example.com"));
     assert!(!no_proxy.matches("notexample.com"));
 }
+
+#[tokio::test]
+async fn test_no_proxy_ip_cidr_and_port_matching() {
+    let no_proxy =
+        aioduct::NoProxy::new("127.0.0.1:8080, 10.0.0.0/8, 2001:db8::/32, [2001:db9::5]:8443");
+
+    assert!(no_proxy.matches("127.0.0.1:8080"));
+    assert!(!no_proxy.matches("127.0.0.1:8081"));
+    assert!(no_proxy.matches("10.20.30.40"));
+    assert!(!no_proxy.matches("192.0.2.1"));
+    assert!(no_proxy.matches("2001:db8::1234"));
+    assert!(!no_proxy.matches("2001:db9::1234"));
+    assert!(no_proxy.matches("[2001:db9::5]:8443"));
+    assert!(!no_proxy.matches("[2001:db9::5]:443"));
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_socks5_proxy() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

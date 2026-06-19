@@ -405,6 +405,65 @@ async fn test_retry_with_retry_after_header() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(attempt.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn retryable_final_response_replays_redirect_chain() {
+    let target_attempts = Arc::new(AtomicU32::new(0));
+    let target_attempts_clone = target_attempts.clone();
+    let (target_addr, _target_counter) = h1_server_with(move |_req| {
+        let target_attempts = target_attempts_clone.clone();
+        async move {
+            let n = target_attempts.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(503)
+                        .body(Full::new(Bytes::from("retry later")))
+                        .unwrap(),
+                )
+            } else {
+                Ok(Response::new(Full::new(Bytes::from("ok"))))
+            }
+        }
+    })
+    .await;
+
+    let origin_attempts = Arc::new(AtomicU32::new(0));
+    let origin_attempts_clone = origin_attempts.clone();
+    let (origin_addr, _origin_counter) = h1_server_with(move |_req| {
+        let origin_attempts = origin_attempts_clone.clone();
+        let location = format!("http://{target_addr}/final");
+        async move {
+            origin_attempts.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(302)
+                    .header("location", location)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{origin_addr}/start"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(1)
+                .initial_backoff(Duration::from_millis(0)),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "ok");
+    assert_eq!(origin_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(target_attempts.load(Ordering::SeqCst), 2);
+}
 #[tokio::test]
 async fn test_retry_on_status_disabled_no_retry() {
     let attempt = Arc::new(AtomicU32::new(0));

@@ -118,6 +118,17 @@ clients. Wasm/browser and wasi-p2 transports are host-managed; proxy discovery,
 DNS, and bypass behavior come from the browser or WASI host rather than
 aioduct's native proxy stack.
 
+### Runtime Scope
+
+| Runtime | Proxy configuration | Bypass matching | Notes |
+|---------|---------------------|-----------------|-------|
+| Tokio | Native stack | `NoProxy` | HTTP, HTTPS, SOCKS4, SOCKS4a, SOCKS5, and SOCKS5h |
+| smol | Native stack | `NoProxy` | Same behavior as Tokio for send clients |
+| compio | Native stack | `NoProxy` | Same behavior through local clients |
+| blocking | Wrapped native client | Wrapped native client | Inherits the configured async client behavior |
+| wasm | Browser-managed | Browser-managed | The browser decides proxy routing and bypass rules |
+| wasi-p2 | Host-managed | Host-managed | The WASI host decides proxy routing and bypass rules |
+
 ### NO_PROXY Rules
 
 The `NO_PROXY` value is a comma-separated list of patterns:

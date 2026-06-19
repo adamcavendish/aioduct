@@ -33,10 +33,10 @@ impl<B> HttpEngineCore<B> {
         host: &str,
         port: u16,
     ) -> Result<Vec<std::net::SocketAddr>, Error> {
-        if let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() {
+        if let Some(ip) = parse_ip_literal(host) {
             // IP-literal hosts bypass the address-family filter: an explicit
             // literal is the caller's deliberate choice.
-            return Ok(vec![addr]);
+            return Ok(vec![std::net::SocketAddr::new(ip, port)]);
         }
 
         #[cfg(feature = "tracing")]
@@ -86,4 +86,12 @@ impl<B> HttpEngineCore<B> {
             self.alt_svc_cache.insert(authority.clone(), entries);
         }
     }
+}
+
+fn parse_ip_literal(host: &str) -> Option<std::net::IpAddr> {
+    host.parse::<std::net::IpAddr>().ok().or_else(|| {
+        host.strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+    })
 }
