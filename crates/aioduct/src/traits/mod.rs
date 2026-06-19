@@ -126,6 +126,13 @@ pub trait RequestBuilderExt: Sized {
         self
     }
 
+    /// Set a URL-encoded form body from string pairs.
+    ///
+    /// Implementations that cannot build request bodies may ignore this option.
+    fn form(self, _params: &[(&str, &str)]) -> Self {
+        self
+    }
+
     /// Force a specific HTTP version.
     ///
     /// Implementations that cannot control the HTTP version may ignore this option.

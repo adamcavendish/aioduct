@@ -83,17 +83,20 @@ WASI-P2: `wasi_p2.rs` `query()` percent-encodes and appends pairs identically.
 | JSON (`json()`) | ✓ `json` | ✓ `json` | ✓ `json` | ✓ `json` | ✓ `json` |
 | Streaming | ✓ | ✓ | ✓ | ✗ | ✗ |
 | Multipart/form-data | ✓ | ✓ | ✓ | ✗ | ✗ |
-| Form (urlencoded) | ✓ `json` | ✓ `json` | ✓ `json` | ✗ | ✗ |
+| Form (urlencoded string pairs) | ✓ | ✓ | ✓ | ✓ `wasm` | ✓ `wasi-p2` |
+| Form (serializable value) | ✓ `json` | ✓ `json` | ✓ `json` | ✗ | ✗ |
 
-WASM: `wasm.rs` line 197 accepts `impl Into<Bytes>`. No streaming body or
-multipart integration. JSON serialization at lines 218-225 (`cfg(feature =
-"json")`).
+WASM: `wasm.rs` accepts `impl Into<Bytes>` via `body()` and URL-encoded string
+forms via `form()`. No streaming body or multipart integration. JSON
+serialization is available with `cfg(feature = "json")`.
 
-WASI-P2: `wasi_p2.rs` line 179 accepts `impl Into<Bytes>`. No streaming or
-multipart integration. JSON at lines 186-194.
+WASI-P2: `wasi_p2.rs` accepts `impl Into<Bytes>` via `body()` and URL-encoded
+string forms via `form()`. No streaming or multipart integration. JSON is
+available with `cfg(feature = "json")`.
 
 Native runtimes support streaming bodies via `RequestBodySend`, multipart via
-the `multipart` module, and form encoding via `serde_urlencoded`.
+the `multipart` module, string-pair form encoding, and serializable form values
+through `serde_urlencoded`.
 
 ### Response Body
 
