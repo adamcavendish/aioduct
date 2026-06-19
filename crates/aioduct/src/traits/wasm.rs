@@ -61,6 +61,11 @@ impl RequestBuilderExt for OwnedWasmRequestBuilder {
         self
     }
 
+    fn form(mut self, params: &[(&str, &str)]) -> Self {
+        self.inner = self.inner.form(params);
+        self
+    }
+
     async fn send(self) -> Result<WasmResponse, SendError> {
         let url = self.inner.uri().clone();
         self.inner.send().await.map_err(|e| SendError::new(e, url))
@@ -130,6 +135,15 @@ mod tests {
         let _rb = HttpClient::get(&client, "https://example.com/path")
             .unwrap()
             .query(&[("a", "1")]);
+        // Actual behavior is tested in wasm::tests.
+    }
+
+    #[test]
+    fn trait_form_non_default() {
+        let client = WasmClient::new();
+        let _rb = HttpClient::post(&client, "https://example.com/path")
+            .unwrap()
+            .form(&[("a", "1")]);
         // Actual behavior is tested in wasm::tests.
     }
 }

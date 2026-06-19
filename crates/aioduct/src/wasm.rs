@@ -259,6 +259,40 @@ impl<'a> WasmRequestBuilder<'a> {
         self
     }
 
+    /// Set a URL-encoded form body from string pairs.
+    pub fn form(mut self, params: &[(&str, &str)]) -> Self {
+        use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+        use std::fmt::Write;
+
+        const FORM_ENCODE: &AsciiSet = &CONTROLS
+            .add(b' ')
+            .add(b'"')
+            .add(b'#')
+            .add(b'<')
+            .add(b'>')
+            .add(b'&')
+            .add(b'=')
+            .add(b'+')
+            .add(b'%');
+
+        let mut encoded = String::new();
+        for (i, (key, val)) in params.iter().enumerate() {
+            if i > 0 {
+                encoded.push('&');
+            }
+            let key = utf8_percent_encode(key, FORM_ENCODE);
+            let val = utf8_percent_encode(val, FORM_ENCODE);
+            let _ = write!(encoded, "{key}={val}");
+        }
+        let encoded = encoded.replace("%20", "+");
+        self.headers.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-www-form-urlencoded"),
+        );
+        self.body = Some(Bytes::from(encoded));
+        self
+    }
+
     /// Set the body as JSON.
     #[cfg(feature = "json")]
     pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self, Error> {
@@ -788,6 +822,24 @@ mod tests {
         let uri = req.uri.to_string();
         assert!(uri.contains("a=1"));
         assert!(uri.contains("b=2"));
+    }
+
+    #[test]
+    fn request_builder_form_sets_content_type_and_body() {
+        let client = WasmClient::new();
+        let req = client
+            .post("https://example.com/path")
+            .unwrap()
+            .form(&[("name", "hello world"), ("tag", "a&b=c")]);
+
+        assert_eq!(
+            req.headers.get(http::header::CONTENT_TYPE).unwrap(),
+            "application/x-www-form-urlencoded"
+        );
+        assert_eq!(
+            req.body.as_ref().unwrap().as_ref(),
+            b"name=hello+world&tag=a%26b%3Dc"
+        );
     }
 
     #[test]
