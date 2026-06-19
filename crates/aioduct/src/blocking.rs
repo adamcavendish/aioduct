@@ -142,6 +142,12 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingRequestBuilder<C, R> {
         self
     }
 
+    /// Set a URL-encoded form body from string pairs.
+    pub fn form(mut self, params: &[(&str, &str)]) -> Self {
+        self.inner = self.inner.form(params);
+        self
+    }
+
     /// Set a timeout for this request.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.inner = self.inner.timeout(timeout);
@@ -157,6 +163,12 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingRequestBuilder<C, R> {
     /// Set a timeout for gaps between response body data chunks.
     pub fn read_timeout(mut self, timeout: Duration) -> Self {
         self.inner = self.inner.read_timeout(timeout);
+        self
+    }
+
+    /// Disable automatic response decompression for this request.
+    pub fn no_decompression(mut self) -> Self {
+        self.inner = self.inner.no_decompression();
         self
     }
 
