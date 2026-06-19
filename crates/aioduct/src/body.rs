@@ -131,6 +131,8 @@ impl From<RequestBodySend> for RequestBody {
 pub struct BodyStreamSend {
     body: RequestBodySend,
     done: bool,
+    /// Trailer headers captured from the body's trailer frame, if any.
+    trailers: Option<http::HeaderMap>,
     #[cfg(not(target_arch = "wasm32"))]
     observer_ctx: Option<BodyObserverCtx>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -151,6 +153,7 @@ impl BodyStreamSend {
         Self {
             body,
             done: false,
+            trailers: None,
             #[cfg(not(target_arch = "wasm32"))]
             observer_ctx: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -169,10 +172,19 @@ impl BodyStreamSend {
         Self {
             body,
             done: false,
+            trailers: None,
             observer_ctx: ctx,
             cumulative_bytes: 0,
             transfer_start,
         }
+    }
+
+    /// Returns the trailer headers received after the body, if any.
+    ///
+    /// Only populated once the stream has been fully consumed (i.e. `next()`
+    /// returned `None`); trailers arrive after the final data frame.
+    pub fn trailers(&self) -> Option<&http::HeaderMap> {
+        self.trailers.as_ref()
     }
 
     /// Returns the next chunk of body data, or `None` when complete.
@@ -211,31 +223,34 @@ impl BodyStreamSend {
                         return Some(Ok(data));
                     }
                     Err(frame) => {
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            let _ = &frame;
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            if let Ok(trailers) = frame.into_trailers()
-                                && let Some(ctx) = &self.observer_ctx
-                            {
-                                let headers: Vec<(String, String)> = trailers
-                                    .iter()
-                                    .map(|(k, v)| {
-                                        (
-                                            k.as_str().to_owned(),
-                                            v.to_str().unwrap_or("<binary>").to_owned(),
-                                        )
-                                    })
-                                    .collect();
-                                ctx.observer.on_event(&RequestEvent {
-                                    method: ctx.method.clone(),
-                                    uri: ctx.uri.clone(),
-                                    phase: RequestPhase::TrailersReceived { headers },
-                                    at: observer::Instant::now(),
-                                });
+                        // Capture trailers so callers can read them via
+                        // `trailers()` after the stream completes.
+                        match frame.into_trailers() {
+                            Ok(trailers) => {
+                                #[cfg(not(target_arch = "wasm32"))]
+                                if let Some(ctx) = &self.observer_ctx {
+                                    let headers: Vec<(String, String)> = trailers
+                                        .iter()
+                                        .map(|(k, v)| {
+                                            (
+                                                k.as_str().to_owned(),
+                                                v.to_str().unwrap_or("<binary>").to_owned(),
+                                            )
+                                        })
+                                        .collect();
+                                    ctx.observer.on_event(&RequestEvent {
+                                        method: ctx.method.clone(),
+                                        uri: ctx.uri.clone(),
+                                        phase: RequestPhase::TrailersReceived { headers },
+                                        at: observer::Instant::now(),
+                                    });
+                                }
+                                match &mut self.trailers {
+                                    Some(existing) => existing.extend(trailers),
+                                    None => self.trailers = Some(trailers),
+                                }
                             }
+                            Err(_non_trailer) => {}
                         }
                     }
                 },
@@ -313,6 +328,7 @@ impl Drop for BodyStreamSend {
 pub struct BodyStreamLocal {
     body: ResponseBodyLocal,
     done: bool,
+    trailers: Option<http::HeaderMap>,
     observer_ctx: Option<BodyObserverCtx>,
     cumulative_bytes: u64,
     transfer_start: Instant,
@@ -335,10 +351,18 @@ impl BodyStreamLocal {
         Self {
             body,
             done: false,
+            trailers: None,
             observer_ctx: ctx,
             cumulative_bytes: 0,
             transfer_start,
         }
+    }
+
+    /// Returns the trailer headers received after the body, if any.
+    ///
+    /// Only populated once the stream has been fully consumed.
+    pub fn trailers(&self) -> Option<&http::HeaderMap> {
+        self.trailers.as_ref()
     }
 
     /// Returns the next chunk of body data, or `None` when complete.
@@ -375,27 +399,32 @@ impl BodyStreamLocal {
                         }
                         return Some(Ok(data));
                     }
-                    Err(frame) => {
-                        if let Ok(trailers) = frame.into_trailers()
-                            && let Some(ctx) = &self.observer_ctx
-                        {
-                            let headers: Vec<(String, String)> = trailers
-                                .iter()
-                                .map(|(k, v)| {
-                                    (
-                                        k.as_str().to_owned(),
-                                        v.to_str().unwrap_or("<binary>").to_owned(),
-                                    )
-                                })
-                                .collect();
-                            ctx.observer.on_event(&RequestEvent {
-                                method: ctx.method.clone(),
-                                uri: ctx.uri.clone(),
-                                phase: RequestPhase::TrailersReceived { headers },
-                                at: observer::Instant::now(),
-                            });
+                    Err(frame) => match frame.into_trailers() {
+                        Ok(trailers) => {
+                            if let Some(ctx) = &self.observer_ctx {
+                                let headers: Vec<(String, String)> = trailers
+                                    .iter()
+                                    .map(|(k, v)| {
+                                        (
+                                            k.as_str().to_owned(),
+                                            v.to_str().unwrap_or("<binary>").to_owned(),
+                                        )
+                                    })
+                                    .collect();
+                                ctx.observer.on_event(&RequestEvent {
+                                    method: ctx.method.clone(),
+                                    uri: ctx.uri.clone(),
+                                    phase: RequestPhase::TrailersReceived { headers },
+                                    at: observer::Instant::now(),
+                                });
+                            }
+                            match &mut self.trailers {
+                                Some(existing) => existing.extend(trailers),
+                                None => self.trailers = Some(trailers),
+                            }
                         }
-                    }
+                        Err(_non_trailer) => {}
+                    },
                 },
                 Some(Err(e)) => {
                     self.done = true;
@@ -701,6 +730,62 @@ mod tests {
 
         // Then done
         assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn body_stream_exposes_trailers_after_drain() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        // Realistic order: data frame, then a trailers frame, then end.
+        struct DataThenTrailer {
+            state: u8,
+        }
+        impl http_body::Body for DataThenTrailer {
+            type Data = Bytes;
+            type Error = Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+                match self.state {
+                    0 => {
+                        self.state = 1;
+                        Poll::Ready(Some(Ok(http_body::Frame::data(Bytes::from("payload")))))
+                    }
+                    1 => {
+                        self.state = 2;
+                        let mut t = http::HeaderMap::new();
+                        t.insert("x-checksum", "abc123".parse().unwrap());
+                        Poll::Ready(Some(Ok(http_body::Frame::trailers(t))))
+                    }
+                    _ => Poll::Ready(None),
+                }
+            }
+        }
+
+        let body: RequestBodySend = DataThenTrailer { state: 0 }.boxed_unsync();
+        let mut stream = BodyStreamSend::new(body);
+
+        // Trailers are not available until the body is fully drained.
+        assert!(stream.trailers().is_none());
+        let chunk = stream.next().await.unwrap().unwrap();
+        assert_eq!(&chunk[..], b"payload");
+        assert!(stream.next().await.is_none());
+
+        let trailers = stream.trailers().expect("trailers should be captured");
+        assert_eq!(trailers.get("x-checksum").unwrap(), "abc123");
+    }
+
+    #[tokio::test]
+    async fn body_stream_no_trailers_stays_none() {
+        use http_body_util::BodyExt;
+        let body: RequestBodySend = http_body_util::Full::new(Bytes::from("no trailers"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let mut stream = BodyStreamSend::new(body);
+        while stream.next().await.is_some() {}
+        assert!(stream.trailers().is_none());
     }
 
     #[tokio::test]

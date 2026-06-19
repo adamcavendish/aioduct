@@ -452,7 +452,39 @@ Phases that are skipped (DNS for pool hits, TLS for plain HTTP) simply don't fir
 ## Trailers
 
 HTTP trailers are optional header fields sent after the body in chunked
-transfer encoding. They are exposed as body frames and via the observer:
+transfer encoding. They are available through three channels:
+
+### Via the bytes stream
+
+The simplest approach: drain the body with `into_bytes_stream()` and call
+`trailers()` once the stream is exhausted. Trailers are captured
+automatically as non-data frames are consumed.
+
+```rust,no_run
+use aioduct::TokioClient;
+
+let resp = client
+    .get("https://example.com/api")?
+    .send()
+    .await?;
+
+let mut stream = resp.into_bytes_stream();
+while let Some(chunk) = stream.next().await {
+    let _bytes = chunk?;
+    // process body data …
+}
+
+// Trailers are available after the stream is fully consumed
+if let Some(trailers) = stream.trailers() {
+    for (name, value) in trailers.iter() {
+        println!("trailer {name}: {value:?}");
+    }
+}
+```
+
+### Via the raw body frame stream
+
+For lower-level control, iterate the body frames directly:
 
 ```rust,no_run
 use aioduct::TokioClient;
@@ -463,7 +495,6 @@ let resp = client
     .send()
     .await?;
 
-// Trailers are available through the body frame stream
 let mut body = resp.into_body();
 while let Some(frame) = body.frame().await {
     let frame = frame?;
@@ -476,7 +507,9 @@ while let Some(frame) = body.frame().await {
 }
 ```
 
-The `RequestObserver` also fires a `TrailersReceived` phase when trailers
+### Via the request observer
+
+The `RequestObserver` fires a `TrailersReceived` phase when trailers
 arrive, with all trailer header fields.
 
 ## Error Types

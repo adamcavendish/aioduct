@@ -739,3 +739,65 @@ async fn upload_echo_large() {
         "echo server should return the full 100KB upload"
     );
 }
+
+// ── Trailers via the byte stream ────────────────────────────────────────────
+
+/// A chunked response with trailers exposes them through
+/// `BodyStreamSend::trailers()` after the stream is drained.
+#[tokio::test]
+async fn bytes_stream_exposes_trailers() {
+    use aioduct_test_server::raw::raw_streaming_server;
+    use tokio::io::AsyncWriteExt;
+
+    let addr = raw_streaming_server(move |_req, mut stream| async move {
+        let headers =
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: x-checksum\r\n\r\n";
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        // One data chunk.
+        stream.write_all(b"5\r\nhello\r\n").await.unwrap();
+        // Last-chunk marker, then a trailer field, then the terminating CRLF.
+        stream.write_all(b"0\r\n").await.unwrap();
+        stream.write_all(b"x-checksum: abc123\r\n").await.unwrap();
+        stream.write_all(b"\r\n").await.unwrap();
+        stream.flush().await.unwrap();
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    let mut stream = resp.into_bytes_stream();
+    let mut body = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        body.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(body, b"hello");
+
+    let trailers = stream.trailers().expect("trailers should be captured");
+    assert_eq!(trailers.get("x-checksum").unwrap(), "abc123");
+}
+
+/// A response without trailers leaves `trailers()` as `None`.
+#[tokio::test]
+async fn bytes_stream_without_trailers_is_none() {
+    let (addr, _counter) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("body"))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let mut stream = resp.into_bytes_stream();
+    while stream.next().await.is_some() {}
+    assert!(stream.trailers().is_none());
+}

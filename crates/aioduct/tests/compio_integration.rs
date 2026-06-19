@@ -4200,3 +4200,45 @@ fn test_compio_system_resolver_resolves_localhost() {
         assert_eq!(body, "hello aioduct");
     });
 }
+
+#[test]
+fn test_compio_bytes_stream_exposes_trailers() {
+    use std::io::Write;
+    // Raw chunked response with a trailer, served from a std-thread TCP server.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        tx.send(addr).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        // Drain the request line/headers.
+        use std::io::Read;
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: x-checksum\r\n\r\n",
+        );
+        let _ = stream.write_all(b"5\r\nhello\r\n");
+        let _ = stream.write_all(b"0\r\nx-checksum: abc123\r\n\r\n");
+        let _ = stream.flush();
+    });
+    let addr = rx.recv().unwrap();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let resp = client
+            .get_local(&format!("http://{addr}/"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        let mut stream = resp.into_bytes_stream();
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            body.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(body, b"hello");
+        let trailers = stream.trailers().expect("trailers should be captured");
+        assert_eq!(trailers.get("x-checksum").unwrap(), "abc123");
+    });
+}
