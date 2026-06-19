@@ -205,12 +205,18 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     }
 
     /// Set a buffered request body.
+    ///
+    /// If another body-setter method (`json()`, `form()`, `multipart()`, etc.)
+    /// is called after this, the body will be silently replaced.
     pub fn body(mut self, body: impl Into<Bytes>) -> Self {
         self.body = Some(RequestBody::Buffered(body.into()));
         self
     }
 
     /// Set a streaming request body.
+    ///
+    /// If another body-setter method (`body()`, `json()`, `form()`, etc.)
+    /// is called after this, the body will be silently replaced.
     pub fn body_stream(mut self, body: RequestBodySend) -> Self {
         self.body = Some(RequestBody::Streaming(body));
         self
@@ -218,6 +224,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     #[cfg(feature = "json")]
     /// Serialize a value as JSON and set it as the request body.
+    ///
+    /// If another body-setter method is called after this, the body will be
+    /// silently replaced.
     pub fn json(mut self, value: &impl serde::Serialize) -> Result<Self, Error> {
         let bytes = serde_json::to_vec(value).map_err(|e| Error::Other(Box::new(e)))?;
         self.headers
@@ -228,6 +237,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     }
 
     /// Set a URL-encoded form body from string pairs.
+    ///
+    /// If another body-setter method is called after this, the body will be
+    /// silently replaced.
     pub fn form(mut self, params: &[(&str, &str)]) -> Self {
         use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
         const FORM_ENCODE: &AsciiSet = &CONTROLS
@@ -261,6 +273,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     #[cfg(feature = "json")]
     /// Set a URL-encoded form body from a serializable value.
+    ///
+    /// If another body-setter method is called after this, the body will be
+    /// silently replaced.
     pub fn form_serde(mut self, value: &impl serde::Serialize) -> Result<Self, Error> {
         let encoded = serde_urlencoded::to_string(value).map_err(|e| Error::Other(Box::new(e)))?;
         self.headers.insert(
@@ -272,6 +287,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     }
 
     /// Set a multipart/form-data body.
+    ///
+    /// If another body-setter method is called after this, the body will be
+    /// silently replaced.
     pub fn multipart(mut self, multipart: crate::multipart::Multipart) -> Self {
         let ct = multipart.content_type();
         // Content-type is constructed from valid parts
@@ -309,6 +327,13 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     /// the client's default headers (those are merged at send time).
     pub fn headers_ref(&self) -> &HeaderMap {
         &self.headers
+    }
+
+    /// Returns the request body configured on this builder, if any.
+    ///
+    /// Returns `None` if no body-setter method has been called.
+    pub fn body_ref(&self) -> Option<&RequestBody> {
+        self.body.as_ref()
     }
 
     /// Set a timeout for this request, overriding the client default.
