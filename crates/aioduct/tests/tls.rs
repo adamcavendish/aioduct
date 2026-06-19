@@ -1156,3 +1156,93 @@ async fn danger_accept_invalid_certs_allows_self_signed() {
     let body = resp.unwrap().text().await.unwrap();
     assert_eq!(body, "insecure ok");
 }
+
+// Sensitive headers (Authorization, Cookie) must be stripped when a redirect
+// downgrades from HTTPS to HTTP, even when the host and port are the same.
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn sensitive_headers_stripped_on_https_to_http_downgrade() {
+    use std::sync::{Arc, Mutex};
+
+    install_crypto_provider();
+
+    #[derive(Default, Clone)]
+    struct CapturedHeaders {
+        authorization: Option<String>,
+        cookie: Option<String>,
+    }
+
+    let captured: Arc<Mutex<CapturedHeaders>> = Arc::new(Mutex::new(CapturedHeaders::default()));
+    let cap = captured.clone();
+    let (http_addr, _http_counter) = aioduct_test_server::h1::h1_server_with(move |req| {
+        let cap = cap.clone();
+        async move {
+            let mut h = cap.lock().unwrap();
+            h.authorization = req
+                .headers()
+                .get("authorization")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            h.cookie = req
+                .headers()
+                .get("cookie")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("landed"))))
+        }
+    })
+    .await;
+
+    // HTTPS origin: 302-redirects to the plaintext HTTP target.
+    let (tls_addr, cert_der, _counter) =
+        aioduct_test_server::tls::tls_server_with(&[b"http/1.1"], move |_req| {
+            let target = format!("http://{http_addr}/landing");
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(302)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        })
+        .await;
+
+    let client_config = aioduct_test_server::tls::make_client_config(&cert_der);
+    let connector = aioduct::tls::RustlsConnector::new(client_config);
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/secret", tls_addr.port()))
+        .unwrap()
+        .header(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer secret-token"),
+        )
+        .header(
+            http::header::COOKIE,
+            http::HeaderValue::from_static("session=abc123"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "landed");
+
+    let h = captured.lock().unwrap();
+    assert!(
+        h.authorization.is_none(),
+        "Authorization MUST be stripped on HTTPS→HTTP downgrade, \
+         but the HTTP target received: {:?}",
+        h.authorization
+    );
+    assert!(
+        h.cookie.is_none(),
+        "Cookie MUST be stripped on HTTPS→HTTP downgrade, \
+         but the HTTP target received: {:?}",
+        h.cookie
+    );
+}
