@@ -342,6 +342,25 @@ async fn debug_request_builder_with_body() {
 }
 
 #[tokio::test]
+async fn body_ref_returns_none_when_no_body_set() {
+    let client = test_client();
+    let rb = client.get("http://example.com/").unwrap();
+    assert!(rb.body_ref().is_none());
+}
+
+#[tokio::test]
+async fn body_ref_returns_some_after_body_set() {
+    let client = test_client();
+    let rb = client.post("http://example.com/").unwrap().body("hello");
+    let body = rb.body_ref().expect("body should be set");
+    match body {
+        RequestBody::Buffered(b) => assert_eq!(&b[..], b"hello"),
+        #[cfg(not(target_arch = "wasm32"))]
+        _ => panic!("expected Buffered body"),
+    }
+}
+
+#[tokio::test]
 async fn query_encodes_special_chars() {
     let client = test_client();
     let rb = client.get("http://example.com/path").unwrap();
