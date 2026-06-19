@@ -98,6 +98,22 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 > (e.g. `client.get("users")`) resolves against it per RFC 3986, while an
 > absolute request URL overrides it.
 
+### Timeout Boundaries
+
+| Timeout | Phase covered | Phase not covered |
+|---------|---------------|-------------------|
+| `timeout(Duration)` | One request attempt until `send()` returns, including redirects, response headers, and body upload | Retry backoff, later retry attempts, and response body reads after `send()` returns |
+| `connect_timeout(Duration)` | TCP connection, proxy tunnel setup, and TLS handshake | Request upload and response body reads |
+| `read_timeout(Duration)` | Gaps between response body chunks | Waiting for response headers and request upload |
+| `write_timeout(Duration)` | Gaps while uploading request body chunks | Waiting for response headers and response body reads |
+
+Per-request timeout setters override client defaults. `no_timeout()` disables a
+client-level overall request timeout for one request, while phase-specific
+timeouts still apply if configured on that request. When retries are enabled,
+this timeout applies per attempt; it does not cap total wall-clock time across
+backoff sleeps and later attempts. Use `read_timeout()` to bound stalled response
+body reads after `send()` returns.
+
 ## RequestBuilderSend / RequestBuilderLocal
 
 Fluent builder for configuring a single request. `RequestBuilderSend` is returned by `HttpEngineSend` methods; `RequestBuilderLocal` is returned by `HttpEngineLocal` methods. Both implement `RequestBuilderExt`.

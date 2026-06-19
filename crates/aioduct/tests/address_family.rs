@@ -40,6 +40,28 @@ impl Resolve for MixedResolver {
     }
 }
 
+struct FailingResolver;
+
+impl Resolve for FailingResolver {
+    fn resolve(
+        &self,
+        host: &str,
+        _port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
+        let host = host.to_owned();
+        Box::pin(async move { Err(io::Error::other(format!("unexpected resolve for {host}"))) })
+    }
+
+    fn resolve_all(
+        &self,
+        host: &str,
+        _port: u16,
+    ) -> Pin<Box<dyn Future<Output = io::Result<Vec<SocketAddr>>> + Send>> {
+        let host = host.to_owned();
+        Box::pin(async move { Err(io::Error::other(format!("unexpected resolve for {host}"))) })
+    }
+}
+
 fn client_with(family: AddressFamily) -> HttpEngineSend<TokioRuntime, TcpConnector> {
     HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .resolver(MixedResolver)
@@ -114,6 +136,31 @@ async fn ip_literal_bypasses_address_family() {
         .unwrap();
     assert_eq!(addrs.len(), 1);
     assert!(addrs[0].is_ipv4());
+}
+
+#[tokio::test]
+async fn ipv4_literal_bypasses_custom_resolver() {
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .resolver(FailingResolver)
+        .build()
+        .unwrap();
+
+    let addrs = client.resolve_all("127.0.0.1", 8080).await.unwrap();
+
+    assert_eq!(addrs, vec!["127.0.0.1:8080".parse().unwrap()]);
+}
+
+#[tokio::test]
+async fn bare_ipv6_literal_bypasses_custom_resolver() {
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .resolver(FailingResolver)
+        .address_family(AddressFamily::Ipv4Only)
+        .build()
+        .unwrap();
+
+    let addrs = client.resolve_all("::1", 8080).await.unwrap();
+
+    assert_eq!(addrs, vec!["[::1]:8080".parse().unwrap()]);
 }
 
 /// When filtering removes every address, resolution fails with a clear error

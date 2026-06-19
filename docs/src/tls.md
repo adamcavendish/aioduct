@@ -77,6 +77,22 @@ The `rustls` feature enables the rustls TLS backend, while `rustls-ring` and `ru
 
 The backend/provider split keeps room for future TLS backends. A `native-tls` backend name is reserved for possible OpenSSL/native TLS support, but it is not implemented today.
 
+## Runtime Scope
+
+| Runtime | TLS provider | Configuration surface |
+|---------|--------------|-----------------------|
+| Tokio | rustls | Builder TLS methods and custom `RustlsConnector` |
+| smol | rustls | Same TLS configuration as Tokio |
+| compio | rustls | Same TLS configuration through the local client path |
+| blocking | Wrapped native client | Inherits the configured async client TLS behavior |
+| wasm | Browser-managed | Certificate verification, SNI, ALPN, and roots are controlled by the browser |
+| wasi-p2 | Host-managed | Certificate verification, SNI, ALPN, and roots are controlled by the WASI host |
+
+Native clients expose TLS version bounds, SNI enablement, extra root certificates,
+client identity, CRLs, hostname-verification bypass for tests, and a fully custom
+rustls configuration. Browser and WASI clients intentionally do not duplicate
+host-managed TLS policy knobs.
+
 ## Custom TLS Configuration
 
 For advanced use cases, configure the `RustlsConnector` directly:
