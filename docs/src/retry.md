@@ -102,6 +102,20 @@ If the `Retry-After` value is missing or unparseable, the normal backoff delay i
 `Retry-After` is only considered after a retryable status response. Transport
 errors and timeout retries use the configured exponential backoff.
 
+## Policy Boundaries
+
+Retries are scoped to the request builder that enabled the policy. A retryable
+final response after redirects causes the whole request operation to be tried
+again, including any redirect hops needed to reach the final target. Redirect
+limits and timeout limits still apply normally on every attempt.
+
+The request `timeout()` is per attempt when retries are enabled. Backoff sleeps
+and later retry attempts can make total wall-clock time exceed that duration.
+
+Streaming request bodies are not replayed after they have been consumed. Use a
+buffered body when a request must be safely replayable, or use a custom
+classifier only when the application can prove the operation is safe to repeat.
+
 ## Retry Budget
 
 A `RetryBudget` prevents retry storms by limiting the total retry rate across all requests. Each successful (non-retried) request deposits tokens; each retry attempt withdraws one. When the budget is exhausted, retries are suppressed.
