@@ -42,6 +42,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for RequestBuil
         f.debug_struct("RequestBuilderLocal")
             .field("method", &self.method)
             .field("uri", &self.uri)
+            .field("body", &self.body)
             .finish()
     }
 }

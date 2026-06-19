@@ -322,6 +322,23 @@ async fn debug_request_builder() {
     let dbg = format!("{rb:?}");
     assert!(dbg.contains("RequestBuilderSend"));
     assert!(dbg.contains("GET"));
+    // No body set → body: None
+    assert!(dbg.contains("body: None"), "no body set, got: {dbg}");
+}
+
+#[tokio::test]
+async fn debug_request_builder_with_body() {
+    let client = test_client();
+    let rb = client
+        .post("http://example.com/data")
+        .unwrap()
+        .body("payload");
+    let dbg = format!("{rb:?}");
+    assert!(dbg.contains("POST"));
+    assert!(
+        dbg.contains("Buffered"),
+        "body should show Buffered variant, got: {dbg}"
+    );
 }
 
 #[tokio::test]
