@@ -90,6 +90,38 @@ fn blocking_post_with_body() {
 }
 
 #[test]
+fn blocking_post_form_sends_urlencoded_body() {
+    let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
+        use http_body_util::BodyExt;
+
+        let content_type = req
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        let body = req.collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "{content_type}|{body}"
+        )))))
+    });
+
+    let client = BlockingTokioClient::new(TokioClient::new());
+    let resp = client
+        .post(&format!("http://{addr}/"))
+        .unwrap()
+        .form(&[("name", "hello world"), ("tag", "a&b=c")])
+        .send()
+        .unwrap();
+
+    assert_eq!(
+        resp.text().unwrap(),
+        "application/x-www-form-urlencoded|name=hello+world&tag=a%26b%3Dc"
+    );
+}
+
+#[test]
 fn blocking_custom_header() {
     let addr = start_server_with(|req: Request<hyper::body::Incoming>| async move {
         let val = req
@@ -673,6 +705,42 @@ fn blocking_connect_timeout() {
         .connect_timeout(Duration::from_millis(50))
         .send();
     assert!(result.is_err(), "connect timeout should produce an error");
+}
+
+#[cfg(feature = "gzip")]
+#[test]
+fn blocking_no_decompression_returns_raw_body() {
+    use std::io::Write;
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(b"blocking raw gzip").unwrap();
+    let compressed = Bytes::from(encoder.finish().unwrap());
+
+    let addr = start_server_with(move |_req: Request<hyper::body::Incoming>| {
+        let compressed = compressed.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header(http::header::CONTENT_ENCODING, "gzip")
+                    .body(Full::new(compressed))
+                    .unwrap(),
+            )
+        }
+    });
+
+    let client = BlockingTokioClient::new(TokioClient::new());
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .no_decompression()
+        .send()
+        .unwrap();
+
+    assert_eq!(
+        resp.headers().get(http::header::CONTENT_ENCODING).unwrap(),
+        "gzip"
+    );
+    assert_ne!(resp.bytes().unwrap().as_ref(), b"blocking raw gzip");
 }
 
 #[test]

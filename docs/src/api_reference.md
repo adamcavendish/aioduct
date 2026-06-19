@@ -361,7 +361,10 @@ let body = client.get("http://example.com")?.send().await?.into_body();
 With the `blocking` feature enabled, `BlockingTokioClient` wraps `TokioClient`
 for synchronous callers. `BlockingResponse` exposes the same buffered consumers
 as async responses and native response metadata accessors before body
-consumption.
+consumption. Blocking request builders forward the common buffered request-body
+and per-request behavior controls, including `body()`, `form()`, `timeout()`,
+`read_timeout()`, `connect_timeout()`, `no_decompression()`, `query()`, and
+`version()`.
 
 ```rust,no_run
 # #[cfg(all(feature = "blocking", feature = "tokio"))]
@@ -369,7 +372,10 @@ consumption.
 use aioduct::{BlockingTokioClient, TokioClient};
 
 let client = BlockingTokioClient::new(TokioClient::new());
-let mut resp = client.get("http://example.com/")?.send()?;
+let mut resp = client.post("http://example.com/")?
+    .form(&[("name", "alice")])
+    .no_decompression()
+    .send()?;
 resp.headers_mut().insert("x-local", "yes".parse().unwrap());
 let body = resp.bytes()?;
 # Ok(())
