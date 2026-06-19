@@ -89,6 +89,11 @@ impl<R: RuntimePoll, C: ConnectorSend> RequestBuilderExt for OwnedRequestBuilder
         self
     }
 
+    fn form(mut self, params: &[(&str, &str)]) -> Self {
+        self.inner = self.inner.form(params);
+        self
+    }
+
     fn version(mut self, version: http::Version) -> Self {
         self.inner = self.inner.version(version);
         self
