@@ -48,6 +48,7 @@ impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilderSend<'_
         f.debug_struct("RequestBuilderSend")
             .field("method", &self.method)
             .field("uri", &self.uri)
+            .field("body", &self.body)
             .finish()
     }
 }

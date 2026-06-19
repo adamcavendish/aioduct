@@ -3527,3 +3527,66 @@ fn redirect_rejects_ftp_scheme_location_compio() {
         );
     });
 }
+
+// 308 redirect with a buffered multipart POST should preserve the method and
+// replay the multipart body on the final hop.
+#[tokio::test]
+async fn redirect_308_preserves_multipart_post_body() {
+    let (addr, _) = h1_server_with(|req| async move {
+        let path = req.uri().path().to_string();
+        if path == "/upload" {
+            let resp = Response::builder()
+                .status(308)
+                .header("Location", "/final")
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            Ok::<_, Infallible>(resp)
+        } else {
+            let method = req.method().to_string();
+            let content_type = req
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+            let body_bytes = req.into_body().collect().await.unwrap().to_bytes();
+            Ok(Response::new(Full::new(Bytes::from(format!(
+                "method={method} ct={content_type} len={}",
+                body_bytes.len()
+            )))))
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let form = aioduct::Multipart::new()
+        .text("field1", "value1")
+        .text("field2", "value2");
+
+    let resp = client
+        .post(&format!("http://{addr}/upload"))
+        .unwrap()
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("method=POST"),
+        "308 should preserve POST method for multipart, got: {body}"
+    );
+    assert!(
+        body.contains("ct=multipart/form-data"),
+        "308 should preserve multipart Content-Type, got: {body}"
+    );
+    // A non-empty multipart body with two text fields should be > 0 bytes.
+    assert!(
+        !body.contains("len=0"),
+        "308 should replay the multipart body, got: {body}"
+    );
+}

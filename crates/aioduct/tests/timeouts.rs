@@ -483,7 +483,7 @@ async fn connect_timeout_with_unreachable_ip() {
 
 #[tokio::test]
 async fn read_timeout_does_not_apply_to_headers() {
-    // Unlike reqwest, aioduct's read_timeout only applies to body reads.
+    // aioduct's read_timeout only applies to body reads, not header wait time.
     // Use request timeout for header wait timeouts.
     let (addr, _counter) = h1_server_with(|_req| async {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -901,7 +901,7 @@ async fn stalling_body_server() -> std::net::SocketAddr {
 
 /// Per-request `read_timeout()` overrides the client default. The client default
 /// is generous (5 s) but the per-request override (100 ms) fires on the stalled
-/// body. reqwest #2512.
+/// body.
 #[tokio::test]
 async fn per_request_read_timeout_overrides_client_default() {
     let addr = stalling_body_server().await;
@@ -963,7 +963,6 @@ async fn per_request_read_timeout_inherits_client_default() {
 /// read_timeout is a per-chunk gap, not a one-shot first-read deadline. A body
 /// that keeps trickling chunks just under the read_timeout interval must NOT
 /// time out, even when the total transfer far exceeds a single interval.
-/// reqwest #1380, #231.
 #[tokio::test]
 async fn read_timeout_resets_between_chunks_not_total_transfer() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1014,7 +1013,7 @@ async fn read_timeout_resets_between_chunks_not_total_transfer() {
 }
 
 /// A stalled `.text()` body read with a per-request read_timeout returns an
-/// error promptly instead of hanging indefinitely. reqwest #1604.
+/// error promptly instead of hanging indefinitely.
 #[tokio::test]
 async fn read_timeout_bounds_stalled_text_read() {
     let addr = stalling_body_server().await;
