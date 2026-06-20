@@ -116,7 +116,7 @@ body reads after `send()` returns.
 
 ## RequestBuilderSend / RequestBuilderLocal
 
-Fluent builder for configuring a single request. `RequestBuilderSend` is returned by `HttpEngineSend` methods; `RequestBuilderLocal` is returned by `HttpEngineLocal` methods. Both implement `RequestBuilderExt`.
+Fluent builder for configuring a single request. `RequestBuilderSend` is returned by `HttpEngineSend` methods; `RequestBuilderLocal` is returned by `HttpEngineLocal` methods. Both implement `RequestBuilderExt`. Fluent setters that cannot fail immediately record the error and return it from `build()` or `send()`.
 
 ### Headers
 
@@ -384,7 +384,7 @@ let body = resp.bytes()?;
 
 ## Portable Traits
 
-These traits provide a common interface across both `Send` and `Local` engine variants:
+These traits provide a common interface across client types. Implementations must either apply each request-builder option or fail explicitly when the request is sent; unsupported options are not silently ignored.
 
 | Trait               | Description                                              |
 |---------------------|----------------------------------------------------------|
@@ -551,6 +551,8 @@ use aioduct::Error;
 // Error::ReadTimeout     — reading response timed out
 // Error::WriteTimeout    — writing request body timed out
 // Error::InvalidUrl(_)   — URL parse or scheme errors
+// Error::InvalidHeader(_) — header name or value errors
+// Error::Unsupported(_)  — runtime or transport does not support an option
 // Error::Status(_)       — HTTP 4xx/5xx from error_for_status()
 // Error::Other(_)        — other boxed errors
 ```

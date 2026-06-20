@@ -17,6 +17,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         connect_timeout: Option<Duration>,
         force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+        proxy.validate_for_use()?;
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
         let proxy_addr = self
@@ -656,6 +657,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         connect_timeout: Option<Duration>,
         force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+        for proxy in chain.iter() {
+            proxy.validate_for_use()?;
+        }
         match chain.len() {
             0 => Err(Error::Other("empty proxy chain".into())),
             1 => {

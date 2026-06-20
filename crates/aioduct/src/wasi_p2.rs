@@ -9,7 +9,7 @@ use http::header::HeaderValue;
 use http::{HeaderMap, Method, StatusCode, Uri};
 use std::time::Duration;
 
-use crate::error::Error;
+use crate::error::{BuilderError, Error};
 
 /// HTTP client for WASI Preview 2 environments.
 ///
@@ -24,13 +24,20 @@ pub struct WasiClient {
 #[derive(Debug, Clone)]
 pub struct WasiClientBuilder {
     default_headers: HeaderMap,
+    builder_error: Option<BuilderError>,
 }
 
 impl WasiClientBuilder {
     /// Set a default User-Agent header.
     pub fn user_agent(mut self, value: impl AsRef<str>) -> Self {
-        if let Ok(val) = HeaderValue::from_str(value.as_ref()) {
-            self.default_headers.insert(http::header::USER_AGENT, val);
+        match HeaderValue::from_str(value.as_ref()) {
+            Ok(val) => {
+                self.default_headers.insert(http::header::USER_AGENT, val);
+            }
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header(format!("invalid user-agent header value: {e}")),
+            ),
         }
         self
     }
@@ -42,7 +49,10 @@ impl WasiClientBuilder {
     }
 
     /// Build the client.
-    pub fn build(self) -> Result<WasiClient, crate::error::Error> {
+    pub fn build(mut self) -> Result<WasiClient, crate::error::Error> {
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
         Ok(WasiClient {
             default_headers: self.default_headers,
         })
@@ -63,7 +73,10 @@ impl WasiClient {
         if let Ok(val) = HeaderValue::from_str(ua) {
             default_headers.insert(http::header::USER_AGENT, val);
         }
-        WasiClientBuilder { default_headers }
+        WasiClientBuilder {
+            default_headers,
+            builder_error: None,
+        }
     }
 
     /// Start a GET request.
@@ -106,6 +119,10 @@ impl WasiClient {
             headers: HeaderMap::new(),
             body: None,
             timeout: None,
+            connect_timeout: None,
+            read_timeout: None,
+            no_decompression: false,
+            builder_error: None,
         })
     }
 }
@@ -125,6 +142,10 @@ pub struct WasiRequestBuilder<'a> {
     headers: HeaderMap,
     body: Option<Bytes>,
     timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
+    no_decompression: bool,
+    builder_error: Option<BuilderError>,
 }
 
 #[derive(Debug)]
@@ -156,6 +177,10 @@ impl<'a> WasiRequestBuilder<'a> {
             headers: HeaderMap::new(),
             body: None,
             timeout: None,
+            connect_timeout: None,
+            read_timeout: None,
+            no_decompression: false,
+            builder_error: None,
         }
     }
 
@@ -195,8 +220,14 @@ impl<'a> WasiRequestBuilder<'a> {
 
     /// Set a bearer authentication token.
     pub fn bearer_auth(mut self, token: &str) -> Self {
-        if let Ok(val) = HeaderValue::from_str(&format!("Bearer {token}")) {
-            self.headers.insert(http::header::AUTHORIZATION, val);
+        match HeaderValue::from_str(&format!("Bearer {token}")) {
+            Ok(val) => {
+                self.headers.insert(http::header::AUTHORIZATION, val);
+            }
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header(format!("invalid bearer token header value: {e}")),
+            ),
         }
         self
     }
@@ -207,9 +238,28 @@ impl<'a> WasiRequestBuilder<'a> {
         self
     }
 
+    /// Set a timeout for establishing this request's connection.
+    pub fn connect_timeout(mut self, duration: Duration) -> Self {
+        self.connect_timeout = Some(duration);
+        self
+    }
+
+    /// Set a timeout for gaps between response body data chunks.
+    pub fn read_timeout(mut self, duration: Duration) -> Self {
+        self.read_timeout = Some(duration);
+        self
+    }
+
+    /// Disable automatic response decompression for this request.
+    pub fn no_decompression(mut self) -> Self {
+        self.no_decompression = true;
+        self
+    }
+
     /// Set a Basic Authorization header.
     ///
-    /// If the username or password produce an invalid header value, this is a no-op.
+    /// If the username or password produce an invalid header value, the builder
+    /// records an error returned by [`send`](Self::send).
     pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         use base64::engine::{Engine, general_purpose::STANDARD};
         let credentials = match password {
@@ -218,6 +268,10 @@ impl<'a> WasiRequestBuilder<'a> {
         };
         let encoded = STANDARD.encode(credentials);
         let Ok(value) = HeaderValue::from_str(&format!("Basic {encoded}")) else {
+            BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header("invalid basic authorization header value"),
+            );
             return self;
         };
         self.headers.insert(http::header::AUTHORIZATION, value);
@@ -247,9 +301,24 @@ impl<'a> WasiRequestBuilder<'a> {
             let val = utf8_percent_encode(val, QUERY_ENCODE);
             let _ = write!(uri_str, "{sep}{key}={val}");
         }
-        if let Ok(new_uri) = uri_str.parse() {
-            self.uri = new_uri;
+        match uri_str.parse() {
+            Ok(new_uri) => self.uri = new_uri,
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_url(format!("failed to append query parameters: {e}")),
+            ),
         }
+        self
+    }
+
+    /// Force a specific HTTP version.
+    ///
+    /// WASI HTTP negotiates protocol versions through the host runtime.
+    pub fn version(mut self, _version: http::Version) -> Self {
+        BuilderError::set_once(
+            &mut self.builder_error,
+            BuilderError::Unsupported("version is not supported by the WASI HTTP runtime".into()),
+        );
         self
     }
 
@@ -288,22 +357,45 @@ impl<'a> WasiRequestBuilder<'a> {
     }
 
     /// Send the request and return the response.
-    pub fn send(self) -> Result<WasiResponse, Error> {
+    pub fn send(mut self) -> Result<WasiResponse, Error> {
         use wasi::http::outgoing_handler;
         use wasi::http::types::{Fields, OutgoingBody, OutgoingRequest, RequestOptions, Scheme};
 
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
+        let _raw_response_requested = self.no_decompression;
+
         let fields = Fields::new();
         for (name, value) in &self.client.default_headers {
-            if !self.headers.contains_key(name)
-                && let Ok(v) = value.to_str()
-            {
-                let _ = fields.append(name.as_str(), v.as_bytes());
+            if !self.headers.contains_key(name) {
+                let v = value.to_str().map_err(|e| {
+                    Error::InvalidHeader(format!(
+                        "default header `{}` is not valid WASI HTTP text: {e}",
+                        name.as_str()
+                    ))
+                })?;
+                fields.append(name.as_str(), v.as_bytes()).map_err(|e| {
+                    Error::InvalidHeader(format!(
+                        "failed to append default header `{}`: {e:?}",
+                        name.as_str(),
+                    ))
+                })?;
             }
         }
         for (name, value) in &self.headers {
-            if let Ok(v) = value.to_str() {
-                let _ = fields.append(name.as_str(), v.as_bytes());
-            }
+            let v = value.to_str().map_err(|e| {
+                Error::InvalidHeader(format!(
+                    "request header `{}` is not valid WASI HTTP text: {e}",
+                    name.as_str()
+                ))
+            })?;
+            fields.append(name.as_str(), v.as_bytes()).map_err(|e| {
+                Error::InvalidHeader(format!(
+                    "failed to append request header `{}`: {e:?}",
+                    name.as_str(),
+                ))
+            })?;
         }
 
         let request = OutgoingRequest::new(fields);
@@ -366,9 +458,27 @@ impl<'a> WasiRequestBuilder<'a> {
         let options = RequestOptions::new();
         if let Some(t) = self.timeout {
             let nanos = u64::try_from(t.as_nanos()).unwrap_or(u64::MAX);
-            let _ = options.set_connect_timeout(Some(nanos));
-            let _ = options.set_first_byte_timeout(Some(nanos));
-            let _ = options.set_between_bytes_timeout(Some(nanos));
+            options
+                .set_connect_timeout(Some(nanos))
+                .map_err(|()| Error::Other("failed to set WASI connect timeout".into()))?;
+            options
+                .set_first_byte_timeout(Some(nanos))
+                .map_err(|()| Error::Other("failed to set WASI first-byte timeout".into()))?;
+            options
+                .set_between_bytes_timeout(Some(nanos))
+                .map_err(|()| Error::Other("failed to set WASI between-bytes timeout".into()))?;
+        }
+        if let Some(t) = self.connect_timeout {
+            let nanos = u64::try_from(t.as_nanos()).unwrap_or(u64::MAX);
+            options
+                .set_connect_timeout(Some(nanos))
+                .map_err(|()| Error::Other("failed to set WASI connect timeout".into()))?;
+        }
+        if let Some(t) = self.read_timeout {
+            let nanos = u64::try_from(t.as_nanos()).unwrap_or(u64::MAX);
+            options
+                .set_between_bytes_timeout(Some(nanos))
+                .map_err(|()| Error::Other("failed to set WASI between-bytes timeout".into()))?;
         }
 
         let future_resp = outgoing_handler::handle(request, Some(options))
@@ -635,16 +745,12 @@ mod tests {
     }
 
     #[test]
-    fn builder_invalid_user_agent_ignored() {
-        let client = WasiClient::builder()
+    fn builder_invalid_user_agent_errors() {
+        let err = WasiClient::builder()
             .user_agent("bad\x00agent")
             .build()
-            .unwrap();
-        let ua = client
-            .default_headers
-            .get(http::header::USER_AGENT)
-            .unwrap();
-        assert!(ua.to_str().unwrap().starts_with("aioduct/"));
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidHeader(_)));
     }
 
     #[test]
@@ -708,6 +814,30 @@ mod tests {
             .unwrap()
             .timeout(Duration::from_secs(30));
         assert_eq!(req.timeout, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn request_builder_timeout_controls_are_explicit() {
+        let client = WasiClient::new();
+        let req = client
+            .get("https://example.com")
+            .unwrap()
+            .connect_timeout(Duration::from_secs(1))
+            .read_timeout(Duration::from_secs(2))
+            .no_decompression();
+        assert_eq!(req.connect_timeout, Some(Duration::from_secs(1)));
+        assert_eq!(req.read_timeout, Some(Duration::from_secs(2)));
+        assert!(req.no_decompression);
+    }
+
+    #[test]
+    fn request_builder_version_errors() {
+        let client = WasiClient::new();
+        let req = client
+            .get("https://example.com")
+            .unwrap()
+            .version(http::Version::HTTP_11);
+        assert!(req.builder_error.is_some());
     }
 
     #[test]

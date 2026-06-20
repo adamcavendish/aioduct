@@ -24,12 +24,13 @@ where
         connect_msg.push_str(&format!("Proxy-Authorization: {auth_value}\r\n"));
     }
     for (name, value) in &proxy.connect_headers {
-        // Header names/values were validated as HeaderName/HeaderValue at
-        // construction; value.to_str() is lossy-safe since HTTP/1 headers are
-        // ASCII and invalid bytes are skipped.
-        if let Ok(value_str) = value.to_str() {
-            connect_msg.push_str(&format!("{}: {value_str}\r\n", name.as_str()));
-        }
+        let value_str = value.to_str().map_err(|e| {
+            Error::InvalidHeader(format!(
+                "proxy CONNECT header `{}` is not valid HTTP/1 text: {e}",
+                name.as_str()
+            ))
+        })?;
+        connect_msg.push_str(&format!("{}: {value_str}\r\n", name.as_str()));
     }
     connect_msg.push_str("\r\n");
 

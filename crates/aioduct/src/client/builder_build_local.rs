@@ -43,7 +43,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
     }
 
     /// Build the configured [`HttpEngineLocal`] for a completion-based runtime.
-    pub fn build_local(self) -> Result<HttpEngineLocal<R, C>, crate::error::Error> {
+    pub fn build_local(mut self) -> Result<HttpEngineLocal<R, C>, crate::error::Error> {
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
+
         let pool = if self.no_connection_reuse {
             ConnectionPool::new()
                 .with_max_idle_per_host(0)

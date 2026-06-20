@@ -17,6 +17,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         connect_timeout: Option<Duration>,
         force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
+        proxy.validate_for_use()?;
         let proxy_authority = proxy.authority()?;
         let default_port = proxy.default_port();
         let proxy_addr = self
@@ -637,6 +638,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         connect_timeout: Option<Duration>,
         force_h2c: bool,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
+        for proxy in chain.iter() {
+            proxy.validate_for_use()?;
+        }
         match chain.len() {
             0 => Err(Error::Other("empty proxy chain".into())),
             1 => {

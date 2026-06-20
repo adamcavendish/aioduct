@@ -119,19 +119,25 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
 
     /// Build the configured [`HttpEngineSend`].
     pub fn build(self) -> Result<HttpEngineSend<R, C>, crate::error::Error> {
-        let pool = if self.no_connection_reuse {
+        let mut this = self;
+        if let Some(error) = this.builder_error.take() {
+            return Err(error.into_error());
+        }
+        let self_ = this;
+
+        let pool = if self_.no_connection_reuse {
             ConnectionPool::new()
                 .with_max_idle_per_host(0)
                 .with_idle_timeout(Duration::ZERO)
         } else {
             let mut pool = ConnectionPool::new()
-                .with_max_idle_per_host(self.pool_max_idle_per_host)
-                .with_max_active_per_host(self.pool_max_active_per_host)
-                .with_idle_timeout(self.pool_idle_timeout);
-            if let Some(max_active) = self.pool_max_active_streams_per_connection {
+                .with_max_idle_per_host(self_.pool_max_idle_per_host)
+                .with_max_active_per_host(self_.pool_max_active_per_host)
+                .with_idle_timeout(self_.pool_idle_timeout);
+            if let Some(max_active) = self_.pool_max_active_streams_per_connection {
                 pool = pool.with_max_active_streams_per_connection(max_active);
             }
-            if let Some(max_lifetime) = self.pool_max_lifetime {
+            if let Some(max_lifetime) = self_.pool_max_lifetime {
                 pool.with_max_lifetime(max_lifetime)
             } else {
                 pool
@@ -141,23 +147,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         #[cfg(feature = "rustls")]
         let tls = {
             let has_version_constraints =
-                self.min_tls_version.is_some() || self.max_tls_version.is_some();
+                self_.min_tls_version.is_some() || self_.max_tls_version.is_some();
             let has_extra_config =
-                !self.extra_root_certs.is_empty() || self.client_identity.is_some();
-            let has_crls = !self.crls.is_empty();
-            let needs_configured = has_crls || self.danger_accept_invalid_hostnames;
-            let needs_sni_update = self.tls_sni == Some(false);
+                !self_.extra_root_certs.is_empty() || self_.client_identity.is_some();
+            let has_crls = !self_.crls.is_empty();
+            let needs_configured = has_crls || self_.danger_accept_invalid_hostnames;
+            let needs_sni_update = self_.tls_sni == Some(false);
 
-            let mut connector = if self.tls.is_some()
+            let mut connector = if self_.tls.is_some()
                 && !has_version_constraints
                 && !has_extra_config
                 && !needs_configured
             {
-                self.tls
+                self_.tls
             } else if needs_configured || has_extra_config || has_version_constraints {
                 let versions: Vec<&'static rustls::SupportedProtocolVersion> =
                     if has_version_constraints {
-                        TlsVersion::filter_versions(self.min_tls_version, self.max_tls_version)?
+                        TlsVersion::filter_versions(self_.min_tls_version, self_.max_tls_version)?
                     } else {
                         vec![&rustls::version::TLS12, &rustls::version::TLS13]
                     };
@@ -166,7 +172,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                     let mut root_store = rustls::RootCertStore::from_iter(
                         webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
                     );
-                    for cert in &self.extra_root_certs {
+                    for cert in &self_.extra_root_certs {
                         // SAFETY: extra root certs are caller-provided; if they
                         // are malformed the builder cannot continue.
                         #[allow(clippy::expect_used)]
@@ -174,8 +180,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                             .add(cert.der.clone())
                             .expect("invalid extra root certificate");
                     }
-                    let crls: Vec<_> = self.crls.into_iter().map(|c| c.der).collect();
-                    let identity = self.client_identity.map(|id| (id.certs, id.key));
+                    let crls: Vec<_> = self_.crls.into_iter().map(|c| c.der).collect();
+                    let identity = self_.client_identity.map(|id| (id.certs, id.key));
                     Some(Arc::new(
                         // SAFETY: build_configured can only fail with invalid
                         // CRLs or client identity — caller-provided inputs that
@@ -185,29 +191,29 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                             root_store,
                             &versions,
                             crls,
-                            self.danger_accept_invalid_hostnames,
+                            self_.danger_accept_invalid_hostnames,
                             identity,
                         )
                         .expect(
                             "failed to build TLS configuration — check CRLs and client identity",
                         ),
                     ))
-                } else if let Some(identity) = self.client_identity {
+                } else if let Some(identity) = self_.client_identity {
                     Some(Arc::new(
                         // SAFETY: with_identity_versioned can only fail with an
                         // invalid client cert/key pair — caller-provided input.
                         #[allow(clippy::expect_used)]
                         crate::tls::RustlsConnector::with_identity_versioned(
-                            &self.extra_root_certs,
+                            &self_.extra_root_certs,
                             identity,
                             &versions,
                         )
                         .expect("failed to build TLS configuration — check client identity (cert/key pair)"),
                     ))
-                } else if !self.extra_root_certs.is_empty() {
+                } else if !self_.extra_root_certs.is_empty() {
                     Some(Arc::new(
                         crate::tls::RustlsConnector::with_extra_roots_versioned(
-                            &self.extra_root_certs,
+                            &self_.extra_root_certs,
                             &versions,
                         ),
                     ))
@@ -233,72 +239,72 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         Ok(HttpEngineSend {
             core: HttpEngineCore {
                 pool,
-                base_url: self.base_url,
-                address_family: self.address_family,
-                redirect_policy: self.redirect_policy,
-                timeout: self.timeout,
-                connect_timeout: self.connect_timeout,
-                read_timeout: self.read_timeout,
-                write_timeout: self.write_timeout,
-                tcp_keepalive: self.tcp_keepalive,
-                tcp_keepalive_interval: self.tcp_keepalive_interval,
-                tcp_keepalive_retries: self.tcp_keepalive_retries,
-                local_address: self.local_address,
+                base_url: self_.base_url,
+                address_family: self_.address_family,
+                redirect_policy: self_.redirect_policy,
+                timeout: self_.timeout,
+                connect_timeout: self_.connect_timeout,
+                read_timeout: self_.read_timeout,
+                write_timeout: self_.write_timeout,
+                tcp_keepalive: self_.tcp_keepalive,
+                tcp_keepalive_interval: self_.tcp_keepalive_interval,
+                tcp_keepalive_retries: self_.tcp_keepalive_retries,
+                local_address: self_.local_address,
                 #[cfg(target_os = "linux")]
-                interface: self.interface,
+                interface: self_.interface,
                 #[cfg(unix)]
-                unix_socket: self.unix_socket,
-                https_only: self.https_only,
-                referer: self.referer,
-                no_connection_reuse: self.no_connection_reuse,
-                tcp_fast_open: self.tcp_fast_open,
-                accept_encoding_header: self.accept_encoding.header_value(),
-                accept_encoding: self.accept_encoding,
-                default_headers: Arc::new(self.default_headers),
-                retry: self.retry,
-                cookie_jar: self.cookie_jar,
-                proxy: self.proxy,
-                proxy_chain: self.proxy_chain,
+                unix_socket: self_.unix_socket,
+                https_only: self_.https_only,
+                referer: self_.referer,
+                no_connection_reuse: self_.no_connection_reuse,
+                tcp_fast_open: self_.tcp_fast_open,
+                accept_encoding_header: self_.accept_encoding.header_value(),
+                accept_encoding: self_.accept_encoding,
+                default_headers: Arc::new(self_.default_headers),
+                retry: self_.retry,
+                cookie_jar: self_.cookie_jar,
+                proxy: self_.proxy,
+                proxy_chain: self_.proxy_chain,
                 resolver: {
-                    if let Some(overrides) = self.static_resolves {
-                        let fallback = self.resolver.or_else(|| Self::default_resolver());
+                    if let Some(overrides) = self_.static_resolves {
+                        let fallback = self_.resolver.or_else(|| Self::default_resolver());
                         let mut sr = crate::runtime::StaticResolver::new(fallback);
                         for (host, addrs) in overrides {
                             sr.add(host, addrs);
                         }
                         Some(Arc::new(sr) as Arc<dyn Resolve>)
                     } else {
-                        self.resolver.or_else(|| Self::default_resolver())
+                        self_.resolver.or_else(|| Self::default_resolver())
                     }
                 },
-                http2: self.http2,
-                middleware: self.middleware,
-                rate_limiter: self.rate_limiter,
-                bandwidth_limiter: self.bandwidth_limiter,
-                digest_auth: self.digest_auth,
-                cache: self.cache,
-                hsts: self.hsts,
-                h2c_probe_cache: self
+                http2: self_.http2,
+                middleware: self_.middleware,
+                rate_limiter: self_.rate_limiter,
+                bandwidth_limiter: self_.bandwidth_limiter,
+                digest_auth: self_.digest_auth,
+                cache: self_.cache,
+                hsts: self_.hsts,
+                h2c_probe_cache: self_
                     .h2c_probe_ttl
                     .map(crate::h2c_probe::H2cProbeCache::with_ttl)
                     .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
-                connection_coalescing: self.connection_coalescing,
-                sensitive_headers: self.sensitive_headers,
-                observer: self.observer,
+                connection_coalescing: self_.connection_coalescing,
+                sensitive_headers: self_.sensitive_headers,
+                observer: self_.observer,
                 #[cfg(feature = "rustls")]
                 tls,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
-                h3_endpoint: self.h3_endpoint,
+                h3_endpoint: self_.h3_endpoint,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
-                prefer_h3: self.prefer_h3,
+                prefer_h3: self_.prefer_h3,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
-                h3_zero_rtt: self.h3_zero_rtt,
+                h3_zero_rtt: self_.h3_zero_rtt,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
                 alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             },
-            connector: self.connector,
+            connector: self_.connector,
             #[cfg(feature = "tower")]
-            tower_connector: self.tower_connector,
+            tower_connector: self_.tower_connector,
             _phantom: PhantomData,
         })
     }

@@ -11,6 +11,7 @@ use http::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 
 use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
+use crate::error::BuilderError;
 use crate::http2::Http2Config;
 use crate::middleware::MiddlewareStack;
 use crate::proxy::{ProxyChain, ProxySettings};
@@ -96,6 +97,7 @@ pub struct HttpEngineBuilder<R, C> {
     pub(super) prefer_h3: bool,
     #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(super) h3_zero_rtt: bool,
+    pub(super) builder_error: Option<BuilderError>,
     pub(super) _phantom: PhantomData<(R, C)>,
 }
 
@@ -176,6 +178,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
             prefer_h3: false,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             h3_zero_rtt: false,
+            builder_error: None,
             _phantom: PhantomData,
         }
     }
