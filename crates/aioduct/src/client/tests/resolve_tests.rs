@@ -120,6 +120,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_all_authority_raw_with_bare_ipv6_literal() {
+        let engine = engine_no_resolver();
+        let result = engine.core.resolve_all_authority_raw("::1", 9090).await;
+        assert!(result.is_ok());
+        let addrs = result.unwrap();
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(
+            addrs[0],
+            "[::1]:9090".parse::<std::net::SocketAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn resolve_authority_ipv6_literal() {
         let engine = engine_no_resolver();
         // IPv6 literal in authority uses brackets
