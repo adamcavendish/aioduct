@@ -383,7 +383,7 @@ pub mod __bench {
         resolved_ip: Option<IpAddr>,
     ) -> bool {
         pool.0
-            .checkout_coalesced(target_host, resolved_ip)
+            .checkout_coalesced(target_host, resolved_ip, crate::pool::ProxyRoute::DIRECT)
             .is_some()
     }
 
