@@ -9,7 +9,7 @@ use http::{Method, Uri, Version};
 use crate::body::RequestBody;
 use crate::body::RequestBodySend;
 use crate::client::HttpEngineSend;
-use crate::error::{Error, SendError};
+use crate::error::{BuilderError, Error, SendError};
 use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::pool::ProtocolHint;
 use crate::response::Response;
@@ -37,6 +37,7 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     retry: Option<RetryConfig>,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
+    builder_error: Option<BuilderError>,
     /// Original URL fragment from the user-provided URL string.
     /// Preserved across redirects per RFC 7231 Section 7.1.2.
     fragment: Option<String>,
@@ -76,6 +77,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            builder_error: None,
             fragment,
             _runtime: PhantomData,
         }
@@ -103,6 +105,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            builder_error: None,
             fragment,
             _runtime: PhantomData,
         }
@@ -134,9 +137,14 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     /// Set a Bearer token Authorization header.
     ///
-    /// If the token contains invalid header characters, this is a no-op.
+    /// If the token contains invalid header characters, the builder records an
+    /// error returned by [`build`](Self::build) or [`send`](Self::send).
     pub fn bearer_auth(mut self, token: &str) -> Self {
         let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
+            BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header("invalid bearer token header value"),
+            );
             return self;
         };
         self.headers.insert(AUTHORIZATION, value);
@@ -145,7 +153,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     /// Set a Basic Authorization header.
     ///
-    /// If the username or password produce an invalid header value, this is a no-op.
+    /// If the username or password produce an invalid header value, the builder
+    /// records an error returned by [`build`](Self::build) or [`send`](Self::send).
     pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         use base64::engine::{Engine, general_purpose::STANDARD};
         let credentials = match password {
@@ -154,6 +163,10 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         };
         let encoded = STANDARD.encode(credentials);
         let Ok(value) = HeaderValue::from_str(&format!("Basic {encoded}")) else {
+            BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header("invalid basic authorization header value"),
+            );
             return self;
         };
         self.headers.insert(AUTHORIZATION, value);
@@ -182,8 +195,12 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             let val = utf8_percent_encode(val, QUERY_ENCODE);
             let _ = write!(uri_str, "{sep}{key}={val}");
         }
-        if let Ok(new_uri) = uri_str.parse() {
-            self.uri = new_uri;
+        match uri_str.parse() {
+            Ok(new_uri) => self.uri = new_uri,
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_url(format!("failed to append query parameters: {e}")),
+            ),
         }
         self
     }
@@ -197,9 +214,10 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             let mut uri_str = self.uri.to_string();
             let sep = if self.uri.query().is_some() { '&' } else { '?' };
             let _ = write!(uri_str, "{sep}{query_string}");
-            if let Ok(new_uri) = uri_str.parse() {
-                self.uri = new_uri;
-            }
+            let new_uri = uri_str.parse().map_err(|e| {
+                Error::InvalidUrl(format!("failed to append query parameters: {e}"))
+            })?;
+            self.uri = new_uri;
         }
         Ok(self)
     }
@@ -294,6 +312,10 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         let ct = multipart.content_type();
         // Content-type is constructed from valid parts
         let Ok(value) = HeaderValue::from_str(&ct) else {
+            BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header("invalid multipart content-type header value"),
+            );
             return self;
         };
         self.headers.insert(http::header::CONTENT_TYPE, value);
@@ -437,8 +459,14 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             HeaderValue::from_static("13"),
         );
         let key = super::generate_websocket_key();
-        if let Ok(val) = HeaderValue::from_str(&key) {
-            self.headers.insert(http::header::SEC_WEBSOCKET_KEY, val);
+        match HeaderValue::from_str(&key) {
+            Ok(val) => {
+                self.headers.insert(http::header::SEC_WEBSOCKET_KEY, val);
+            }
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header(format!("invalid websocket key header value: {e}")),
+            ),
         }
         self.version = Some(Version::HTTP_11);
         self
@@ -448,6 +476,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     ///
     /// Returns the configured `http::Request` for inspection or manual sending.
     pub fn build(mut self) -> Result<http::Request<RequestBody>, Error> {
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
         let body = self
             .body
             .take()
@@ -489,6 +520,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: self.retry.clone(),
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
+            builder_error: self.builder_error.clone(),
             fragment: self.fragment.clone(),
             _runtime: PhantomData,
         })
@@ -500,12 +532,21 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     /// requested. Use [`SendError::into_error()`] to discard URL context, or
     /// call convenience methods like [`SendError::is_timeout()`] directly.
     pub async fn send(self) -> Result<Response, SendError> {
-        let url = self.uri.clone();
-        let effective_retry = self.retry.as_ref().or(self.client.default_retry()).cloned();
+        let mut this = self;
+        let url = this.uri.clone();
+        if let Some(error) = this.builder_error.take() {
+            return Err(SendError::new(error.into_error(), url));
+        }
+        let self_ = this;
+        let effective_retry = self_
+            .retry
+            .as_ref()
+            .or(self_.client.default_retry())
+            .cloned();
 
         let result = match effective_retry {
-            Some(config) => self.send_with_retry(config).await,
-            None => self.send_once().await,
+            Some(config) => self_.send_with_retry(config).await,
+            None => self_.send_once().await,
         };
 
         result.map_err(|error| SendError::new(error, url))

@@ -63,6 +63,10 @@ pub enum Error {
     #[error("invalid header: {0}")]
     InvalidHeader(String),
 
+    /// The requested operation is not supported by this runtime or transport.
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
+
     /// A connection pool error, such as a configured limit being reached.
     #[error(transparent)]
     Pool(#[from] PoolError),
@@ -70,6 +74,41 @@ pub enum Error {
     /// A catch-all for other errors.
     #[error("{0}")]
     Other(#[source] BoxError),
+}
+
+/// Cloneable error recorded by fluent builders whose setter methods return
+/// `Self` and therefore cannot fail immediately.
+#[derive(Debug, Clone)]
+pub(crate) enum BuilderError {
+    InvalidHeader(String),
+    InvalidUrl(String),
+    #[cfg(any(feature = "wasm", feature = "wasi-p2"))]
+    Unsupported(String),
+}
+
+impl BuilderError {
+    pub(crate) fn invalid_header(message: impl Into<String>) -> Self {
+        Self::InvalidHeader(message.into())
+    }
+
+    pub(crate) fn invalid_url(message: impl Into<String>) -> Self {
+        Self::InvalidUrl(message.into())
+    }
+
+    pub(crate) fn set_once(slot: &mut Option<Self>, error: Self) {
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+
+    pub(crate) fn into_error(self) -> Error {
+        match self {
+            Self::InvalidHeader(message) => Error::InvalidHeader(message),
+            Self::InvalidUrl(message) => Error::InvalidUrl(message),
+            #[cfg(any(feature = "wasm", feature = "wasi-p2"))]
+            Self::Unsupported(message) => Error::Unsupported(message),
+        }
+    }
 }
 
 /// Errors originating from the connection pool.

@@ -1,6 +1,7 @@
 use super::*;
 
 use super::settings::env_proxy;
+use crate::error::Error;
 use http::Uri;
 
 /// Serializes env var mutations to prevent flakiness under `--test-threads > 1`.
@@ -821,13 +822,15 @@ fn route_hash_differs_by_connect_headers() {
 #[test]
 fn route_hash_ignores_headers_for_socks() {
     // SOCKS proxies don't send CONNECT headers, so header() calls should not
-    // fragment pool keys for otherwise-identical SOCKS configs.
+    // fragment pool keys for otherwise-identical SOCKS configs. The config is
+    // rejected explicitly when used.
     let s1 = ProxyConfig::socks5("socks5://proxy:1080").unwrap();
     let s2 = ProxyConfig::socks5("socks5://proxy:1080").unwrap().header(
         http::header::HeaderName::from_static("x-irrelevant"),
         http::HeaderValue::from_static("v"),
     );
     assert_eq!(s1.route_hash(), s2.route_hash());
+    assert!(matches!(s2.validate_for_use(), Err(Error::Unsupported(_))));
 }
 
 #[test]

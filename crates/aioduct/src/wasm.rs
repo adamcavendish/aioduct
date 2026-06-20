@@ -5,7 +5,7 @@ use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::error::Error;
+use crate::error::{BuilderError, Error};
 
 /// A browser-based HTTP client using the Fetch API.
 ///
@@ -30,6 +30,7 @@ impl WasmClient {
         WasmClientBuilder {
             default_headers: HeaderMap::new(),
             timeout: None,
+            builder_error: None,
         }
     }
 
@@ -86,6 +87,7 @@ impl Default for WasmClient {
 pub struct WasmClientBuilder {
     default_headers: HeaderMap,
     timeout: Option<Duration>,
+    builder_error: Option<BuilderError>,
 }
 
 impl WasmClientBuilder {
@@ -97,8 +99,14 @@ impl WasmClientBuilder {
 
     /// Set a default User-Agent header.
     pub fn user_agent(mut self, value: impl AsRef<str>) -> Self {
-        if let Ok(val) = HeaderValue::from_str(value.as_ref()) {
-            self.default_headers.insert(http::header::USER_AGENT, val);
+        match HeaderValue::from_str(value.as_ref()) {
+            Ok(val) => {
+                self.default_headers.insert(http::header::USER_AGENT, val);
+            }
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header(format!("invalid user-agent header value: {e}")),
+            ),
         }
         self
     }
@@ -110,7 +118,10 @@ impl WasmClientBuilder {
     }
 
     /// Build the WASM client.
-    pub fn build(self) -> Result<WasmClient, crate::error::Error> {
+    pub fn build(mut self) -> Result<WasmClient, crate::error::Error> {
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
         let mut default_headers = self.default_headers;
         if !default_headers.contains_key(http::header::USER_AGENT) {
             let ua = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
@@ -133,6 +144,7 @@ pub struct WasmRequestBuilder<'a> {
     headers: HeaderMap,
     body: Option<Bytes>,
     timeout: Option<Duration>,
+    builder_error: Option<BuilderError>,
 }
 
 enum WasmClientRef<'a> {
@@ -159,6 +171,7 @@ impl<'a> WasmRequestBuilder<'a> {
             headers: HeaderMap::new(),
             body: None,
             timeout: None,
+            builder_error: None,
         }
     }
 
@@ -174,6 +187,7 @@ impl<'a> WasmRequestBuilder<'a> {
             headers: HeaderMap::new(),
             body: None,
             timeout: None,
+            builder_error: None,
         }
     }
 
@@ -201,8 +215,14 @@ impl<'a> WasmRequestBuilder<'a> {
 
     /// Set a Bearer auth token.
     pub fn bearer_auth(mut self, token: &str) -> Self {
-        if let Ok(val) = HeaderValue::from_str(&format!("Bearer {token}")) {
-            self.headers.insert(http::header::AUTHORIZATION, val);
+        match HeaderValue::from_str(&format!("Bearer {token}")) {
+            Ok(val) => {
+                self.headers.insert(http::header::AUTHORIZATION, val);
+            }
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header(format!("invalid bearer token header value: {e}")),
+            ),
         }
         self
     }
@@ -213,9 +233,49 @@ impl<'a> WasmRequestBuilder<'a> {
         self
     }
 
+    /// Set a per-request connect timeout.
+    ///
+    /// Browser Fetch does not expose connection-establishment timing controls.
+    pub fn connect_timeout(mut self, _timeout: Duration) -> Self {
+        BuilderError::set_once(
+            &mut self.builder_error,
+            BuilderError::Unsupported(
+                "connect_timeout is not supported by the browser fetch runtime".into(),
+            ),
+        );
+        self
+    }
+
+    /// Set a per-request read timeout.
+    ///
+    /// Browser Fetch does not expose response-body read-gap timing controls.
+    pub fn read_timeout(mut self, _timeout: Duration) -> Self {
+        BuilderError::set_once(
+            &mut self.builder_error,
+            BuilderError::Unsupported(
+                "read_timeout is not supported by the browser fetch runtime".into(),
+            ),
+        );
+        self
+    }
+
+    /// Disable automatic response decompression for this request.
+    ///
+    /// Browser Fetch manages decompression and does not expose raw compressed bytes.
+    pub fn no_decompression(mut self) -> Self {
+        BuilderError::set_once(
+            &mut self.builder_error,
+            BuilderError::Unsupported(
+                "no_decompression is not supported by the browser fetch runtime".into(),
+            ),
+        );
+        self
+    }
+
     /// Set a Basic Authorization header.
     ///
-    /// If the username or password produce an invalid header value, this is a no-op.
+    /// If the username or password produce an invalid header value, the builder
+    /// records an error returned by [`send`](Self::send).
     pub fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         use base64::engine::{Engine, general_purpose::STANDARD};
         let credentials = match password {
@@ -224,6 +284,10 @@ impl<'a> WasmRequestBuilder<'a> {
         };
         let encoded = STANDARD.encode(credentials);
         let Ok(value) = HeaderValue::from_str(&format!("Basic {encoded}")) else {
+            BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header("invalid basic authorization header value"),
+            );
             return self;
         };
         self.headers.insert(http::header::AUTHORIZATION, value);
@@ -253,9 +317,26 @@ impl<'a> WasmRequestBuilder<'a> {
             let val = utf8_percent_encode(val, QUERY_ENCODE);
             let _ = write!(uri_str, "{sep}{key}={val}");
         }
-        if let Ok(new_uri) = uri_str.parse() {
-            self.uri = new_uri;
+        match uri_str.parse() {
+            Ok(new_uri) => self.uri = new_uri,
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_url(format!("failed to append query parameters: {e}")),
+            ),
         }
+        self
+    }
+
+    /// Force a specific HTTP version.
+    ///
+    /// Browser Fetch negotiates protocol versions internally.
+    pub fn version(mut self, _version: http::Version) -> Self {
+        BuilderError::set_once(
+            &mut self.builder_error,
+            BuilderError::Unsupported(
+                "version is not supported by the browser fetch runtime".into(),
+            ),
+        );
         self
     }
 
@@ -305,7 +386,11 @@ impl<'a> WasmRequestBuilder<'a> {
     }
 
     /// Send the request using the browser's Fetch API.
-    pub async fn send(self) -> Result<WasmResponse, Error> {
+    pub async fn send(mut self) -> Result<WasmResponse, Error> {
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
+
         let url = self.uri.to_string();
 
         let opts = web_sys::RequestInit::new();
@@ -315,16 +400,34 @@ impl<'a> WasmRequestBuilder<'a> {
             .map_err(|e| Error::Other(format!("Headers::new failed: {e:?}").into()))?;
 
         for (name, value) in &self.client.default_headers {
-            if !self.headers.contains_key(name)
-                && let Ok(v) = value.to_str()
-            {
-                let _ = headers.set(name.as_str(), v);
+            if !self.headers.contains_key(name) {
+                let v = value.to_str().map_err(|e| {
+                    Error::InvalidHeader(format!(
+                        "default header `{}` is not valid fetch text: {e}",
+                        name.as_str()
+                    ))
+                })?;
+                headers.set(name.as_str(), v).map_err(|e| {
+                    Error::InvalidHeader(format!(
+                        "failed to set default header `{}`: {e:?}",
+                        name.as_str()
+                    ))
+                })?;
             }
         }
         for (name, value) in &self.headers {
-            if let Ok(v) = value.to_str() {
-                let _ = headers.set(name.as_str(), v);
-            }
+            let v = value.to_str().map_err(|e| {
+                Error::InvalidHeader(format!(
+                    "request header `{}` is not valid fetch text: {e}",
+                    name.as_str()
+                ))
+            })?;
+            headers.set(name.as_str(), v).map_err(|e| {
+                Error::InvalidHeader(format!(
+                    "failed to set request header `{}`: {e:?}",
+                    name.as_str()
+                ))
+            })?;
         }
 
         opts.set_headers(&headers);
@@ -660,16 +763,12 @@ mod tests {
     }
 
     #[test]
-    fn builder_invalid_user_agent_ignored() {
-        let client = WasmClient::builder()
+    fn builder_invalid_user_agent_errors() {
+        let err = WasmClient::builder()
             .user_agent("bad\x00agent")
             .build()
-            .unwrap();
-        let ua = client
-            .default_headers
-            .get(http::header::USER_AGENT)
-            .unwrap();
-        assert!(ua.to_str().unwrap().starts_with("aioduct/"));
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidHeader(_)));
     }
 
     #[test]
@@ -760,6 +859,44 @@ mod tests {
             .unwrap()
             .timeout(Duration::from_secs(5));
         assert_eq!(req.timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn request_builder_platform_managed_controls_error() {
+        let client = WasmClient::new();
+
+        assert!(
+            client
+                .get("https://example.com")
+                .unwrap()
+                .connect_timeout(Duration::from_secs(1))
+                .builder_error
+                .is_some()
+        );
+        assert!(
+            client
+                .get("https://example.com")
+                .unwrap()
+                .read_timeout(Duration::from_secs(1))
+                .builder_error
+                .is_some()
+        );
+        assert!(
+            client
+                .get("https://example.com")
+                .unwrap()
+                .no_decompression()
+                .builder_error
+                .is_some()
+        );
+        assert!(
+            client
+                .get("https://example.com")
+                .unwrap()
+                .version(http::Version::HTTP_11)
+                .builder_error
+                .is_some()
+        );
     }
 
     #[test]

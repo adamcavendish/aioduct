@@ -51,6 +51,21 @@ impl RequestBuilderExt for OwnedWasmRequestBuilder {
         self
     }
 
+    fn connect_timeout(mut self, duration: Duration) -> Self {
+        self.inner = self.inner.connect_timeout(duration);
+        self
+    }
+
+    fn read_timeout(mut self, duration: Duration) -> Self {
+        self.inner = self.inner.read_timeout(duration);
+        self
+    }
+
+    fn no_decompression(mut self) -> Self {
+        self.inner = self.inner.no_decompression();
+        self
+    }
+
     fn basic_auth(mut self, username: &str, password: Option<&str>) -> Self {
         self.inner = self.inner.basic_auth(username, password);
         self
@@ -63,6 +78,11 @@ impl RequestBuilderExt for OwnedWasmRequestBuilder {
 
     fn form(mut self, params: &[(&str, &str)]) -> Self {
         self.inner = self.inner.form(params);
+        self
+    }
+
+    fn version(mut self, version: http::Version) -> Self {
+        self.inner = self.inner.version(version);
         self
     }
 

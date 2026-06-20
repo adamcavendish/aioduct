@@ -1,7 +1,6 @@
 #![cfg(feature = "tokio")]
 
 use super::super::*;
-use super::DEFAULT_USER_AGENT;
 use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
 use http::header::USER_AGENT;
 
@@ -20,7 +19,7 @@ async fn builder_no_default_headers() {
 }
 
 #[tokio::test]
-async fn builder_user_agent_with_invalid_value() {
+async fn builder_user_agent_sets_valid_value() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .user_agent("valid-agent/1.0")
         .build()
@@ -262,13 +261,12 @@ async fn builder_proxy_shorthand() {
 }
 
 #[tokio::test]
-async fn builder_user_agent_invalid_is_ignored() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+async fn builder_user_agent_invalid_errors_on_build() {
+    let err = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .user_agent("bad\x00agent")
         .build()
-        .unwrap();
-    let ua = client.core.default_headers.get(USER_AGENT).unwrap();
-    assert_eq!(ua.as_bytes(), DEFAULT_USER_AGENT.as_bytes());
+        .unwrap_err();
+    assert!(matches!(err, crate::Error::InvalidHeader(_)));
 }
 
 #[cfg(feature = "rustls")]

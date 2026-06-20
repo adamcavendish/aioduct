@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use http::header::{HeaderMap, HeaderValue, USER_AGENT};
 
+use crate::error::BuilderError;
 use crate::http2::Http2Config;
 use crate::middleware::Middleware;
 use crate::proxy::{ProxyConfig, ProxySettings};
@@ -223,11 +224,15 @@ impl<R, C> HttpEngineBuilder<R, C> {
     }
 
     /// Set the User-Agent header for all requests.
-    ///
-    /// If the value contains invalid header characters, it is silently ignored.
     pub fn user_agent(mut self, value: impl AsRef<str>) -> Self {
-        if let Ok(val) = HeaderValue::from_str(value.as_ref()) {
-            self.default_headers.insert(USER_AGENT, val);
+        match HeaderValue::from_str(value.as_ref()) {
+            Ok(val) => {
+                self.default_headers.insert(USER_AGENT, val);
+            }
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header(format!("invalid user-agent header value: {e}")),
+            ),
         }
         self
     }
