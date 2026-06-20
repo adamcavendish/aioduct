@@ -415,28 +415,21 @@ async fn query_serde_empty_struct() {
 }
 
 #[tokio::test]
-async fn bearer_auth_with_invalid_chars_is_noop() {
+async fn bearer_auth_with_invalid_chars_errors_on_build() {
     let client = test_client();
     let rb = client.get("http://example.com").unwrap();
     // Control characters are invalid in header values
     let rb = rb.bearer_auth("token\x00with\x01control\x02chars");
-    let req = rb.build().unwrap();
-    assert!(
-        !req.headers().contains_key("authorization"),
-        "invalid bearer token should not set header"
-    );
+    let err = rb.build().unwrap_err();
+    assert!(matches!(err, Error::InvalidHeader(_)));
 }
 
 #[tokio::test]
-async fn basic_auth_with_invalid_chars_is_noop() {
+async fn basic_auth_sets_header() {
     let client = test_client();
     let rb = client.get("http://example.com").unwrap();
-    // base64 encoding of a username with certain chars can still be valid,
-    // but we can force invalid by using multi-line strings. Actually base64
-    // always produces valid ASCII, so we test by observing that the header IS set.
-    // The only way to trigger line 117 is if the base64-encoded result has invalid
-    // header chars, which is impossible with standard base64.
-    // Instead, let's verify that valid basic_auth works to document the behavior.
+    // Standard base64 output is valid header text, so basic auth should apply
+    // once credentials are encoded.
     let rb = rb.basic_auth("user", Some("pass"));
     let req = rb.build().unwrap();
     assert!(req.headers().contains_key("authorization"));

@@ -7,7 +7,7 @@ use http::{Method, Uri, Version};
 
 use crate::body::{RequestBody, RequestBodySend};
 use crate::client::HttpEngineLocal;
-use crate::error::Error;
+use crate::error::{BuilderError, Error};
 use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
@@ -32,6 +32,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     force_no_timeout: bool,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
+    builder_error: Option<BuilderError>,
     /// Original URL fragment from the user-provided URL string.
     /// Preserved across redirects per RFC 7231 Section 7.1.2.
     fragment: Option<String>,
@@ -69,6 +70,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             force_no_timeout: false,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            builder_error: None,
             fragment,
         }
     }
@@ -94,6 +96,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             force_no_timeout: false,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            builder_error: None,
             fragment,
         }
     }
@@ -124,6 +127,10 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
     /// Set a Bearer token Authorization header.
     pub fn bearer_auth(mut self, token: &str) -> Self {
         let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}")) else {
+            BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header("invalid bearer token header value"),
+            );
             return self;
         };
         self.headers.insert(AUTHORIZATION, value);
@@ -139,6 +146,10 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         };
         let encoded = STANDARD.encode(credentials);
         let Ok(value) = HeaderValue::from_str(&format!("Basic {encoded}")) else {
+            BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header("invalid basic authorization header value"),
+            );
             return self;
         };
         self.headers.insert(AUTHORIZATION, value);
@@ -167,8 +178,12 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             let v = utf8_percent_encode(value, QUERY_ENCODE);
             let _ = write!(uri_str, "{s}{k}={v}");
         }
-        if let Ok(new_uri) = uri_str.parse() {
-            self.uri = new_uri;
+        match uri_str.parse() {
+            Ok(new_uri) => self.uri = new_uri,
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_url(format!("failed to append query parameters: {e}")),
+            ),
         }
         self
     }
@@ -182,9 +197,10 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             let mut uri_str = self.uri.to_string();
             let sep = if self.uri.query().is_some() { '&' } else { '?' };
             let _ = write!(uri_str, "{sep}{query_string}");
-            if let Ok(new_uri) = uri_str.parse() {
-                self.uri = new_uri;
-            }
+            let new_uri = uri_str.parse().map_err(|e| {
+                Error::InvalidUrl(format!("failed to append query parameters: {e}"))
+            })?;
+            self.uri = new_uri;
         }
         Ok(self)
     }
@@ -278,6 +294,10 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
     pub fn multipart(mut self, multipart: crate::multipart::Multipart) -> Self {
         let ct = multipart.content_type();
         let Ok(value) = HeaderValue::from_str(&ct) else {
+            BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header("invalid multipart content-type header value"),
+            );
             return self;
         };
         self.headers.insert(http::header::CONTENT_TYPE, value);
@@ -407,8 +427,14 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             HeaderValue::from_static("13"),
         );
         let key = super::generate_websocket_key();
-        if let Ok(val) = HeaderValue::from_str(&key) {
-            self.headers.insert(http::header::SEC_WEBSOCKET_KEY, val);
+        match HeaderValue::from_str(&key) {
+            Ok(val) => {
+                self.headers.insert(http::header::SEC_WEBSOCKET_KEY, val);
+            }
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_header(format!("invalid websocket key header value: {e}")),
+            ),
         }
         self.version = Some(Version::HTTP_11);
         self
@@ -418,6 +444,9 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
     ///
     /// Returns the configured `http::Request` for inspection or manual sending.
     pub fn build(mut self) -> Result<http::Request<RequestBody>, Error> {
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
         let body = self
             .body
             .take()
@@ -457,12 +486,16 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             force_no_timeout: self.force_no_timeout,
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
+            builder_error: self.builder_error.clone(),
             fragment: self.fragment.clone(),
         })
     }
 
     /// Send the request and return the response.
-    pub async fn send(self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
+    pub async fn send(mut self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
         let effective_timeout = if self.force_no_timeout {
             None
         } else {

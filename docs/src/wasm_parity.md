@@ -164,19 +164,22 @@ portable module for manual use.
 | Feature | tokio | smol | compio | wasm | wasi-p2 |
 |---------|-------|------|--------|------|---------|
 | Request timeout | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ⚠ AbortController [4] | ⚠ WASI-mapped [5] |
-| Connect timeout | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ | ⚠ WASI-mapped [5] |
-| Read timeout | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ | ⚠ WASI-mapped [5] |
+| Connect timeout | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ explicit error [4] | ⚠ WASI-mapped [5] |
+| Read timeout | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ explicit error [4] | ⚠ WASI-mapped [5] |
 
 [4] WASM: `wasm.rs` lines 258-264 create an `AbortController` and attach its
 signal to the `RequestInit`. A `setTimeout` callback (lines 276-288 for Window,
 296-310 for Worker) fires `controller.abort()` after the timeout duration
 elapses. This is a combined request-level timeout; finer-grained connect/read
-timeouts are not available.
+timeouts are not available. Calling those request-builder controls records an
+unsupported-operation error returned by `send()`.
 
-[5] WASI-P2: `wasi_p2.rs` lines 287-292. The user's timeout `Duration` is
-converted to nanoseconds and passed to all three WASI `RequestOptions` fields:
-`connect_timeout`, `first_byte_timeout`, and `between_bytes_timeout`.
-Enforcement is delegated to the WASI runtime (e.g., wasmtime).
+[5] WASI-P2: the user's request timeout is converted to nanoseconds and passed
+to all three WASI `RequestOptions` fields: `connect_timeout`,
+`first_byte_timeout`, and `between_bytes_timeout`. Per-request
+`connect_timeout()` overrides the connect field, and `read_timeout()` maps to
+the `between_bytes_timeout` field. Enforcement is delegated to the WASI runtime
+(e.g., wasmtime).
 
 ### Proxy
 
@@ -284,11 +287,13 @@ applies the stack during request/response processing.
 [12] WASM: The browser fetch API automatically sets `Accept-Encoding` and
 decompresses response bodies. The `decompress.rs` module is portable but not
 wired into `WasmClient` — the browser handles it transparently. No
-per-codec configuration is possible.
+per-codec configuration is possible. Calling `no_decompression()` records an
+unsupported-operation error returned by `send()`.
 
 WASI-P2: No decompression integration. The `decompress.rs` module compiles
-but is not called by `WasiClient`. Users can apply the portable
-`DecompressBody` type manually.
+but is not called by `WasiClient`; `no_decompression()` is therefore already
+satisfied because the client does not add `Accept-Encoding` or decode response
+bodies. Users can apply the portable `DecompressBody` type manually.
 
 Native runtimes integrate `maybe_decompress()` from `decompress.rs` into the
 response body pipeline. Each codec is behind a cfg feature: `gzip`, `brotli`,
@@ -305,10 +310,12 @@ response body pipeline. Each codec is behind a cfg feature: `gzip`, `brotli`,
 [13] WASM: The browser negotiates HTTP/2 and HTTP/3 via ALPN. No version
 selection or tuning is exposed by the fetch API. The `Http2Config` type
 (`http2.rs`) is portable but its `apply()` method is gated behind
-`#[cfg(not(target_arch = "wasm32"))]` (line 119).
+`#[cfg(not(target_arch = "wasm32"))]` (line 119). Calling request-builder
+`version()` records an unsupported-operation error returned by `send()`.
 
 [14] WASI-P2: The WASI runtime negotiates the HTTP version. No version
-configuration is exposed. `Http2Config` is not applicable.
+configuration is exposed. `Http2Config` is not applicable, and request-builder
+`version()` records an unsupported-operation error returned by `send()`.
 
 Native runtimes negotiate HTTP/2 through hyper's `http2` builder. HTTP/3 is
 enabled via the `http3` feature (requires `rustls`; see `lib.rs` line 23-24).

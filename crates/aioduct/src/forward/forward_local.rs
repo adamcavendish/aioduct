@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::body::RequestBodyLocal;
 use crate::client::HttpEngineLocal;
-use crate::error::Error;
+use crate::error::{BuilderError, Error};
 use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
@@ -32,6 +32,7 @@ pub struct ForwardBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B
     remove_headers: Vec<HeaderName>,
     forward_headers: Vec<HeaderName>,
     protocol_hint: ProtocolHint,
+    builder_error: Option<BuilderError>,
     on_request: Option<RequestHook>,
     on_response: Option<ResponseHook>,
 }
@@ -58,18 +59,24 @@ where
             remove_headers: Vec::new(),
             forward_headers: Vec::new(),
             protocol_hint,
+            builder_error: None,
             on_request: None,
             on_response: None,
         }
     }
 
     /// Set the upstream origin to forward to.
-    pub fn upstream(mut self, uri: impl TryInto<Uri>) -> Self
+    pub fn upstream<U>(mut self, uri: U) -> Self
     where
-        <Uri as TryFrom<Uri>>::Error: std::fmt::Debug,
+        U: TryInto<Uri>,
+        U::Error: std::fmt::Debug,
     {
-        if let Ok(u) = uri.try_into() {
-            self.upstream = Some(u);
+        match uri.try_into() {
+            Ok(u) => self.upstream = Some(u),
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_url(format!("invalid forward upstream: {e:?}")),
+            ),
         }
         self
     }
@@ -143,6 +150,9 @@ where
 
     /// Execute the forwarded request.
     pub async fn send(mut self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
+        if let Some(error) = self.builder_error.take() {
+            return Err(error.into_error());
+        }
         let (mut parts, body) = self.request.into_parts();
 
         let is_h1_upgrade = parts
@@ -468,13 +478,34 @@ mod tests {
         let client = test_client();
         let req = dummy_request("/path");
         compio_runtime::Runtime::new().unwrap().block_on(async {
-            // An upstream with just a path and no authority triggers an error
             let result = ForwardBuilderLocal::new(&client, req)
                 .upstream("/just-a-path")
                 .send()
                 .await;
-            // upstream() silently drops invalid URIs, so this falls through as "no upstream"
-            assert!(result.is_err());
+            match result.unwrap_err() {
+                crate::error::Error::InvalidUrl(msg) => {
+                    assert!(msg.contains("upstream has no authority"));
+                }
+                other => panic!("expected InvalidUrl, got: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn send_with_invalid_upstream_returns_recorded_error() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let result = ForwardBuilderLocal::new(&client, req)
+                .upstream("http://bad host")
+                .send()
+                .await;
+            match result.unwrap_err() {
+                crate::error::Error::InvalidUrl(msg) => {
+                    assert!(msg.contains("invalid forward upstream"));
+                }
+                other => panic!("expected InvalidUrl, got: {other:?}"),
+            }
         });
     }
 }

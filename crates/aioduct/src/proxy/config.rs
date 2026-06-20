@@ -268,8 +268,9 @@ impl ProxyConfig {
     /// Add an extra header to the HTTP `CONNECT` request sent to the proxy.
     ///
     /// Applies to HTTP and HTTPS proxies (which tunnel via `CONNECT`); SOCKS
-    /// proxies have no header phase and ignore these. Useful for proxy auth
-    /// tokens or routing headers beyond basic auth. May be called repeatedly.
+    /// proxies have no header phase and fail explicitly when used with CONNECT
+    /// headers. Useful for proxy auth tokens or routing headers beyond basic
+    /// auth. May be called repeatedly.
     pub fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
         self.connect_headers.push((name, value));
         self
@@ -289,6 +290,17 @@ impl ProxyConfig {
             ProxyScheme::Socks5 => 1080,
             ProxyScheme::Socks5h => 1080,
         }
+    }
+
+    pub(crate) fn validate_for_use(&self) -> Result<(), Error> {
+        if !self.connect_headers.is_empty()
+            && !matches!(self.scheme, ProxyScheme::Http | ProxyScheme::Https)
+        {
+            return Err(Error::Unsupported(
+                "CONNECT headers are only supported by HTTP and HTTPS proxies".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn connect_header(&self, _target_authority: &str) -> Option<String> {

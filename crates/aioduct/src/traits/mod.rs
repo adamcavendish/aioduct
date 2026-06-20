@@ -90,55 +90,25 @@ pub trait RequestBuilderExt: Sized {
     fn timeout(self, duration: Duration) -> Self;
 
     /// Set a per-request connect timeout.
-    ///
-    /// Implementations that cannot control connection establishment may ignore
-    /// this option.
-    fn connect_timeout(self, _duration: Duration) -> Self {
-        self
-    }
+    fn connect_timeout(self, duration: Duration) -> Self;
 
     /// Set a per-request read timeout for gaps between response body chunks.
-    ///
-    /// Implementations that cannot control response body reads may ignore this
-    /// option.
-    fn read_timeout(self, _duration: Duration) -> Self {
-        self
-    }
+    fn read_timeout(self, duration: Duration) -> Self;
 
     /// Disable automatic response decompression for this request.
-    ///
-    /// Implementations that do not perform decompression may ignore this option.
-    fn no_decompression(self) -> Self {
-        self
-    }
+    fn no_decompression(self) -> Self;
 
     /// Set HTTP Basic auth credentials.
-    ///
-    /// Implementations that do not support auth headers may ignore this option.
-    fn basic_auth(self, _username: &str, _password: Option<&str>) -> Self {
-        self
-    }
+    fn basic_auth(self, username: &str, password: Option<&str>) -> Self;
 
     /// Append query parameters to the URL.
-    ///
-    /// Implementations that do not support URL modification may ignore this option.
-    fn query(self, _params: &[(&str, &str)]) -> Self {
-        self
-    }
+    fn query(self, params: &[(&str, &str)]) -> Self;
 
     /// Set a URL-encoded form body from string pairs.
-    ///
-    /// Implementations that cannot build request bodies may ignore this option.
-    fn form(self, _params: &[(&str, &str)]) -> Self {
-        self
-    }
+    fn form(self, params: &[(&str, &str)]) -> Self;
 
     /// Force a specific HTTP version.
-    ///
-    /// Implementations that cannot control the HTTP version may ignore this option.
-    fn version(self, _version: http::Version) -> Self {
-        self
-    }
+    fn version(self, version: http::Version) -> Self;
 
     /// Send the request and return the response.
     fn send(self) -> impl Future<Output = Result<Self::Response, SendError>>;

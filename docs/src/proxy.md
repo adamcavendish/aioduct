@@ -201,8 +201,9 @@ let client = TokioClient::builder()
 
 For HTTP and HTTPS proxies (which tunnel via `CONNECT`), `header()` attaches
 extra headers to the `CONNECT` request — useful for proxy auth tokens or routing
-headers beyond Basic auth. SOCKS proxies have no header phase and ignore these.
-Different CONNECT headers segregate pooled connections.
+headers beyond Basic auth. SOCKS proxies have no header phase; using CONNECT
+headers with a SOCKS proxy fails explicitly when the proxy is used. Different
+CONNECT headers segregate pooled connections for HTTP and HTTPS proxies.
 
 ```rust,no_run
 use aioduct::{TokioClient, ProxyConfig};
