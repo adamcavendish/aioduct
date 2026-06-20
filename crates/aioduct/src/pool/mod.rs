@@ -741,6 +741,7 @@ impl<B: 'static> ConnectionPool<B> {
         &self,
         target_host: &str,
         resolved_ip: Option<IpAddr>,
+        proxy_route: ProxyRoute,
     ) -> Option<PooledConnection<B>> {
         let pool_weak = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().ok()?;
@@ -761,6 +762,9 @@ impl<B: 'static> ConnectionPool<B> {
         // Scope: all queue operations happen here.
         {
             for key in &candidate_keys {
+                if key.proxy_route != proxy_route {
+                    continue;
+                }
                 let queue = match inner.idle.get_mut(key) {
                     Some(q) => q,
                     None => {
@@ -1123,7 +1127,7 @@ mod tests_sync {
 
         assert!(pool.inner.lock().is_err(), "mutex should be poisoned");
         let ip: std::net::IpAddr = [10, 0, 0, 1].into();
-        let result = pool.checkout_coalesced("example.com", Some(ip));
+        let result = pool.checkout_coalesced("example.com", Some(ip), ProxyRoute::DIRECT);
         assert!(
             result.is_none(),
             "checkout_coalesced on poisoned mutex should return None"
