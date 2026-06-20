@@ -256,10 +256,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .await
                 .ok()
                 .and_then(|addrs| addrs.first().map(|a| a.ip()));
-            if let Some(mut conn) = self
-                .core
-                .pool
-                .checkout_coalesced(authority.host(), resolved_ip)
+            if let Some(mut conn) =
+                self.core
+                    .pool
+                    .checkout_coalesced(authority.host(), resolved_ip, proxy_route)
             {
                 #[cfg(feature = "tracing")]
                 tracing::trace!(host = authority.host(), "connection.pool.coalesced");
