@@ -566,54 +566,82 @@ async fn test_connect_tunnel_detects_auth_required() {
     );
 }
 
-#[ignore = "needs CONNECT tunnel rewrite: proxy and target must be separate servers"]
+#[cfg(feature = "rustls")]
 #[tokio::test]
 async fn test_proxy_settings_routes_http_and_https_separately() {
-    // Set up an HTTP proxy server
-    let (http_proxy_addr, _counter) = h1_server_with(|req| async move {
-        let uri = req.uri().to_string();
-        let body = format!("http-proxy: {uri}");
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-    })
-    .await;
+    let (http_target_addr, _http_counter) = h1_server().await;
+    let (https_target_addr, https_cert, _https_counter) =
+        aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
 
-    // Set up the actual target server for direct access
-    let (target_addr, _counter) = h1_server_with(|_req| async move {
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
-    })
-    .await;
+    let http_connects = captured_connects();
+    let https_connects = captured_connects();
+    let (http_proxy_addr, _http_proxy_conns) =
+        connect_proxy_with_capture(Some(http_connects.clone())).await;
+    let (https_proxy_addr, _https_proxy_conns) =
+        connect_proxy_with_capture(Some(https_connects.clone())).await;
 
-    // Configure separate HTTP proxy, no HTTPS proxy, bypass the target address
     let settings = aioduct::ProxySettings::default()
         .http(aioduct::ProxyConfig::http(&format!("http://{http_proxy_addr}")).unwrap())
-        .no_proxy(aioduct::NoProxy::new(&format!("{}", target_addr.ip())));
+        .https(aioduct::ProxyConfig::http(&format!("http://{https_proxy_addr}")).unwrap());
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&https_cert),
+    );
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
         .proxy_settings(settings)
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
 
-    // HTTP request to non-bypassed host goes through HTTP proxy
     let resp = client
-        .get("http://example.com/test")
+        .get(&format!("http://{http_target_addr}/test"))
         .unwrap()
         .send()
         .await
         .unwrap();
-    let body = resp.text().await.unwrap();
-    assert!(
-        body.starts_with("http-proxy:"),
-        "expected http-proxy response, got: {body}"
-    );
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 
-    // Request to bypassed host goes direct
     let resp = client
-        .get(&format!("http://{target_addr}/"))
+        .get(&format!(
+            "https://localhost:{}/test",
+            https_target_addr.port()
+        ))
         .unwrap()
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.text().await.unwrap(), "direct");
+    assert_eq!(resp.text().await.unwrap(), "hello tls");
+
+    let http_reqs = http_connects.lock().unwrap();
+    assert!(
+        http_reqs
+            .iter()
+            .any(|req| connect_target(req) == http_target_addr.to_string()),
+        "HTTP proxy should receive HTTP target CONNECT, got: {http_reqs:?}"
+    );
+    assert!(
+        !http_reqs
+            .iter()
+            .any(|req| connect_target(req) == format!("localhost:{}", https_target_addr.port())),
+        "HTTP proxy should not receive HTTPS target CONNECT, got: {http_reqs:?}"
+    );
+    drop(http_reqs);
+
+    let https_reqs = https_connects.lock().unwrap();
+    assert!(
+        https_reqs
+            .iter()
+            .any(|req| connect_target(req) == format!("localhost:{}", https_target_addr.port())),
+        "HTTPS proxy should receive HTTPS target CONNECT, got: {https_reqs:?}"
+    );
+    assert!(
+        !https_reqs
+            .iter()
+            .any(|req| connect_target(req) == http_target_addr.to_string()),
+        "HTTPS proxy should not receive HTTP target CONNECT, got: {https_reqs:?}"
+    );
 }
 
 #[tokio::test]
@@ -803,22 +831,15 @@ async fn system_proxy_integration() {
     assert!(result.is_err(), "expected tunnel to fail with 400");
 }
 
-#[ignore = "needs CONNECT tunnel rewrite: proxy and target must be separate servers"]
 #[tokio::test]
 async fn proxy_chain_integration() {
-    // Target server that returns a distinctive response
     let (target_addr, _) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target-reached"))))
     })
     .await;
 
-    // Proxy server that echoes back the request URI (acting as first chain hop)
-    let (proxy_addr, _) = h1_server_with(|req| async move {
-        let uri = req.uri().to_string();
-        let body = format!("via-chain: {uri}");
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-    })
-    .await;
+    let captured_connects = captured_connects();
+    let (proxy_addr, _conns) = connect_proxy_with_capture(Some(captured_connects.clone())).await;
 
     let chain = aioduct::ProxyChain::single(
         aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap(),
@@ -829,7 +850,6 @@ async fn proxy_chain_integration() {
         .build()
         .unwrap();
 
-    // Request is sent through the chain (proxy hop 1) to the target (hop 2)
     let resp = client
         .get(&format!("http://{target_addr}/"))
         .unwrap()
@@ -838,9 +858,14 @@ async fn proxy_chain_integration() {
         .unwrap();
 
     let body = resp.text().await.unwrap();
+    assert_eq!(body, "target-reached");
+
+    let connect_reqs = captured_connects.lock().unwrap();
     assert!(
-        body.contains("via-chain:"),
-        "expected chain proxy response, got: {body}"
+        connect_reqs
+            .iter()
+            .any(|req| connect_target(req) == target_addr.to_string()),
+        "proxy chain should CONNECT to the target, got: {connect_reqs:?}"
     );
 }
 
@@ -882,26 +907,22 @@ async fn no_proxy_cidr_integration() {
     assert_eq!(resp.text().await.unwrap(), "direct");
 }
 
-#[ignore = "needs CONNECT tunnel rewrite: proxy and target must be separate servers"]
 #[tokio::test]
 async fn no_proxy_port_specific() {
-    // Verify port-specific NoProxy matching: host:1234 only bypasses for port 1234
     let (target_addr, _) = h1_server_with(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("direct"))))
     })
     .await;
 
-    // Proxy server
-    let (proxy_addr, _) = h1_server_with(|req| async move {
-        let uri = req.uri().to_string();
-        let body = format!("proxied: {uri}");
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))
-    })
-    .await;
+    let captured_connects = captured_connects();
+    let (proxy_addr, _) = connect_proxy_with_capture(Some(captured_connects.clone())).await;
 
-    // NoProxy matching the target IP but only on a DIFFERENT port (target_port + 1)
     let target_ip = target_addr.ip().to_string();
-    let non_matching_port = target_addr.port() + 1;
+    let non_matching_port = if target_addr.port() == u16::MAX {
+        target_addr.port() - 1
+    } else {
+        target_addr.port() + 1
+    };
     let no_proxy_rule = format!("{target_ip}:{non_matching_port}");
 
     let settings = aioduct::ProxySettings::all(
@@ -914,7 +935,6 @@ async fn no_proxy_port_specific() {
         .build()
         .unwrap();
 
-    // Request to the target's actual port should NOT be bypassed (port mismatch)
     let resp = client
         .get(&format!("http://{target_addr}/"))
         .unwrap()
@@ -922,10 +942,42 @@ async fn no_proxy_port_specific() {
         .await
         .unwrap();
 
-    let body = resp.text().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "direct");
     assert!(
-        body.contains("proxied:"),
-        "expected proxied (port mismatch), got: {body}"
+        captured_connects
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|req| connect_target(req) == target_addr.to_string()),
+        "port mismatch should use proxy CONNECT"
+    );
+
+    let before_matching_rule = captured_connects.lock().unwrap().len();
+    let settings = aioduct::ProxySettings::all(
+        aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap(),
+    )
+    .no_proxy(aioduct::NoProxy::new(&format!(
+        "{target_ip}:{}",
+        target_addr.port()
+    )));
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_settings(settings)
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{target_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "direct");
+    assert_eq!(
+        captured_connects.lock().unwrap().len(),
+        before_matching_rule,
+        "matching host:port no_proxy rule should bypass the proxy"
     );
 }
 
@@ -1119,44 +1171,10 @@ async fn credential_resolver_global_env() {
     assert!(result.is_none());
 }
 
-#[ignore = "needs CONNECT tunnel rewrite: proxy and target must be separate servers"]
 #[tokio::test]
 async fn proxy_connection_pooling_with_counter() {
-    // Raw TCP proxy server: counts connections, returns 200 for HTTP.
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy_addr = listener.local_addr().unwrap();
-    let conn_count = Arc::new(AtomicUsize::new(0));
-    let cc = Arc::clone(&conn_count);
-
-    tokio::spawn(async move {
-        loop {
-            let (mut stream, _) = match listener.accept().await {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            loop {
-                let mut buf = vec![0u8; 4096];
-                let n = match stream.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => n,
-                };
-                if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
-                    stream
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nproxied")
-                        .await
-                        .unwrap();
-                    stream.flush().await.unwrap();
-                    // Keep-alive: continue reading next request.
-                }
-            }
-        }
-    });
-
-    // Target server behind proxy.
     let (target_addr, _counter) = h1_server().await;
+    let (proxy_addr, conn_count) = connect_proxy().await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
@@ -1165,7 +1183,6 @@ async fn proxy_connection_pooling_with_counter() {
         .build()
         .unwrap();
 
-    // Two sequential requests — should reuse proxy connection.
     for _ in 0..2 {
         let resp = client
             .get(&format!("http://{target_addr}/"))
@@ -1177,13 +1194,47 @@ async fn proxy_connection_pooling_with_counter() {
         let _ = resp.bytes().await.unwrap();
     }
 
-    // Pooling may or may not reuse depending on timing — verify at least one
-    // connection was established (not zero).
     let count = conn_count.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(
-        count >= 1,
-        "expected at least 1 proxy connection, got {count}"
-    );
+    assert_eq!(count, 1, "same target should reuse the CONNECT tunnel");
+}
+
+#[tokio::test]
+async fn proxy_connection_pooling_keeps_targets_separate() {
+    let (first_addr, _first_counter) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("first"))))
+    })
+    .await;
+    let (second_addr, _second_counter) = h1_server_with(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("second"))))
+    })
+    .await;
+    let (proxy_addr, conn_count) = connect_proxy().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .pool_idle_timeout(std::time::Duration::from_secs(60))
+        .pool_max_idle_per_host(5)
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{first_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "first");
+
+    let resp = client
+        .get(&format!("http://{second_addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "second");
+
+    let count = conn_count.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(count, 2, "different targets should use distinct tunnels");
 }
 
 #[tokio::test]
