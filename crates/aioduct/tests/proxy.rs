@@ -1420,6 +1420,17 @@ async fn tls_connect_proxy() -> (
     rustls::pki_types::CertificateDer<'static>,
     Arc<AtomicUsize>,
 ) {
+    tls_connect_proxy_with_capture(None).await
+}
+
+#[cfg(feature = "rustls")]
+async fn tls_connect_proxy_with_capture(
+    captured_connects: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+) -> (
+    std::net::SocketAddr,
+    rustls::pki_types::CertificateDer<'static>,
+    Arc<AtomicUsize>,
+) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
@@ -1450,20 +1461,34 @@ async fn tls_connect_proxy() -> (
             };
             cc.fetch_add(1, AtomicOrdering::SeqCst);
             let acceptor = acceptor.clone();
+            let captured_connects = captured_connects.clone();
             tokio::spawn(async move {
                 // Client → proxy TLS handshake must complete first.
                 let mut client = match acceptor.accept(tcp).await {
                     Ok(s) => s,
                     Err(_) => return,
                 };
-                let mut buf = vec![0u8; 8192];
-                let n = match client.read(&mut buf).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => n,
-                };
-                let head = String::from_utf8_lossy(&buf[..n]);
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 512];
+                loop {
+                    let n = match client.read(&mut tmp).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if buf.len() > 8192 {
+                        return;
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf).to_string();
                 if !head.starts_with("CONNECT ") {
                     return;
+                }
+                if let Some(captured_connects) = captured_connects {
+                    captured_connects.lock().unwrap().push(head.clone());
                 }
                 let target = head.split_whitespace().nth(1).unwrap_or("").to_owned();
                 client
@@ -1521,6 +1546,55 @@ async fn https_proxy_tls_to_proxy_reaches_http_target() {
         conns.load(AtomicOrdering::SeqCst) >= 1,
         "the TLS proxy should have accepted at least one connection"
     );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_http_target_connect_includes_proxy_auth() {
+    let (target_addr, _counter) = h1_server().await;
+    let captured_connects = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (proxy_addr, proxy_cert, _conns) =
+        tls_connect_proxy_with_capture(Some(captured_connects.clone())).await;
+
+    let client_config = aioduct_test_server::tls::make_client_config(&proxy_cert);
+    let connector = aioduct::tls::RustlsConnector::new(client_config);
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap()
+                .basic_auth("Aladdin", "open sesame"),
+        )
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{target_addr}/path"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    let connect_reqs = captured_connects.lock().unwrap();
+    let connect_req = connect_reqs
+        .iter()
+        .find(|req| req.starts_with("CONNECT "))
+        .expect("HTTPS proxy should receive a CONNECT request");
+    let auth = connect_req
+        .lines()
+        .find(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("proxy-authorization:")
+        })
+        .and_then(|line| line.split_once(':'))
+        .map(|(_, value)| value.trim());
+
+    assert_eq!(auth, Some("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="));
 }
 
 /// Build a client TLS config that trusts multiple self-signed certs. The
