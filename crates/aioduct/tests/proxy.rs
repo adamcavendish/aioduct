@@ -22,6 +22,35 @@ use aioduct_test_server::raw::raw_server;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
 
+const EXPECTED_PROXY_AUTH: &str = "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==";
+type CapturedConnects = Arc<std::sync::Mutex<Vec<String>>>;
+
+fn captured_connects() -> CapturedConnects {
+    Arc::new(std::sync::Mutex::new(Vec::new()))
+}
+
+fn connect_target(connect_req: &str) -> &str {
+    connect_req.split_whitespace().nth(1).unwrap_or("")
+}
+
+fn proxy_auth_value(connect_req: &str) -> Option<&str> {
+    connect_req
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("proxy-authorization"))
+        .map(|(_, value)| value.trim())
+}
+
+fn assert_connect_for_target_has_auth(captured_connects: &CapturedConnects, target: &str) {
+    let connect_reqs = captured_connects.lock().unwrap();
+    let connect_req = connect_reqs
+        .iter()
+        .find(|req| req.starts_with("CONNECT ") && connect_target(req) == target)
+        .unwrap_or_else(|| panic!("expected CONNECT request for {target}, got: {connect_reqs:?}"));
+
+    assert_eq!(proxy_auth_value(connect_req), Some(EXPECTED_PROXY_AUTH));
+}
+
 #[tokio::test]
 async fn test_http_proxy() {
     let (target_addr, _counter) = h1_server().await;
@@ -361,27 +390,11 @@ async fn test_socks5h_proxy() {
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
 
-#[ignore = "needs CONNECT tunnel rewrite: proxy and target must be separate servers"]
 #[tokio::test]
 async fn test_http_proxy_basic_auth() {
-    let auth_seen = Arc::new(AtomicBool::new(false));
-    let auth_seen_clone = auth_seen.clone();
-
-    let (proxy_addr, _counter) = h1_server_with(move |req| {
-        let auth_seen = auth_seen_clone.clone();
-        async move {
-            // For plain HTTP proxy, Proxy-Authorization should be in the request headers
-            if let Some(auth) = req.headers().get("proxy-authorization") {
-                let auth_str = auth.to_str().unwrap_or("");
-                // "Aladdin:open sesame" -> base64 "QWxhZGRpbjpvcGVuIHNlc2FtZQ=="
-                if auth_str == "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
-                    auth_seen.store(true, AtomicOrdering::SeqCst);
-                }
-            }
-            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
-        }
-    })
-    .await;
+    let (target_addr, _counter) = h1_server().await;
+    let captured_connects = captured_connects();
+    let (proxy_addr, _conns) = connect_proxy_with_capture(Some(captured_connects.clone())).await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(
@@ -393,17 +406,41 @@ async fn test_http_proxy_basic_auth() {
         .unwrap();
 
     let resp = client
-        .get("http://example.com/prox")
+        .get(&format!("http://{target_addr}/prox"))
         .unwrap()
         .send()
         .await
         .unwrap();
 
     assert_eq!(resp.status(), http::StatusCode::OK);
-    assert!(
-        auth_seen.load(AtomicOrdering::SeqCst),
-        "proxy should have received Proxy-Authorization header with basic auth"
-    );
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+    assert_connect_for_target_has_auth(&captured_connects, &target_addr.to_string());
+}
+
+#[tokio::test]
+async fn http_proxy_uri_auth_reaches_connect_tunnel() {
+    let (target_addr, _counter) = h1_server().await;
+    let captured_connects = captured_connects();
+    let (proxy_addr, _conns) = connect_proxy_with_capture(Some(captured_connects.clone())).await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(
+            aioduct::ProxyConfig::http(&format!("http://Aladdin:open%20sesame@{proxy_addr}"))
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{target_addr}/uri-auth"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+    assert_connect_for_target_has_auth(&captured_connects, &target_addr.to_string());
 }
 
 #[tokio::test]
@@ -1286,6 +1323,12 @@ impl ConnectorSend for ProxyKeepaliveCountingConnector {
 /// (`host:port`) to connect to the correct server. Each accepted TCP connection
 /// counts as one proxy connection.
 async fn connect_proxy() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+    connect_proxy_with_capture(None).await
+}
+
+async fn connect_proxy_with_capture(
+    captured_connects: Option<CapturedConnects>,
+) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
@@ -1301,24 +1344,38 @@ async fn connect_proxy() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
                 Err(_) => return,
             };
             cc.fetch_add(1, AtomicOrdering::SeqCst);
+            let captured_connects = captured_connects.clone();
 
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 8192];
-                let n = match client.read(&mut buf).await {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => n,
-                };
-                let head = String::from_utf8_lossy(&buf[..n]);
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 512];
+                loop {
+                    let n = match client.read(&mut tmp).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => n,
+                    };
+                    buf.extend_from_slice(&tmp[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if buf.len() > 8192 {
+                        return;
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf).to_string();
                 if !head.starts_with("CONNECT ") {
                     return;
                 }
+                if let Some(captured_connects) = captured_connects {
+                    captured_connects.lock().unwrap().push(head.clone());
+                }
                 // Parse CONNECT host:port
-                let target = head.split_whitespace().nth(1).unwrap_or("");
+                let target = head.split_whitespace().nth(1).unwrap_or("").to_owned();
                 client
                     .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                     .await
                     .unwrap();
-                let mut target = TcpStream::connect(target).await.unwrap();
+                let mut target = TcpStream::connect(&target).await.unwrap();
                 let _ = tokio::io::copy_bidirectional(&mut client, &mut target).await;
             });
         }
@@ -1425,7 +1482,7 @@ async fn tls_connect_proxy() -> (
 
 #[cfg(feature = "rustls")]
 async fn tls_connect_proxy_with_capture(
-    captured_connects: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    captured_connects: Option<CapturedConnects>,
 ) -> (
     std::net::SocketAddr,
     rustls::pki_types::CertificateDer<'static>,
@@ -1552,9 +1609,9 @@ async fn https_proxy_tls_to_proxy_reaches_http_target() {
 #[tokio::test]
 async fn https_proxy_http_target_connect_includes_proxy_auth() {
     let (target_addr, _counter) = h1_server().await;
-    let captured_connects = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = captured_connects();
     let (proxy_addr, proxy_cert, _conns) =
-        tls_connect_proxy_with_capture(Some(captured_connects.clone())).await;
+        tls_connect_proxy_with_capture(Some(captured.clone())).await;
 
     let client_config = aioduct_test_server::tls::make_client_config(&proxy_cert);
     let connector = aioduct::tls::RustlsConnector::new(client_config);
@@ -1580,21 +1637,145 @@ async fn https_proxy_http_target_connect_includes_proxy_auth() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 
-    let connect_reqs = captured_connects.lock().unwrap();
-    let connect_req = connect_reqs
-        .iter()
-        .find(|req| req.starts_with("CONNECT "))
-        .expect("HTTPS proxy should receive a CONNECT request");
-    let auth = connect_req
-        .lines()
-        .find(|line| {
-            line.to_ascii_lowercase()
-                .starts_with("proxy-authorization:")
-        })
-        .and_then(|line| line.split_once(':'))
-        .map(|(_, value)| value.trim());
+    assert_connect_for_target_has_auth(&captured, &target_addr.to_string());
+}
 
-    assert_eq!(auth, Some("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="));
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_https_target_connect_includes_proxy_auth() {
+    let (origin_addr, origin_cert, _origin_counter) =
+        aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
+    let captured = captured_connects();
+    let (proxy_addr, proxy_cert, _conns) =
+        tls_connect_proxy_with_capture(Some(captured.clone())).await;
+
+    let client_config = client_config_trusting(&[proxy_cert, origin_cert]);
+    let connector = aioduct::tls::RustlsConnector::new(client_config);
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap()
+                .basic_auth("Aladdin", "open sesame"),
+        )
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/", origin_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello tls");
+
+    assert_connect_for_target_has_auth(&captured, &format!("localhost:{}", origin_addr.port()));
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn http_proxy_auth_survives_http_to_https_redirect() {
+    let (target_addr, target_cert, _target_counter) =
+        aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
+    let location = format!("https://localhost:{}/final", target_addr.port());
+    let (redirect_addr, _redirect_counter) = h1_server_with(move |_req| {
+        let location = location.clone();
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(http::StatusCode::FOUND)
+                    .header(http::header::LOCATION, location)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let captured = captured_connects();
+    let (proxy_addr, _conns) = connect_proxy_with_capture(Some(captured.clone())).await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&target_cert),
+    );
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .proxy(
+            aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+                .unwrap()
+                .basic_auth("Aladdin", "open sesame"),
+        )
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{redirect_addr}/start"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello tls");
+
+    assert_connect_for_target_has_auth(&captured, &redirect_addr.to_string());
+    assert_connect_for_target_has_auth(&captured, &format!("localhost:{}", target_addr.port()));
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn http_proxy_auth_survives_https_to_http_redirect() {
+    let (target_addr, _target_counter) = h1_server().await;
+    let location = format!("http://{target_addr}/final");
+    let (redirect_addr, redirect_cert, _redirect_counter) =
+        aioduct_test_server::tls::tls_server_with(&[b"http/1.1"], move |_req| {
+            let location = location.clone();
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(http::StatusCode::FOUND)
+                        .header(http::header::LOCATION, location)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        })
+        .await;
+
+    let captured = captured_connects();
+    let (proxy_addr, _conns) = connect_proxy_with_capture(Some(captured.clone())).await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&redirect_cert),
+    );
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .proxy(
+            aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+                .unwrap()
+                .basic_auth("Aladdin", "open sesame"),
+        )
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/start", redirect_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+
+    assert_connect_for_target_has_auth(&captured, &format!("localhost:{}", redirect_addr.port()));
+    assert_connect_for_target_has_auth(&captured, &target_addr.to_string());
 }
 
 /// Build a client TLS config that trusts multiple self-signed certs. The
