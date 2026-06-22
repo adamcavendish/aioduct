@@ -151,18 +151,14 @@ async fn h2_multiplex_concurrent() {
     }
 
     assert_eq!(counter.requests(), 11);
-    // BUG: H2 multiplexing is broken due to exclusive pool checkout.
-    // Pool removes the connection on checkout (pop_back), so concurrent
-    // requests each open a new TCP connection. hyper's http2::SendRequest
-    // is Clone and supports multiplexing, but the pool doesn't clone it.
-    //
-    // Correct behavior: counter.connections() == 1
-    // Actual behavior: counter.connections() == N (one per concurrent request)
+    // H2 must multiplex concurrent requests over a single connection.
+    // The pool must clone the send-request handle on checkout rather
+    // than removing the connection from the pool.
     assert_eq!(
         counter.connections(),
         1,
-        "H2 concurrent requests should multiplex over 1 connection, \
-         but exclusive pool checkout opened {} connections",
+        "H2 concurrent requests must use 1 connection for all parallel streams, \
+         got {} connections",
         counter.connections()
     );
 }

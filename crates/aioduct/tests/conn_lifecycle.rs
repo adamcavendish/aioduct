@@ -31,8 +31,10 @@ fn client_with_timeout(t: Duration) -> HttpEngineSend<TokioRuntime, TcpConnector
         .unwrap()
 }
 
-#[path = "conn_lifecycle/bug_finding.rs"]
-mod bug_finding;
+#[path = "conn_lifecycle/h1_reuse.rs"]
+mod h1_reuse;
+#[path = "conn_lifecycle/h2_reuse.rs"]
+mod h2_reuse;
 #[path = "conn_lifecycle/pool_behavior.rs"]
 mod pool_behavior;
 #[path = "conn_lifecycle/pool_key.rs"]
