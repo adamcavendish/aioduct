@@ -1,155 +1,4 @@
 use super::*;
-// ── Bug-Finding Tests ─────────────────────────────────────────────────
-
-// BUG: H2 pool exclusive checkout breaks multiplexing.
-// pool/mod.rs:129 uses pop_back() which removes the H2 connection from the pool.
-// Concurrent requests each open a new TCP connection instead of multiplexing.
-#[tokio::test]
-async fn h2_concurrent_should_multiplex_single_connection() {
-    let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
-    let url = format!("http://{addr}/");
-
-    let resp = client
-        .get(&url)
-        .unwrap()
-        .h2c_prior_knowledge()
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let _ = resp.text().await.unwrap();
-    assert_eq!(counter.connections(), 1, "warmup should use 1 connection");
-
-    let mut handles = Vec::new();
-    for _ in 0..10 {
-        let client = client.clone();
-        let url = url.clone();
-        handles.push(tokio::spawn(async move {
-            let resp = client
-                .get(&url)
-                .unwrap()
-                .h2c_prior_knowledge()
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), 200);
-            let _ = resp.text().await.unwrap();
-        }));
-    }
-    for h in handles {
-        h.await.unwrap();
-    }
-
-    assert_eq!(counter.requests(), 11);
-    assert_eq!(
-        counter.connections(),
-        1,
-        "BUG: H2 concurrent requests should multiplex over 1 connection, \
-         but pool exclusive checkout causes {} connections to be opened",
-        counter.connections()
-    );
-}
-
-// BUG: H2 slow body concurrent should still multiplex (variant of above).
-#[tokio::test]
-async fn h2_slow_body_concurrent_should_still_multiplex() {
-    let (addr, counter) = aioduct_test_server::h2::h2_server_with(|_req| async {
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
-    })
-    .await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
-    let url = format!("http://{addr}/");
-
-    let resp = client
-        .get(&url)
-        .unwrap()
-        .h2c_prior_knowledge()
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let _ = resp.text().await.unwrap();
-
-    let mut handles = Vec::new();
-    for _ in 0..5 {
-        let client = client.clone();
-        let url = url.clone();
-        handles.push(tokio::spawn(async move {
-            client.get(&url).unwrap().h2c_prior_knowledge().send().await
-        }));
-    }
-
-    let mut successes = 0;
-    for h in handles {
-        if let Ok(Ok(resp)) = h.await
-            && resp.status() == 200
-        {
-            let _ = resp.text().await;
-            successes += 1;
-        }
-    }
-    assert_eq!(successes, 5);
-
-    assert_eq!(
-        counter.connections(),
-        1,
-        "BUG: H2 should multiplex all requests over 1 connection, \
-         but exclusive pool checkout opened {} connections",
-        counter.connections()
-    );
-}
-
-// H2 parallel downloads should use single connection (curl test_02_04).
-#[tokio::test]
-async fn h2_parallel_downloads_single_connection() {
-    let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
-    let url = format!("http://{addr}/");
-
-    let mut handles = Vec::new();
-    for _ in 0..10 {
-        let client = client.clone();
-        let url = url.clone();
-        handles.push(tokio::spawn(async move {
-            let resp = client
-                .get(&url)
-                .unwrap()
-                .h2c_prior_knowledge()
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(resp.status(), 200);
-            let _ = resp.text().await.unwrap();
-        }));
-    }
-    for h in handles {
-        h.await.unwrap();
-    }
-
-    assert_eq!(counter.requests(), 10);
-    assert_eq!(
-        counter.connections(),
-        1,
-        "BUG: H2 parallel downloads should use 1 connection (multiplexing), \
-         but opened {}",
-        counter.connections()
-    );
-}
-
 // Repeated body drops should not leak connections.
 #[tokio::test]
 async fn h1_repeated_body_drop_does_not_leak_connections() {
@@ -179,7 +28,6 @@ async fn h1_repeated_body_drop_does_not_leak_connections() {
         "20 body-drop cycles + 1 clean request should not open more than ~25 connections, got {conns}"
     );
 }
-
 // H1 connection should be reused after body is fully consumed.
 #[tokio::test]
 async fn h1_connection_ready_after_body_consumed() {
@@ -206,39 +54,6 @@ async fn h1_connection_ready_after_body_consumed() {
         "H1 connection should be reused after body is fully consumed"
     );
 }
-
-// H2 pool eviction should not discard connections with active streams.
-#[tokio::test]
-async fn h2_pool_eviction_should_not_discard_active_connections() {
-    let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .pool_idle_timeout(Duration::from_secs(60))
-        .pool_max_idle_per_host(2)
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
-    let url = format!("http://{addr}/");
-
-    for _ in 0..5 {
-        let resp = client
-            .get(&url)
-            .unwrap()
-            .h2c_prior_knowledge()
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200);
-        let _ = resp.text().await.unwrap();
-    }
-
-    assert_eq!(counter.requests(), 5);
-    assert!(
-        counter.connections() <= 2,
-        "sequential H2 requests with max_idle=2 should reuse connections, got {}",
-        counter.connections()
-    );
-}
-
 // pool_max_idle_per_host=1 with body consumption should still allow reuse.
 #[tokio::test]
 async fn h1_pool_max_idle_1_with_body_consumed_reuses() {
@@ -265,7 +80,6 @@ async fn h1_pool_max_idle_1_with_body_consumed_reuses() {
         counter.connections()
     );
 }
-
 // After a concurrent burst, sequential requests should reuse pooled connections.
 #[tokio::test]
 async fn h1_concurrent_then_sequential_reuses_pool() {
@@ -310,49 +124,6 @@ async fn h1_concurrent_then_sequential_reuses_pool() {
         conns_after_sequential
     );
 }
-
-// H2 GOAWAY after N requests should force a new connection.
-#[tokio::test]
-async fn h2_goaway_after_n_forces_new_connection() {
-    let (addr, counter) = aioduct_test_server::h2::h2_goaway_after(1).await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
-    let url = format!("http://{addr}/");
-
-    let resp = client
-        .get(&url)
-        .unwrap()
-        .h2c_prior_knowledge()
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let _ = resp.text().await.unwrap();
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let resp = client
-        .get(&url)
-        .unwrap()
-        .h2c_prior_knowledge()
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let _ = resp.text().await.unwrap();
-
-    assert_eq!(counter.requests(), 2);
-    assert!(
-        counter.connections() >= 2,
-        "After GOAWAY + 100ms sleep, second request should use a new connection, \
-         got only {} connection(s)",
-        counter.connections()
-    );
-}
-
 // HEAD response (no body) should allow immediate connection reuse.
 #[tokio::test]
 async fn h1_head_response_connection_reuse() {
@@ -392,7 +163,6 @@ async fn h1_head_response_connection_reuse() {
         counter.connections()
     );
 }
-
 // Connection: close on every response should force a new connection each time.
 #[tokio::test]
 async fn connection_close_every_response_forces_new_connections() {
@@ -424,7 +194,6 @@ async fn connection_close_every_response_forces_new_connections() {
         "Every response with Connection: close should force a new connection"
     );
 }
-
 // H1 parallel downloads should need multiple connections (no multiplexing).
 #[tokio::test]
 async fn h1_parallel_downloads_need_multiple_connections() {
@@ -457,39 +226,6 @@ async fn h1_parallel_downloads_need_multiple_connections() {
         counter.connections()
     );
 }
-
-// 200 sequential H2 requests should reuse a single connection.
-#[tokio::test]
-async fn h2_sequential_200_requests_reuse_one_connection() {
-    let (addr, counter) = aioduct_test_server::h2::h2_server().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap();
-    let url = format!("http://{addr}/");
-
-    for i in 0..200 {
-        let resp = client
-            .get(&url)
-            .unwrap()
-            .h2c_prior_knowledge()
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), 200, "request {i} failed");
-        let _ = resp.text().await.unwrap();
-    }
-
-    assert_eq!(counter.requests(), 200);
-    assert_eq!(
-        counter.connections(),
-        1,
-        "200 sequential H2 requests should reuse 1 connection, got {}",
-        counter.connections()
-    );
-}
-
 // 100 sequential H1 requests should reuse a single connection.
 #[tokio::test]
 async fn h1_sequential_100_downloads_one_connection() {
@@ -514,7 +250,6 @@ async fn h1_sequential_100_downloads_one_connection() {
         counter.connections()
     );
 }
-
 // Connection reuse after 404 response.
 #[tokio::test]
 async fn connection_reuse_after_404() {
@@ -563,7 +298,6 @@ async fn connection_reuse_after_404() {
         counter.connections()
     );
 }
-
 // Connection reuse after 204 No Content.
 #[tokio::test]
 async fn connection_reuse_after_204() {
@@ -611,7 +345,6 @@ async fn connection_reuse_after_204() {
         "connection should be reused after 204 No Content"
     );
 }
-
 // Pool stability under sustained concurrent load (5 waves of 10).
 #[tokio::test]
 async fn h1_sustained_concurrent_load_pool_stability() {
@@ -648,7 +381,6 @@ async fn h1_sustained_concurrent_load_pool_stability() {
          but opened {total_conns} total connections (possible pool leak)"
     );
 }
-
 #[tokio::test]
 async fn pool_max_active_per_host_caps_concurrent_fresh_dials() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;

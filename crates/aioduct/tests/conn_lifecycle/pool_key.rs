@@ -1,8 +1,8 @@
 use super::*;
 // ── Pool Key Bug-Finding Tests ────────────────────────────────────────
 
-// BUG: pool/mod.rs PoolKey stores raw Authority without normalizing default ports.
-// http://host/ and http://host:80/ produce different pool keys, causing separate connections.
+// PoolKey must normalize default ports so http://host/ and
+// http://host:80/ produce the same pool key and share connections.
 #[tokio::test]
 async fn pool_key_should_normalize_default_port() {
     let (addr, counter) = aioduct_test_server::h1::h1_server().await;
@@ -41,15 +41,14 @@ async fn pool_key_should_normalize_default_port() {
     assert_eq!(
         counter.connections(),
         1,
-        "BUG: PoolKey doesn't normalize default ports. \
+        "PoolKey must normalize default ports. \
          Requests to the same origin with and without explicit port should share a connection."
     );
 }
 
-// BUG: dispatch_send.rs:156-158 checks H1 connections back into the pool immediately
-// after send_on_connection resolves (response HEAD received), before the body is fully
-// drained. Two concurrent users of the same H1 connection corrupt each other.
-// This test verifies that H1 connections with slow bodies don't get reused prematurely.
+// H1 connections with in-flight bodies must not be checked back into
+// the pool until the body is fully drained. Otherwise concurrent requests
+// can reuse the connection and corrupt each other's response streams.
 #[tokio::test]
 async fn h1_slow_body_should_not_allow_concurrent_reuse() {
     let (addr, counter) =
@@ -100,7 +99,7 @@ async fn h1_slow_body_should_not_allow_concurrent_reuse() {
     // the second request should have opened a new connection.
     assert!(
         counter.connections() >= 2,
-        "BUG: dispatch_send.rs:156 checks H1 connection back into pool before body is drained. \
+        "H1 connection must not be checked into pool before body drain. \
          With a slow body still streaming, the second request should use a NEW connection, \
          but only {} connection(s) were opened. This means the pool allowed reuse of a \
          connection with an in-flight body.",
@@ -108,10 +107,9 @@ async fn h1_slow_body_should_not_allow_concurrent_reuse() {
     );
 }
 
-// BUG: No check for HTTP/1.0 responses or Connection: close before checking connection
-// back into the pool. An HTTP/1.0 response is immediately pooled, causing the next
-// request on that connection to fail with a stale error. This wastes a round-trip
-// for streaming bodies where stale retry is not possible.
+// Connections with Connection: close (or HTTP/1.0) must not be returned
+// to the pool. Pooling them wastes a slot and forces the next request
+// to fail on a stale connection before opening a fresh one.
 #[tokio::test]
 async fn h1_connection_close_should_not_be_pooled() {
     use std::sync::Arc;
@@ -169,10 +167,9 @@ async fn h1_connection_close_should_not_be_pooled() {
         "Connection: close should force 2 connections"
     );
 
-    // The real bug: even though Connection: close works because hyper handles it,
-    // the library still checks the connection into the pool, and then hyper's
-    // is_ready() catches it as closed on checkout. This wastes a pool slot.
-    // A proper implementation would skip checkin entirely when Connection: close is present.
+    // Connection: close must skip pool checkin entirely.
+    // Hyper handles the protocol-level close signal, but the library must
+    // not return the connection to the pool, otherwise it wastes a pool slot.
 }
 
 // ── H2 multiplex-wait timeout race (#183) ─────────────────────────────
