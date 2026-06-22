@@ -186,7 +186,7 @@ pub trait TlsConnect<S>: Send + Sync + 'static {
 ///
 /// Gated on having a `RuntimeLocal` runtime available. Extend the cfg
 /// when additional `!Send` runtimes are added.
-#[cfg(feature = "compio")]
+#[cfg(all(feature = "rustls", feature = "compio"))]
 pub(crate) trait TlsConnectLocal<S>: 'static {
     type Stream: hyper::rt::Read + hyper::rt::Write + Unpin + 'static;
 
