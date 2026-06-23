@@ -1,5 +1,7 @@
 #![cfg(feature = "tokio")]
 
+#[path = "redirects/cookie_jar.rs"]
+mod cookie_jar;
 #[path = "redirects/edge_safety.rs"]
 mod edge_safety;
 #[path = "redirects/header_safety.rs"]
@@ -1171,55 +1173,6 @@ async fn redirect_limited_exact_boundary() {
     assert_eq!(resp.status(), 200, "Limited(4) should reach /final");
     let body = resp.text().await.unwrap();
     assert_eq!(body, "final", "Limited(4) should reach the final page");
-}
-
-// Redirect Set-Cookie headers should be stored and applied to the redirected request.
-#[tokio::test]
-async fn redirect_stores_cookies_from_redirect_response() {
-    let (addr, _) = h1_server_with(|req| async move {
-        let path = req.uri().path().to_string();
-        if path == "/login" {
-            let resp = Response::builder()
-                .status(302)
-                .header("Location", "/dashboard")
-                .header("Set-Cookie", "session=xyz789; Path=/")
-                .body(Full::new(Bytes::new()))
-                .unwrap();
-            Ok::<_, Infallible>(resp)
-        } else {
-            let cookie = req
-                .headers()
-                .get("cookie")
-                .map(|v| v.to_str().unwrap_or("").to_string())
-                .unwrap_or_default();
-            Ok(Response::new(Full::new(Bytes::from(format!(
-                "cookie={cookie}"
-            )))))
-        }
-    })
-    .await;
-
-    let jar = aioduct::cookie::CookieJar::new();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .cookie_jar(jar)
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("http://{addr}/login"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), 200);
-    let body = resp.text().await.unwrap();
-    assert!(
-        body.contains("session=xyz789"),
-        "redirect response Set-Cookie should be stored and applied to the \
-         redirected request, got: {body}"
-    );
 }
 
 // 308 redirect preserves method and body (like 307 but permanent).
