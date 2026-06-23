@@ -232,11 +232,18 @@ mod tests {
     #[test]
     fn evicts_expired_when_over_capacity() {
         let cache = H2cProbeCache::with_ttl(Duration::from_millis(1));
-        // Fill past threshold
-        for i in 0..66 {
-            cache.record_h2c(authority(&format!("host{i}.com:80")));
+        {
+            let mut map = cache.inner.lock().unwrap();
+            for i in 0..66 {
+                map.insert(
+                    authority(&format!("host{i}.com:80")),
+                    H2cCapability::SupportsH2c {
+                        probed_at: Instant::now() - Duration::from_millis(10),
+                    },
+                );
+            }
         }
-        std::thread::sleep(Duration::from_millis(10));
+
         // All entries are now expired. Next insert triggers eviction.
         cache.record_h2c(authority("new.com:80"));
         let map = cache.inner.lock().unwrap();
