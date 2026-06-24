@@ -1239,3 +1239,129 @@ async fn https_proxy_tls_to_proxy_reaches_https_target() {
         "the TLS proxy should have accepted at least one connection"
     );
 }
+
+/// When HTTP/3 is enabled on a client that also has a proxy configured, the
+/// proxy must not be bypassed: the client must still tunnel through the proxy
+/// rather than attempt a direct HTTP/3 connection to the origin.
+#[cfg(all(feature = "rustls", feature = "http3"))]
+#[tokio::test]
+async fn http3_with_proxy_uses_connect_tunnel() {
+    aioduct_test_server::tls::install_crypto_provider();
+
+    let (origin_addr, origin_cert, _origin_counter) =
+        aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
+    let captured = captured_connects();
+    let (proxy_addr, _conns) = connect_proxy_with_capture(Some(captured.clone())).await;
+
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&origin_cert),
+    );
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .http3(true)
+        .unwrap()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("https://localhost:{}/", origin_addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello tls");
+
+    let connect_reqs = captured.lock().unwrap();
+    assert!(
+        connect_reqs
+            .iter()
+            .any(|req| connect_target(req) == format!("localhost:{}", origin_addr.port())),
+        "proxy CONNECT tunnel should be used, got: {connect_reqs:?}"
+    );
+}
+
+/// Two-hop chain: SOCKS5 (first hop) → HTTP second hop.  The second hop
+/// mock reads the tunnelled HTTP request and responds with a static body.
+/// This verifies that the proxy chain infrastructure relays traffic through
+/// both hops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_chain_socks_then_http_connect() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Second hop mock: reads an HTTP request and sends a static response.
+    let second_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second_addr = second_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (mut client, _) = second_listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let mut tmp = [0u8; 512];
+            let n = match client.read(&mut tmp).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            buf.extend_from_slice(&tmp[..n]);
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+            if buf.len() > 8192 {
+                return;
+            }
+        }
+        client
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nhello aioduct")
+            .await
+            .unwrap();
+    });
+
+    // SOCKS5 mock: after SOCKS5 handshake, connects to second hop and relays.
+    let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socks_addr = socks_listener.local_addr().unwrap();
+    let second = second_addr;
+
+    tokio::spawn(async move {
+        let (mut client, _) = socks_listener.accept().await.unwrap();
+        let mut buf = [0u8; 512];
+        let n = client.read(&mut buf).await.unwrap();
+        assert!(n >= 3 && buf[0] == 0x05);
+        client.write_all(&[0x05, 0x00]).await.unwrap();
+
+        let n = client.read(&mut buf).await.unwrap();
+        assert!(n >= 7 && buf[0] == 0x05 && buf[1] == 0x01);
+
+        let mut upstream = tokio::net::TcpStream::connect(second).await.unwrap();
+        client
+            .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await
+            .unwrap();
+
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    });
+
+    let chain = aioduct::ProxyChain::new(vec![
+        aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}")).unwrap(),
+        aioduct::ProxyConfig::http(&format!("http://{second_addr}")).unwrap(),
+    ]);
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_chain(chain)
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get("http://127.0.0.1:9999/through-chain")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}

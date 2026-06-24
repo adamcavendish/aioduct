@@ -1,6 +1,6 @@
 # Proxy Support
 
-aioduct supports routing requests through HTTP, HTTPS, SOCKS4/SOCKS4a, SOCKS5, and SOCKS5h proxies. For HTTP targets via an HTTP proxy, the request is sent directly to the proxy. For HTTPS targets, a CONNECT tunnel is established. SOCKS proxies tunnel all traffic regardless of scheme.
+aioduct supports routing requests through HTTP, HTTPS, SOCKS4/SOCKS4a, SOCKS5, and SOCKS5h proxies. Both HTTP and HTTPS targets use a CONNECT tunnel through HTTP and HTTPS proxies. SOCKS proxies tunnel all traffic regardless of scheme at the TCP level.
 
 ## Proxy Schemes
 
@@ -316,9 +316,10 @@ takes priority.
 
 ### HTTP Targets
 
-For plain HTTP requests through an HTTP proxy, the client connects to the
-proxy and sends the request with the full absolute URI in the request line.
-The proxy forwards the request to the target server.
+For plain HTTP requests through an HTTP proxy, the client uses a CONNECT
+tunnel to the target through the proxy, then sends the request through the
+tunnel. This is a transparent tunnel — the proxy relays raw TCP bytes between
+the client and the target.
 
 ### HTTPS Targets (CONNECT Tunnel)
 
@@ -346,6 +347,16 @@ SOCKS proxies operate at the TCP level. After the SOCKS handshake (which
 establishes a tunnel to the target), the TCP stream is used directly —
 for HTTP targets the client sends a normal request, for HTTPS targets TLS
 is negotiated over the tunnel.
+
+### HTTP/3 Policy
+
+When a proxy is configured (via `.proxy()`, `.proxy_settings()`, or
+`.proxy_chain()`), the client never attempts a direct HTTP/3 connection to
+the origin. HTTP/3 proxy tunneling (CONNECT-UDP, RFC 9298) is not yet
+supported. Proxied requests use the configured HTTP/1.1 or HTTP/2 tunnel
+path instead, even when `.http3(true)` or `.alt_svc_h3(true)` is active on
+the builder. Non-proxied requests are unaffected and may use HTTP/3
+normally.
 
 ## Example: Corporate Proxy
 
