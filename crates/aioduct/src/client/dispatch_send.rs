@@ -388,8 +388,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         }
 
+        // When a proxy is configured, never attempt a direct HTTP/3 connection;
+        // proxied requests must stay on the configured proxy path (HTTP CONNECT
+        // or SOCKS tunnel).  HTTP/3 proxy tunneling (CONNECT-UDP) is not yet
+        // supported.
         #[cfg(all(feature = "http3", feature = "rustls"))]
-        if is_https && let Some(endpoint) = &self.core.h3_endpoint {
+        if is_https
+            && !through_proxy
+            && let Some(endpoint) = &self.core.h3_endpoint
+        {
             let use_h3 =
                 self.core.prefer_h3 || self.core.alt_svc_cache.lookup_h3(authority).is_some();
             if use_h3 {
