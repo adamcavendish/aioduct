@@ -418,42 +418,43 @@ aioduct http -x http://proxy:8080 --noproxy localhost,127.0.0.1,.internal \
 
 ## Proxy Compatibility Matrix
 
-The following table maps every proxy feature across supported runtimes and
-deployment targets. Features marked *unsupported* or *host-managed* are
-documented here explicitly so callers know the expected behavior.
+Every proxy feature is listed below across all runtimes and deployment
+targets. Platform-managed transports (wasm, wasi-p2) delegate proxy routing
+and bypass to the browser or WASI host; aioduct does not control proxy
+behavior on those targets.
 
 | Feature | Tokio / smol / compio | blocking | wasm | wasi-p2 |
 |---------|-----------------------|----------|------|---------|
 | HTTP proxy (CONNECT tunnel) | Yes | Yes, via wrapped async client | Browser-managed | Host-managed |
 | HTTPS proxy (TLS to proxy) | Yes | Yes | Browser-managed | Host-managed |
-| SOCKS4 / SOCKS4a | Yes | Yes | Unsupported | Unsupported |
-| SOCKS5 / SOCKS5h | Yes | Yes | Unsupported | Unsupported |
+| SOCKS4 / SOCKS4a | Yes | Yes | Not available | Not available |
+| SOCKS5 / SOCKS5h | Yes | Yes | Not available | Not available |
 | Proxy auth (Basic, URI-embedded) | Yes | Yes | Browser-managed | Host-managed |
-| Credential resolver | Yes | Yes | Unsupported | Unsupported |
-| Custom CONNECT headers | Yes | Yes | Unsupported | Unsupported |
-| System proxy (env vars) | Yes | Yes | Unsupported | Unsupported |
-| NO_PROXY bypass rules | Yes | Yes | Unsupported | Unsupported |
-| Custom proxy selection | Yes | Yes | Unsupported | Unsupported |
-| Proxy chaining (up to 2 hops) | Yes | Yes | Unsupported | Unsupported |
+| Credential resolver | Yes | Yes | Not available | Not available |
+| Custom CONNECT headers | Yes | Yes | Not available | Not available |
+| System proxy (env vars) | Yes | Yes | Not available | Not available |
+| NO_PROXY bypass rules | Yes | Yes | Not available | Not available |
+| Custom proxy selection | Yes | Yes | Not available | Not available |
+| Proxy chaining (up to 2 hops) | Yes | Yes | Not available | Not available |
 | HTTP/3 with proxy (CONNECT tunnel fallback) | Yes | Yes | N/A | N/A |
 | Redirect through proxy (auth survives hops) | Yes | Yes | Browser-managed | Host-managed |
 | TCP keepalive on proxy tunnel | Yes | Yes | N/A | N/A |
 
 ### Future Work
 
-| Item | Status | Notes |
-|------|--------|-------|
-| Windows machine-scope system proxy | Not yet implemented | System proxy currently means environment variables. Windows registry / WinHTTP proxy discovery is planned. |
-| NTLM proxy authentication | Not yet implemented | Only Basic auth, URI-embedded credentials, and credential resolvers are available. |
-| CONNECT-UDP (RFC 9298) | Not yet implemented | HTTP/3 with a proxy falls back to the configured HTTP/1.1 or HTTP/2 CONNECT tunnel. |
-| Per-request proxy override | Not yet implemented | Proxy configuration is per-client (builder). |
-| CONNECT headers on SOCKS proxies | Rejected with clear error | `validate_for_use()` rejects SOCKS configs with CONNECT headers before any I/O. |
+| Item | Notes |
+|------|-------|
+| Windows machine-scope system proxy | System proxy currently means environment variables. Windows registry / WinHTTP proxy discovery is planned. |
+| NTLM proxy authentication | Only Basic auth, URI-embedded credentials, and credential resolvers are available. |
+| CONNECT-UDP (RFC 9298) | HTTP/3 with a proxy falls back to the configured HTTP/1.1 or HTTP/2 CONNECT tunnel. |
+| Per-request proxy override | Proxy configuration is per-client (builder). |
 
 ## Limitations
 
 - SOCKS5 supports no-auth and username/password authentication (RFC 1928/1929)
 - SOCKS4 supports optional user ID authentication
 - Proxy chaining supports up to 2 hops
+- CONNECT headers on SOCKS proxies are rejected with a clear error before any I/O.
 - `EnvCredentialResolver` applies the same credentials to all proxies (the
   `key` parameter is reserved for future per-proxy resolvers)
 - The HTTP proxy URI must use `http://` or `https://` scheme; SOCKS proxies
