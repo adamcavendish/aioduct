@@ -487,3 +487,91 @@ async fn socks5_connect_headers_error_at_send_time() {
         "expected CONNECT header rejection for SOCKS proxy, got: {err}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socks5_proxy_routes_to_ipv6_target() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let target_listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let target_addr = target_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (mut stream, _) = target_listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let n = match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+            if buf.len() > 8192 {
+                return;
+            }
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nhello aioduct")
+            .await
+            .ok();
+    });
+
+    let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socks_addr = socks_listener.local_addr().unwrap();
+    let target_port = target_addr.port();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut client, _) = match socks_listener.accept().await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+
+            tokio::spawn(async move {
+                let mut buf = [0u8; 256];
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 3 && buf[0] == 0x05);
+                client.write_all(&[0x05, 0x00]).await.unwrap();
+
+                let n = client.read(&mut buf).await.unwrap();
+                assert!(n >= 22);
+                assert_eq!(buf[0], 0x05);
+                assert_eq!(buf[1], 0x01);
+                assert_eq!(buf[3], 0x04, "expected ATYP_IPV6, got {:#04x}", buf[3]);
+                assert_eq!(
+                    &buf[4..20],
+                    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                    "expected ::1 IPv6 address in CONNECT"
+                );
+                let port = u16::from_be_bytes([buf[20], buf[21]]);
+                assert_eq!(port, target_port);
+
+                let mut upstream = tokio::net::TcpStream::connect(format!("[::1]:{target_port}"))
+                    .await
+                    .unwrap();
+
+                client.write_all(&[0x05, 0x00, 0x00, 0x04]).await.unwrap();
+                client.write_all(&[0u8; 16]).await.unwrap();
+                client.write_all(&[0x00, 0x00]).await.unwrap();
+
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}")).unwrap())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://[::1]:{target_port}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+}
