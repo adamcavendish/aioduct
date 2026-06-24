@@ -1000,8 +1000,81 @@ mod tests {
     }
 
     #[test]
+    fn handshake_connect_message_format_local_dns_ipv6_explicit() {
+        run_test(
+            |server| {
+                let mut greeting = [0u8; 3];
+                server.read_exact(&mut greeting).unwrap();
+                server.write_all(&[SOCKS5_VERSION, AUTH_NONE]).unwrap();
+
+                let mut connect = [0u8; 256];
+                let n = server.read(&mut connect).unwrap();
+                let msg = &connect[..n];
+                assert_eq!(msg[0], SOCKS5_VERSION);
+                assert_eq!(msg[1], CMD_CONNECT);
+                assert_eq!(msg[2], 0x00);
+                assert_eq!(msg[3], ATYP_IPV6);
+                assert_eq!(
+                    &msg[4..20],
+                    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+                );
+                assert_eq!(msg[20], 0x1F);
+                assert_eq!(msg[21], 0x90);
+
+                server.write_all(&ipv6_reply()).unwrap();
+            },
+            |client| {
+                let result = socks5_handshake(client, "::1", 8080, None, Socks5Dns::Local);
+                assert!(result.is_ok());
+            },
+        );
+    }
+
+    #[test]
+    fn handshake_eof_during_reply_header() {
+        run_test(
+            |server| {
+                let mut greeting = [0u8; 3];
+                server.read_exact(&mut greeting).unwrap();
+                server.write_all(&[SOCKS5_VERSION, AUTH_NONE]).unwrap();
+
+                let mut connect = [0u8; 256];
+                let _ = server.read(&mut connect).unwrap();
+                server.write_all(&[SOCKS5_VERSION]).unwrap();
+            },
+            |client| {
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
+                assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+            },
+        );
+    }
+
+    #[test]
+    fn handshake_eof_during_bound_address() {
+        run_test(
+            |server| {
+                let mut greeting = [0u8; 3];
+                server.read_exact(&mut greeting).unwrap();
+                server.write_all(&[SOCKS5_VERSION, AUTH_NONE]).unwrap();
+
+                let mut connect = [0u8; 256];
+                let _ = server.read(&mut connect).unwrap();
+                server
+                    .write_all(&[SOCKS5_VERSION, REPLY_SUCCESS, 0x00, 0x01])
+                    .unwrap();
+                server.write_all(&[127, 0, 0]).unwrap();
+            },
+            |client| {
+                let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
+                assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+            },
+        );
+    }
+
+    #[test]
     fn resolve_host_localhost() {
-        // localhost resolution should always work and return loopback
         let ip = resolve_host("localhost", 80).unwrap();
         assert!(
             ip.is_loopback(),
@@ -1011,7 +1084,6 @@ mod tests {
 
     #[test]
     fn resolve_host_unknown_fails() {
-        // A clearly invalid hostname should fail
         let result = resolve_host("invalid.invalid.invalid.test", 80);
         assert!(result.is_err(), "invalid hostname should fail to resolve");
     }

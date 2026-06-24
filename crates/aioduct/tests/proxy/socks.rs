@@ -456,3 +456,34 @@ async fn socks4_proxy_sends_userid_and_domain() {
     assert_eq!(captured_user.lock().unwrap().as_str(), "proxyuser");
     assert_eq!(captured_domain.lock().unwrap().as_str(), "localhost");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socks5_connect_headers_error_at_send_time() {
+    let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socks_addr = socks_listener.local_addr().unwrap();
+    drop(socks_listener);
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(
+            aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}"))
+                .unwrap()
+                .header(
+                    http::header::HeaderName::from_static("x-token"),
+                    http::HeaderValue::from_static("abc"),
+                ),
+        )
+        .build()
+        .unwrap();
+
+    let err = client
+        .get("http://localhost:80/")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(
+        format!("{err}").contains("CONNECT headers are only supported by HTTP and HTTPS proxies"),
+        "expected CONNECT header rejection for SOCKS proxy, got: {err}"
+    );
+}
