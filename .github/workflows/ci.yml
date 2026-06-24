@@ -192,32 +192,41 @@ jobs:
       - run: bash scripts/check-snippets.sh --verbose
 
   cross-check:
-    name: Check (${{ matrix.target }})
+    name: Check (${{ join(matrix.targets, ', ') }})
     runs-on: ${{ matrix.os }}
     needs: [basics]
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-unknown-linux-gnu
+          - targets:
+              - aarch64-unknown-linux-gnu
             os: ubuntu-latest
-          - target: x86_64-unknown-linux-gnu
+          - targets:
+              - x86_64-unknown-linux-gnu
             os: ubuntu-latest
-          - target: aarch64-apple-darwin
+          - targets:
+              - aarch64-apple-darwin
+              - x86_64-apple-darwin
             os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
+          - targets:
+              - x86_64-pc-windows-msvc
             os: windows-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ join(matrix.targets, ',') }}
       - uses: Swatinem/rust-cache@v2
       - name: Install cross-compilers (Linux only)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-      - run: cargo check -p aioduct-cli --target ${{ matrix.target }}
+      - name: Cross-check targets
+        run: |
+          for target in ${{ join(matrix.targets, ' ') }}; do
+            echo "::group::cargo check --target $target"
+            cargo check -p aioduct-cli --target "$target"
+            echo "::endgroup::"
+          done
