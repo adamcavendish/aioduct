@@ -3,10 +3,14 @@ name: Nightly
 permissions:
   "contents": "write"
 
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
-  push:
-    branches:
-      - master
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   plan:
