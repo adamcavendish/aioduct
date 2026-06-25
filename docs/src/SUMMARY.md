@@ -19,6 +19,7 @@
 - [Cookie Jar](cookies.md)
 - [HTTP Caching](caching.md)
 - [HSTS](hsts.md)
+- [Security Controls](security_controls.md)
 - [Response Decompression](decompression.md)
 - [Proxy Support](proxy.md)
 - [HTTP/2 Tuning](http2_tuning.md)

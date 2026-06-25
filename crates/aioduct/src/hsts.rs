@@ -39,6 +39,9 @@ impl HstsStore {
     /// Per RFC 6797, HSTS headers must only be processed when received over
     /// a secure (HTTPS) connection. The caller must enforce this.
     pub fn store_from_response(&self, host: &str, headers: &HeaderMap) {
+        let Some(host) = canonical_host(host) else {
+            return;
+        };
         if let Some(value) = headers.get("strict-transport-security")
             && let Some((max_age, include_subdomains)) = parse_hsts(value)
         {
@@ -46,7 +49,7 @@ impl HstsStore {
                 return;
             };
             if max_age.is_zero() {
-                store.remove(host);
+                store.remove(&host);
             } else {
                 let now = Instant::now();
                 if store.len() >= 1024 {
@@ -61,7 +64,7 @@ impl HstsStore {
                     store.remove(&oldest_key);
                 }
                 store.insert(
-                    host.to_owned(),
+                    host,
                     HstsEntry {
                         include_subdomains,
                         expires_at: now + max_age,
@@ -73,18 +76,21 @@ impl HstsStore {
 
     /// Check whether a host should be upgraded from HTTP to HTTPS.
     pub fn should_upgrade(&self, host: &str) -> bool {
+        let Some(host) = canonical_host(host) else {
+            return false;
+        };
         let Ok(store) = self.inner.lock() else {
             return false;
         };
 
-        if let Some(entry) = store.get(host)
+        if let Some(entry) = store.get(&host)
             && Instant::now() < entry.expires_at
         {
             return true;
         }
 
         // Check parent domains for includeSubDomains
-        let mut domain = host;
+        let mut domain = host.as_str();
         while let Some(dot_pos) = domain.find('.') {
             domain = &domain[dot_pos + 1..];
             if let Some(entry) = store.get(domain)
@@ -105,6 +111,35 @@ impl HstsStore {
         };
         inner.clear();
     }
+}
+
+fn canonical_host(host: &str) -> Option<String> {
+    let mut host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = host.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let (addr, suffix) = rest.split_at(end);
+        let suffix = &suffix[1..];
+        if !suffix.is_empty() {
+            let port = suffix.strip_prefix(':')?;
+            if port.parse::<u16>().is_err() {
+                return None;
+            }
+        }
+        host = addr;
+    } else if host.matches(':').count() == 1
+        && let Some((name, port)) = host.rsplit_once(':')
+        && !name.is_empty()
+        && port.parse::<u16>().is_ok()
+    {
+        host = name;
+    }
+
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() { None } else { Some(host) }
 }
 
 fn parse_hsts(value: &HeaderValue) -> Option<(Duration, bool)> {
@@ -162,6 +197,57 @@ mod tests {
         let headers = hsts_headers("max-age=31536000");
         store.store_from_response("example.com", &headers);
         assert!(!store.should_upgrade("sub.example.com"));
+    }
+
+    #[test]
+    fn host_matching_is_case_insensitive() {
+        let store = HstsStore::new();
+        let headers = hsts_headers("max-age=31536000");
+        store.store_from_response("EXAMPLE.COM", &headers);
+
+        assert!(store.should_upgrade("example.com"));
+        assert!(store.should_upgrade("Example.Com"));
+    }
+
+    #[test]
+    fn host_matching_ignores_single_port_suffix() {
+        let store = HstsStore::new();
+        let headers = hsts_headers("max-age=31536000");
+        store.store_from_response("example.com:443", &headers);
+
+        assert!(store.should_upgrade("example.com"));
+        assert!(store.should_upgrade("example.com:80"));
+    }
+
+    #[test]
+    fn include_subdomains_matches_canonicalized_hosts() {
+        let store = HstsStore::new();
+        let headers = hsts_headers("max-age=31536000; includeSubDomains");
+        store.store_from_response("Example.Com:443", &headers);
+
+        assert!(store.should_upgrade("api.EXAMPLE.com:80"));
+        assert!(store.should_upgrade("deep.api.example.com."));
+    }
+
+    #[test]
+    fn bracketed_ipv6_hosts_are_canonicalized() {
+        let store = HstsStore::new();
+        let headers = hsts_headers("max-age=31536000");
+        store.store_from_response("[::1]", &headers);
+
+        assert!(store.should_upgrade("::1"));
+        assert!(store.should_upgrade("[::1]"));
+    }
+
+    #[test]
+    fn bracketed_ipv6_authorities_with_ports_are_canonicalized() {
+        let store = HstsStore::new();
+        let headers = hsts_headers("max-age=31536000");
+        store.store_from_response("[::1]:443", &headers);
+
+        assert!(store.should_upgrade("::1"));
+        assert!(store.should_upgrade("[::1]"));
+        assert!(store.should_upgrade("[::1]:80"));
     }
 
     #[test]
