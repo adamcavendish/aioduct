@@ -471,6 +471,7 @@ async fn error_for_status_with_reason_phrase() {
 #[tokio::test]
 async fn error_carries_url_context() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let expected_remote = "127.0.0.1:1".parse().unwrap();
     let err = client
         .get("http://127.0.0.1:1/the-path")
         .unwrap()
@@ -479,6 +480,7 @@ async fn error_carries_url_context() {
         .unwrap_err();
 
     assert_eq!(err.url().path(), "/the-path");
+    assert_eq!(err.remote_addr(), Some(expected_remote));
     assert!(err.is_connect());
 
     let display = format!("{err}");
