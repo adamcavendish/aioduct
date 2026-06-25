@@ -1,4 +1,5 @@
 use http::Uri;
+use std::net::SocketAddr;
 
 /// Boxed error type for dynamic dispatch.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -74,6 +75,16 @@ pub enum Error {
     /// A catch-all for other errors.
     #[error("{0}")]
     Other(#[source] BoxError),
+
+    /// A transport error associated with the resolved remote address.
+    #[error("{source} (remote address: {remote_addr})")]
+    RemoteAddr {
+        /// The remote address used by the failing transport operation.
+        remote_addr: SocketAddr,
+        /// The underlying transport error.
+        #[source]
+        source: BoxError,
+    },
 }
 
 /// Cloneable error recorded by fluent builders whose setter methods return
@@ -295,6 +306,11 @@ impl SendError {
     pub fn root_cause(&self) -> &(dyn std::error::Error + 'static) {
         self.error.root_cause()
     }
+
+    /// Returns the remote address associated with the underlying transport error, if known.
+    pub fn remote_addr(&self) -> Option<SocketAddr> {
+        self.error.remote_addr()
+    }
 }
 
 impl From<SendError> for Error {
@@ -304,6 +320,16 @@ impl From<SendError> for Error {
 }
 
 impl Error {
+    pub(crate) fn with_remote_addr(self, remote_addr: SocketAddr) -> Self {
+        match self {
+            Error::RemoteAddr { .. } => self,
+            source => Error::RemoteAddr {
+                remote_addr,
+                source: Box::new(source),
+            },
+        }
+    }
+
     /// Returns the deepest source in this error's chain, or this error if it has no source.
     pub fn root_cause(&self) -> &(dyn std::error::Error + 'static) {
         let mut source = self as &(dyn std::error::Error + 'static);
@@ -317,6 +343,14 @@ impl Error {
     pub fn is_connect(&self) -> bool {
         match self {
             Error::Io(_) | Error::Tls(_) | Error::ConnectTimeout => true,
+            Error::RemoteAddr { source, .. } => {
+                source
+                    .downcast_ref::<Error>()
+                    .is_some_and(Error::is_connect)
+                    || source
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(is_connect_io_error)
+            }
             Error::Hyper(e) => {
                 // A hyper error is a "connect" failure when it wraps an I/O
                 // error that indicates the connection was refused, reset, or
@@ -324,15 +358,7 @@ impl Error {
                 let mut source = std::error::Error::source(e);
                 while let Some(err) = source {
                     if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
-                        return matches!(
-                            io_err.kind(),
-                            std::io::ErrorKind::ConnectionRefused
-                                | std::io::ErrorKind::ConnectionReset
-                                | std::io::ErrorKind::ConnectionAborted
-                                | std::io::ErrorKind::AddrNotAvailable
-                                | std::io::ErrorKind::AddrInUse
-                                | std::io::ErrorKind::NotConnected
-                        );
+                        return is_connect_io_error(io_err);
                     }
                     source = err.source();
                 }
@@ -344,10 +370,28 @@ impl Error {
 
     /// Returns `true` if the error is a timeout.
     pub fn is_timeout(&self) -> bool {
-        matches!(
-            self,
-            Error::Timeout | Error::ConnectTimeout | Error::ReadTimeout | Error::WriteTimeout
-        )
+        match self {
+            Error::Timeout | Error::ConnectTimeout | Error::ReadTimeout | Error::WriteTimeout => {
+                true
+            }
+            Error::RemoteAddr { source, .. } => {
+                source
+                    .downcast_ref::<Error>()
+                    .is_some_and(Error::is_timeout)
+                    || source
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::TimedOut)
+            }
+            _ => false,
+        }
+    }
+
+    /// Returns the remote address associated with this transport error, if known.
+    pub fn remote_addr(&self) -> Option<SocketAddr> {
+        match self {
+            Error::RemoteAddr { remote_addr, .. } => Some(*remote_addr),
+            _ => None,
+        }
     }
 
     /// Returns `true` if the error is an HTTP status error.
@@ -371,6 +415,9 @@ impl Error {
     /// Returns `true` if the error was caused by a DNS resolution failure.
     pub fn is_dns(&self) -> bool {
         match self {
+            Error::RemoteAddr { source, .. } => {
+                source.downcast_ref::<Error>().is_some_and(Error::is_dns)
+            }
             Error::Io(e) => {
                 // OS DNS errors on Linux (glibc): "Name or service not known"
                 // OS DNS errors on macOS: "nodename nor servname provided"
@@ -411,6 +458,9 @@ impl Error {
     pub fn is_closed(&self) -> bool {
         use std::error::Error as _;
         match self {
+            Error::RemoteAddr { source, .. } => {
+                source.downcast_ref::<Error>().is_some_and(Error::is_closed)
+            }
             Error::Hyper(e) => {
                 if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
                     return true;
@@ -437,12 +487,24 @@ impl Error {
 
     /// Returns `true` if the error is a write timeout during body upload.
     pub fn is_write_timeout(&self) -> bool {
-        matches!(self, Error::WriteTimeout)
+        match self {
+            Error::WriteTimeout => true,
+            Error::RemoteAddr { source, .. } => source
+                .downcast_ref::<Error>()
+                .is_some_and(Error::is_write_timeout),
+            _ => false,
+        }
     }
 
     /// Returns `true` if the error originates from the connection pool.
     pub fn is_pool(&self) -> bool {
-        matches!(self, Error::Pool(_))
+        match self {
+            Error::Pool(_) => true,
+            Error::RemoteAddr { source, .. } => {
+                source.downcast_ref::<Error>().is_some_and(Error::is_pool)
+            }
+            _ => false,
+        }
     }
 
     /// Returns `true` if the error is a connection pool limit (client-side
@@ -454,13 +516,22 @@ impl Error {
     /// [`is_connect`]: Error::is_connect
     /// [`is_timeout`]: Error::is_timeout
     pub fn is_pool_limit(&self) -> bool {
-        matches!(self, Error::Pool(PoolError::Limit(_)))
+        match self {
+            Error::Pool(PoolError::Limit(_)) => true,
+            Error::RemoteAddr { source, .. } => source
+                .downcast_ref::<Error>()
+                .is_some_and(Error::is_pool_limit),
+            _ => false,
+        }
     }
 
     /// Returns the [`PoolError`] if this is a [`Error::Pool`] variant.
     pub fn pool_error(&self) -> Option<&PoolError> {
         match self {
             Error::Pool(e) => Some(e),
+            Error::RemoteAddr { source, .. } => {
+                source.downcast_ref::<Error>().and_then(Error::pool_error)
+            }
             _ => None,
         }
     }
@@ -469,6 +540,9 @@ impl Error {
     pub fn pool_limit(&self) -> Option<&PoolLimitError> {
         match self {
             Error::Pool(PoolError::Limit(e)) => Some(e),
+            Error::RemoteAddr { source, .. } => {
+                source.downcast_ref::<Error>().and_then(Error::pool_limit)
+            }
             _ => None,
         }
     }
@@ -488,6 +562,18 @@ impl Error {
             None
         }
     }
+}
+
+fn is_connect_io_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::AddrNotAvailable
+            | std::io::ErrorKind::AddrInUse
+            | std::io::ErrorKind::NotConnected
+    )
 }
 
 fn redact_url(uri: &Uri) -> String {
@@ -731,6 +817,32 @@ mod tests {
     fn send_error_connect_variant() {
         let uri: Uri = "http://example.com/".parse().unwrap();
         let err = SendError::new(Error::ConnectTimeout, uri);
+        assert!(err.is_connect());
+        assert!(err.is_timeout());
+    }
+
+    #[test]
+    fn remote_addr_error_preserves_inner_classification() {
+        let remote_addr: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let err = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused",
+        ))
+        .with_remote_addr(remote_addr);
+
+        assert_eq!(err.remote_addr(), Some(remote_addr));
+        assert!(err.is_connect());
+        assert!(!err.is_timeout());
+        assert_eq!(err.root_cause().to_string(), "refused");
+    }
+
+    #[test]
+    fn send_error_remote_addr_delegates_to_inner_error() {
+        let uri: Uri = "http://example.com/".parse().unwrap();
+        let remote_addr: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let err = SendError::new(Error::ConnectTimeout.with_remote_addr(remote_addr), uri);
+
+        assert_eq!(err.remote_addr(), Some(remote_addr));
         assert!(err.is_connect());
         assert!(err.is_timeout());
     }

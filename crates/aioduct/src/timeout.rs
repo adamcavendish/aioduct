@@ -244,6 +244,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_timeout_maps_timeout_classification() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+
+        let result = connect_timeout::<TokioRuntime, _, i32>(
+            async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(42)
+            },
+            Some(Duration::from_millis(1)),
+        )
+        .await;
+
+        assert!(matches!(result, Err(crate::error::Error::ConnectTimeout)));
+    }
+
+    #[tokio::test]
     async fn read_timeout_body_end_stream() {
         use crate::runtime::tokio_rt::TokioRuntime;
         use http_body::Body;

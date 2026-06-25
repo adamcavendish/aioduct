@@ -497,7 +497,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         self.connector
                             .connect_bound(addr, local_addr)
                             .await
-                            .map_err(Error::Io)?
+                            .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                     } else {
                         #[cfg(feature = "tower")]
                         if let Some(ref tower_slot) = self.tower_connector_local {
@@ -506,12 +506,21 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                 uri: original_uri.clone(),
                                 addr,
                             };
-                            tower_conn.connect(info).await.map_err(Error::Io)?
+                            tower_conn
+                                .connect(info)
+                                .await
+                                .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                         } else {
-                            self.connector.connect(addr).await.map_err(Error::Io)?
+                            self.connector
+                                .connect(addr)
+                                .await
+                                .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                         }
                         #[cfg(not(feature = "tower"))]
-                        self.connector.connect(addr).await.map_err(Error::Io)?
+                        self.connector
+                            .connect(addr)
+                            .await
+                            .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                     };
                     (stream, addr)
                 };
@@ -523,14 +532,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             self.core.tcp_keepalive_interval,
                             self.core.tcp_keepalive_retries,
                         )
-                        .map_err(Error::Io)?;
+                        .map_err(|e| Error::Io(e).with_remote_addr(addr))?;
                 }
                 if self.core.tcp_fast_open {
                     let _ = tcp_stream.set_fast_open();
                 }
 
                 let mut conn = if is_https {
-                    self.connect_tls_local(tcp_stream, authority.host()).await?
+                    self.connect_tls_local(tcp_stream, authority.host())
+                        .await
+                        .map_err(|e| e.with_remote_addr(addr))?
                 } else if force_h2c && effective_hint == crate::pool::ProtocolHint::AdaptiveH2c {
                     // Adaptive h2c: try h2c, fall back to H1, cache the result.
                     // Poll readiness over 200ms to tolerate slow SETTINGS
@@ -573,11 +584,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                     .connector
                                     .connect_bound(addrs[0], local_addr)
                                     .await
-                                    .map_err(Error::Io)?;
+                                    .map_err(|e| Error::Io(e).with_remote_addr(addrs[0]))?;
                                 (s, addrs[0])
                             } else {
-                                let s =
-                                    self.connector.connect(addrs[0]).await.map_err(Error::Io)?;
+                                let s = self
+                                    .connector
+                                    .connect(addrs[0])
+                                    .await
+                                    .map_err(|e| Error::Io(e).with_remote_addr(addrs[0]))?;
                                 (s, addrs[0])
                             };
                             if let Some(time) = self.core.tcp_keepalive {
@@ -587,19 +601,23 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                         self.core.tcp_keepalive_interval,
                                         self.core.tcp_keepalive_retries,
                                     )
-                                    .map_err(Error::Io)?;
+                                    .map_err(|e| Error::Io(e).with_remote_addr(fallback_addr))?;
                             }
                             if self.core.tcp_fast_open {
                                 let _ = stream2.set_fast_open();
                             }
-                            let mut c = self.connect_h1_local(stream2).await?;
+                            let mut c = self
+                                .connect_h1_local(stream2)
+                                .await
+                                .map_err(|e| e.with_remote_addr(fallback_addr))?;
                             c.remote_addr = Some(fallback_addr);
                             c
                         }
                     }
                 } else {
                     self.connect_plaintext_local_with_hint(tcp_stream, force_h2c)
-                        .await?
+                        .await
+                        .map_err(|e| e.with_remote_addr(addr))?
                 };
                 if conn.remote_addr.is_none() {
                     conn.remote_addr = Some(addr);
@@ -607,16 +625,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 Ok::<(PooledConnection<RequestBodyLocal>, Instant), Error>((conn, Instant::now()))
             };
 
-            let (conn, connect_done) = match connect_timeout {
-                Some(duration) => {
-                    crate::timeout::Timeout::WithTimeout {
-                        future: connect_fut,
-                        sleep: R::sleep(duration),
-                    }
-                    .await?
-                }
-                None => connect_fut.await?,
-            };
+            let (conn, connect_done) =
+                crate::timeout::connect_timeout::<R, _, _>(connect_fut, connect_timeout).await?;
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             if is_https {
                 if let Some(tls_dur) = conn.tls_handshake_duration {

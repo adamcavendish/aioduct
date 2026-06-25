@@ -221,14 +221,17 @@ impl RetryConfig {
 }
 
 pub(crate) fn is_retryable_error(err: &Error) -> bool {
-    matches!(
-        err,
+    match err {
         Error::Io(_)
-            | Error::Hyper(_)
-            | Error::Timeout
-            | Error::ConnectTimeout
-            | Error::ReadTimeout
-    )
+        | Error::Hyper(_)
+        | Error::Timeout
+        | Error::ConnectTimeout
+        | Error::ReadTimeout => true,
+        Error::RemoteAddr { source, .. } => source
+            .downcast_ref::<Error>()
+            .is_some_and(is_retryable_error),
+        _ => false,
+    }
 }
 
 pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
