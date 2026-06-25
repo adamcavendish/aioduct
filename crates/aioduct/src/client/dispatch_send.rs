@@ -469,16 +469,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .await
                     }
                 };
-                let (mut pooled, addr) = match connect_timeout {
-                    Some(duration) => {
-                        crate::timeout::Timeout::WithTimeout {
-                            future: h3_connect_fut,
-                            sleep: R::sleep(duration),
-                        }
-                        .await?
-                    }
-                    None => h3_connect_fut.await?,
-                };
+                let (mut pooled, addr) =
+                    crate::timeout::connect_timeout::<R, _, _>(h3_connect_fut, connect_timeout)
+                        .await?;
                 self.core.notify(
                     request.method(),
                     original_uri,
@@ -840,7 +833,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         self.connector
                             .connect_bound(addr, local_addr)
                             .await
-                            .map_err(Error::Io)?
+                            .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                     } else {
                         #[cfg(feature = "tower")]
                         if let Some(ref tower_slot) = self.tower_connector {
@@ -849,24 +842,35 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 uri: original_uri.clone(),
                                 addr,
                             };
-                            tower_conn.connect(info).await.map_err(Error::Io)?
+                            tower_conn
+                                .connect(info)
+                                .await
+                                .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                         } else {
-                            self.connector.connect(addr).await.map_err(Error::Io)?
+                            self.connector
+                                .connect(addr)
+                                .await
+                                .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                         }
                         #[cfg(not(feature = "tower"))]
-                        self.connector.connect(addr).await.map_err(Error::Io)?
+                        self.connector
+                            .connect(addr)
+                            .await
+                            .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                     };
                     (stream, addr)
                 };
 
                 #[cfg(target_os = "linux")]
                 if let Some(iface) = interface {
-                    tcp_stream.bind_device(iface).map_err(Error::Io)?;
+                    tcp_stream
+                        .bind_device(iface)
+                        .map_err(|e| Error::Io(e).with_remote_addr(addr))?;
                 }
                 if let Some(time) = tcp_keepalive {
                     tcp_stream
                         .set_keepalive(time, tcp_keepalive_interval, tcp_keepalive_retries)
-                        .map_err(Error::Io)?;
+                        .map_err(|e| Error::Io(e).with_remote_addr(addr))?;
                 }
                 if tcp_fast_open {
                     let _ = tcp_stream.set_fast_open();
@@ -875,7 +879,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 tracing::trace!(addr = %addr, "tcp.connect.done");
 
                 let mut conn = if is_https {
-                    self.connect_tls(tcp_stream, authority.host()).await?
+                    self.connect_tls(tcp_stream, authority.host())
+                        .await
+                        .map_err(|e| e.with_remote_addr(addr))?
                 } else if matches!(effective_protocol, ProtocolHint::AdaptiveH2c) {
                     // Probe: try h2c, fall back to h1 on failure.
                     // The h2 handshake can "succeed" even against an h1 server
@@ -917,7 +923,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                     .connector
                                     .connect_bound(addrs[0], local_addr)
                                     .await
-                                    .map_err(Error::Io)?;
+                                    .map_err(|e| Error::Io(e).with_remote_addr(addrs[0]))?;
                                 (s, addrs[0])
                             } else {
                                 #[cfg(feature = "tower")]
@@ -927,18 +933,29 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                         uri: original_uri.clone(),
                                         addr,
                                     };
-                                    tower_conn.connect(info).await.map_err(Error::Io)?
+                                    tower_conn
+                                        .connect(info)
+                                        .await
+                                        .map_err(|e| Error::Io(e).with_remote_addr(addr))?
                                 } else {
-                                    self.connector.connect(addrs[0]).await.map_err(Error::Io)?
+                                    self.connector
+                                        .connect(addrs[0])
+                                        .await
+                                        .map_err(|e| Error::Io(e).with_remote_addr(addrs[0]))?
                                 };
                                 #[cfg(not(feature = "tower"))]
-                                let s =
-                                    self.connector.connect(addrs[0]).await.map_err(Error::Io)?;
+                                let s = self
+                                    .connector
+                                    .connect(addrs[0])
+                                    .await
+                                    .map_err(|e| Error::Io(e).with_remote_addr(addrs[0]))?;
                                 (s, addrs[0])
                             };
                             #[cfg(target_os = "linux")]
                             if let Some(iface) = interface {
-                                stream2.bind_device(iface).map_err(Error::Io)?;
+                                stream2
+                                    .bind_device(iface)
+                                    .map_err(|e| Error::Io(e).with_remote_addr(fallback_addr))?;
                             }
                             if let Some(time) = tcp_keepalive {
                                 stream2
@@ -947,19 +964,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                         tcp_keepalive_interval,
                                         tcp_keepalive_retries,
                                     )
-                                    .map_err(Error::Io)?;
+                                    .map_err(|e| Error::Io(e).with_remote_addr(fallback_addr))?;
                             }
                             if tcp_fast_open {
                                 let _ = stream2.set_fast_open();
                             }
-                            let mut c = self.connect_h1(stream2).await?;
+                            let mut c = self
+                                .connect_h1(stream2)
+                                .await
+                                .map_err(|e| e.with_remote_addr(fallback_addr))?;
                             c.remote_addr = Some(fallback_addr);
                             c
                         }
                     }
                 } else {
                     self.connect_plaintext_with_hint(tcp_stream, force_h2c)
-                        .await?
+                        .await
+                        .map_err(|e| e.with_remote_addr(addr))?
                 };
                 if conn.remote_addr.is_none() {
                     conn.remote_addr = Some(addr);
@@ -967,16 +988,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 Ok::<(PooledConnection<RequestBodySend>, Instant), Error>((conn, Instant::now()))
             };
 
-            let (conn, connect_done) = match connect_timeout {
-                Some(duration) => {
-                    crate::timeout::Timeout::WithTimeout {
-                        future: connect_fut,
-                        sleep: R::sleep(duration),
-                    }
-                    .await?
-                }
-                None => connect_fut.await?,
-            };
+            let (conn, connect_done) =
+                crate::timeout::connect_timeout::<R, _, _>(connect_fut, connect_timeout).await?;
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             if is_https {
                 if let Some(tls_dur) = conn.tls_handshake_duration {
