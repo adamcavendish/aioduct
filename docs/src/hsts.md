@@ -43,6 +43,8 @@ When `includeSubDomains` is set for `example.com`:
 
 Without `includeSubDomains`, only the exact domain is upgraded.
 
+Host matching is case-insensitive. `HstsStore` also canonicalizes host inputs with a single port suffix, so storing `Example.Com:443` matches later checks for `example.com`, `example.com:80`, and subdomains when `includeSubDomains` is present.
+
 ## Shared State
 
 `HstsStore` uses `Arc<Mutex<...>>` internally, so cloning a store shares state between clients:
