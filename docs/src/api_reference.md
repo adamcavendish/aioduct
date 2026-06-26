@@ -234,6 +234,38 @@ assert!(rb.headers_ref().contains_key(http::header::ACCEPT));
 The builders are `#[must_use]`: a `RequestBuilder` that is never sent or built,
 or a `ClientBuilder` that is never built, produces a compiler warning.
 
+### HTTP Message Signatures
+
+`MessageSignatureConfig` builds RFC 9421 request signature bases and formats the
+`Signature-Input` / `Signature` headers from caller-provided signature bytes. The
+helpers are portable and do not choose a cryptographic algorithm.
+
+```rust,no_run
+# use aioduct::{MessageSignatureComponent, MessageSignatureConfig};
+# use http::{HeaderMap, Method, Uri};
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let target_uri: Uri = "https://example.com/api".parse()?;
+let request_target: Uri = "/api".parse()?;
+let headers = HeaderMap::new();
+
+let config = MessageSignatureConfig::new("sig1")?
+    .component(MessageSignatureComponent::Method)
+    .component(MessageSignatureComponent::Authority)
+    .created(1_618_884_473)
+    .key_id("test-key");
+
+let base = config.signature_base(&Method::GET, &target_uri, &request_target, &headers)?;
+let signature = sign_with_your_key(base.as_bytes());
+let signature_headers = config.headers_from_signature(signature)?;
+# Ok(())
+# }
+# fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
+```
+
+Native automatic request signing is planned as a separate stage so it can sign
+after redirects, retries, digest authentication, cache validators, and forwarding
+have finalized the request.
+
 ### Sending
 
 ```rust,no_run

@@ -41,6 +41,18 @@ All backends support setting headers per-request and configuring default headers
 on the client builder. WASM: `wasm.rs` lines 185-194 (set), 92-96 (default).
 WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 
+### HTTP Message Signatures
+
+| Feature | tokio | smol | compio | wasm | wasi-p2 |
+|---------|-------|------|--------|------|---------|
+| RFC 9421 signature-base helpers | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Automatic request signing | ✗ future work | ✗ future work | ✗ future work | ✗ future work | ✗ future work |
+
+`message_signatures` is portable: callers can build a signature base, sign it
+with their own key material, and attach `Signature-Input` / `Signature` through
+the normal header APIs on every runtime. Automatic signing is not yet wired into
+native, browser Fetch, or WASI request dispatch.
+
 ### Authentication
 
 | Feature | tokio | smol | compio | wasm | wasi-p2 |
