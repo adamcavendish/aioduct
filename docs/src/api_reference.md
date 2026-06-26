@@ -282,9 +282,9 @@ let client = TokioClient::builder()
 ```
 
 Automatic signing runs after default headers, cookies, cache validators,
-middleware, digest-auth retry headers, and framing cleanup. When configured, it
-replaces `Signature-Input` and `Signature` on every native dispatch attempt.
-Forwarding automatic signing is Future Work.
+middleware, digest-auth retry headers, forwarding request rewrites, and framing
+cleanup. When configured, it replaces `Signature-Input` and `Signature` on every
+native dispatch attempt.
 
 ### Sending
 

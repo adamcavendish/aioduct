@@ -18,7 +18,7 @@ aioduct keeps security-sensitive HTTP behavior explicit and feature-scoped. This
 
 RFC 9421 request signature-base generation is available through `MessageSignatureConfig`. Callers choose the signing algorithm, sign the generated base, then attach the formatted `Signature-Input` and `Signature` headers manually on any runtime.
 
-Native tokio, smol, and compio clients can also use `HttpEngineBuilder::message_signature(config, signer)` to sign after default headers, cookies, cache validators, middleware, digest-auth retry headers, and framing cleanup have finalized each request attempt. Signer errors abort the request rather than sending an unsigned request. Forwarding automatic signing, response verification, `Accept-Signature`, multiple-signature merging, async automatic signing, and automatic body digest generation remain Future Work.
+Native tokio, smol, and compio clients can also use `HttpEngineBuilder::message_signature(config, signer)` to sign after default headers, cookies, cache validators, middleware, digest-auth retry headers, forwarding request rewrites, and framing cleanup have finalized each request attempt. Signer errors abort the request rather than sending an unsigned request. Response verification, `Accept-Signature`, multiple-signature merging, async automatic signing, and automatic body digest generation remain Future Work.
 
 ## Platform-Managed Runtimes
 
