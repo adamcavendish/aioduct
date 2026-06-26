@@ -49,6 +49,8 @@ pub mod hsts;
 pub mod http2;
 /// Link header parsing (RFC 8288).
 pub mod link;
+/// RFC 9421 HTTP Message Signatures helpers.
+pub mod message_signatures;
 /// Request/response middleware trait and stack.
 pub mod middleware;
 /// Multipart/form-data request body builder.
@@ -164,6 +166,10 @@ pub use forwarded::ForwardedElement;
 pub use hsts::HstsStore;
 pub use http2::Http2Config;
 pub use link::Link;
+pub use message_signatures::{
+    MessageSignatureBase, MessageSignatureComponent, MessageSignatureConfig, MessageSignatureError,
+    MessageSignatureHeaders, MessageSignatureParams, MessageSignatureSigner,
+};
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
 pub use netrc::{Netrc, NetrcMiddleware};
