@@ -72,6 +72,10 @@ pub enum Error {
     #[error(transparent)]
     Pool(#[from] PoolError),
 
+    /// An HTTP Message Signatures error.
+    #[error(transparent)]
+    MessageSignature(#[from] crate::message_signatures::MessageSignatureError),
+
     /// A catch-all for other errors.
     #[error("{0}")]
     Other(#[source] BoxError),

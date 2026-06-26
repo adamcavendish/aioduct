@@ -128,6 +128,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 .remove(http::header::TRANSFER_ENCODING);
             request.headers_mut().remove(http::header::CONTENT_LENGTH);
 
+            self.core.sign_final_request(&current_uri, &mut request)?;
+
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
                 Some(RequestBody::Buffered(b)) => Some(b.clone()),
                 _ => None,
@@ -304,6 +306,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         retry_request
             .headers_mut()
             .remove(http::header::CONTENT_LENGTH);
+        self.core.sign_final_request(uri, &mut retry_request)?;
         self.execute_single_local(
             retry_request,
             uri,

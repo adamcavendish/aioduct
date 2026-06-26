@@ -33,11 +33,15 @@ use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 
-use aioduct::HttpEngineLocal;
 use aioduct::runtime::compio_rt::{CompioRuntime, TcpConnector};
+use aioduct::{HttpEngineLocal, MessageSignatureComponent, MessageSignatureConfig};
 
 async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     Ok(Response::new(Full::new(Bytes::from("hello aioduct"))))
+}
+
+fn compio_signature(_: &[u8]) -> Result<Vec<u8>, aioduct::MessageSignatureError> {
+    Ok(b"compio".to_vec())
 }
 
 fn start_server_tokio() -> SocketAddr {
@@ -106,6 +110,45 @@ fn test_compio_base_url_resolves_relative_path() {
         let resp = client.get_local("users").unwrap().send().await.unwrap();
         assert_eq!(resp.status(), http::StatusCode::OK);
         assert_eq!(resp.text().await.unwrap(), "/v1/users");
+    });
+}
+
+#[test]
+fn test_compio_automatic_message_signature() {
+    let addr = start_server_with_tokio(|req| async move {
+        let signature_input = req
+            .headers()
+            .get("signature-input")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let signature = req
+            .headers()
+            .get("signature")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "{signature_input}\n{signature}"
+        )))))
+    });
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::Method)
+            .component(MessageSignatureComponent::RequestTarget);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .message_signature(config, compio_signature)
+            .build_local()
+            .unwrap();
+
+        let resp = client
+            .get_local(&format!("http://{addr}/signed"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("sig1="), "{body}");
+        assert!(body.contains("sig1=:Y29tcGlv:"), "{body}");
     });
 }
 
