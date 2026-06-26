@@ -172,7 +172,7 @@ impl MessageSignatureConfig {
         target_uri: &Uri,
         request_target: &Uri,
         headers: &HeaderMap,
-        signer: &impl MessageSignatureSigner,
+        signer: &(impl MessageSignatureSigner + ?Sized),
     ) -> Result<MessageSignatureHeaders, MessageSignatureError> {
         let base = self.signature_base(method, target_uri, request_target, headers)?;
         let signature = signer.sign(base.as_bytes())?;

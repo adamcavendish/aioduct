@@ -262,9 +262,29 @@ let signature_headers = config.headers_from_signature(signature)?;
 # fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
 ```
 
-Native automatic request signing is planned as a separate stage so it can sign
-after redirects, retries, digest authentication, cache validators, and forwarding
-have finalized the request.
+Native clients can also sign each finalized request attempt automatically:
+
+```rust,no_run
+# use aioduct::{MessageSignatureComponent, MessageSignatureConfig, TokioClient};
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let config = MessageSignatureConfig::new("sig1")?
+    .component(MessageSignatureComponent::Method)
+    .component(MessageSignatureComponent::Authority)
+    .key_id("test-key");
+
+let client = TokioClient::builder()
+    .message_signature(config, |base: &[u8]| Ok(sign_with_your_key(base)))
+    .build()?;
+# let _ = client;
+# Ok(())
+# }
+# fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
+```
+
+Automatic signing runs after default headers, cookies, cache validators,
+middleware, digest-auth retry headers, and framing cleanup. When configured, it
+replaces `Signature-Input` and `Signature` on every native dispatch attempt.
+Forwarding automatic signing is Future Work.
 
 ### Sending
 
