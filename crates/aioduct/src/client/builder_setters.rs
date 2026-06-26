@@ -590,6 +590,24 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Enable automatic RFC 9421 request signing for native requests.
+    ///
+    /// The signer runs after default headers, cookies, cache validators,
+    /// middleware, and digest-auth retry headers have finalized each request
+    /// attempt. When configured, it owns and replaces `Signature-Input` and
+    /// `Signature` on every dispatch.
+    pub fn message_signature(
+        mut self,
+        config: crate::message_signatures::MessageSignatureConfig,
+        signer: impl crate::message_signatures::MessageSignatureSigner,
+    ) -> Self {
+        self.message_signature = Some(crate::message_signatures::AutomaticMessageSignature::new(
+            config,
+            Arc::new(signer),
+        ));
+        self
+    }
+
     /// Enable HTTP response caching with the given cache instance.
     pub fn cache(mut self, cache: crate::cache::HttpCache) -> Self {
         self.cache = Some(cache);

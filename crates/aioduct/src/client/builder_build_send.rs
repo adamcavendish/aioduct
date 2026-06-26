@@ -282,6 +282,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 rate_limiter: self_.rate_limiter,
                 bandwidth_limiter: self_.bandwidth_limiter,
                 digest_auth: self_.digest_auth,
+                message_signature: self_.message_signature,
                 cache: self_.cache,
                 hsts: self_.hsts,
                 h2c_probe_cache: self_

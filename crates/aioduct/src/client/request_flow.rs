@@ -46,6 +46,24 @@ impl std::fmt::Debug for PostExecuteAction {
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
 impl<B> HttpEngineCore<B> {
+    pub(super) fn sign_final_request<ReqBody>(
+        &self,
+        target_uri: &Uri,
+        request: &mut http::Request<ReqBody>,
+    ) -> Result<(), Error> {
+        if let Some(ref message_signature) = self.message_signature {
+            let method = request.method().clone();
+            let request_target = request.uri().clone();
+            message_signature.sign_headers(
+                &method,
+                target_uri,
+                &request_target,
+                request.headers_mut(),
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn maybe_upgrade_hsts(&self, uri: Uri) -> Uri {
         if let Some(ref hsts) = self.hsts
             && uri.scheme() == Some(&http::uri::Scheme::HTTP)

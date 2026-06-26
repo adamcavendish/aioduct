@@ -226,6 +226,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     };
                     let headers = stale_retry_headers.cloned().unwrap_or_default();
                     request = retry_request_from_parts(method, uri, version, headers, &replay_body);
+                    self.core.sign_final_request(original_uri, &mut request)?;
                 }
                 Err(e) => {
                     self.core.notify(
@@ -371,6 +372,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         let headers = stale_retry_headers.cloned().unwrap_or_default();
                         request =
                             retry_request_from_parts(method, uri, version, headers, &replay_body);
+                        self.core.sign_final_request(original_uri, &mut request)?;
                     }
                     Err(e) => {
                         self.core.notify(
@@ -671,6 +673,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 headers,
                                 &replay_body,
                             );
+                            self.core.sign_final_request(original_uri, &mut request)?;
                             break;
                         }
                         Err(e) => {
