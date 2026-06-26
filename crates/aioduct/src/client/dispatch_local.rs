@@ -237,6 +237,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     *retry_req.headers_mut() = headers;
                     *retry_req.version_mut() = version;
                     request = retry_req;
+                    self.core.sign_final_request(original_uri, &mut request)?;
                 }
                 Err(e) => {
                     self.core.notify(
@@ -394,6 +395,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             *retry_req.headers_mut() = headers;
                             *retry_req.version_mut() = version;
                             request = retry_req;
+                            self.core.sign_final_request(original_uri, &mut request)?;
                             break;
                         }
                         Err(e) => {

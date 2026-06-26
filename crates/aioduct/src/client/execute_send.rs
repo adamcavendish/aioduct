@@ -125,6 +125,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .remove(http::header::TRANSFER_ENCODING);
             request.headers_mut().remove(http::header::CONTENT_LENGTH);
 
+            self.core.sign_final_request(&current_uri, &mut request)?;
+
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
                 Some(RequestBody::Buffered(b)) => Some(b.clone()),
                 _ => None,
@@ -312,12 +314,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         retry_request
             .headers_mut()
             .remove(http::header::CONTENT_LENGTH);
+        self.core.sign_final_request(uri, &mut retry_request)?;
+        let retry_headers_for_stale = retry_request.headers().clone();
         self.execute_single_with_hint_send(
             retry_request,
             uri,
             protocol_hint,
             replay_for_stale,
-            Some(headers),
+            Some(&retry_headers_for_stale),
             connect_timeout,
             write_timeout,
             force_addr,
