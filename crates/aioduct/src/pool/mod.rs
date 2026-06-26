@@ -440,7 +440,7 @@ impl<B: 'static> ConnectionPool<B> {
     }
 
     /// Returns the configured maximum connection lifetime for this pool.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(crate) fn max_lifetime(&self) -> Option<Duration> {
         self.inner
             .lock()

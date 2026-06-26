@@ -88,7 +88,7 @@ impl<B> HttpEngineCore<B> {
         uri
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(super) fn apply_default_headers(&self, headers: &mut HeaderMap) {
         self.apply_default_headers_with(headers, false);
     }
