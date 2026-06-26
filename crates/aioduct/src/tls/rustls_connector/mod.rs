@@ -5,9 +5,9 @@ mod verifier;
 pub use config::{AlpnProtocol, RustlsConnector};
 pub use stream::TlsStream;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rustls", feature = "tokio"))]
 use stream::{read_tls, write_tls};
-#[cfg(test)]
+#[cfg(all(test, feature = "rustls", feature = "tokio"))]
 use verifier::NoVerifier;
 
 #[cfg(all(test, feature = "rustls", feature = "tokio"))]

@@ -1,6 +1,7 @@
+#![cfg(feature = "tokio")]
+
 use super::*;
 
-#[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_middleware_adds_request_header() {
     let (addr, _counter) = h1_server_with(|req| async move {
@@ -35,7 +36,6 @@ async fn test_middleware_adds_request_header() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "injected");
 }
-#[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_middleware_modifies_response_header() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,7 +86,6 @@ async fn test_middleware_modifies_response_header() {
     );
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
-#[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_multiple_middleware_ordering() {
     let (addr, _counter) = h1_server_with(|req| async move {

@@ -25,13 +25,13 @@ msrv:
 
 # Run clippy across selected feature combinations
 clippy:
-    cargo clippy --features tokio              --all-targets -- -D warnings
-    cargo clippy --features smol               --all-targets -- -D warnings
-    cargo clippy --features compio             --all-targets -- -D warnings
-    cargo clippy --features tokio,rustls,rustls-ring       --all-targets -- -D warnings
-    cargo clippy --features smol,rustls,rustls-ring        --all-targets -- -D warnings
-    cargo clippy --features tokio,json         --all-targets -- -D warnings
-    cargo clippy --features tokio,rustls,rustls-ring,json  --all-targets -- -D warnings
+    cargo clippy -p aioduct --features tokio              --all-targets -- -D warnings
+    cargo clippy -p aioduct --features smol               --all-targets -- -D warnings
+    cargo clippy -p aioduct --features compio             --all-targets -- -D warnings
+    cargo clippy -p aioduct --features tokio,rustls,rustls-ring       --all-targets -- -D warnings
+    cargo clippy -p aioduct --features smol,rustls,rustls-ring        --all-targets -- -D warnings
+    cargo clippy -p aioduct --features tokio,json         --all-targets -- -D warnings
+    cargo clippy -p aioduct --features tokio,rustls,rustls-ring,json  --all-targets -- -D warnings
 
 # Run clippy with every compatible all-feature provider set
 clippy-all:
@@ -41,7 +41,7 @@ clippy-all:
 
 # Run clippy with a specific feature set
 clippy-features features:
-    cargo clippy --features {{ features }} --all-targets -- -D warnings
+    cargo clippy -p aioduct --features {{ features }} --all-targets -- -D warnings
 
 # Check formatting
 fmt-check:
