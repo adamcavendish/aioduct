@@ -1,5 +1,7 @@
 use super::MessageSignatureError;
 
+const MAX_STRUCTURED_FIELDS_INTEGER: u64 = 999_999_999_999_999;
+
 /// Signature metadata parameters serialized into `Signature-Input`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
@@ -17,11 +19,11 @@ impl MessageSignatureParams {
         let mut out = String::new();
         if let Some(created) = self.created {
             out.push_str(";created=");
-            out.push_str(&created.to_string());
+            out.push_str(&serialize_sf_integer("created", created)?);
         }
         if let Some(expires) = self.expires {
             out.push_str(";expires=");
-            out.push_str(&expires.to_string());
+            out.push_str(&serialize_sf_integer("expires", expires)?);
         }
         if let Some(ref nonce) = self.nonce {
             out.push_str(";nonce=");
@@ -41,6 +43,16 @@ impl MessageSignatureParams {
         }
         Ok(out)
     }
+}
+
+fn serialize_sf_integer(
+    parameter: &'static str,
+    value: u64,
+) -> Result<String, MessageSignatureError> {
+    if value > MAX_STRUCTURED_FIELDS_INTEGER {
+        return Err(MessageSignatureError::InvalidIntegerParameter { parameter, value });
+    }
+    Ok(value.to_string())
 }
 
 fn serialize_sf_string(value: &str) -> Result<String, MessageSignatureError> {

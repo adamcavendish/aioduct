@@ -112,19 +112,16 @@ impl MessageSignatureConfig {
         request_target: &Uri,
         headers: &HeaderMap,
     ) -> Result<MessageSignatureBase, MessageSignatureError> {
-        if self.components.is_empty() {
-            return Err(MessageSignatureError::EmptyComponents);
-        }
+        self.validate_components()?;
 
-        let mut seen = HashSet::new();
         let mut lines = Vec::with_capacity(self.components.len() + 1);
         for component in &self.components {
             let identifier = component.identifier();
-            if !seen.insert(identifier.clone()) {
-                return Err(MessageSignatureError::DuplicateComponent(identifier));
-            }
             let value = component_value(component, method, target_uri, request_target, headers)?;
-            ensure_signature_component_value(&value)?;
+            match component {
+                MessageSignatureComponent::Header { .. } => ensure_header_component_value(&value)?,
+                _ => ensure_derived_component_value(&value)?,
+            }
             lines.push(format!("{identifier}: {value}"));
         }
 
@@ -142,9 +139,7 @@ impl MessageSignatureConfig {
         &self,
         signature: impl AsRef<[u8]>,
     ) -> Result<MessageSignatureHeaders, MessageSignatureError> {
-        if self.components.is_empty() {
-            return Err(MessageSignatureError::EmptyComponents);
-        }
+        self.validate_components()?;
 
         let signature_params = self.signature_params_value()?;
         let signature_input = format!("{}={signature_params}", self.label);
@@ -182,6 +177,21 @@ impl MessageSignatureConfig {
         let base = self.signature_base(method, target_uri, request_target, headers)?;
         let signature = signer.sign(base.as_bytes())?;
         self.headers_from_signature(signature)
+    }
+
+    fn validate_components(&self) -> Result<(), MessageSignatureError> {
+        if self.components.is_empty() {
+            return Err(MessageSignatureError::EmptyComponents);
+        }
+
+        let mut seen = HashSet::new();
+        for component in &self.components {
+            let identifier = component.identifier();
+            if !seen.insert(identifier.clone()) {
+                return Err(MessageSignatureError::DuplicateComponent(identifier));
+            }
+        }
+        Ok(())
     }
 
     fn signature_params_value(&self) -> Result<String, MessageSignatureError> {
@@ -277,7 +287,17 @@ fn normalize_field_value(value: &str) -> String {
     value.trim_matches(|c| c == ' ' || c == '\t').to_owned()
 }
 
-fn ensure_signature_component_value(value: &str) -> Result<(), MessageSignatureError> {
+fn ensure_header_component_value(value: &str) -> Result<(), MessageSignatureError> {
+    if value.contains('\n') || value.contains('\r') {
+        return Err(MessageSignatureError::NewlineInComponentValue);
+    }
+    if value.chars().any(|c| c.is_ascii_control() && c != '\t') {
+        return Err(MessageSignatureError::ControlCharacterInComponentValue);
+    }
+    Ok(())
+}
+
+fn ensure_derived_component_value(value: &str) -> Result<(), MessageSignatureError> {
     if value.contains('\n') || value.contains('\r') {
         return Err(MessageSignatureError::NewlineInComponentValue);
     }

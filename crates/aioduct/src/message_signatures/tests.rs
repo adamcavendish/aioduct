@@ -222,7 +222,7 @@ fn missing_header_errors() {
 }
 
 #[test]
-fn control_character_header_value_errors() {
+fn internal_tab_header_value_is_signed() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
         .component(MessageSignatureComponent::Header { name: CONTENT_TYPE });
@@ -234,14 +234,14 @@ fn control_character_header_value_errors() {
         HeaderValue::from_bytes(b"application\tjson").unwrap(),
     );
 
-    let err = cfg
+    let base = cfg
         .signature_base(&Method::GET, &target_uri, &request_target, &headers)
-        .unwrap_err();
+        .unwrap();
 
-    assert!(matches!(
-        err,
-        MessageSignatureError::ControlCharacterInComponentValue
-    ));
+    assert!(
+        base.as_str()
+            .contains("\"content-type\": application\tjson")
+    );
 }
 
 #[test]
@@ -275,6 +275,38 @@ fn headers_from_signature_requires_components() {
         .unwrap_err();
 
     assert!(matches!(err, MessageSignatureError::EmptyComponents));
+}
+
+#[test]
+fn headers_from_signature_rejects_duplicate_components() {
+    let err = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::Method)
+        .component(MessageSignatureComponent::Method)
+        .headers_from_signature([1_u8, 2, 3])
+        .unwrap_err();
+
+    assert!(
+        matches!(err, MessageSignatureError::DuplicateComponent(component) if component == "\"@method\"")
+    );
+}
+
+#[test]
+fn structured_fields_integer_parameters_must_be_in_range() {
+    let err = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::Method)
+        .created(1_000_000_000_000_000)
+        .headers_from_signature([1_u8, 2, 3])
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        MessageSignatureError::InvalidIntegerParameter {
+            parameter: "created",
+            value: 1_000_000_000_000_000,
+        }
+    ));
 }
 
 #[test]
