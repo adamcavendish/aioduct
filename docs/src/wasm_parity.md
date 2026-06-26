@@ -52,8 +52,8 @@ WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 with their own key material, and attach `Signature-Input` / `Signature` through
 the normal header APIs on every runtime. Native automatic signing runs after
 default headers, cookies, cache validators, middleware, digest-auth retry
-headers, and framing cleanup have finalized each tokio, smol, or compio request
-attempt. Browser Fetch and WASI request dispatch do not expose an automatic
+headers, forwarding request rewrites, and framing cleanup have finalized each
+tokio, smol, or compio request attempt. Browser Fetch and WASI request dispatch do not expose an automatic
 signing hook; use the portable helper flow and manual headers there.
 
 ### Authentication

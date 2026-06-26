@@ -46,7 +46,7 @@ impl std::fmt::Debug for PostExecuteAction {
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
 impl<B> HttpEngineCore<B> {
-    pub(super) fn sign_final_request<ReqBody>(
+    pub(crate) fn sign_final_request<ReqBody>(
         &self,
         target_uri: &Uri,
         request: &mut http::Request<ReqBody>,
