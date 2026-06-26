@@ -37,6 +37,16 @@ pub enum MessageSignatureError {
     /// A Structured Fields string parameter contains unsupported characters.
     #[error("signature parameter `{0}` is not a valid Structured Fields string")]
     InvalidStringParameter(String),
+    /// A Structured Fields integer parameter is outside the valid range.
+    #[error(
+        "signature parameter `{parameter}` value {value} is outside the Structured Fields integer range"
+    )]
+    InvalidIntegerParameter {
+        /// The generated parameter name.
+        parameter: &'static str,
+        /// The out-of-range value.
+        value: u64,
+    },
     /// The generated signature base contains non-ASCII characters.
     #[error("generated signature base contains non-ASCII characters")]
     NonAsciiSignatureBase,
