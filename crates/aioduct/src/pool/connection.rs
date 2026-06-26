@@ -215,7 +215,7 @@ impl<B> PooledConnection<B> {
         Some(ActiveStreamPermit { active })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(crate) fn active_multiplex_streams(&self) -> Option<usize> {
         self.active_streams
             .as_ref()
@@ -268,7 +268,7 @@ impl<B: 'static> PooledConnection<B> {
     /// Clone the underlying send handle for H2/H3 multiplexing.
     ///
     /// Returns `None` for H1 connections (no multiplexing).
-    #[cfg(test)]
+    #[cfg(all(test, feature = "tokio"))]
     pub(crate) fn clone_for_multiplex(&self) -> Option<Self> {
         self.clone_for_multiplex_with_limit(None)
     }
