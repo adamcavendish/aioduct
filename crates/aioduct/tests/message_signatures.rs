@@ -253,6 +253,105 @@ async fn digest_retry_signature_covers_retry_authorization() {
 }
 
 #[tokio::test]
+async fn forwarding_signature_covers_rewritten_upstream_request() {
+    let bases = Arc::new(Mutex::new(Vec::new()));
+    let signer_bases = bases.clone();
+    let signer = move |base: &[u8]| -> Result<Vec<u8>, MessageSignatureError> {
+        signer_bases
+            .lock()
+            .unwrap()
+            .push(String::from_utf8(base.to_vec()).unwrap());
+        Ok(b"forwarded".to_vec())
+    };
+    let config = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::Method)
+        .component(MessageSignatureComponent::RequestTarget)
+        .component(MessageSignatureComponent::TargetUri)
+        .component(MessageSignatureComponent::Header {
+            name: HeaderName::from_static("x-forward-final"),
+        });
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let signature = req
+            .headers()
+            .get("signature")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(signature))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .message_signature(config, signer)
+        .build()
+        .unwrap();
+    let incoming = http::Request::builder()
+        .method("GET")
+        .uri("/proxy/users?active=1")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+    let resp = client
+        .forward(incoming)
+        .upstream(format!("http://{addr}/api"))
+        .strip_prefix("/proxy")
+        .on_request(|parts| {
+            parts
+                .headers
+                .insert("x-forward-final", http::HeaderValue::from_static("hooked"));
+        })
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), "sig1=:Zm9yd2FyZGVk:");
+    let bases = bases.lock().unwrap();
+    assert_eq!(bases.len(), 1);
+    assert!(bases[0].contains(r#""@request-target": /api/users?active=1"#));
+    assert!(
+        bases[0].contains(&format!(
+            r#""@target-uri": http://{addr}/api/users?active=1"#
+        )),
+        "{}",
+        bases[0]
+    );
+    assert!(bases[0].contains(r#""x-forward-final": hooked"#));
+}
+
+#[tokio::test]
+async fn forwarding_stale_retry_preserves_signed_headers() {
+    let (addr, _counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
+    let config = basic_config().component(MessageSignatureComponent::Header {
+        name: HeaderName::from_static("x-forward-final"),
+    });
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .message_signature(config, sign_new)
+        .build()
+        .unwrap();
+
+    for path in ["/first", "/second"] {
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp = client
+            .forward(incoming)
+            .upstream(format!("http://{addr}"))
+            .on_request(|parts| {
+                parts
+                    .headers
+                    .insert("x-forward-final", http::HeaderValue::from_static("hooked"));
+            })
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "ok");
+    }
+}
+
+#[tokio::test]
 async fn stale_connection_replay_is_resigned() {
     let sign_count = Arc::new(AtomicUsize::new(0));
     let signer_count = sign_count.clone();

@@ -287,7 +287,10 @@ where
             Error::Other(boxed)
         }));
 
-        let request = http::Request::from_parts(parts, boxed_body);
+        let mut request = http::Request::from_parts(parts, boxed_body);
+        self.client
+            .core
+            .sign_final_request(&full_uri, &mut request)?;
 
         let send_fut = self.client.execute_single_local(
             request,

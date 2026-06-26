@@ -332,7 +332,17 @@ where
             })
             .boxed_unsync();
 
-        let request = http::Request::from_parts(parts, boxed_body);
+        let mut request = http::Request::from_parts(parts, boxed_body);
+        self.client
+            .core
+            .sign_final_request(&full_uri, &mut request)?;
+        let post_signing_headers;
+        let stale_headers = if !self.client.core.no_connection_reuse {
+            post_signing_headers = request.headers().clone();
+            Some(&post_signing_headers)
+        } else {
+            None
+        };
 
         // 10. Send via execute_single_with_hint (bypasses redirects, cookies, cache, decompression)
         let send_fut = self.client.execute_single_with_hint_send(
@@ -340,7 +350,7 @@ where
             &full_uri,
             self.protocol_hint,
             None,
-            None,
+            stale_headers,
             None,
             None,
             None,
