@@ -43,6 +43,55 @@ fn test_compio_forward_on_request_hook() {
     });
 }
 
+#[test]
+fn test_compio_forward_automatic_message_signature() {
+    let upstream_addr = start_server_with_tokio(|req| async move {
+        let signature_input = req
+            .headers()
+            .get("signature-input")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        let signature = req
+            .headers()
+            .get("signature")
+            .map(|v| v.to_str().unwrap_or("").to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "{signature_input}\n{signature}"
+        )))))
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::Method)
+            .component(MessageSignatureComponent::RequestTarget);
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .message_signature(config, compio_signature)
+            .build_local()
+            .unwrap();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/forwarded")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let resp = client
+            .forward_local(incoming)
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("sig1="), "{body}");
+        assert!(body.contains("sig1=:Y29tcGlv:"), "{body}");
+    });
+}
+
 // ── Forward: on_response hook ─────────────────────────────────────────
 
 #[test]

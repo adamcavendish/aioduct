@@ -66,8 +66,9 @@ represented as ASCII header fields return `MessageSignatureError`.
 Native tokio, smol, and compio clients can sign requests automatically with
 `HttpEngineBuilder::message_signature(config, signer)`. The signer runs after
 default headers, cookies, cache validators, middleware, digest-auth retry
-headers, and request framing cleanup have finalized each native dispatch
-attempt. Stale pooled-connection replays are re-signed before retrying.
+headers, forwarding request rewrites, and request framing cleanup have finalized
+each native dispatch attempt. Stale pooled-connection replays are re-signed
+before retrying.
 
 ```rust,no_run
 use aioduct::{HttpEngineSend, MessageSignatureComponent, MessageSignatureConfig};
@@ -96,8 +97,10 @@ When automatic signing is configured, aioduct owns the `Signature-Input` and
 `Signature` request fields and replaces any existing values on every signed
 attempt. If the signer fails, the request is not dispatched.
 
-Forwarding integration is not yet implemented; forwarding requests should use
-the portable helper flow until that stage lands.
+Forwarded requests are signed after hop-by-hop cleanup, upstream URI rewriting,
+explicit header forwarding/removal, and `on_request` hooks. Components derived
+from the target URI use the upstream URI; `@request-target` uses the final URI
+form sent on the wire.
 
 ## Manual And Async Signers
 
@@ -114,8 +117,8 @@ call inside that synchronous signer on an async runtime thread.
 When automatic signing is not configured, user-supplied `Signature` and
 `Signature-Input` headers are ordinary request headers and are preserved. Native
 automatic signing owns those two fields when configured: it replaces them on each
-final dispatch so redirects, retries, digest-auth retries, and stale connection
-replays cannot send signatures for an earlier request shape.
+final dispatch so redirects, retries, digest-auth retries, forwarding rewrites,
+and stale connection replays cannot send signatures for an earlier request shape.
 
 ## Runtime Coverage
 
@@ -130,7 +133,6 @@ boundary. That host behavior is outside aioduct's control.
 ## Future Work
 
 - Async automatic signer callbacks.
-- Forwarding automatic request signing.
 - Response signature verification.
 - `Accept-Signature` negotiation.
 - Multiple signature dictionary merging.
