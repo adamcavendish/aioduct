@@ -140,6 +140,11 @@ let rb = client.get("http://example.com").unwrap()
     .headers(headers);
 ```
 
+Typed `HeaderValue` metadata is preserved. If a request header value is marked
+sensitive with `set_sensitive(true)`, aioduct strips that header on cross-origin
+redirects in addition to the built-in `Authorization`, `Cookie`, and
+`Proxy-Authorization` stripping.
+
 ### Authentication
 
 ```rust,no_run
@@ -459,7 +464,7 @@ aioduct follows redirects automatically (up to `max_redirects`, default 10):
 | 307    | Follow with original method + body  |
 | 308    | Follow with original method + body  |
 
-Sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are automatically stripped when redirecting to a different origin.
+Sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`) and request headers whose `HeaderValue` is marked sensitive are automatically stripped when redirecting to a different origin.
 
 Disable with `.max_redirects(0)` on the builder.
 
