@@ -18,7 +18,7 @@ Regardless of policy, aioduct follows RFC semantics for method changes:
 - **301, 302, 303** → method changes to `GET`, body is dropped, content headers (`Content-Type`, `Content-Length`, `Content-Encoding`) are stripped
 - **307, 308** → method and body are preserved
 
-Sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are automatically stripped when redirecting to a different origin.
+Sensitive headers (`Authorization`, `Cookie`, `Proxy-Authorization`) are automatically stripped when redirecting to a different origin. Headers whose `HeaderValue` is marked sensitive with `set_sensitive(true)` are stripped as well.
 
 ## No Redirects
 
@@ -94,4 +94,3 @@ Per [RFC 7231 §7.1.2](https://www.rfc-editor.org/rfc/rfc7231#section-7.1.2), ai
 - If `Location` has no fragment, the original request's fragment is inherited by the redirect target.
 
 Fragments are not sent to servers (they are client-side per RFC 7230), so `http::Uri` strips them. aioduct tracks the effective fragment separately and exposes it on the final response via `Response::fragment()`.
-

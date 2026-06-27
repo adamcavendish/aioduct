@@ -189,6 +189,123 @@ fn redirect_cross_origin_strips_authorization_compio() {
     });
 }
 
+#[cfg(feature = "tokio")]
+#[tokio::test]
+async fn redirect_cross_origin_strips_header_value_marked_sensitive_tokio() {
+    let captured_secret = Arc::new(Mutex::new(None::<String>));
+    let cap = captured_secret.clone();
+
+    let target_addr = spawn_h1_server_with(move |req| {
+        let cap = cap.clone();
+        async move {
+            let secret = req
+                .headers()
+                .get("x-secret")
+                .map(|v| v.to_str().unwrap_or("").to_string());
+            *cap.lock().unwrap() = secret;
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+        }
+    });
+
+    let origin_addr = spawn_h1_server_with(move |_req| {
+        let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+        async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(307)
+                    .header("location", target)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let mut secret = http::HeaderValue::from_static("do-not-forward");
+    secret.set_sensitive(true);
+
+    let resp = client
+        .get(&format!("http://{origin_addr}/start"))
+        .unwrap()
+        .header(http::HeaderName::from_static("x-secret"), secret)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    let _ = resp.text().await.unwrap();
+
+    let secret = captured_secret.lock().unwrap().clone();
+    assert!(
+        secret.is_none(),
+        "sensitive HeaderValue should be stripped on cross-origin redirect, got: {}",
+        secret.unwrap_or_default()
+    );
+}
+
+#[cfg(feature = "compio")]
+#[test]
+fn redirect_cross_origin_strips_header_value_marked_sensitive_compio() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let captured_secret = Arc::new(Mutex::new(None::<String>));
+        let cap = captured_secret.clone();
+
+        let target_addr = spawn_h1_server_with(move |req| {
+            let cap = cap.clone();
+            async move {
+                let secret = req
+                    .headers()
+                    .get("x-secret")
+                    .map(|v| v.to_str().unwrap_or("").to_string());
+                *cap.lock().unwrap() = secret;
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("target"))))
+            }
+        });
+
+        let origin_addr = spawn_h1_server_with(move |_req| {
+            let target = format!("http://127.0.0.1:{}/final", target_addr.port());
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(307)
+                        .header("location", target)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            }
+        });
+
+        let client: aioduct::HttpEngineLocal<
+            aioduct::runtime::compio_rt::CompioRuntime,
+            aioduct::runtime::compio_rt::TcpConnector,
+        > = aioduct::HttpEngineLocal::builder()
+            .timeout(Duration::from_secs(5))
+            .build_local()
+            .unwrap();
+        let mut secret = http::HeaderValue::from_static("do-not-forward");
+        secret.set_sensitive(true);
+
+        let resp = client
+            .get_local(&format!("http://{origin_addr}/start"))
+            .unwrap()
+            .header(http::HeaderName::from_static("x-secret"), secret)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let _ = resp.text().await.unwrap();
+
+        let secret = captured_secret.lock().unwrap().clone();
+        assert!(
+            secret.is_none(),
+            "sensitive HeaderValue should be stripped on cross-origin redirect, got: {}",
+            secret.unwrap_or_default()
+        );
+    });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 3. redirect_cross_origin_strips_cookie
 //    Cross-origin redirect must strip Cookie header.
