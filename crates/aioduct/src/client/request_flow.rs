@@ -317,6 +317,14 @@ impl<B> HttpEngineCore<B> {
             headers.remove(http::header::AUTHORIZATION);
             headers.remove(COOKIE);
             headers.remove(PROXY_AUTHORIZATION);
+            let sensitive_value_headers: Vec<_> = headers
+                .iter()
+                .filter(|(_, value)| value.is_sensitive())
+                .map(|(name, _)| name.clone())
+                .collect();
+            for name in sensitive_value_headers {
+                headers.remove(name);
+            }
             for name in &self.sensitive_headers {
                 headers.remove(name);
             }
