@@ -130,6 +130,33 @@ Blocking clients inherit it when they wrap a configured native client.
 Browser Fetch and WASI hosts can still alter or reject some headers at the host
 boundary. That host behavior is outside aioduct's control.
 
+## RFC 9421 Conformance Matrix
+
+This matrix tracks RFC 9421 example coverage against the current public API.
+Rows marked supported are covered by normal Rust tests, not ignored or
+expected-failing tests. Rows marked planned remain visible here until their owner
+work lands.
+
+| RFC 9421 area | Status | Test coverage | Owner | Notes |
+| --- | --- | --- | --- | --- |
+| Appendix B.2.3 full request coverage | Supported | `appendix_b23_full_coverage_request_base` | Current | Covers request derived components, plain fields, `Content-Digest` as a caller-supplied header, and signature parameters. |
+| Appendix B.2.5 HMAC request example | Supported | `appendix_b25_hmac_request_base_and_header_formatting` | Current | Tests request base and single-label header formatting with caller-supplied signature bytes. It does not test HMAC itself. |
+| Appendix B.2.6 Ed25519 request example | Supported | `appendix_b26_ed25519_request_base` | Current | Tests request base only; Ed25519 signing remains caller-owned. |
+| Appendix B.3 TLS-terminating proxy request base | Supported | `appendix_b3_tls_terminating_proxy_request_base` | Current | Covers proxy-style authority and a long `Client-Cert` field value. |
+| Appendix B.4 request transformations | Supported | `appendix_b4_safe_request_transformations_keep_base_stable`, `appendix_b4_unsafe_request_transformations_change_base` | Current | Covers stable base strings across safe transformations and changed base strings for covered method/authority or reordered same-name fields. |
+| Appendix B.2.1 empty covered component set | Planned | Matrix only | Core model | Current API rejects empty covered component lists. The RFC discourages empty sets, but full parsing/model support should make the policy explicit. |
+| Appendix B.2.2 `@query-param` | Planned | Matrix only | Component parameters | Requires named query parameter component support and component-parameter serialization. |
+| Component parameters `;sf`, `;key`, `;bs`, `;tr` | Planned | Matrix only | Component parameters | Requires the richer component model and Structured Fields adapter. `;tr` covers caller-supplied trailer fields only in the first pass. |
+| Response `@status` and response signatures | Planned | Matrix only | Response support | Requires response signature contexts and response verification support. |
+| Related request components `;req` | Planned | Matrix only | Response support | Requires request-response pair contexts. |
+| Multiple signature dictionaries | Planned | Matrix only | Dictionaries | Current automatic signing replaces signature fields; full support will parse and merge labels. |
+| Verification API | Planned | Matrix only | Verification | Requires parsed signatures, typed verification policy, and caller-owned verifier callbacks. |
+| `Accept-Signature` negotiation | Planned | Matrix only | Negotiation | Requires parser, builder, and fulfillment logic for requested signatures. |
+| Buffered automatic `Content-Digest` generation | Planned | Matrix only | Body digest | Current support signs caller-supplied `Content-Digest` fields. |
+| Async automatic signing | Planned | Matrix only | Async signing | Sync automatic signing remains supported; async signing will use explicit send/local APIs. |
+| Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs cross-runtime request-trailer semantics first. |
+| Cryptographic algorithm validation | Not in scope | Matrix only | Caller-owned | aioduct builds bases and header values; callers own keys, algorithms, signing, and verification cryptography. |
+
 ## Future Work
 
 - Async automatic signer callbacks.
@@ -138,4 +165,6 @@ boundary. That host behavior is outside aioduct's control.
 - Multiple signature dictionary merging.
 - `@query-param` and component parameters such as `;sf`, `;key`, `;bs`, and `;tr`.
 - Trailer coverage and response `;req` / `@status` components.
-- Automatic `Content-Digest` generation for buffered or streaming request bodies.
+- Automatic `Content-Digest` generation for buffered request bodies.
+- Precomputed digest helpers for streaming bodies.
+- Automatic trailer-based digest/signature generation after trailer semantics are proven across runtimes.

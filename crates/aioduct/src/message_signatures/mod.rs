@@ -19,4 +19,6 @@ pub use params::MessageSignatureParams;
 pub use signer::MessageSignatureSigner;
 
 #[cfg(test)]
+mod rfc9421_tests;
+#[cfg(test)]
 mod tests;
