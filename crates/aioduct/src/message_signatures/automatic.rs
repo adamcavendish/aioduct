@@ -3,6 +3,7 @@ use std::sync::Arc;
 use http::header::HeaderMap;
 use http::{Method, Uri};
 
+use super::headers;
 use super::{MessageSignatureConfig, MessageSignatureError, MessageSignatureSigner};
 
 #[derive(Clone)]
@@ -26,8 +27,7 @@ impl AutomaticMessageSignature {
         request_target: &Uri,
         headers: &mut HeaderMap,
     ) -> Result<(), MessageSignatureError> {
-        headers.remove(http::HeaderName::from_static("signature-input"));
-        headers.remove(http::HeaderName::from_static("signature"));
+        headers::remove_label(headers, self.config.label())?;
         let signature_headers = self.config.sign_request(
             method,
             target_uri,
@@ -35,7 +35,7 @@ impl AutomaticMessageSignature {
             headers,
             self.signer.as_ref(),
         )?;
-        signature_headers.insert_into(headers);
+        signature_headers.insert_into(headers)?;
         Ok(())
     }
 }

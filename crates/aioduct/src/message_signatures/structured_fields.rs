@@ -34,6 +34,25 @@ pub(crate) fn field_value(input: &str) -> Result<String, StructuredFieldError> {
         .or_else(|_| Parser::new(input).parse_complete(|parser| parser.parse_item()))
 }
 
+pub(crate) fn dictionary(input: &str) -> Result<Vec<(String, String)>, StructuredFieldError> {
+    if !input.is_ascii() {
+        return Err(StructuredFieldError::Parse);
+    }
+
+    Parser::new(input).parse_complete(|parser| parser.parse_dictionary_entries())
+}
+
+pub(crate) fn serialize_dictionary(entries: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (index, (key, member)) in entries.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&serialize_dictionary_member(key, member));
+    }
+    out
+}
+
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
@@ -61,25 +80,24 @@ impl<'a> Parser<'a> {
         &mut self,
         target_key: &str,
     ) -> Result<Option<String>, StructuredFieldError> {
-        let members = self.parse_dictionary_members()?;
-        Ok(members
-            .into_iter()
-            .find_map(|(key, member)| (key == target_key).then_some(member)))
+        let mut selected = None;
+        for (key, member) in self.parse_dictionary_entries()? {
+            if key == target_key {
+                selected = Some(member);
+            }
+        }
+        Ok(selected)
     }
 
     fn parse_dictionary_value(&mut self) -> Result<String, StructuredFieldError> {
-        let members = self.parse_dictionary_members()?;
-        let mut out = String::new();
-        for (index, (key, member)) in members.into_iter().enumerate() {
-            if index > 0 {
-                out.push_str(", ");
-            }
-            out.push_str(&serialize_dictionary_member(&key, &member));
+        let mut members = Vec::<(String, String)>::new();
+        for (key, member) in self.parse_dictionary_entries()? {
+            replace_or_append(&mut members, key, member);
         }
-        Ok(out)
+        Ok(serialize_dictionary(&members))
     }
 
-    fn parse_dictionary_members(&mut self) -> Result<Vec<(String, String)>, StructuredFieldError> {
+    fn parse_dictionary_entries(&mut self) -> Result<Vec<(String, String)>, StructuredFieldError> {
         let mut members = Vec::<(String, String)>::new();
         while !self.is_empty() {
             let key = self.parse_key()?;
@@ -90,14 +108,7 @@ impl<'a> Parser<'a> {
                 format!("?1{parameters}")
             };
 
-            if let Some(index) = members
-                .iter()
-                .position(|(existing_key, _)| existing_key == &key)
-            {
-                members[index].1 = member;
-            } else {
-                members.push((key, member));
-            }
+            members.push((key, member));
 
             self.discard_ows();
             if self.is_empty() {
@@ -447,10 +458,10 @@ impl<'a> Parser<'a> {
         self.pos == self.input.len()
     }
 
-    fn parse_complete(
+    fn parse_complete<T>(
         mut self,
-        parse: impl FnOnce(&mut Self) -> Result<String, StructuredFieldError>,
-    ) -> Result<String, StructuredFieldError> {
+        parse: impl FnOnce(&mut Self) -> Result<T, StructuredFieldError>,
+    ) -> Result<T, StructuredFieldError> {
         self.discard_sp();
         let value = parse(&mut self)?;
         self.discard_sp();
@@ -535,6 +546,17 @@ fn serialize_dictionary_member(key: &str, member: &str) -> String {
         }
     }
     out
+}
+
+fn replace_or_append(entries: &mut Vec<(String, String)>, key: String, member: String) {
+    if let Some(index) = entries
+        .iter()
+        .position(|(existing_key, _)| existing_key == &key)
+    {
+        entries[index].1 = member;
+    } else {
+        entries.push((key, member));
+    }
 }
 
 fn strip_leading_zeroes(mut digits: &[u8]) -> &[u8] {
@@ -634,6 +656,18 @@ mod tests {
     #[test]
     fn duplicate_dictionary_keys_keep_original_position_and_last_value() {
         assert_eq!(field_value("a=1, b=2, a=3").unwrap(), "a=3, b=2");
+    }
+
+    #[test]
+    fn dictionary_preserves_duplicate_entries_for_callers() {
+        assert_eq!(
+            dictionary("a=1, b=2, a=3").unwrap(),
+            vec![
+                ("a".to_owned(), "1".to_owned()),
+                ("b".to_owned(), "2".to_owned()),
+                ("a".to_owned(), "3".to_owned()),
+            ]
+        );
     }
 
     #[test]
