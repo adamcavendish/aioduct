@@ -19,8 +19,8 @@ use aioduct_test_server::h1::h1_server_with;
 fn basic_config() -> MessageSignatureConfig {
     MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::RequestTarget)
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::request_target())
 }
 
 fn sign_new(_: &[u8]) -> Result<Vec<u8>, MessageSignatureError> {
@@ -44,11 +44,11 @@ async fn automatic_signing_adds_headers_after_middleware() {
     };
     let config = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::RequestTarget)
-        .component(MessageSignatureComponent::Header {
-            name: HeaderName::from_static("x-final"),
-        });
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::request_target())
+        .component(MessageSignatureComponent::header(HeaderName::from_static(
+            "x-final",
+        )));
 
     let (addr, _counter) = h1_server_with(|req| async move {
         let signature_input = req
@@ -200,9 +200,7 @@ async fn digest_retry_signature_covers_retry_authorization() {
             .push(String::from_utf8(base.to_vec()).unwrap());
         Ok(b"signed".to_vec())
     };
-    let config = basic_config().component(MessageSignatureComponent::Header {
-        name: AUTHORIZATION,
-    });
+    let config = basic_config().component(MessageSignatureComponent::header(AUTHORIZATION));
     let attempts = Arc::new(AtomicUsize::new(0));
     let server_attempts = attempts.clone();
 
@@ -265,12 +263,12 @@ async fn forwarding_signature_covers_rewritten_upstream_request() {
     };
     let config = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::RequestTarget)
-        .component(MessageSignatureComponent::TargetUri)
-        .component(MessageSignatureComponent::Header {
-            name: HeaderName::from_static("x-forward-final"),
-        });
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::request_target())
+        .component(MessageSignatureComponent::target_uri())
+        .component(MessageSignatureComponent::header(HeaderName::from_static(
+            "x-forward-final",
+        )));
     let (addr, _counter) = h1_server_with(|req| async move {
         let signature = req
             .headers()
@@ -320,9 +318,9 @@ async fn forwarding_signature_covers_rewritten_upstream_request() {
 #[tokio::test]
 async fn forwarding_stale_retry_preserves_signed_headers() {
     let (addr, _counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
-    let config = basic_config().component(MessageSignatureComponent::Header {
-        name: HeaderName::from_static("x-forward-final"),
-    });
+    let config = basic_config().component(MessageSignatureComponent::header(
+        HeaderName::from_static("x-forward-final"),
+    ));
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .message_signature(config, sign_new)
         .build()

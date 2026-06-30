@@ -20,12 +20,10 @@ let target_uri: Uri = "https://example.com/foo?param=Value".parse()?;
 let request_target: Uri = "/foo?param=Value".parse()?;
 
 let config = MessageSignatureConfig::new("sig1")?
-    .component(MessageSignatureComponent::Method)
-    .component(MessageSignatureComponent::Authority)
-    .component(MessageSignatureComponent::Path)
-    .component(MessageSignatureComponent::Header {
-        name: http::header::DATE,
-    })
+    .component(MessageSignatureComponent::method())
+    .component(MessageSignatureComponent::authority())
+    .component(MessageSignatureComponent::path())
+    .component(MessageSignatureComponent::header(http::header::DATE))
     .created(1_618_884_473)
     .key_id("test-key");
 
@@ -77,9 +75,9 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 
 # fn example() -> Result<(), Box<dyn std::error::Error>> {
 let config = MessageSignatureConfig::new("sig1")?
-    .component(MessageSignatureComponent::Method)
-    .component(MessageSignatureComponent::Authority)
-    .component(MessageSignatureComponent::Path)
+    .component(MessageSignatureComponent::method())
+    .component(MessageSignatureComponent::authority())
+    .component(MessageSignatureComponent::path())
     .key_id("test-key");
 
 let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
