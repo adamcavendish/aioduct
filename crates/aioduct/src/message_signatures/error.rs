@@ -28,6 +28,17 @@ pub enum MessageSignatureError {
     /// A covered query parameter appeared more than once.
     #[error("covered query parameter `{0}` appears more than once")]
     DuplicateQueryParam(String),
+    /// A covered Dictionary Structured Field member is missing.
+    #[error("covered structured field `{field}` does not contain dictionary key `{key}`")]
+    MissingDictionaryKey {
+        /// The covered Dictionary Structured Field name.
+        field: HeaderName,
+        /// The selected Dictionary member key.
+        key: String,
+    },
+    /// A covered Structured Field value is malformed.
+    #[error("covered structured field `{0}` is malformed")]
+    MalformedStructuredField(HeaderName),
     /// A covered component is not supported by the current implementation.
     #[error("covered component {0} is not supported")]
     UnsupportedComponent(String),
