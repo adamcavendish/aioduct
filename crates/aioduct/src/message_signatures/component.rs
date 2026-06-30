@@ -159,13 +159,42 @@ impl MessageSignatureComponent {
     }
 
     pub(crate) fn query_param_name(&self) -> Option<&str> {
-        if !matches!(self.kind, MessageSignatureComponentKind::QueryParam) {
+        if !matches!(&self.kind, MessageSignatureComponentKind::QueryParam) {
             return None;
         }
         match self.parameters.as_slice() {
             [MessageSignatureComponentParameter::Name(name)] => Some(name),
             _ => None,
         }
+    }
+
+    pub(crate) fn dictionary_key(&self) -> Option<&str> {
+        if !self.is_header_field() {
+            return None;
+        }
+
+        let mut key = None;
+        let mut structured_field = false;
+        for parameter in &self.parameters {
+            match parameter {
+                MessageSignatureComponentParameter::StructuredField if !structured_field => {
+                    structured_field = true;
+                }
+                MessageSignatureComponentParameter::Key(value) if key.is_none() => {
+                    key = Some(value.as_str());
+                }
+                _ => return None,
+            }
+        }
+        key
+    }
+
+    pub(crate) fn dictionary_key_identity(&self) -> Option<(HeaderName, String)> {
+        let MessageSignatureComponentKind::Header(name) = &self.kind else {
+            return None;
+        };
+        self.dictionary_key()
+            .map(|key| (name.clone(), key.to_owned()))
     }
 
     pub(crate) fn has_only_byte_sequence_parameter(&self) -> bool {

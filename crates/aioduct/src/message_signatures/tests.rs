@@ -383,6 +383,175 @@ fn byte_sequence_parameter_is_only_supported_for_header_fields() {
 }
 
 #[test]
+fn dictionary_key_header_values_are_signed_as_structured_field_members() {
+    let name = http::header::HeaderName::from_static("example-dict");
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(
+            MessageSignatureComponent::header(name.clone())
+                .key("a")
+                .unwrap(),
+        )
+        .component(
+            MessageSignatureComponent::header(name.clone())
+                .key("d")
+                .unwrap(),
+        )
+        .component(
+            MessageSignatureComponent::header(name.clone())
+                .key("b")
+                .unwrap(),
+        )
+        .component(
+            MessageSignatureComponent::header(name.clone())
+                .key("c")
+                .unwrap(),
+        );
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        name,
+        HeaderValue::from_static(" a=1, b=2;x=1;y=2, c=(a   b    c), d "),
+    );
+
+    let base = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\
+\"example-dict\";key=\"a\": 1\n\
+\"example-dict\";key=\"d\": ?1\n\
+\"example-dict\";key=\"b\": 2;x=1;y=2\n\
+\"example-dict\";key=\"c\": (a b c)\n\
+\"@signature-params\": (\"example-dict\";key=\"a\" \"example-dict\";key=\"d\" \"example-dict\";key=\"b\" \"example-dict\";key=\"c\")"
+    );
+}
+
+#[test]
+fn dictionary_key_allows_redundant_structured_field_parameter() {
+    let name = http::header::HeaderName::from_static("example-dict");
+    let cfg = MessageSignatureConfig::new("sig1").unwrap().component(
+        MessageSignatureComponent::header(name.clone())
+            .structured_field()
+            .key("a")
+            .unwrap(),
+    );
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(name, HeaderValue::from_static("a=1"));
+
+    let base = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\"example-dict\";sf;key=\"a\": 1\n\"@signature-params\": (\"example-dict\";sf;key=\"a\")"
+    );
+}
+
+#[test]
+fn dictionary_key_missing_malformed_and_duplicate_values() {
+    let name = http::header::HeaderName::from_static("example-dict");
+    let cfg = MessageSignatureConfig::new("sig1").unwrap().component(
+        MessageSignatureComponent::header(name.clone())
+            .key("a")
+            .unwrap(),
+    );
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+
+    let mut headers = HeaderMap::new();
+    headers.insert(name.clone(), HeaderValue::from_static("b=1"));
+    let err = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MissingDictionaryKey { field, key }
+            if field == name && key == "a"
+    ));
+
+    headers.insert(name.clone(), HeaderValue::from_static("a=(unterminated"));
+    let err = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MalformedStructuredField(field) if field == name
+    ));
+
+    headers.insert(name.clone(), HeaderValue::from_static("a=1, a=2"));
+    let base = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap();
+    assert_eq!(
+        base.as_str(),
+        "\"example-dict\";key=\"a\": 2\n\"@signature-params\": (\"example-dict\";key=\"a\")"
+    );
+}
+
+#[test]
+fn dictionary_key_rejects_duplicate_member_identities() {
+    let name = http::header::HeaderName::from_static("example-dict");
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(
+            MessageSignatureComponent::header(name.clone())
+                .key("a")
+                .unwrap(),
+        )
+        .component(
+            MessageSignatureComponent::header(name)
+                .structured_field()
+                .key("a")
+                .unwrap(),
+        );
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+    let headers = HeaderMap::new();
+
+    let err = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        MessageSignatureError::DuplicateComponent(component)
+            if component == "\"example-dict\";sf;key=\"a\""
+    ));
+}
+
+#[test]
+fn dictionary_key_rejects_duplicate_structured_field_parameters() {
+    let name = http::header::HeaderName::from_static("example-dict");
+    let cfg = MessageSignatureConfig::new("sig1").unwrap().component(
+        MessageSignatureComponent::header(name)
+            .structured_field()
+            .structured_field()
+            .key("a")
+            .unwrap(),
+    );
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+    let headers = HeaderMap::new();
+
+    let err = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnsupportedComponentParameters(component)
+            if component == "\"example-dict\";sf;sf;key=\"a\""
+    ));
+}
+
+#[test]
 fn duplicate_components_error() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
