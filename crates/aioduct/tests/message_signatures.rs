@@ -131,7 +131,7 @@ async fn manual_signature_headers_are_preserved_without_automatic_signing() {
 }
 
 #[tokio::test]
-async fn automatic_signing_replaces_existing_signature_headers() {
+async fn automatic_signing_merges_existing_signature_headers_by_label() {
     let (addr, _counter) = h1_server_with(|req| async move {
         let signature_input = req
             .headers()
@@ -156,7 +156,7 @@ async fn automatic_signing_replaces_existing_signature_headers() {
     let resp = client
         .get(&format!("http://{addr}/"))
         .unwrap()
-        .header_str("signature-input", r#"old=("@method")"#)
+        .header_str("signature-input", r#"old=("@method"), sig1=("@path")"#)
         .unwrap()
         .header_str("signature", "old=:b2xk:")
         .unwrap()
@@ -165,9 +165,11 @@ async fn automatic_signing_replaces_existing_signature_headers() {
         .unwrap();
 
     let body = resp.text().await.unwrap();
+    assert!(body.contains(r#"old=("@method")"#), "{body}");
+    assert!(body.contains("old=:b2xk:"), "{body}");
     assert!(body.contains("sig1="), "{body}");
     assert!(body.contains("sig1=:bmV3:"), "{body}");
-    assert!(!body.contains("old="), "{body}");
+    assert!(!body.contains("c3RhbGU"), "{body}");
 }
 
 #[tokio::test]

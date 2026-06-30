@@ -155,6 +155,7 @@ impl MessageSignatureConfig {
         );
 
         Ok(MessageSignatureHeaders {
+            label: self.label.clone(),
             signature_input: HeaderValue::from_str(&signature_input).map_err(|source| {
                 MessageSignatureError::InvalidGeneratedHeader {
                     header: "Signature-Input",
