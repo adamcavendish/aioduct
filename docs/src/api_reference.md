@@ -254,8 +254,8 @@ let request_target: Uri = "/api".parse()?;
 let headers = HeaderMap::new();
 
 let config = MessageSignatureConfig::new("sig1")?
-    .component(MessageSignatureComponent::Method)
-    .component(MessageSignatureComponent::Authority)
+    .component(MessageSignatureComponent::method())
+    .component(MessageSignatureComponent::authority())
     .created(1_618_884_473)
     .key_id("test-key");
 
@@ -273,8 +273,8 @@ Native clients can also sign each finalized request attempt automatically:
 # use aioduct::{MessageSignatureComponent, MessageSignatureConfig, TokioClient};
 # fn example() -> Result<(), Box<dyn std::error::Error>> {
 let config = MessageSignatureConfig::new("sig1")?
-    .component(MessageSignatureComponent::Method)
-    .component(MessageSignatureComponent::Authority)
+    .component(MessageSignatureComponent::method())
+    .component(MessageSignatureComponent::authority())
     .key_id("test-key");
 
 let client = TokioClient::builder()

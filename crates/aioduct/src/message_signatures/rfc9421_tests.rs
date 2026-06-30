@@ -31,7 +31,7 @@ fn client_cert() -> HeaderName {
 }
 
 fn header(name: HeaderName) -> MessageSignatureComponent {
-    MessageSignatureComponent::Header { name }
+    MessageSignatureComponent::header(name)
 }
 
 fn test_request_headers() -> HeaderMap {
@@ -70,10 +70,10 @@ fn appendix_b23_full_coverage_request_base() {
     let config = MessageSignatureConfig::new("sig-b23")
         .unwrap()
         .component(header(DATE))
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::Path)
-        .component(MessageSignatureComponent::Query)
-        .component(MessageSignatureComponent::Authority)
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::path())
+        .component(MessageSignatureComponent::query())
+        .component(MessageSignatureComponent::authority())
         .component(header(CONTENT_TYPE))
         .component(header(content_digest()))
         .component(header(CONTENT_LENGTH))
@@ -111,7 +111,7 @@ fn appendix_b25_hmac_request_base_and_header_formatting() {
     let config = MessageSignatureConfig::new("sig-b25")
         .unwrap()
         .component(header(DATE))
-        .component(MessageSignatureComponent::Authority)
+        .component(MessageSignatureComponent::authority())
         .component(header(CONTENT_TYPE))
         .created(1_618_884_473)
         .key_id("test-shared-secret");
@@ -154,9 +154,9 @@ fn appendix_b26_ed25519_request_base() {
     let config = MessageSignatureConfig::new("sig-b26")
         .unwrap()
         .component(header(DATE))
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::Path)
-        .component(MessageSignatureComponent::Authority)
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::path())
+        .component(MessageSignatureComponent::authority())
         .component(header(CONTENT_TYPE))
         .component(header(CONTENT_LENGTH))
         .created(1_618_884_473)
@@ -190,10 +190,10 @@ fn appendix_b3_tls_terminating_proxy_request_base() {
     headers.insert(client_cert(), HeaderValue::from_static(CLIENT_CERT));
     let config = MessageSignatureConfig::new("ttrp")
         .unwrap()
-        .component(MessageSignatureComponent::Path)
-        .component(MessageSignatureComponent::Query)
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::Authority)
+        .component(MessageSignatureComponent::path())
+        .component(MessageSignatureComponent::query())
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::authority())
         .component(header(client_cert()))
         .created(1_618_884_473)
         .key_id("test-key-ecc-p256");
@@ -287,9 +287,9 @@ fn appendix_b4_base(
 ) -> String {
     let config = MessageSignatureConfig::new("transform")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::Path)
-        .component(MessageSignatureComponent::Authority)
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::path())
+        .component(MessageSignatureComponent::authority())
         .component(header(ACCEPT))
         .created(1_618_884_473)
         .key_id("test-key-ed25519");

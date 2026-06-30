@@ -5,13 +5,11 @@ use http::{HeaderMap, HeaderValue, Method, Uri};
 fn config() -> MessageSignatureConfig {
     MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::Authority)
-        .component(MessageSignatureComponent::Path)
-        .component(MessageSignatureComponent::Header {
-            name: CONTENT_LENGTH,
-        })
-        .component(MessageSignatureComponent::Header { name: CONTENT_TYPE })
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::authority())
+        .component(MessageSignatureComponent::path())
+        .component(MessageSignatureComponent::header(CONTENT_LENGTH))
+        .component(MessageSignatureComponent::header(CONTENT_TYPE))
         .created(1_618_884_473)
         .key_id("test-key-rsa-pss")
 }
@@ -45,7 +43,7 @@ fn builds_signature_base_for_core_components() {
 fn method_preserves_case() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method);
+        .component(MessageSignatureComponent::method());
     let target_uri: Uri = "https://example.com/".parse().unwrap();
     let request_target: Uri = "/".parse().unwrap();
     let method = Method::from_bytes(b"custom").unwrap();
@@ -61,8 +59,8 @@ fn method_preserves_case() {
 fn scheme_lowercases_and_authority_omits_default_port() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Scheme)
-        .component(MessageSignatureComponent::Authority);
+        .component(MessageSignatureComponent::scheme())
+        .component(MessageSignatureComponent::authority());
     let target_uri: Uri = "HTTPS://Example.COM:443/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
 
@@ -83,7 +81,7 @@ fn scheme_lowercases_and_authority_omits_default_port() {
 fn authority_keeps_non_default_port() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Authority);
+        .component(MessageSignatureComponent::authority());
     let target_uri: Uri = "https://example.com:8443/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
 
@@ -103,8 +101,8 @@ fn authority_keeps_non_default_port() {
 fn request_target_uses_actual_request_uri() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::TargetUri)
-        .component(MessageSignatureComponent::RequestTarget);
+        .component(MessageSignatureComponent::target_uri())
+        .component(MessageSignatureComponent::request_target());
     let target_uri: Uri = "https://example.com/path?x=1".parse().unwrap();
     let request_target: Uri = "https://example.com/path?x=1".parse().unwrap();
 
@@ -131,7 +129,7 @@ fn request_target_uses_actual_request_uri() {
 fn empty_path_is_normalized_to_slash() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Path);
+        .component(MessageSignatureComponent::path());
     let target_uri: Uri = "https://example.com".parse().unwrap();
     let request_target: Uri = "/".parse().unwrap();
 
@@ -151,7 +149,7 @@ fn empty_path_is_normalized_to_slash() {
 fn query_includes_leading_question_mark_and_absent_query_is_question_mark() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Query);
+        .component(MessageSignatureComponent::query());
     let target_uri: Uri = "https://example.com/path?a=1".parse().unwrap();
     let request_target: Uri = "/path?a=1".parse().unwrap();
     let base = cfg
@@ -179,12 +177,9 @@ fn query_includes_leading_question_mark_and_absent_query_is_question_mark() {
 
 #[test]
 fn header_values_are_lowercase_identifiers_and_comma_joined() {
-    let cfg =
-        MessageSignatureConfig::new("sig1")
-            .unwrap()
-            .component(MessageSignatureComponent::Header {
-                name: CACHE_CONTROL,
-            });
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::header(CACHE_CONTROL));
     let target_uri: Uri = "https://example.com/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
     let mut headers = HeaderMap::new();
@@ -205,7 +200,7 @@ fn header_values_are_lowercase_identifiers_and_comma_joined() {
 fn missing_header_errors() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Header { name: DATE });
+        .component(MessageSignatureComponent::header(DATE));
     let target_uri: Uri = "https://example.com/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
 
@@ -225,7 +220,7 @@ fn missing_header_errors() {
 fn internal_tab_header_value_is_signed() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Header { name: CONTENT_TYPE });
+        .component(MessageSignatureComponent::header(CONTENT_TYPE));
     let target_uri: Uri = "https://example.com/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
     let mut headers = HeaderMap::new();
@@ -248,8 +243,8 @@ fn internal_tab_header_value_is_signed() {
 fn duplicate_components_error() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::Method);
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::method());
     let target_uri: Uri = "https://example.com/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
 
@@ -281,8 +276,8 @@ fn headers_from_signature_requires_components() {
 fn headers_from_signature_rejects_duplicate_components() {
     let err = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
-        .component(MessageSignatureComponent::Method)
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::method())
         .headers_from_signature([1_u8, 2, 3])
         .unwrap_err();
 
@@ -295,7 +290,7 @@ fn headers_from_signature_rejects_duplicate_components() {
 fn structured_fields_integer_parameters_must_be_in_range() {
     let err = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
+        .component(MessageSignatureComponent::method())
         .created(1_000_000_000_000_000)
         .headers_from_signature([1_u8, 2, 3])
         .unwrap_err();
@@ -319,7 +314,7 @@ fn invalid_label_errors() {
 fn string_parameters_are_escaped() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
+        .component(MessageSignatureComponent::method())
         .key_id("key\\\"1");
     let target_uri: Uri = "https://example.com/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
@@ -340,7 +335,7 @@ fn string_parameters_are_escaped() {
 fn headers_from_signature_formats_structured_fields() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method)
+        .component(MessageSignatureComponent::method())
         .created(1)
         .algorithm("test");
 
@@ -375,7 +370,7 @@ fn insert_into_replaces_signature_headers() {
 fn sign_request_uses_signer_callback() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::Method);
+        .component(MessageSignatureComponent::method());
     let target_uri: Uri = "https://example.com/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
 
