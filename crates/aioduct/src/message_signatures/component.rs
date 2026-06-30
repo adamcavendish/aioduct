@@ -25,7 +25,7 @@ pub enum MessageSignatureComponentParameter {
     Trailer,
     /// Read this component from the related request when signing a response (`;req`).
     RelatedRequest,
-    /// The named query parameter for `@query-param` (`;name`).
+    /// The percent-encoded named query parameter for `@query-param` (`;name`).
     Name(String),
 }
 
@@ -85,7 +85,12 @@ impl MessageSignatureComponent {
     }
 
     /// A named query parameter component (`@query-param`).
+    ///
+    /// The input is the decoded parameter name. It is serialized using the
+    /// percent-encoded form required by RFC 9421's `;name` parameter.
     pub fn query_param(name: impl Into<String>) -> Result<Self, MessageSignatureError> {
+        let name = name.into();
+        let name = encode_query_param_component(&name);
         Self::new(MessageSignatureComponentKind::QueryParam).name(name)
     }
 
@@ -153,6 +158,23 @@ impl MessageSignatureComponent {
         !self.parameters.is_empty()
     }
 
+    pub(crate) fn query_param_name(&self) -> Option<&str> {
+        if !matches!(self.kind, MessageSignatureComponentKind::QueryParam) {
+            return None;
+        }
+        match self.parameters.as_slice() {
+            [MessageSignatureComponentParameter::Name(name)] => Some(name),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn has_only_byte_sequence_parameter(&self) -> bool {
+        matches!(
+            self.parameters.as_slice(),
+            [MessageSignatureComponentParameter::ByteSequence]
+        )
+    }
+
     pub(crate) fn is_header_field(&self) -> bool {
         matches!(&self.kind, MessageSignatureComponentKind::Header(_))
     }
@@ -215,4 +237,20 @@ impl MessageSignatureComponentParameter {
 
 fn validate_component_string(value: &str) -> Result<(), MessageSignatureError> {
     serialize_sf_string(value).map(|_| ())
+}
+
+pub(crate) fn encode_query_param_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'*' | b'-' | b'.' | b'_') {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    out
 }

@@ -143,8 +143,9 @@ work lands.
 | Appendix B.3 TLS-terminating proxy request base | Supported | `appendix_b3_tls_terminating_proxy_request_base` | Current | Covers proxy-style authority and a long `Client-Cert` field value. |
 | Appendix B.4 request transformations | Supported | `appendix_b4_safe_request_transformations_keep_base_stable`, `appendix_b4_unsafe_request_transformations_change_base` | Current | Covers stable base strings across safe transformations and changed base strings for covered method/authority or reordered same-name fields. |
 | Appendix B.2.1 empty covered component set | Planned | Matrix only | Core model | Current API rejects empty covered component lists. The RFC discourages empty sets, but full parsing/model support should make the policy explicit. |
-| Appendix B.2.2 `@query-param` | Planned | Matrix only | Component parameters | Requires named query parameter component support and component-parameter serialization. |
-| Component parameters `;sf`, `;key`, `;bs`, `;tr` | Planned | Matrix only | Component parameters | Requires the richer component model and Structured Fields adapter. `;tr` covers caller-supplied trailer fields only in the first pass. |
+| Appendix B.2.2 `@query-param` | Supported | `appendix_b22_query_param_request_base` | Current | Covers named query parameter parsing, form-style decoding, percent-encoded component identifiers, and missing/duplicate parameter errors. |
+| Component parameter `;bs` | Supported | `byte_sequence_header_values_are_signed_as_structured_field_list` | Current | Covers Byte Sequence wrapping for caller-supplied header field values. |
+| Component parameters `;sf`, `;key`, `;tr` | Planned | Matrix only | Component parameters | Requires the Structured Fields adapter for `;sf` and `;key`; `;tr` covers caller-supplied trailer fields only in the first pass. |
 | Response `@status` and response signatures | Planned | Matrix only | Response support | Requires response signature contexts and response verification support. |
 | Related request components `;req` | Planned | Matrix only | Response support | Requires request-response pair contexts. |
 | Multiple signature dictionaries | Planned | Matrix only | Dictionaries | Current automatic signing replaces signature fields; full support will parse and merge labels. |
@@ -161,7 +162,7 @@ work lands.
 - Response signature verification.
 - `Accept-Signature` negotiation.
 - Multiple signature dictionary merging.
-- `@query-param` and component parameters such as `;sf`, `;key`, `;bs`, and `;tr`.
+- Component parameters `;sf`, `;key`, and `;tr`.
 - Trailer coverage and response `;req` / `@status` components.
 - Automatic `Content-Digest` generation for buffered request bodies.
 - Precomputed digest helpers for streaming bodies.
