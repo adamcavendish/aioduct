@@ -176,6 +176,103 @@ fn query_includes_leading_question_mark_and_absent_query_is_question_mark() {
 }
 
 #[test]
+fn query_param_uses_form_decoding_and_percent_encoding() {
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::query_param("var").unwrap())
+        .component(MessageSignatureComponent::query_param("bar").unwrap())
+        .component(MessageSignatureComponent::query_param("façade\": ").unwrap());
+    let target_uri: Uri = concat!(
+        "https://example.com/parameters?",
+        "var=this%20is%20a%20big%0Amultiline%20value&",
+        "bar=with+plus+whitespace&",
+        "fa%C3%A7ade%22%3A%20=something"
+    )
+    .parse()
+    .unwrap();
+    let request_target: Uri = target_uri
+        .path_and_query()
+        .unwrap()
+        .as_str()
+        .parse()
+        .unwrap();
+
+    let base = cfg
+        .signature_base(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &HeaderMap::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\
+\"@query-param\";name=\"var\": this%20is%20a%20big%0Amultiline%20value\n\
+\"@query-param\";name=\"bar\": with%20plus%20whitespace\n\
+\"@query-param\";name=\"fa%C3%A7ade%22%3A%20\": something\n\
+\"@signature-params\": (\"@query-param\";name=\"var\" \"@query-param\";name=\"bar\" \"@query-param\";name=\"fa%C3%A7ade%22%3A%20\")"
+    );
+}
+
+#[test]
+fn query_param_empty_value_is_signed() {
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::query_param("qux").unwrap());
+    let target_uri: Uri = "https://example.com/path?qux=".parse().unwrap();
+    let request_target: Uri = "/path?qux=".parse().unwrap();
+
+    let base = cfg
+        .signature_base(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &HeaderMap::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\"@query-param\";name=\"qux\": \n\"@signature-params\": (\"@query-param\";name=\"qux\")"
+    );
+}
+
+#[test]
+fn query_param_missing_and_duplicate_values_error() {
+    let missing_cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::query_param("Pet").unwrap());
+    let target_uri: Uri = "https://example.com/path?cat=tabby".parse().unwrap();
+    let request_target: Uri = "/path?cat=tabby".parse().unwrap();
+    let err = missing_cfg
+        .signature_base(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &HeaderMap::new(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, MessageSignatureError::MissingQueryParam(name) if name == "Pet"));
+
+    let duplicate_cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::query_param("Pet").unwrap());
+    let target_uri: Uri = "https://example.com/path?Pet=dog&Pet=cat".parse().unwrap();
+    let request_target: Uri = "/path?Pet=dog&Pet=cat".parse().unwrap();
+    let err = duplicate_cfg
+        .signature_base(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &HeaderMap::new(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, MessageSignatureError::DuplicateQueryParam(name) if name == "Pet"));
+}
+
+#[test]
 fn header_values_are_lowercase_identifiers_and_comma_joined() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
@@ -237,6 +334,52 @@ fn internal_tab_header_value_is_signed() {
         base.as_str()
             .contains("\"content-type\": application\tjson")
     );
+}
+
+#[test]
+fn byte_sequence_header_values_are_signed_as_structured_field_list() {
+    let name = http::header::HeaderName::from_static("example-header");
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::header(name.clone()).byte_sequence());
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.append(name.clone(), HeaderValue::from_static("value, with, lots"));
+    headers.append(name, HeaderValue::from_static(" of, commas\t"));
+
+    let base = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\"example-header\";bs: :dmFsdWUsIHdpdGgsIGxvdHM=:, :b2YsIGNvbW1hcw==:\n\"@signature-params\": (\"example-header\";bs)"
+    );
+}
+
+#[test]
+fn byte_sequence_parameter_is_only_supported_for_header_fields() {
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::method().byte_sequence());
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+
+    let err = cfg
+        .signature_base(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &HeaderMap::new(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnsupportedComponentParameters(component)
+            if component == "\"@method\";bs"
+    ));
 }
 
 #[test]

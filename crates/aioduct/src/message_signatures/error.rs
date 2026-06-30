@@ -22,6 +22,12 @@ pub enum MessageSignatureError {
     /// A covered header field is missing.
     #[error("covered header `{0}` is missing")]
     MissingHeader(HeaderName),
+    /// A covered query parameter is missing.
+    #[error("covered query parameter `{0}` is missing")]
+    MissingQueryParam(String),
+    /// A covered query parameter appeared more than once.
+    #[error("covered query parameter `{0}` appears more than once")]
+    DuplicateQueryParam(String),
     /// A covered component is not supported by the current implementation.
     #[error("covered component {0} is not supported")]
     UnsupportedComponent(String),
