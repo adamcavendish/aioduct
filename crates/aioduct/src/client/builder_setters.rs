@@ -594,8 +594,8 @@ impl<R, C> HttpEngineBuilder<R, C> {
     ///
     /// The signer runs after default headers, cookies, cache validators,
     /// middleware, and digest-auth retry headers have finalized each request
-    /// attempt. When configured, it owns and replaces `Signature-Input` and
-    /// `Signature` on every dispatch.
+    /// attempt. When configured, it owns and replaces only its configured label
+    /// in `Signature-Input` and `Signature` on every dispatch.
     pub fn message_signature(
         mut self,
         config: crate::message_signatures::MessageSignatureConfig,

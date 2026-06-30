@@ -39,6 +39,20 @@ pub enum MessageSignatureError {
     /// A covered Structured Field value is malformed.
     #[error("covered structured field `{0}` is malformed")]
     MalformedStructuredField(HeaderName),
+    /// An existing signature header is not a valid Structured Fields dictionary.
+    #[error("existing `{0}` header is malformed")]
+    MalformedSignatureHeader(&'static str),
+    /// An existing signature header contains the same signature label more than once.
+    #[error("existing `{header}` header contains duplicate signature label `{label}`")]
+    DuplicateSignatureLabel {
+        /// The signature header name.
+        header: &'static str,
+        /// The duplicate dictionary member label.
+        label: String,
+    },
+    /// Existing `Signature-Input` and `Signature` dictionaries cover different labels.
+    #[error("existing `Signature-Input` and `Signature` labels do not match")]
+    MismatchedSignatureLabels,
     /// A covered component is not supported by the current implementation.
     #[error("covered component {0} is not supported")]
     UnsupportedComponent(String),

@@ -30,7 +30,7 @@ let config = MessageSignatureConfig::new("sig1")?
 let base = config.signature_base(&Method::GET, &target_uri, &request_target, &headers)?;
 let signature_bytes = my_signing_function(base.as_bytes());
 let signature_headers = config.headers_from_signature(signature_bytes)?;
-signature_headers.insert_into(&mut headers);
+signature_headers.insert_into(&mut headers)?;
 # Ok(())
 # }
 # fn my_signing_function(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
@@ -91,9 +91,10 @@ let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
 # fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
 ```
 
-When automatic signing is configured, aioduct owns the `Signature-Input` and
-`Signature` request fields and replaces any existing values on every signed
-attempt. If the signer fails, the request is not dispatched.
+When automatic signing is configured, aioduct owns its configured signature
+label in the `Signature-Input` and `Signature` request fields. It preserves
+unrelated labels and replaces the configured label on every signed attempt. If
+the signer fails, the request is not dispatched.
 
 Forwarded requests are signed after hop-by-hop cleanup, upstream URI rewriting,
 explicit header forwarding/removal, and `on_request` hooks. Components derived
@@ -114,9 +115,10 @@ call inside that synchronous signer on an async runtime thread.
 
 When automatic signing is not configured, user-supplied `Signature` and
 `Signature-Input` headers are ordinary request headers and are preserved. Native
-automatic signing owns those two fields when configured: it replaces them on each
-final dispatch so redirects, retries, digest-auth retries, forwarding rewrites,
-and stale connection replays cannot send signatures for an earlier request shape.
+automatic signing owns its configured label in those two fields when configured:
+it replaces that label on each final dispatch so redirects, retries,
+digest-auth retries, forwarding rewrites, and stale connection replays cannot
+send signatures for an earlier request shape.
 
 ## Runtime Coverage
 
@@ -150,7 +152,7 @@ work lands.
 | Component parameter `;tr` | Planned | Matrix only | Component parameters | `;tr` covers caller-supplied trailer fields only in the first pass. |
 | Response `@status` and response signatures | Planned | Matrix only | Response support | Requires response signature contexts and response verification support. |
 | Related request components `;req` | Planned | Matrix only | Response support | Requires request-response pair contexts. |
-| Multiple signature dictionaries | Planned | Matrix only | Dictionaries | Current automatic signing replaces signature fields; full support will parse and merge labels. |
+| Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
 | Verification API | Planned | Matrix only | Verification | Requires parsed signatures, typed verification policy, and caller-owned verifier callbacks. |
 | `Accept-Signature` negotiation | Planned | Matrix only | Negotiation | Requires parser, builder, and fulfillment logic for requested signatures. |
 | Buffered automatic `Content-Digest` generation | Planned | Matrix only | Body digest | Current support signs caller-supplied `Content-Digest` fields. |
@@ -163,7 +165,6 @@ work lands.
 - Async automatic signer callbacks.
 - Response signature verification.
 - `Accept-Signature` negotiation.
-- Multiple signature dictionary merging.
 - Component parameter `;tr`.
 - Trailer coverage and response `;req` / `@status` components.
 - Automatic `Content-Digest` generation for buffered request bodies.
