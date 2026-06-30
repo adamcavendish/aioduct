@@ -22,6 +22,20 @@ pub enum MessageSignatureError {
     /// A covered header field is missing.
     #[error("covered header `{0}` is missing")]
     MissingHeader(HeaderName),
+    /// A covered component is not supported by the current implementation.
+    #[error("covered component {0} is not supported")]
+    UnsupportedComponent(String),
+    /// A covered component is not available in the selected message context.
+    #[error("covered component {component} is not available in {context} context")]
+    ComponentNotAvailable {
+        /// The serialized component identifier.
+        component: String,
+        /// The target message context.
+        context: &'static str,
+    },
+    /// A covered component uses parameters that are not supported yet.
+    #[error("covered component {0} uses unsupported component parameters")]
+    UnsupportedComponentParameters(String),
     /// A covered header value cannot be represented as an ASCII field value.
     #[error("covered header `{0}` contains a non-ASCII or otherwise unsupported value")]
     UnsupportedHeaderValue(HeaderName),

@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
 use base64::Engine as _;
-use http::header::{HeaderMap, HeaderName, HeaderValue};
+use http::header::{HeaderMap, HeaderValue};
 use http::{Method, Uri};
 
 use super::{
-    MessageSignatureBase, MessageSignatureComponent, MessageSignatureError,
-    MessageSignatureHeaders, MessageSignatureParams, MessageSignatureSigner,
+    MessageSignatureBase, MessageSignatureComponent, MessageSignatureContext,
+    MessageSignatureError, MessageSignatureHeaders, MessageSignatureParams, MessageSignatureSigner,
 };
 
 /// Configuration for generating an RFC 9421 request signature base and headers.
@@ -112,16 +112,21 @@ impl MessageSignatureConfig {
         request_target: &Uri,
         headers: &HeaderMap,
     ) -> Result<MessageSignatureBase, MessageSignatureError> {
+        let context = MessageSignatureContext::request(method, target_uri, request_target, headers);
+        self.signature_base_for_context(&context)
+    }
+
+    pub(crate) fn signature_base_for_context(
+        &self,
+        context: &MessageSignatureContext<'_>,
+    ) -> Result<MessageSignatureBase, MessageSignatureError> {
         self.validate_components()?;
 
         let mut lines = Vec::with_capacity(self.components.len() + 1);
         for component in &self.components {
-            let identifier = component.identifier();
-            let value = component_value(component, method, target_uri, request_target, headers)?;
-            match component {
-                MessageSignatureComponent::Header { .. } => ensure_header_component_value(&value)?,
-                _ => ensure_derived_component_value(&value)?,
-            }
+            let identifier = component.identifier()?;
+            let value = context.component_value(component)?;
+            ensure_component_value(component, &value)?;
             lines.push(format!("{identifier}: {value}"));
         }
 
@@ -186,7 +191,7 @@ impl MessageSignatureConfig {
 
         let mut seen = HashSet::new();
         for component in &self.components {
-            let identifier = component.identifier();
+            let identifier = component.identifier()?;
             if !seen.insert(identifier.clone()) {
                 return Err(MessageSignatureError::DuplicateComponent(identifier));
             }
@@ -201,7 +206,7 @@ impl MessageSignatureConfig {
             if index > 0 {
                 out.push(' ');
             }
-            out.push_str(&component.identifier());
+            out.push_str(&component.identifier()?);
         }
         out.push(')');
         out.push_str(&self.params.serialize()?);
@@ -209,103 +214,22 @@ impl MessageSignatureConfig {
     }
 }
 
-fn component_value(
+fn ensure_component_value(
     component: &MessageSignatureComponent,
-    method: &Method,
-    target_uri: &Uri,
-    request_target: &Uri,
-    headers: &HeaderMap,
-) -> Result<String, MessageSignatureError> {
-    match component {
-        MessageSignatureComponent::Method => Ok(method.as_str().to_owned()),
-        MessageSignatureComponent::Scheme => target_uri
-            .scheme_str()
-            .map(|scheme| scheme.to_ascii_lowercase())
-            .ok_or(MessageSignatureError::MissingScheme),
-        MessageSignatureComponent::Authority => canonical_authority(target_uri),
-        MessageSignatureComponent::RequestTarget => Ok(request_target.to_string()),
-        MessageSignatureComponent::TargetUri => Ok(target_uri.to_string()),
-        MessageSignatureComponent::Path => {
-            let path = target_uri.path();
-            if path.is_empty() {
-                Ok("/".to_owned())
-            } else {
-                Ok(path.to_owned())
-            }
-        }
-        MessageSignatureComponent::Query => Ok(match target_uri.query() {
-            Some(query) => format!("?{query}"),
-            None => "?".to_owned(),
-        }),
-        MessageSignatureComponent::Header { name } => canonical_header_value(headers, name),
-    }
-}
-
-fn canonical_authority(uri: &Uri) -> Result<String, MessageSignatureError> {
-    let scheme = uri.scheme_str().map(|s| s.to_ascii_lowercase());
-    let authority = uri
-        .authority()
-        .ok_or(MessageSignatureError::MissingAuthority)?;
-    let host = authority.host().to_ascii_lowercase();
-    let port = authority.port_u16();
-    let default_port = matches!(
-        (scheme.as_deref(), port),
-        (Some("http"), Some(80)) | (Some("https"), Some(443))
-    );
-    if default_port {
-        Ok(host)
-    } else if let Some(port) = port {
-        Ok(format!("{host}:{port}"))
-    } else {
-        Ok(host)
-    }
-}
-
-fn canonical_header_value(
-    headers: &HeaderMap,
-    name: &HeaderName,
-) -> Result<String, MessageSignatureError> {
-    let values = headers.get_all(name);
-    let mut out = Vec::new();
-    for value in values {
-        let value = value
-            .to_str()
-            .map_err(|_| MessageSignatureError::UnsupportedHeaderValue(name.clone()))?;
-        let value = normalize_field_value(value);
-        if value.contains('\n') || value.contains('\r') {
-            return Err(MessageSignatureError::NewlineInComponentValue);
-        }
-        out.push(value);
-    }
-    if out.is_empty() {
-        return Err(MessageSignatureError::MissingHeader(name.clone()));
-    }
-    Ok(out.join(", "))
-}
-
-fn normalize_field_value(value: &str) -> String {
-    value.trim_matches(|c| c == ' ' || c == '\t').to_owned()
-}
-
-fn ensure_header_component_value(value: &str) -> Result<(), MessageSignatureError> {
+    value: &str,
+) -> Result<(), MessageSignatureError> {
     if value.contains('\n') || value.contains('\r') {
         return Err(MessageSignatureError::NewlineInComponentValue);
     }
-    if value.chars().any(|c| c.is_ascii_control() && c != '\t') {
+    if value
+        .chars()
+        .any(|c| c.is_ascii_control() && (c != '\t' || !component.is_header_field()))
+    {
         return Err(MessageSignatureError::ControlCharacterInComponentValue);
     }
-    Ok(())
-}
-
-fn ensure_derived_component_value(value: &str) -> Result<(), MessageSignatureError> {
-    if value.contains('\n') || value.contains('\r') {
-        return Err(MessageSignatureError::NewlineInComponentValue);
-    }
-    if value.chars().any(|c| c.is_ascii_control()) {
-        return Err(MessageSignatureError::ControlCharacterInComponentValue);
-    }
-    if value.chars().next().is_some_and(char::is_whitespace)
-        || value.chars().last().is_some_and(char::is_whitespace)
+    if !component.is_header_field()
+        && (value.chars().next().is_some_and(char::is_whitespace)
+            || value.chars().last().is_some_and(char::is_whitespace))
     {
         return Err(MessageSignatureError::InvalidDerivedComponentWhitespace);
     }

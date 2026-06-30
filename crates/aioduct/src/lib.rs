@@ -167,8 +167,9 @@ pub use hsts::HstsStore;
 pub use http2::Http2Config;
 pub use link::Link;
 pub use message_signatures::{
-    MessageSignatureBase, MessageSignatureComponent, MessageSignatureConfig, MessageSignatureError,
-    MessageSignatureHeaders, MessageSignatureParams, MessageSignatureSigner,
+    MessageSignatureBase, MessageSignatureComponent, MessageSignatureComponentParameter,
+    MessageSignatureConfig, MessageSignatureError, MessageSignatureHeaders, MessageSignatureParams,
+    MessageSignatureSigner,
 };
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};

@@ -55,7 +55,7 @@ fn serialize_sf_integer(
     Ok(value.to_string())
 }
 
-fn serialize_sf_string(value: &str) -> Result<String, MessageSignatureError> {
+pub(crate) fn serialize_sf_string(value: &str) -> Result<String, MessageSignatureError> {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for c in value.chars() {

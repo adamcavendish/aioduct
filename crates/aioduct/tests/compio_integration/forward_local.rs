@@ -64,8 +64,8 @@ fn test_compio_forward_automatic_message_signature() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let config = MessageSignatureConfig::new("sig1")
             .unwrap()
-            .component(MessageSignatureComponent::Method)
-            .component(MessageSignatureComponent::RequestTarget);
+            .component(MessageSignatureComponent::method())
+            .component(MessageSignatureComponent::request_target());
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .message_signature(config, compio_signature)
             .build_local()
