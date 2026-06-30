@@ -1,7 +1,10 @@
+use base64::Engine as _;
 use http::header::{HeaderMap, HeaderName};
 use http::{Method, StatusCode, Uri};
 
-use super::component::{MessageSignatureComponentKind, MessageSignatureComponentTarget};
+use super::component::{
+    MessageSignatureComponentKind, MessageSignatureComponentTarget, encode_query_param_component,
+};
 use super::{MessageSignatureComponent, MessageSignatureError};
 
 #[allow(dead_code)]
@@ -71,11 +74,6 @@ impl<'a> MessageSignatureContext<'a> {
     ) -> Result<String, MessageSignatureError> {
         let identifier = component.identifier()?;
         self.ensure_target(component, &identifier)?;
-        if component.has_parameters() {
-            return Err(MessageSignatureError::UnsupportedComponentParameters(
-                identifier,
-            ));
-        }
 
         match self {
             Self::Request {
@@ -136,6 +134,11 @@ fn request_component_value(
     headers: &HeaderMap,
 ) -> Result<String, MessageSignatureError> {
     match component.kind() {
+        MessageSignatureComponentKind::QueryParam => query_param_value(component, target_uri),
+        MessageSignatureComponentKind::Header(name) => {
+            header_component_value(component, headers, name)
+        }
+        _ if component.has_parameters() => Err(unsupported_component_parameters(component)?),
         MessageSignatureComponentKind::Method => Ok(method.as_str().to_owned()),
         MessageSignatureComponentKind::Scheme => target_uri
             .scheme_str()
@@ -156,8 +159,6 @@ fn request_component_value(
             Some(query) => format!("?{query}"),
             None => "?".to_owned(),
         }),
-        MessageSignatureComponentKind::QueryParam => Err(unsupported_component(component)?),
-        MessageSignatureComponentKind::Header(name) => canonical_header_value(headers, name),
     }
 }
 
@@ -166,7 +167,9 @@ fn response_component_value(
     headers: &HeaderMap,
 ) -> Result<String, MessageSignatureError> {
     match component.kind() {
-        MessageSignatureComponentKind::Header(name) => canonical_header_value(headers, name),
+        MessageSignatureComponentKind::Header(name) => {
+            header_component_value(component, headers, name)
+        }
         _ => Err(unsupported_component(component)?),
     }
 }
@@ -181,7 +184,7 @@ fn request_response_component_value(
 ) -> Result<String, MessageSignatureError> {
     match component.kind() {
         MessageSignatureComponentKind::Header(name) => {
-            canonical_header_value(response_headers, name)
+            header_component_value(component, response_headers, name)
         }
         _ => request_component_value(
             component,
@@ -191,6 +194,43 @@ fn request_response_component_value(
             request_headers,
         ),
     }
+}
+
+fn header_component_value(
+    component: &MessageSignatureComponent,
+    headers: &HeaderMap,
+    name: &HeaderName,
+) -> Result<String, MessageSignatureError> {
+    if component.has_only_byte_sequence_parameter() {
+        canonical_header_byte_sequence_value(headers, name)
+    } else if component.has_parameters() {
+        Err(unsupported_component_parameters(component)?)
+    } else {
+        canonical_header_value(headers, name)
+    }
+}
+
+fn query_param_value(
+    component: &MessageSignatureComponent,
+    target_uri: &Uri,
+) -> Result<String, MessageSignatureError> {
+    let Some(name) = component.query_param_name() else {
+        return Err(unsupported_component_parameters(component)?);
+    };
+    let Some(query) = target_uri.query() else {
+        return Err(MessageSignatureError::MissingQueryParam(name.to_owned()));
+    };
+
+    let mut value = None;
+    for (query_name, query_value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if encode_query_param_component(&query_name) == name {
+            if value.is_some() {
+                return Err(MessageSignatureError::DuplicateQueryParam(name.to_owned()));
+            }
+            value = Some(encode_query_param_component(&query_value));
+        }
+    }
+    value.ok_or_else(|| MessageSignatureError::MissingQueryParam(name.to_owned()))
 }
 
 pub(crate) fn canonical_authority(uri: &Uri) -> Result<String, MessageSignatureError> {
@@ -235,14 +275,51 @@ pub(crate) fn canonical_header_value(
     Ok(out.join(", "))
 }
 
+fn canonical_header_byte_sequence_value(
+    headers: &HeaderMap,
+    name: &HeaderName,
+) -> Result<String, MessageSignatureError> {
+    let values = headers.get_all(name);
+    let mut out = Vec::new();
+    for value in values {
+        let value = trim_field_value_bytes(value.as_bytes());
+        out.push(format!(
+            ":{}:",
+            base64::engine::general_purpose::STANDARD.encode(value)
+        ));
+    }
+    if out.is_empty() {
+        return Err(MessageSignatureError::MissingHeader(name.clone()));
+    }
+    Ok(out.join(", "))
+}
+
 fn normalize_field_value(value: &str) -> String {
     value.trim_matches(|c| c == ' ' || c == '\t').to_owned()
+}
+
+fn trim_field_value_bytes(mut value: &[u8]) -> &[u8] {
+    while matches!(value.first(), Some(b' ' | b'\t')) {
+        value = &value[1..];
+    }
+    while matches!(value.last(), Some(b' ' | b'\t')) {
+        value = &value[..value.len() - 1];
+    }
+    value
 }
 
 fn unsupported_component(
     component: &MessageSignatureComponent,
 ) -> Result<MessageSignatureError, MessageSignatureError> {
     Ok(MessageSignatureError::UnsupportedComponent(
+        component.identifier()?,
+    ))
+}
+
+fn unsupported_component_parameters(
+    component: &MessageSignatureComponent,
+) -> Result<MessageSignatureError, MessageSignatureError> {
+    Ok(MessageSignatureError::UnsupportedComponentParameters(
         component.identifier()?,
     ))
 }
