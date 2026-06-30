@@ -729,21 +729,111 @@ fn headers_from_signature_formats_structured_fields() {
 }
 
 #[test]
-fn insert_into_replaces_signature_headers() {
+fn insert_into_merges_signature_headers_by_label() {
     let generated = MessageSignatureHeaders {
+        label: "sig1".to_owned(),
         signature_input: HeaderValue::from_static("sig1=(\"@method\")"),
         signature: HeaderValue::from_static("sig1=:AQID:"),
     };
     let mut headers = HeaderMap::new();
     headers.insert(HOST, HeaderValue::from_static("example.com"));
-    headers.insert("signature-input", HeaderValue::from_static("old=()"));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static("old=(), sig1=(\"@path\")"),
+    );
+    headers.insert(
+        "signature",
+        HeaderValue::from_static("old=:AA:, sig1=:c3RhbGU:"),
+    );
+
+    generated.insert_into(&mut headers).unwrap();
+
+    assert_eq!(headers["signature-input"], "old=(), sig1=(\"@method\")");
+    assert_eq!(headers["signature"], "old=:AA==:, sig1=:AQID:");
+    assert_eq!(headers[HOST], "example.com");
+}
+
+#[test]
+fn insert_into_replaces_partial_existing_owned_label() {
+    let generated = MessageSignatureHeaders {
+        label: "sig1".to_owned(),
+        signature_input: HeaderValue::from_static("sig1=(\"@method\")"),
+        signature: HeaderValue::from_static("sig1=:AQID:"),
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static("old=(), sig1=(\"@path\")"),
+    );
     headers.insert("signature", HeaderValue::from_static("old=:AA:"));
 
-    generated.insert_into(&mut headers);
+    generated.insert_into(&mut headers).unwrap();
 
-    assert_eq!(headers["signature-input"], "sig1=(\"@method\")");
-    assert_eq!(headers["signature"], "sig1=:AQID:");
-    assert_eq!(headers[HOST], "example.com");
+    assert_eq!(headers["signature-input"], "old=(), sig1=(\"@method\")");
+    assert_eq!(headers["signature"], "old=:AA==:, sig1=:AQID:");
+}
+
+#[test]
+fn insert_into_replaces_duplicate_existing_owned_label() {
+    let generated = MessageSignatureHeaders {
+        label: "sig1".to_owned(),
+        signature_input: HeaderValue::from_static("sig1=(\"@method\")"),
+        signature: HeaderValue::from_static("sig1=:AQID:"),
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static("sig1=(\"@path\"), old=(), sig1=(\"@query\")"),
+    );
+    headers.insert(
+        "signature",
+        HeaderValue::from_static("sig1=:c3RhbGU:, old=:AA:, sig1=:b2xk:"),
+    );
+
+    generated.insert_into(&mut headers).unwrap();
+
+    assert_eq!(headers["signature-input"], "old=(), sig1=(\"@method\")");
+    assert_eq!(headers["signature"], "old=:AA==:, sig1=:AQID:");
+}
+
+#[test]
+fn insert_into_rejects_invalid_existing_signature_dictionaries() {
+    let generated = MessageSignatureHeaders {
+        label: "sig1".to_owned(),
+        signature_input: HeaderValue::from_static("sig1=(\"@method\")"),
+        signature: HeaderValue::from_static("sig1=:AQID:"),
+    };
+
+    let mut malformed = HeaderMap::new();
+    malformed.insert("signature-input", HeaderValue::from_static("old=("));
+    malformed.insert("signature", HeaderValue::from_static("old=:AA:"));
+    let err = generated.clone().insert_into(&mut malformed).unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MalformedSignatureHeader("signature-input")
+    ));
+
+    let mut duplicate = HeaderMap::new();
+    duplicate.insert(
+        "signature-input",
+        HeaderValue::from_static("old=(), old=()"),
+    );
+    duplicate.insert("signature", HeaderValue::from_static("old=:AA:"));
+    let err = generated.clone().insert_into(&mut duplicate).unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::DuplicateSignatureLabel { header, label }
+            if header == "signature-input" && label == "old"
+    ));
+
+    let mut mismatched = HeaderMap::new();
+    mismatched.insert("signature-input", HeaderValue::from_static("old=()"));
+    mismatched.insert("signature", HeaderValue::from_static("other=:AA:"));
+    let err = generated.insert_into(&mut mismatched).unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MismatchedSignatureLabels
+    ));
 }
 
 #[test]
