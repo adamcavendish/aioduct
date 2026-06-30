@@ -204,6 +204,8 @@ fn header_component_value(
 ) -> Result<String, MessageSignatureError> {
     if let Some(key) = component.dictionary_key() {
         canonical_header_dictionary_member_value(headers, name, key)
+    } else if component.has_only_structured_field_parameter() {
+        canonical_header_structured_field_value(headers, name)
     } else if component.has_only_byte_sequence_parameter() {
         canonical_header_byte_sequence_value(headers, name)
     } else if component.has_parameters() {
@@ -225,6 +227,15 @@ fn canonical_header_dictionary_member_value(
             field: name.clone(),
             key: key.to_owned(),
         })
+}
+
+fn canonical_header_structured_field_value(
+    headers: &HeaderMap,
+    name: &HeaderName,
+) -> Result<String, MessageSignatureError> {
+    let value = canonical_header_value(headers, name)?;
+    structured_fields::field_value(&value)
+        .map_err(|_| MessageSignatureError::MalformedStructuredField(name.clone()))
 }
 
 fn query_param_value(

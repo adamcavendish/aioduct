@@ -23,6 +23,17 @@ pub(crate) fn dictionary_member(
     Ok(member)
 }
 
+pub(crate) fn field_value(input: &str) -> Result<String, StructuredFieldError> {
+    if !input.is_ascii() {
+        return Err(StructuredFieldError::Parse);
+    }
+
+    Parser::new(input)
+        .parse_complete(|parser| parser.parse_dictionary_value())
+        .or_else(|_| Parser::new(input).parse_complete(|parser| parser.parse_list()))
+        .or_else(|_| Parser::new(input).parse_complete(|parser| parser.parse_item()))
+}
+
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
@@ -50,7 +61,26 @@ impl<'a> Parser<'a> {
         &mut self,
         target_key: &str,
     ) -> Result<Option<String>, StructuredFieldError> {
-        let mut selected = None;
+        let members = self.parse_dictionary_members()?;
+        Ok(members
+            .into_iter()
+            .find_map(|(key, member)| (key == target_key).then_some(member)))
+    }
+
+    fn parse_dictionary_value(&mut self) -> Result<String, StructuredFieldError> {
+        let members = self.parse_dictionary_members()?;
+        let mut out = String::new();
+        for (index, (key, member)) in members.into_iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&serialize_dictionary_member(&key, &member));
+        }
+        Ok(out)
+    }
+
+    fn parse_dictionary_members(&mut self) -> Result<Vec<(String, String)>, StructuredFieldError> {
+        let mut members = Vec::<(String, String)>::new();
         while !self.is_empty() {
             let key = self.parse_key()?;
             let member = if self.consume_if(b'=') {
@@ -60,13 +90,18 @@ impl<'a> Parser<'a> {
                 format!("?1{parameters}")
             };
 
-            if key == target_key {
-                selected = Some(member);
+            if let Some(index) = members
+                .iter()
+                .position(|(existing_key, _)| existing_key == &key)
+            {
+                members[index].1 = member;
+            } else {
+                members.push((key, member));
             }
 
             self.discard_ows();
             if self.is_empty() {
-                return Ok(selected);
+                return Ok(members);
             }
             if !self.consume_if(b',') {
                 return Err(StructuredFieldError::Parse);
@@ -76,7 +111,26 @@ impl<'a> Parser<'a> {
                 return Err(StructuredFieldError::Parse);
             }
         }
-        Ok(selected)
+        Ok(members)
+    }
+
+    fn parse_list(&mut self) -> Result<String, StructuredFieldError> {
+        let mut members = Vec::new();
+        while !self.is_empty() {
+            members.push(self.parse_item_or_inner_list()?);
+            self.discard_ows();
+            if self.is_empty() {
+                return Ok(members.join(", "));
+            }
+            if !self.consume_if(b',') {
+                return Err(StructuredFieldError::Parse);
+            }
+            self.discard_ows();
+            if self.is_empty() {
+                return Err(StructuredFieldError::Parse);
+            }
+        }
+        Ok(members.join(", "))
     }
 
     fn parse_item_or_inner_list(&mut self) -> Result<String, StructuredFieldError> {
@@ -392,6 +446,19 @@ impl<'a> Parser<'a> {
     fn is_empty(&self) -> bool {
         self.pos == self.input.len()
     }
+
+    fn parse_complete(
+        mut self,
+        parse: impl FnOnce(&mut Self) -> Result<String, StructuredFieldError>,
+    ) -> Result<String, StructuredFieldError> {
+        self.discard_sp();
+        let value = parse(&mut self)?;
+        self.discard_sp();
+        if !self.is_empty() {
+            return Err(StructuredFieldError::Parse);
+        }
+        Ok(value)
+    }
 }
 
 impl BareItem {
@@ -453,6 +520,20 @@ fn serialize_display_string(value: &str) -> String {
         }
     }
     out.push('"');
+    out
+}
+
+fn serialize_dictionary_member(key: &str, member: &str) -> String {
+    let mut out = String::from(key);
+    match member.strip_prefix("?1") {
+        Some(parameters) if parameters.is_empty() || parameters.starts_with(';') => {
+            out.push_str(parameters);
+        }
+        _ => {
+            out.push('=');
+            out.push_str(member);
+        }
+    }
     out
 }
 
@@ -532,6 +613,27 @@ mod tests {
             dictionary_member(input, "d").unwrap(),
             Some("?1".to_owned())
         );
+    }
+
+    #[test]
+    fn serializes_complete_structured_field_values() {
+        assert_eq!(
+            field_value(" a=1,    b=2;x=1;y=2,   c=(a   b   c), d ").unwrap(),
+            "a=1, b=2;x=1;y=2, c=(a b c), d"
+        );
+        assert_eq!(
+            field_value(" 1, 02.300, (a   b);q=01.200 ").unwrap(),
+            "1, 2.3, (a b);q=1.2"
+        );
+        assert_eq!(
+            field_value(" \"hello\\\"\";a=1;a=2 ").unwrap(),
+            "\"hello\\\"\";a=2"
+        );
+    }
+
+    #[test]
+    fn duplicate_dictionary_keys_keep_original_position_and_last_value() {
+        assert_eq!(field_value("a=1, b=2, a=3").unwrap(), "a=3, b=2");
     }
 
     #[test]
