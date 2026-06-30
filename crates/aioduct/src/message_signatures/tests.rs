@@ -383,6 +383,74 @@ fn byte_sequence_parameter_is_only_supported_for_header_fields() {
 }
 
 #[test]
+fn structured_field_header_values_are_signed_with_strict_serialization() {
+    let dict = http::header::HeaderName::from_static("example-dict");
+    let list = http::header::HeaderName::from_static("example-list");
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::header(dict.clone()).structured_field())
+        .component(MessageSignatureComponent::header(list.clone()).structured_field());
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        dict,
+        HeaderValue::from_static(" a=1,    b=2;x=1;y=2,   c=(a   b   c), d "),
+    );
+    headers.append(list.clone(), HeaderValue::from_static(" 1;foo=bar "));
+    headers.append(list, HeaderValue::from_static(" (a   b);q=01.200 "));
+
+    let base = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\
+\"example-dict\";sf: a=1, b=2;x=1;y=2, c=(a b c), d\n\
+\"example-list\";sf: 1;foo=bar, (a b);q=1.2\n\
+\"@signature-params\": (\"example-dict\";sf \"example-list\";sf)"
+    );
+}
+
+#[test]
+fn structured_field_rejects_malformed_values_and_non_header_targets() {
+    let name = http::header::HeaderName::from_static("example-dict");
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::header(name.clone()).structured_field());
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(name.clone(), HeaderValue::from_static("a=(unterminated"));
+
+    let err = cfg
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MalformedStructuredField(field) if field == name
+    ));
+
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::method().structured_field());
+    let err = cfg
+        .signature_base(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &HeaderMap::new(),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnsupportedComponentParameters(component)
+            if component == "\"@method\";sf"
+    ));
+}
+
+#[test]
 fn dictionary_key_header_values_are_signed_as_structured_field_members() {
     let name = http::header::HeaderName::from_static("example-dict");
     let cfg = MessageSignatureConfig::new("sig1")

@@ -204,6 +204,13 @@ impl MessageSignatureComponent {
         )
     }
 
+    pub(crate) fn has_only_structured_field_parameter(&self) -> bool {
+        matches!(
+            self.parameters.as_slice(),
+            [MessageSignatureComponentParameter::StructuredField]
+        )
+    }
+
     pub(crate) fn is_header_field(&self) -> bool {
         matches!(&self.kind, MessageSignatureComponentKind::Header(_))
     }
