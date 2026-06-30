@@ -65,6 +65,38 @@ fn signature_base(
 }
 
 #[test]
+fn appendix_b22_query_param_request_base() {
+    // RFC 9421 Appendix B.2.2, lines 4704-4715.
+    let config = MessageSignatureConfig::new("sig-b22")
+        .unwrap()
+        .component(MessageSignatureComponent::authority())
+        .component(header(content_digest()))
+        .component(MessageSignatureComponent::query_param("Pet").unwrap())
+        .created(1_618_884_473)
+        .key_id("test-key-rsa-pss")
+        .tag("header-example");
+
+    let base = signature_base(
+        config,
+        Method::POST,
+        TEST_REQUEST_URI,
+        TEST_REQUEST_TARGET,
+        &test_request_headers(),
+    );
+
+    assert_eq!(
+        base,
+        format!(
+            "\
+\"@authority\": example.com\n\
+\"content-digest\": {REQUEST_CONTENT_DIGEST}\n\
+\"@query-param\";name=\"Pet\": dog\n\
+\"@signature-params\": (\"@authority\" \"content-digest\" \"@query-param\";name=\"Pet\");created=1618884473;keyid=\"test-key-rsa-pss\";tag=\"header-example\""
+        )
+    );
+}
+
+#[test]
 fn appendix_b23_full_coverage_request_base() {
     // RFC 9421 Appendix B.2.3, lines 4738-4761.
     let config = MessageSignatureConfig::new("sig-b23")
