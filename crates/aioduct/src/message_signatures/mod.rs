@@ -8,6 +8,7 @@ mod error;
 mod headers;
 mod params;
 mod signer;
+mod structured_fields;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use automatic::AutomaticMessageSignature;

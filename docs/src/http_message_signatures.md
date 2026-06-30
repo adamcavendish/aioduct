@@ -145,7 +145,8 @@ work lands.
 | Appendix B.2.1 empty covered component set | Planned | Matrix only | Core model | Current API rejects empty covered component lists. The RFC discourages empty sets, but full parsing/model support should make the policy explicit. |
 | Appendix B.2.2 `@query-param` | Supported | `appendix_b22_query_param_request_base` | Current | Covers named query parameter parsing, form-style decoding, percent-encoded component identifiers, and missing/duplicate parameter errors. |
 | Component parameter `;bs` | Supported | `byte_sequence_header_values_are_signed_as_structured_field_list` | Current | Covers Byte Sequence wrapping for caller-supplied header field values. |
-| Component parameters `;sf`, `;key`, `;tr` | Planned | Matrix only | Component parameters | Requires the Structured Fields adapter for `;sf` and `;key`; `;tr` covers caller-supplied trailer fields only in the first pass. |
+| Component parameter `;key` | Supported | `dictionary_key_header_values_are_signed_as_structured_field_members`, `dictionary_key_missing_malformed_and_duplicate_values` | Current | Covers Dictionary Structured Field member selection, strict member serialization, missing key errors, malformed dictionary errors, and duplicate source keys using the RFC 9651 last-value rule. |
+| Component parameters `;sf`, `;tr` | Planned | Matrix only | Component parameters | `;sf` still needs field-type-aware List/Dictionary/Item serialization; `;tr` covers caller-supplied trailer fields only in the first pass. |
 | Response `@status` and response signatures | Planned | Matrix only | Response support | Requires response signature contexts and response verification support. |
 | Related request components `;req` | Planned | Matrix only | Response support | Requires request-response pair contexts. |
 | Multiple signature dictionaries | Planned | Matrix only | Dictionaries | Current automatic signing replaces signature fields; full support will parse and merge labels. |
@@ -162,7 +163,7 @@ work lands.
 - Response signature verification.
 - `Accept-Signature` negotiation.
 - Multiple signature dictionary merging.
-- Component parameters `;sf`, `;key`, and `;tr`.
+- Component parameters `;sf` and `;tr`.
 - Trailer coverage and response `;req` / `@status` components.
 - Automatic `Content-Digest` generation for buffered request bodies.
 - Precomputed digest helpers for streaming bodies.

@@ -5,6 +5,7 @@ use http::{Method, StatusCode, Uri};
 use super::component::{
     MessageSignatureComponentKind, MessageSignatureComponentTarget, encode_query_param_component,
 };
+use super::structured_fields;
 use super::{MessageSignatureComponent, MessageSignatureError};
 
 #[allow(dead_code)]
@@ -201,13 +202,29 @@ fn header_component_value(
     headers: &HeaderMap,
     name: &HeaderName,
 ) -> Result<String, MessageSignatureError> {
-    if component.has_only_byte_sequence_parameter() {
+    if let Some(key) = component.dictionary_key() {
+        canonical_header_dictionary_member_value(headers, name, key)
+    } else if component.has_only_byte_sequence_parameter() {
         canonical_header_byte_sequence_value(headers, name)
     } else if component.has_parameters() {
         Err(unsupported_component_parameters(component)?)
     } else {
         canonical_header_value(headers, name)
     }
+}
+
+fn canonical_header_dictionary_member_value(
+    headers: &HeaderMap,
+    name: &HeaderName,
+    key: &str,
+) -> Result<String, MessageSignatureError> {
+    let value = canonical_header_value(headers, name)?;
+    structured_fields::dictionary_member(&value, key)
+        .map_err(|_| MessageSignatureError::MalformedStructuredField(name.clone()))?
+        .ok_or_else(|| MessageSignatureError::MissingDictionaryKey {
+            field: name.clone(),
+            key: key.to_owned(),
+        })
 }
 
 fn query_param_value(
