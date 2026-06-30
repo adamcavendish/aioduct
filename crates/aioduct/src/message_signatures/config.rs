@@ -190,9 +190,15 @@ impl MessageSignatureConfig {
         }
 
         let mut seen = HashSet::new();
+        let mut seen_dictionary_keys = HashSet::new();
         for component in &self.components {
             let identifier = component.identifier()?;
             if !seen.insert(identifier.clone()) {
+                return Err(MessageSignatureError::DuplicateComponent(identifier));
+            }
+            if let Some(identity) = component.dictionary_key_identity()
+                && !seen_dictionary_keys.insert(identity)
+            {
                 return Err(MessageSignatureError::DuplicateComponent(identifier));
             }
         }
