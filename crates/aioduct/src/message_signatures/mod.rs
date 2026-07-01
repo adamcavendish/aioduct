@@ -7,6 +7,7 @@ mod context;
 mod error;
 mod headers;
 mod params;
+mod parsed;
 mod signer;
 mod structured_fields;
 
@@ -19,6 +20,7 @@ pub(crate) use context::MessageSignatureContext;
 pub use error::MessageSignatureError;
 pub use headers::MessageSignatureHeaders;
 pub use params::MessageSignatureParams;
+pub use parsed::MessageSignature;
 pub use signer::MessageSignatureSigner;
 
 #[cfg(test)]

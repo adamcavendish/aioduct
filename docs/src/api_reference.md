@@ -242,8 +242,10 @@ or a `ClientBuilder` that is never built, produces a compiler warning.
 ### HTTP Message Signatures
 
 `MessageSignatureConfig` builds RFC 9421 request signature bases and formats the
-`Signature-Input` / `Signature` headers from caller-provided signature bytes. The
-helpers are portable and do not choose a cryptographic algorithm.
+`Signature-Input` / `Signature` headers from caller-provided signature bytes.
+`MessageSignature` parses existing signature fields by label and rebuilds the
+request signature base for caller-owned verification. The helpers are portable
+and do not choose a cryptographic algorithm.
 
 ```rust,no_run
 # use aioduct::{MessageSignatureComponent, MessageSignatureConfig};
@@ -290,6 +292,24 @@ Automatic signing runs after default headers, cookies, cache validators,
 middleware, digest-auth retry headers, forwarding request rewrites, and framing
 cleanup. When configured, it replaces only its configured label in
 `Signature-Input` and `Signature` on every native dispatch attempt.
+
+For verification, parse a selected label, rebuild the base, then pass the base,
+signature bytes, and metadata to your own verifier:
+
+```rust,no_run
+# use aioduct::MessageSignature;
+# use http::{HeaderMap, Method, Uri};
+# fn example(headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
+let target_uri: Uri = "https://example.com/api".parse()?;
+let request_target: Uri = "/api".parse()?;
+let signature = MessageSignature::from_headers(&headers, "sig1")?;
+let base = signature.signature_base(&Method::GET, &target_uri, &request_target, &headers)?;
+
+verify_with_your_key(base.as_bytes(), signature.signature(), signature.params());
+# Ok(())
+# }
+# fn verify_with_your_key(_: &[u8], _: &[u8], _: &aioduct::MessageSignatureParams) {}
+```
 
 ### Sending
 
