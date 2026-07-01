@@ -5,8 +5,8 @@ use http::header::{HeaderMap, HeaderName, HeaderValue};
 use super::MessageSignatureError;
 use super::structured_fields;
 
-const SIGNATURE_INPUT: &str = "signature-input";
-const SIGNATURE: &str = "signature";
+pub(crate) const SIGNATURE_INPUT: &str = "signature-input";
+pub(crate) const SIGNATURE: &str = "signature";
 
 /// Generated `Signature-Input` and `Signature` header values.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -73,7 +73,7 @@ pub(crate) fn remove_label(
     Ok(())
 }
 
-fn existing_dictionary(
+pub(crate) fn existing_dictionary(
     headers: &HeaderMap,
     name: &'static str,
 ) -> Result<Vec<(String, String)>, MessageSignatureError> {
@@ -117,7 +117,7 @@ fn single_generated_member(
     }
 }
 
-fn reject_duplicate_labels(
+pub(crate) fn reject_duplicate_labels(
     header: &'static str,
     entries: &[(String, String)],
 ) -> Result<(), MessageSignatureError> {
@@ -133,7 +133,7 @@ fn reject_duplicate_labels(
     Ok(())
 }
 
-fn ensure_matching_labels(
+pub(crate) fn ensure_matching_labels(
     signature_input: &[(String, String)],
     signature: &[(String, String)],
 ) -> Result<(), MessageSignatureError> {

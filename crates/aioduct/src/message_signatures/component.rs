@@ -145,6 +145,10 @@ impl MessageSignatureComponent {
         &self.kind
     }
 
+    pub(crate) fn parsed_query_param() -> Self {
+        Self::new(MessageSignatureComponentKind::QueryParam)
+    }
+
     pub(crate) fn target(&self) -> MessageSignatureComponentTarget {
         match &self.kind {
             MessageSignatureComponentKind::Header(_) => {
@@ -195,6 +199,22 @@ impl MessageSignatureComponent {
         };
         self.dictionary_key()
             .map(|key| (name.clone(), key.to_owned()))
+    }
+
+    pub(crate) fn with_parsed_parameter(
+        mut self,
+        parameter: MessageSignatureComponentParameter,
+    ) -> Result<Self, MessageSignatureError> {
+        match &parameter {
+            MessageSignatureComponentParameter::Key(value)
+            | MessageSignatureComponentParameter::Name(value) => validate_component_string(value)?,
+            MessageSignatureComponentParameter::StructuredField
+            | MessageSignatureComponentParameter::ByteSequence
+            | MessageSignatureComponentParameter::Trailer
+            | MessageSignatureComponentParameter::RelatedRequest => {}
+        }
+        self.parameters.push(parameter);
+        Ok(self)
     }
 
     pub(crate) fn has_only_byte_sequence_parameter(&self) -> bool {
