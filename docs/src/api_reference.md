@@ -326,29 +326,44 @@ cleanup. When configured, it replaces only its configured label in
 `Signature-Input` and `Signature` on every native dispatch attempt.
 
 `AcceptSignature` parses and formats RFC 9421 `Accept-Signature` negotiation
-fields. Validate the requested target shape before fulfilling it:
+fields. `AcceptSignatureFulfillment` turns accepted entries into concrete
+`MessageSignatureConfig` values after validating the target shape and requested
+metadata:
 
 ```rust,no_run
-# use aioduct::{AcceptSignature, AcceptSignatureEntry, MessageSignatureComponent};
-# use http::HeaderMap;
+# use aioduct::{
+#     AcceptSignature, AcceptSignatureEntry, AcceptSignatureFulfillment,
+#     MessageSignatureComponent,
+# };
+# use http::{HeaderMap, StatusCode};
 # fn example(mut headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
 let accept = AcceptSignature::new().entry(
     AcceptSignatureEntry::new("sig1")?
         .component(MessageSignatureComponent::status())
-        .component(MessageSignatureComponent::method().related_request())
         .created()
         .key_id("test-key"),
 );
 
-accept.validate_request_response_target()?;
-accept.insert_into(&mut headers)?;
+let configs = accept.response_signature_configs(
+    &AcceptSignatureFulfillment::new()
+        .created(1_618_884_500)
+        .key_id("test-key"),
+)?;
+let signature_headers = configs[0].sign_response(
+    StatusCode::OK,
+    &headers,
+    &|base: &[u8]| Ok(sign_with_your_key(base)),
+)?;
+signature_headers.insert_into(&mut headers)?;
 # Ok(())
 # }
+# fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
 ```
 
-`AcceptSignature::from_headers()` parses combined field values. The helpers do
-not choose keys or automatically fulfill requests; callers still generate the
-requested signature and attach `Signature-Input` / `Signature` fields.
+`AcceptSignature::from_headers()` parses combined field values. The fulfillment
+helpers do not choose keys or algorithms and do not automatically decide which
+requests to honor; callers still generate timestamps, run cryptography, and
+attach `Signature-Input` / `Signature` fields.
 
 For verification, configure a policy, then pass the selected label, rebuilt base,
 signature bytes, and metadata to your own verifier:

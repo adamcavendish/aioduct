@@ -65,6 +65,9 @@ pub enum MessageSignatureError {
     /// A verification policy required a metadata parameter that is missing.
     #[error("signature metadata parameter `{0}` is missing")]
     MissingSignatureParameter(&'static str),
+    /// An `Accept-Signature` requested metadata parameter cannot be fulfilled.
+    #[error("Accept-Signature requested metadata parameter `{0}` cannot be fulfilled")]
+    UnfulfillableAcceptSignatureParameter(&'static str),
     /// A verification policy needs a validation time but none was configured.
     #[error("signature verification policy needs a validation time")]
     MissingValidationTime,
