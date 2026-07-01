@@ -4,9 +4,10 @@ use http::{Method, StatusCode, Uri};
 
 use super::config::{ensure_component_value, validate_component_set, validate_label};
 use super::headers::{
-    SIGNATURE, SIGNATURE_INPUT, ensure_matching_labels, existing_dictionary,
+    ACCEPT_SIGNATURE, SIGNATURE, SIGNATURE_INPUT, ensure_matching_labels, existing_dictionary,
     reject_duplicate_labels,
 };
+use super::params::AcceptSignatureParams;
 use super::{
     MessageSignatureBase, MessageSignatureComponent, MessageSignatureComponentParameter,
     MessageSignatureContext, MessageSignatureError, MessageSignatureParams,
@@ -176,13 +177,21 @@ fn parse_signature_bytes(member: &str) -> Result<Vec<u8>, MessageSignatureError>
 fn parse_signature_input_member(
     member: &str,
 ) -> Result<(Vec<MessageSignatureComponent>, MessageSignatureParams), MessageSignatureError> {
-    let mut parser = SignatureInputParser::new(member);
+    let mut parser = SignatureInputParser::new(member, SIGNATURE_INPUT);
     parser.parse()
+}
+
+pub(crate) fn parse_accept_signature_member(
+    member: &str,
+) -> Result<(Vec<MessageSignatureComponent>, AcceptSignatureParams), MessageSignatureError> {
+    let mut parser = SignatureInputParser::new(member, ACCEPT_SIGNATURE);
+    parser.parse_accept_signature_request()
 }
 
 struct SignatureInputParser<'a> {
     input: &'a [u8],
     pos: usize,
+    header: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -194,10 +203,11 @@ enum ParameterValue {
 }
 
 impl<'a> SignatureInputParser<'a> {
-    fn new(input: &'a str) -> Self {
+    fn new(input: &'a str, header: &'static str) -> Self {
         Self {
             input: input.as_bytes(),
             pos: 0,
+            header,
         }
     }
 
@@ -205,17 +215,32 @@ impl<'a> SignatureInputParser<'a> {
         &mut self,
     ) -> Result<(Vec<MessageSignatureComponent>, MessageSignatureParams), MessageSignatureError>
     {
+        let components = self.parse_component_list()?;
+        let params = self.parse_signature_params()?;
+        self.ensure_empty()?;
+        Ok((components, params))
+    }
+
+    fn parse_accept_signature_request(
+        &mut self,
+    ) -> Result<(Vec<MessageSignatureComponent>, AcceptSignatureParams), MessageSignatureError>
+    {
+        let components = self.parse_component_list()?;
+        let params = self.parse_accept_signature_params()?;
+        self.ensure_empty()?;
+        Ok((components, params))
+    }
+
+    fn parse_component_list(
+        &mut self,
+    ) -> Result<Vec<MessageSignatureComponent>, MessageSignatureError> {
         if !self.consume_if(b'(') {
-            return Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            ));
+            return Err(self.malformed());
         }
 
         let mut components = Vec::new();
         if self.consume_if(b')') {
-            let params = self.parse_signature_params()?;
-            self.ensure_empty()?;
-            return Ok((components, params));
+            return Ok(components);
         }
 
         loop {
@@ -223,22 +248,16 @@ impl<'a> SignatureInputParser<'a> {
             match self.peek() {
                 Some(b')') => {
                     self.consume();
-                    let params = self.parse_signature_params()?;
-                    self.ensure_empty()?;
-                    return Ok((components, params));
+                    return Ok(components);
                 }
                 Some(b' ') => {
                     self.consume();
                     if matches!(self.peek(), Some(b' ' | b')') | None) {
-                        return Err(MessageSignatureError::MalformedSignatureHeader(
-                            SIGNATURE_INPUT,
-                        ));
+                        return Err(self.malformed());
                     }
                 }
                 _ => {
-                    return Err(MessageSignatureError::MalformedSignatureHeader(
-                        SIGNATURE_INPUT,
-                    ));
+                    return Err(self.malformed());
                 }
             }
         }
@@ -246,7 +265,7 @@ impl<'a> SignatureInputParser<'a> {
 
     fn parse_component(&mut self) -> Result<MessageSignatureComponent, MessageSignatureError> {
         let component_name = self.parse_string()?;
-        let mut component = component_from_name(&component_name)?;
+        let mut component = component_from_name(&component_name, self.header)?;
 
         while self.consume_if(b';') {
             let key = self.parse_key()?;
@@ -255,7 +274,7 @@ impl<'a> SignatureInputParser<'a> {
             } else {
                 None
             };
-            let parameter = component_parameter(&key, value)?;
+            let parameter = component_parameter(&key, value, self.header)?;
             component = component.with_parsed_parameter(parameter)?;
         }
         Ok(component)
@@ -272,24 +291,62 @@ impl<'a> SignatureInputParser<'a> {
             };
             match key.as_str() {
                 "created" => {
-                    params.created = Some(required_u64_parameter(value)?);
+                    params.created = Some(required_u64_parameter(value, self.header)?);
                 }
                 "expires" => {
-                    params.expires = Some(required_u64_parameter(value)?);
+                    params.expires = Some(required_u64_parameter(value, self.header)?);
                 }
                 "nonce" => {
-                    params.nonce = Some(required_string_parameter(value)?);
+                    params.nonce = Some(required_string_parameter(value, self.header)?);
                 }
                 "alg" => {
-                    params.algorithm = Some(required_string_parameter(value)?);
+                    params.algorithm = Some(required_string_parameter(value, self.header)?);
                 }
                 "keyid" => {
-                    params.key_id = Some(required_string_parameter(value)?);
+                    params.key_id = Some(required_string_parameter(value, self.header)?);
                 }
                 "tag" => {
-                    params.tag = Some(required_string_parameter(value)?);
+                    params.tag = Some(required_string_parameter(value, self.header)?);
                 }
                 _ => {}
+            }
+        }
+        Ok(params)
+    }
+
+    fn parse_accept_signature_params(
+        &mut self,
+    ) -> Result<AcceptSignatureParams, MessageSignatureError> {
+        let mut params = AcceptSignatureParams::default();
+        while self.consume_if(b';') {
+            let key = self.parse_key()?;
+            let value = if self.consume_if(b'=') {
+                Some(self.parse_parameter_value()?)
+            } else {
+                None
+            };
+            match key.as_str() {
+                "created" => {
+                    require_absent_parameter(value, self.header)?;
+                    params.created = true;
+                }
+                "expires" => {
+                    require_absent_parameter(value, self.header)?;
+                    params.expires = true;
+                }
+                "nonce" => {
+                    params.nonce = Some(required_string_parameter(value, self.header)?);
+                }
+                "alg" => {
+                    params.algorithm = Some(required_string_parameter(value, self.header)?);
+                }
+                "keyid" => {
+                    params.key_id = Some(required_string_parameter(value, self.header)?);
+                }
+                "tag" => {
+                    params.tag = Some(required_string_parameter(value, self.header)?);
+                }
+                _ => return Err(self.malformed()),
             }
         }
         Ok(params)
@@ -317,44 +374,32 @@ impl<'a> SignatureInputParser<'a> {
                 self.parse_token();
                 Ok(ParameterValue::Other)
             }
-            _ => Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            )),
+            _ => Err(self.malformed()),
         }
     }
 
     fn parse_string(&mut self) -> Result<String, MessageSignatureError> {
         if !self.consume_if(b'"') {
-            return Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            ));
+            return Err(self.malformed());
         }
         let mut out = String::new();
         loop {
             let Some(byte) = self.consume() else {
-                return Err(MessageSignatureError::MalformedSignatureHeader(
-                    SIGNATURE_INPUT,
-                ));
+                return Err(self.malformed());
             };
             match byte {
                 b'\\' => {
                     let Some(next) = self.consume() else {
-                        return Err(MessageSignatureError::MalformedSignatureHeader(
-                            SIGNATURE_INPUT,
-                        ));
+                        return Err(self.malformed());
                     };
                     if !matches!(next, b'"' | b'\\') {
-                        return Err(MessageSignatureError::MalformedSignatureHeader(
-                            SIGNATURE_INPUT,
-                        ));
+                        return Err(self.malformed());
                     }
                     out.push(next as char);
                 }
                 b'"' => return Ok(out),
                 0x00..=0x1f | 0x7f => {
-                    return Err(MessageSignatureError::MalformedSignatureHeader(
-                        SIGNATURE_INPUT,
-                    ));
+                    return Err(self.malformed());
                 }
                 _ => out.push(byte as char),
             }
@@ -368,9 +413,7 @@ impl<'a> SignatureInputParser<'a> {
                 self.consume();
             }
             _ => {
-                return Err(MessageSignatureError::MalformedSignatureHeader(
-                    SIGNATURE_INPUT,
-                ));
+                return Err(self.malformed());
             }
         }
         while self.peek().is_some_and(is_key_char) {
@@ -381,16 +424,12 @@ impl<'a> SignatureInputParser<'a> {
 
     fn parse_boolean(&mut self) -> Result<bool, MessageSignatureError> {
         if !self.consume_if(b'?') {
-            return Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            ));
+            return Err(self.malformed());
         }
         match self.consume() {
             Some(b'1') => Ok(true),
             Some(b'0') => Ok(false),
-            _ => Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            )),
+            _ => Err(self.malformed()),
         }
     }
 
@@ -398,9 +437,7 @@ impl<'a> SignatureInputParser<'a> {
         let negative = self.consume_if(b'-');
         let start = self.pos;
         if !self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
-            return Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            ));
+            return Err(self.malformed());
         }
         while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
             self.consume();
@@ -408,18 +445,14 @@ impl<'a> SignatureInputParser<'a> {
         let integer = as_ascii_string(&self.input[start..self.pos]);
         if self.consume_if(b'.') {
             if !self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
-                return Err(MessageSignatureError::MalformedSignatureHeader(
-                    SIGNATURE_INPUT,
-                ));
+                return Err(self.malformed());
             }
             while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
                 self.consume();
             }
             return Ok(ParameterValue::Other);
         }
-        let value = integer
-            .parse::<i64>()
-            .map_err(|_| MessageSignatureError::MalformedSignatureHeader(SIGNATURE_INPUT))?;
+        let value = integer.parse::<i64>().map_err(|_| self.malformed())?;
         Ok(ParameterValue::Integer(if negative {
             -value
         } else {
@@ -429,9 +462,7 @@ impl<'a> SignatureInputParser<'a> {
 
     fn parse_byte_sequence(&mut self) -> Result<(), MessageSignatureError> {
         if !self.consume_if(b':') {
-            return Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            ));
+            return Err(self.malformed());
         }
         while !matches!(self.peek(), Some(b':') | None) {
             self.consume();
@@ -439,23 +470,17 @@ impl<'a> SignatureInputParser<'a> {
         if self.consume_if(b':') {
             Ok(())
         } else {
-            Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            ))
+            Err(self.malformed())
         }
     }
 
     fn parse_display_string(&mut self) -> Result<(), MessageSignatureError> {
         if !self.consume_if(b'%') || !self.consume_if(b'"') {
-            return Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            ));
+            return Err(self.malformed());
         }
         loop {
             let Some(byte) = self.consume() else {
-                return Err(MessageSignatureError::MalformedSignatureHeader(
-                    SIGNATURE_INPUT,
-                ));
+                return Err(self.malformed());
             };
             if byte == b'"' {
                 return Ok(());
@@ -464,9 +489,7 @@ impl<'a> SignatureInputParser<'a> {
                 && (self.consume().and_then(lowercase_hex_value).is_none()
                     || self.consume().and_then(lowercase_hex_value).is_none())
             {
-                return Err(MessageSignatureError::MalformedSignatureHeader(
-                    SIGNATURE_INPUT,
-                ));
+                return Err(self.malformed());
             }
         }
     }
@@ -485,10 +508,12 @@ impl<'a> SignatureInputParser<'a> {
         if self.pos == self.input.len() {
             Ok(())
         } else {
-            Err(MessageSignatureError::MalformedSignatureHeader(
-                SIGNATURE_INPUT,
-            ))
+            Err(self.malformed())
         }
+    }
+
+    fn malformed(&self) -> MessageSignatureError {
+        MessageSignatureError::MalformedSignatureHeader(self.header)
     }
 
     fn consume_if(&mut self, byte: u8) -> bool {
@@ -511,7 +536,10 @@ impl<'a> SignatureInputParser<'a> {
     }
 }
 
-fn component_from_name(name: &str) -> Result<MessageSignatureComponent, MessageSignatureError> {
+fn component_from_name(
+    name: &str,
+    header: &'static str,
+) -> Result<MessageSignatureComponent, MessageSignatureError> {
     match name {
         "@method" => Ok(MessageSignatureComponent::method()),
         "@scheme" => Ok(MessageSignatureComponent::scheme()),
@@ -530,12 +558,10 @@ fn component_from_name(name: &str) -> Result<MessageSignatureComponent, MessageS
         ))),
         _ => {
             if name != name.to_ascii_lowercase() {
-                return Err(MessageSignatureError::MalformedSignatureHeader(
-                    SIGNATURE_INPUT,
-                ));
+                return Err(MessageSignatureError::MalformedSignatureHeader(header));
             }
             let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| MessageSignatureError::MalformedSignatureHeader(SIGNATURE_INPUT))?;
+                .map_err(|_| MessageSignatureError::MalformedSignatureHeader(header))?;
             Ok(MessageSignatureComponent::header(name))
         }
     }
@@ -544,62 +570,72 @@ fn component_from_name(name: &str) -> Result<MessageSignatureComponent, MessageS
 fn component_parameter(
     key: &str,
     value: Option<ParameterValue>,
+    header: &'static str,
 ) -> Result<MessageSignatureComponentParameter, MessageSignatureError> {
     match key {
         "sf" => {
-            require_true_or_absent(value)?;
+            require_true_or_absent(value, header)?;
             Ok(MessageSignatureComponentParameter::StructuredField)
         }
         "key" => Ok(MessageSignatureComponentParameter::Key(
-            required_string_parameter(value)?,
+            required_string_parameter(value, header)?,
         )),
         "bs" => {
-            require_true_or_absent(value)?;
+            require_true_or_absent(value, header)?;
             Ok(MessageSignatureComponentParameter::ByteSequence)
         }
         "tr" => {
-            require_true_or_absent(value)?;
+            require_true_or_absent(value, header)?;
             Ok(MessageSignatureComponentParameter::Trailer)
         }
         "req" => {
-            require_true_or_absent(value)?;
+            require_true_or_absent(value, header)?;
             Ok(MessageSignatureComponentParameter::RelatedRequest)
         }
         "name" => Ok(MessageSignatureComponentParameter::Name(
-            required_string_parameter(value)?,
+            required_string_parameter(value, header)?,
         )),
-        _ => Err(MessageSignatureError::MalformedSignatureHeader(
-            SIGNATURE_INPUT,
-        )),
+        _ => Err(MessageSignatureError::MalformedSignatureHeader(header)),
     }
 }
 
-fn require_true_or_absent(value: Option<ParameterValue>) -> Result<(), MessageSignatureError> {
+fn require_true_or_absent(
+    value: Option<ParameterValue>,
+    header: &'static str,
+) -> Result<(), MessageSignatureError> {
     match value {
         None | Some(ParameterValue::Boolean(true)) => Ok(()),
-        _ => Err(MessageSignatureError::MalformedSignatureHeader(
-            SIGNATURE_INPUT,
-        )),
+        _ => Err(MessageSignatureError::MalformedSignatureHeader(header)),
     }
 }
 
 fn required_string_parameter(
     value: Option<ParameterValue>,
+    header: &'static str,
 ) -> Result<String, MessageSignatureError> {
     match value {
         Some(ParameterValue::String(value)) => Ok(value),
-        _ => Err(MessageSignatureError::MalformedSignatureHeader(
-            SIGNATURE_INPUT,
-        )),
+        _ => Err(MessageSignatureError::MalformedSignatureHeader(header)),
     }
 }
 
-fn required_u64_parameter(value: Option<ParameterValue>) -> Result<u64, MessageSignatureError> {
+fn required_u64_parameter(
+    value: Option<ParameterValue>,
+    header: &'static str,
+) -> Result<u64, MessageSignatureError> {
     match value {
         Some(ParameterValue::Integer(value)) if value >= 0 => Ok(value as u64),
-        _ => Err(MessageSignatureError::MalformedSignatureHeader(
-            SIGNATURE_INPUT,
-        )),
+        _ => Err(MessageSignatureError::MalformedSignatureHeader(header)),
+    }
+}
+
+fn require_absent_parameter(
+    value: Option<ParameterValue>,
+    header: &'static str,
+) -> Result<(), MessageSignatureError> {
+    match value {
+        None => Ok(()),
+        _ => Err(MessageSignatureError::MalformedSignatureHeader(header)),
     }
 }
 
