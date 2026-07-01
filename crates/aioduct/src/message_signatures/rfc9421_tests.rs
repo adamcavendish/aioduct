@@ -1,6 +1,6 @@
 use base64::Engine as _;
 use http::header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, DATE};
-use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 
 use super::{MessageSignatureComponent, MessageSignatureConfig};
 
@@ -9,6 +9,10 @@ const TEST_REQUEST_TARGET: &str = "/foo?param=Value&Pet=dog";
 const REQUEST_CONTENT_DIGEST: &str = concat!(
     "sha-512=:WZDPaVn/7XgHaAy8pmojAkGWoRx2UFChF41A2svX",
     "+TaPm+AbwAgBWnrIiYllu7BNNyealdVLvRwEmTHWXvJwew==:"
+);
+const RESPONSE_CONTENT_DIGEST: &str = concat!(
+    "sha-512=:0Y6iCBzGg5rZtoXS95Ijz03mslf6KAMCloESHObfwn",
+    "HJDbkkWWQz6PhhU9kxsTbARtY2PTBOzq24uJFpHsMuAg==:"
 );
 const CLIENT_CERT: &str = concat!(
     ":MIIBqDCCAU6gAwIBAgIBBzAKBggqhkjOPQQDAjA6MRswGQYDVQQK",
@@ -49,6 +53,17 @@ fn test_request_headers() -> HeaderMap {
     headers
 }
 
+fn test_response_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        content_digest(),
+        HeaderValue::from_static(RESPONSE_CONTENT_DIGEST),
+    );
+    headers.insert(CONTENT_LENGTH, HeaderValue::from_static("62"));
+    headers
+}
+
 fn signature_base(
     config: MessageSignatureConfig,
     method: Method,
@@ -60,6 +75,30 @@ fn signature_base(
     let request_target: Uri = request_target.parse().unwrap();
     config
         .signature_base(&method, &target_uri, &request_target, headers)
+        .unwrap()
+        .into_string()
+}
+
+fn request_response_signature_base(
+    config: MessageSignatureConfig,
+    method: Method,
+    target_uri: &str,
+    request_target: &str,
+    request_headers: &HeaderMap,
+    status: StatusCode,
+    response_headers: &HeaderMap,
+) -> String {
+    let target_uri: Uri = target_uri.parse().unwrap();
+    let request_target: Uri = request_target.parse().unwrap();
+    config
+        .request_response_signature_base(
+            &method,
+            &target_uri,
+            &request_target,
+            request_headers,
+            status,
+            response_headers,
+        )
         .unwrap()
         .into_string()
 }
@@ -212,6 +251,47 @@ fn appendix_b26_ed25519_request_base() {
 \"content-type\": application/json\n\
 \"content-length\": 18\n\
 \"@signature-params\": (\"date\" \"@method\" \"@path\" \"@authority\" \"content-type\" \"content-length\");created=1618884473;keyid=\"test-key-ed25519\""
+    );
+}
+
+#[test]
+fn section_24_response_with_related_request_base() {
+    // RFC 9421 Section 2.4, lines 1596-1611.
+    let config = MessageSignatureConfig::new("reqres")
+        .unwrap()
+        .component(MessageSignatureComponent::status())
+        .component(header(content_digest()))
+        .component(header(CONTENT_TYPE))
+        .component(MessageSignatureComponent::authority().related_request())
+        .component(MessageSignatureComponent::method().related_request())
+        .component(MessageSignatureComponent::path().related_request())
+        .component(header(content_digest()).related_request())
+        .created(1_618_884_479)
+        .key_id("test-key-ecc-p256");
+
+    let base = request_response_signature_base(
+        config,
+        Method::POST,
+        TEST_REQUEST_URI,
+        TEST_REQUEST_TARGET,
+        &test_request_headers(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        &test_response_headers(),
+    );
+
+    assert_eq!(
+        base,
+        format!(
+            "\
+\"@status\": 503\n\
+\"content-digest\": {RESPONSE_CONTENT_DIGEST}\n\
+\"content-type\": application/json\n\
+\"@authority\";req: example.com\n\
+\"@method\";req: POST\n\
+\"@path\";req: /foo\n\
+\"content-digest\";req: {REQUEST_CONTENT_DIGEST}\n\
+\"@signature-params\": (\"@status\" \"content-digest\" \"content-type\" \"@authority\";req \"@method\";req \"@path\";req \"content-digest\";req);created=1618884479;keyid=\"test-key-ecc-p256\""
+        )
     );
 }
 
