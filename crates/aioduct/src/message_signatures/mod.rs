@@ -1,3 +1,4 @@
+mod accept_signature;
 #[cfg(not(target_arch = "wasm32"))]
 mod automatic;
 mod base;
@@ -12,6 +13,7 @@ mod signer;
 mod structured_fields;
 mod verification;
 
+pub use accept_signature::{AcceptSignature, AcceptSignatureEntry};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use automatic::AutomaticMessageSignature;
 pub use base::MessageSignatureBase;
@@ -20,7 +22,7 @@ pub use config::MessageSignatureConfig;
 pub(crate) use context::MessageSignatureContext;
 pub use error::MessageSignatureError;
 pub use headers::MessageSignatureHeaders;
-pub use params::MessageSignatureParams;
+pub use params::{AcceptSignatureParams, MessageSignatureParams};
 pub use parsed::MessageSignature;
 pub use signer::MessageSignatureSigner;
 pub use verification::{
