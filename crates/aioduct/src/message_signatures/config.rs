@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use base64::Engine as _;
 use http::header::{HeaderMap, HeaderValue};
-use http::{Method, Uri};
+use http::{Method, StatusCode, Uri};
 
 use super::{
     MessageSignatureBase, MessageSignatureComponent, MessageSignatureContext,
@@ -116,6 +116,37 @@ impl MessageSignatureConfig {
         self.signature_base_for_context(&context)
     }
 
+    /// Build the RFC 9421 signature base for a response.
+    pub fn response_signature_base(
+        &self,
+        status: StatusCode,
+        headers: &HeaderMap,
+    ) -> Result<MessageSignatureBase, MessageSignatureError> {
+        let context = MessageSignatureContext::response(status, headers);
+        self.signature_base_for_context(&context)
+    }
+
+    /// Build the RFC 9421 signature base for a response with its related request.
+    pub fn request_response_signature_base(
+        &self,
+        method: &Method,
+        target_uri: &Uri,
+        request_target: &Uri,
+        request_headers: &HeaderMap,
+        status: StatusCode,
+        response_headers: &HeaderMap,
+    ) -> Result<MessageSignatureBase, MessageSignatureError> {
+        let context = MessageSignatureContext::request_response(
+            method,
+            target_uri,
+            request_target,
+            request_headers,
+            status,
+            response_headers,
+        );
+        self.signature_base_for_context(&context)
+    }
+
     pub(crate) fn signature_base_for_context(
         &self,
         context: &MessageSignatureContext<'_>,
@@ -181,6 +212,18 @@ impl MessageSignatureConfig {
         signer: &(impl MessageSignatureSigner + ?Sized),
     ) -> Result<MessageSignatureHeaders, MessageSignatureError> {
         let base = self.signature_base(method, target_uri, request_target, headers)?;
+        let signature = signer.sign(base.as_bytes())?;
+        self.headers_from_signature(signature)
+    }
+
+    /// Build a response signature base, sign it, and format signature headers.
+    pub fn sign_response(
+        &self,
+        status: StatusCode,
+        headers: &HeaderMap,
+        signer: &(impl MessageSignatureSigner + ?Sized),
+    ) -> Result<MessageSignatureHeaders, MessageSignatureError> {
+        let base = self.response_signature_base(status, headers)?;
         let signature = signer.sign(base.as_bytes())?;
         self.headers_from_signature(signature)
     }

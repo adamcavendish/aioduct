@@ -1,6 +1,6 @@
 use base64::Engine as _;
 use http::header::{HeaderMap, HeaderName};
-use http::{Method, Uri};
+use http::{Method, StatusCode, Uri};
 
 use super::config::{ensure_component_value, validate_component_set, validate_label};
 use super::headers::{
@@ -87,6 +87,37 @@ impl MessageSignature {
         headers: &HeaderMap,
     ) -> Result<MessageSignatureBase, MessageSignatureError> {
         let context = MessageSignatureContext::request(method, target_uri, request_target, headers);
+        self.signature_base_for_context(&context)
+    }
+
+    /// Rebuild the RFC 9421 signature base for a response.
+    pub fn response_signature_base(
+        &self,
+        status: StatusCode,
+        headers: &HeaderMap,
+    ) -> Result<MessageSignatureBase, MessageSignatureError> {
+        let context = MessageSignatureContext::response(status, headers);
+        self.signature_base_for_context(&context)
+    }
+
+    /// Rebuild the RFC 9421 signature base for a response with its related request.
+    pub fn request_response_signature_base(
+        &self,
+        method: &Method,
+        target_uri: &Uri,
+        request_target: &Uri,
+        request_headers: &HeaderMap,
+        status: StatusCode,
+        response_headers: &HeaderMap,
+    ) -> Result<MessageSignatureBase, MessageSignatureError> {
+        let context = MessageSignatureContext::request_response(
+            method,
+            target_uri,
+            request_target,
+            request_headers,
+            status,
+            response_headers,
+        );
         self.signature_base_for_context(&context)
     }
 
@@ -490,6 +521,7 @@ fn component_from_name(name: &str) -> Result<MessageSignatureComponent, MessageS
         "@path" => Ok(MessageSignatureComponent::path()),
         "@query" => Ok(MessageSignatureComponent::query()),
         "@query-param" => Ok(MessageSignatureComponent::parsed_query_param()),
+        "@status" => Ok(MessageSignatureComponent::status()),
         "@signature-params" => Err(MessageSignatureError::UnsupportedComponent(
             "\"@signature-params\"".to_owned(),
         )),

@@ -74,7 +74,9 @@ impl<'a> MessageSignatureContext<'a> {
         component: &MessageSignatureComponent,
     ) -> Result<String, MessageSignatureError> {
         let identifier = component.identifier()?;
-        self.ensure_target(component, &identifier)?;
+        if component.related_request_parameter_count() > 1 {
+            return Err(unsupported_component_parameters(component)?);
+        }
 
         match self {
             Self::Request {
@@ -82,39 +84,62 @@ impl<'a> MessageSignatureContext<'a> {
                 target_uri,
                 request_target,
                 headers,
-            } => request_component_value(component, method, target_uri, request_target, headers),
-            Self::Response { headers, .. } => response_component_value(component, headers),
+            } => {
+                if component.has_related_request_parameter() {
+                    return Err(unsupported_component_parameters(component)?);
+                }
+                ensure_component_target(
+                    component,
+                    &identifier,
+                    MessageSignatureContextKind::Request,
+                )?;
+                request_component_value(component, method, target_uri, request_target, headers)
+            }
+            Self::Response { status, headers } => {
+                if component.has_related_request_parameter() {
+                    return Err(MessageSignatureError::ComponentNotAvailable {
+                        component: identifier,
+                        context: "response",
+                    });
+                }
+                ensure_component_target(
+                    component,
+                    &identifier,
+                    MessageSignatureContextKind::Response,
+                )?;
+                response_component_value(component, *status, headers)
+            }
             Self::RequestResponse {
                 method,
                 target_uri,
                 request_target,
                 request_headers,
+                status,
                 response_headers,
-                ..
-            } => request_response_component_value(
-                component,
-                method,
-                target_uri,
-                request_target,
-                request_headers,
-                response_headers,
-            ),
-        }
-    }
-
-    fn ensure_target(
-        &self,
-        component: &MessageSignatureComponent,
-        identifier: &str,
-    ) -> Result<(), MessageSignatureError> {
-        match (self, component.target()) {
-            (Self::Response { .. }, MessageSignatureComponentTarget::Request) => {
-                Err(MessageSignatureError::ComponentNotAvailable {
-                    component: identifier.to_owned(),
-                    context: "response",
-                })
+            } => {
+                if component.has_related_request_parameter() {
+                    if matches!(
+                        component.target(),
+                        MessageSignatureComponentTarget::Response
+                    ) {
+                        return Err(unsupported_component_parameters(component)?);
+                    }
+                    let request_component = component.without_related_request_parameter();
+                    return request_component_value(
+                        &request_component,
+                        method,
+                        target_uri,
+                        request_target,
+                        request_headers,
+                    );
+                }
+                ensure_component_target(
+                    component,
+                    &identifier,
+                    MessageSignatureContextKind::Response,
+                )?;
+                response_component_value(component, *status, response_headers)
             }
-            _ => Ok(()),
         }
     }
 
@@ -124,6 +149,34 @@ impl<'a> MessageSignatureContext<'a> {
             Self::Request { .. } => None,
             Self::Response { status, .. } | Self::RequestResponse { status, .. } => Some(*status),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MessageSignatureContextKind {
+    Request,
+    Response,
+}
+
+fn ensure_component_target(
+    component: &MessageSignatureComponent,
+    identifier: &str,
+    context: MessageSignatureContextKind,
+) -> Result<(), MessageSignatureError> {
+    match (context, component.target()) {
+        (MessageSignatureContextKind::Request, MessageSignatureComponentTarget::Response) => {
+            Err(MessageSignatureError::ComponentNotAvailable {
+                component: identifier.to_owned(),
+                context: "request",
+            })
+        }
+        (MessageSignatureContextKind::Response, MessageSignatureComponentTarget::Request) => {
+            Err(MessageSignatureError::ComponentNotAvailable {
+                component: identifier.to_owned(),
+                context: "response",
+            })
+        }
+        _ => Ok(()),
     }
 }
 
@@ -160,40 +213,24 @@ fn request_component_value(
             Some(query) => format!("?{query}"),
             None => "?".to_owned(),
         }),
+        MessageSignatureComponentKind::Status => Err(unsupported_component(component)?),
     }
 }
 
 fn response_component_value(
     component: &MessageSignatureComponent,
+    status: StatusCode,
     headers: &HeaderMap,
 ) -> Result<String, MessageSignatureError> {
     match component.kind() {
+        MessageSignatureComponentKind::Status if component.has_parameters() => {
+            Err(unsupported_component_parameters(component)?)
+        }
+        MessageSignatureComponentKind::Status => Ok(status.as_u16().to_string()),
         MessageSignatureComponentKind::Header(name) => {
             header_component_value(component, headers, name)
         }
         _ => Err(unsupported_component(component)?),
-    }
-}
-
-fn request_response_component_value(
-    component: &MessageSignatureComponent,
-    method: &Method,
-    target_uri: &Uri,
-    request_target: &Uri,
-    request_headers: &HeaderMap,
-    response_headers: &HeaderMap,
-) -> Result<String, MessageSignatureError> {
-    match component.kind() {
-        MessageSignatureComponentKind::Header(name) => {
-            header_component_value(component, response_headers, name)
-        }
-        _ => request_component_value(
-            component,
-            method,
-            target_uri,
-            request_target,
-            request_headers,
-        ),
     }
 }
 
@@ -371,6 +408,12 @@ mod tests {
             context.component_value(&component).unwrap(),
             "application/json"
         );
+        assert_eq!(
+            context
+                .component_value(&MessageSignatureComponent::status())
+                .unwrap(),
+            "200"
+        );
     }
 
     #[test]
@@ -409,7 +452,7 @@ mod tests {
 
         assert_eq!(
             context
-                .component_value(&MessageSignatureComponent::method())
+                .component_value(&MessageSignatureComponent::method().related_request())
                 .unwrap(),
             "GET"
         );
@@ -420,5 +463,52 @@ mod tests {
             "application/json"
         );
         assert_eq!(context.status_for_test(), Some(StatusCode::OK));
+        let err = context
+            .component_value(&MessageSignatureComponent::method())
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            MessageSignatureError::ComponentNotAvailable {
+                context: "response",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn request_context_rejects_related_request_parameter() {
+        let method = Method::GET;
+        let target_uri: Uri = "https://example.com/demo".parse().unwrap();
+        let request_target: Uri = "/demo".parse().unwrap();
+        let headers = HeaderMap::new();
+        let context =
+            MessageSignatureContext::request(&method, &target_uri, &request_target, &headers);
+
+        let err = context
+            .component_value(&MessageSignatureComponent::method().related_request())
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            MessageSignatureError::UnsupportedComponentParameters(component)
+                if component == "\"@method\";req"
+        ));
+    }
+
+    #[test]
+    fn response_context_requires_related_request_context_for_req() {
+        let headers = HeaderMap::new();
+        let context = MessageSignatureContext::response(StatusCode::OK, &headers);
+        let err = context
+            .component_value(&MessageSignatureComponent::method().related_request())
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            MessageSignatureError::ComponentNotAvailable {
+                context: "response",
+                ..
+            }
+        ));
     }
 }

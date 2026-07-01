@@ -45,14 +45,14 @@ WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 
 | Feature | tokio | smol | compio | wasm | wasi-p2 |
 |---------|-------|------|--------|------|---------|
-| RFC 9421 signature-base helpers | ✓ | ✓ | ✓ | ✓ | ✓ |
+| RFC 9421 request/response signature-base helpers | ✓ | ✓ | ✓ | ✓ | ✓ |
 | RFC 9421 request verification policy | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Automatic request signing | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
 
-`message_signatures` is portable: callers can build a signature base, sign it
-with their own key material, verify signed request headers with caller-owned
-cryptography, and attach `Signature-Input` / `Signature` through the normal
-header APIs on every runtime. Native automatic signing runs after
+`message_signatures` is portable: callers can build request or response
+signature bases, sign them with their own key material, verify signed request
+headers with caller-owned cryptography, and attach `Signature-Input` /
+`Signature` through the normal header APIs on every runtime. Native automatic signing runs after
 default headers, cookies, cache validators, middleware, digest-auth retry
 headers, forwarding request rewrites, and framing cleanup have finalized each
 tokio, smol, or compio request attempt. Browser Fetch and WASI request dispatch do not expose an automatic
