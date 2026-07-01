@@ -10,6 +10,7 @@ mod params;
 mod parsed;
 mod signer;
 mod structured_fields;
+mod verification;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use automatic::AutomaticMessageSignature;
@@ -22,6 +23,9 @@ pub use headers::MessageSignatureHeaders;
 pub use params::MessageSignatureParams;
 pub use parsed::MessageSignature;
 pub use signer::MessageSignatureSigner;
+pub use verification::{
+    MessageSignatureVerificationInput, MessageSignatureVerificationPolicy, MessageSignatureVerifier,
+};
 
 #[cfg(test)]
 mod rfc9421_tests;
