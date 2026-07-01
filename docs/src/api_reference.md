@@ -325,8 +325,8 @@ middleware, digest-auth retry headers, forwarding request rewrites, and framing
 cleanup. When configured, it replaces only its configured label in
 `Signature-Input` and `Signature` on every native dispatch attempt.
 
-For verification, configure a request policy, then pass the selected label,
-rebuilt base, signature bytes, and metadata to your own verifier:
+For verification, configure a policy, then pass the selected label, rebuilt base,
+signature bytes, and metadata to your own verifier:
 
 ```rust,no_run
 # use aioduct::{
@@ -366,12 +366,57 @@ policy.verify_request(
 # }
 ```
 
+Response verification uses borrowed context values so signatures can cover both
+the response and selected related request components:
+
+```rust,no_run
+# use aioduct::{
+#     MessageSignatureComponent, MessageSignatureRequestContext,
+#     MessageSignatureResponseContext, MessageSignatureVerificationInput,
+#     MessageSignatureVerificationPolicy,
+# };
+# use http::{HeaderMap, Method, StatusCode, Uri};
+# fn example(request_headers: HeaderMap, response_headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
+let target_uri: Uri = "https://example.com/api".parse()?;
+let request_target: Uri = "/api".parse()?;
+let request = MessageSignatureRequestContext::new(
+    &Method::POST,
+    &target_uri,
+    &request_target,
+    &request_headers,
+);
+let response = MessageSignatureResponseContext::new(StatusCode::OK, &response_headers);
+
+let policy = MessageSignatureVerificationPolicy::new()
+    .required_component(MessageSignatureComponent::status())
+    .required_component(MessageSignatureComponent::method().related_request())
+    .validation_time(1_618_884_500);
+
+policy.verify_request_response(
+    request,
+    response,
+    "sig1",
+    &|input: MessageSignatureVerificationInput<'_>| {
+        Ok(verify_with_your_key(
+            input.signature_base(),
+            input.signature(),
+            input.params(),
+        ))
+    },
+)?;
+# Ok(())
+# }
+# fn verify_with_your_key(_: &[u8], _: &[u8], _: &aioduct::MessageSignatureParams) -> bool {
+#     true
+# }
+```
+
 If the selected signature includes `created` or `expires`, set
 `validation_time()`; otherwise the policy fails closed with
 `MissingValidationTime` instead of silently accepting stale metadata.
 
-Response signature verification policy is not automatic yet; use parsed
-`MessageSignature` response-base rebuilders plus caller-owned cryptography.
+`MessageSignature::verify_response()` and `verify_request_response()` apply the
+same policy to an already parsed signature.
 
 ### Sending
 
