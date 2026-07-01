@@ -38,6 +38,7 @@ mod clock;
 pub mod cookie;
 mod decompress;
 mod digest_auth;
+mod digest_fields;
 /// Error types for HTTP operations.
 pub mod error;
 /// Forwarded header builder and parser (RFC 7239).
@@ -67,6 +68,7 @@ pub mod proxy_credential;
 pub mod redirect;
 /// Automatic retry with exponential backoff.
 pub mod retry;
+mod sha256;
 /// Server-Sent Events (SSE) stream parser.
 pub mod sse;
 /// Token-bucket rate limiter for throttling requests.

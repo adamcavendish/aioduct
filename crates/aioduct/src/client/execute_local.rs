@@ -7,6 +7,7 @@ use std::time::Duration;
 use super::HttpEngineLocal;
 use crate::body::RequestBody;
 use crate::body::RequestBodyLocal;
+use crate::digest_fields::ContentDigestBody;
 use crate::error::Error;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
@@ -30,6 +31,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         no_decompression: bool,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
+        automatic_content_digest: bool,
         mut original_fragment: Option<String>,
     ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
@@ -58,17 +60,24 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 &mut current_headers,
             );
 
-            let (req_body, body_for_replay) = match current_body.take() {
+            let (req_body, body_for_replay, mut digest_body) = match current_body.take() {
                 Some(RequestBody::Buffered(b)) => {
                     let body_clone = RequestBody::Buffered(b.clone());
-                    (RequestBody::Buffered(b).into_local_body(), Some(body_clone))
+                    let digest_body = ContentDigestBody::Buffered(b.clone());
+                    (
+                        RequestBody::Buffered(b).into_local_body(),
+                        Some(body_clone),
+                        digest_body,
+                    )
                 }
-                Some(rb @ RequestBody::Streaming(_)) => (rb.into_local_body(), None),
+                Some(rb @ RequestBody::Streaming(_)) => {
+                    (rb.into_local_body(), None, ContentDigestBody::Unavailable)
+                }
                 None => {
                     let empty: RequestBodyLocal = Box::pin(
                         http_body_util::Full::new(Bytes::new()).map_err(|never| match never {}),
                     );
-                    (empty, None)
+                    (empty, None, ContentDigestBody::None)
                 }
             };
 
@@ -80,23 +89,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     Box::pin(timeout_body)
                 }
                 None => req_body,
-            };
-
-            let (cache_state, stale_if_error) =
-                self.core
-                    .cache_lookup(&current_method, &current_uri, &mut current_headers);
-            let mut cache_entry = match cache_state {
-                CacheLookupOutcome::Fresh(resp) => {
-                    let mut resp = *resp;
-                    if !self.core.middleware.is_empty() {
-                        resp.apply_middleware(&self.core.middleware, &current_uri);
-                    }
-                    self.core
-                        .attach_observer(&mut resp, &current_method, &current_uri);
-                    return Ok(resp.into_local());
-                }
-                CacheLookupOutcome::Stale(entry) => Some(entry),
-                CacheLookupOutcome::Miss => None,
             };
 
             let req_uri: Uri = match current_uri.path_and_query() {
@@ -115,10 +107,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             let mut request = builder.body(req_body)?;
             *request.headers_mut() = current_headers.clone();
 
-            if !self.core.middleware.is_empty() {
-                self.core
+            if !self.core.middleware.is_empty()
+                && self
+                    .core
                     .middleware
-                    .apply_request_local(&mut request, &current_uri);
+                    .apply_request_local(&mut request, &current_uri)
+            {
+                digest_body = ContentDigestBody::Unavailable;
             }
 
             // Strip user-supplied framing headers to prevent request smuggling.
@@ -128,6 +123,30 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 .remove(http::header::TRANSFER_ENCODING);
             request.headers_mut().remove(http::header::CONTENT_LENGTH);
 
+            self.core.apply_automatic_content_digest(
+                automatic_content_digest,
+                request.headers_mut(),
+                &digest_body,
+            )?;
+
+            let (cache_state, stale_if_error) =
+                self.core
+                    .cache_lookup(&current_method, &current_uri, request.headers_mut());
+            let mut cache_entry = match cache_state {
+                CacheLookupOutcome::Fresh(resp) => {
+                    let mut resp = *resp;
+                    if !self.core.middleware.is_empty() {
+                        resp.apply_middleware(&self.core.middleware, &current_uri);
+                    }
+                    self.core
+                        .attach_observer(&mut resp, &current_method, &current_uri);
+                    return Ok(resp.into_local());
+                }
+                CacheLookupOutcome::Stale(entry) => Some(entry),
+                CacheLookupOutcome::Miss => None,
+            };
+            sync_cache_validators(request.headers(), &mut current_headers);
+            let mut cache_request_headers = request.headers().clone();
             self.core.sign_final_request(&current_uri, &mut request)?;
 
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
@@ -194,8 +213,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     write_timeout,
                     force_addr,
                     protocol_hint,
+                    automatic_content_digest,
+                    digest_body.clone(),
                 )
                 .await?;
+            if let Some(value) = current_headers.get(AUTHORIZATION).cloned() {
+                cache_request_headers.insert(AUTHORIZATION, value);
+            }
 
             match self.core.post_execute(
                 &resp,
@@ -220,7 +244,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             resp,
                             &current_method,
                             current_uri,
-                            &current_headers,
+                            &cache_request_headers,
                             read_timeout,
                             no_decompression,
                         )
@@ -260,6 +284,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         write_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
+        automatic_content_digest: bool,
+        mut digest_body: ContentDigestBody,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -294,10 +320,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         retry_builder = retry_builder.version(version);
         let mut retry_request = retry_builder.body(retry_body)?;
         *retry_request.headers_mut() = headers.clone();
-        if !self.core.middleware.is_empty() {
-            self.core
+        if !self.core.middleware.is_empty()
+            && self
+                .core
                 .middleware
-                .apply_request_local(&mut retry_request, uri);
+                .apply_request_local(&mut retry_request, uri)
+        {
+            digest_body = ContentDigestBody::Unavailable;
         }
         // Strip framing headers on retry — after middleware.
         retry_request
@@ -306,6 +335,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         retry_request
             .headers_mut()
             .remove(http::header::CONTENT_LENGTH);
+        self.core.apply_automatic_content_digest(
+            automatic_content_digest,
+            retry_request.headers_mut(),
+            &digest_body,
+        )?;
         self.core.sign_final_request(uri, &mut retry_request)?;
         self.execute_single_local(
             retry_request,
@@ -363,5 +397,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         }
 
         Ok(resp)
+    }
+}
+
+fn sync_cache_validators(source: &HeaderMap, target: &mut HeaderMap) {
+    for name in [http::header::IF_NONE_MATCH, http::header::IF_MODIFIED_SINCE] {
+        if let Some(value) = source.get(&name).cloned() {
+            target.insert(name, value);
+        }
     }
 }

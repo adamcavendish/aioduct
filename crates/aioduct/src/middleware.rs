@@ -108,7 +108,11 @@ impl MiddlewareStack {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn apply_request_local(&self, request: &mut http::Request<RequestBodyLocal>, uri: &Uri) {
+    pub fn apply_request_local(
+        &self,
+        request: &mut http::Request<RequestBodyLocal>,
+        uri: &Uri,
+    ) -> bool {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -134,6 +138,9 @@ impl MiddlewareStack {
         if body_replaced.load(Ordering::Relaxed) {
             let (_, body) = proxy.into_parts();
             *request.body_mut() = Box::pin(body);
+            true
+        } else {
+            false
         }
     }
 

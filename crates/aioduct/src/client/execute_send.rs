@@ -2,10 +2,15 @@ use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderMap};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use super::HttpEngineSend;
 use crate::body::{RequestBody, RequestBodySend};
+use crate::digest_fields::ContentDigestBody;
 use crate::error::Error;
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
@@ -27,6 +32,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         no_decompression: bool,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
+        automatic_content_digest: bool,
         mut original_fragment: Option<String>,
     ) -> Result<Response, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
@@ -55,17 +61,24 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 &mut current_headers,
             );
 
-            let (req_body, body_for_replay) = match current_body.take() {
+            let (req_body, body_for_replay, mut digest_body) = match current_body.take() {
                 Some(RequestBody::Buffered(b)) => {
                     let body_clone = RequestBody::Buffered(b.clone());
-                    (RequestBody::Buffered(b).into_hyper_body(), Some(body_clone))
+                    let digest_body = ContentDigestBody::Buffered(b.clone());
+                    (
+                        RequestBody::Buffered(b).into_hyper_body(),
+                        Some(body_clone),
+                        digest_body,
+                    )
                 }
-                Some(rb @ RequestBody::Streaming(_)) => (rb.into_hyper_body(), None),
+                Some(rb @ RequestBody::Streaming(_)) => {
+                    (rb.into_hyper_body(), None, ContentDigestBody::Unavailable)
+                }
                 None => {
                     let empty: RequestBodySend = http_body_util::Full::new(Bytes::new())
                         .map_err(|never| match never {})
                         .boxed_unsync();
-                    (empty, None)
+                    (empty, None, ContentDigestBody::None)
                 }
             };
 
@@ -78,22 +91,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 }
                 None => req_body,
             };
-
-            let (cache_state, stale_if_error) =
-                self.core
-                    .cache_lookup(&current_method, &current_uri, &mut current_headers);
-            let mut cache_entry = match cache_state {
-                CacheLookupOutcome::Fresh(resp) => {
-                    let mut resp = *resp;
-                    if !self.core.middleware.is_empty() {
-                        resp.apply_middleware(&self.core.middleware, &current_uri);
-                    }
-                    self.core
-                        .attach_observer(&mut resp, &current_method, &current_uri);
-                    return Ok(resp);
-                }
-                CacheLookupOutcome::Stale(entry) => Some(entry),
-                CacheLookupOutcome::Miss => None,
+            let mut body_replaced = None;
+            let req_body = if automatic_content_digest
+                && matches!(digest_body, ContentDigestBody::Buffered(_))
+            {
+                let (tracked_body, replaced) = track_body_replacement(req_body);
+                body_replaced = Some(replaced);
+                tracked_body
+            } else {
+                req_body
             };
 
             let req_uri: Uri = match current_uri.path_and_query() {
@@ -117,6 +123,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     .middleware
                     .apply_request(&mut request, &current_uri);
             }
+            if body_replaced
+                .as_ref()
+                .is_some_and(|replaced| replaced.load(Ordering::Relaxed))
+            {
+                digest_body = ContentDigestBody::Unavailable;
+            }
 
             // Strip user-supplied framing headers to prevent request smuggling.
             // Runs AFTER middleware so middleware cannot re-inject them.
@@ -125,6 +137,30 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .remove(http::header::TRANSFER_ENCODING);
             request.headers_mut().remove(http::header::CONTENT_LENGTH);
 
+            self.core.apply_automatic_content_digest(
+                automatic_content_digest,
+                request.headers_mut(),
+                &digest_body,
+            )?;
+
+            let (cache_state, stale_if_error) =
+                self.core
+                    .cache_lookup(&current_method, &current_uri, request.headers_mut());
+            let mut cache_entry = match cache_state {
+                CacheLookupOutcome::Fresh(resp) => {
+                    let mut resp = *resp;
+                    if !self.core.middleware.is_empty() {
+                        resp.apply_middleware(&self.core.middleware, &current_uri);
+                    }
+                    self.core
+                        .attach_observer(&mut resp, &current_method, &current_uri);
+                    return Ok(resp);
+                }
+                CacheLookupOutcome::Stale(entry) => Some(entry),
+                CacheLookupOutcome::Miss => None,
+            };
+            sync_cache_validators(request.headers(), &mut current_headers);
+            let mut cache_request_headers = request.headers().clone();
             self.core.sign_final_request(&current_uri, &mut request)?;
 
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
@@ -200,8 +236,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     write_timeout,
                     force_addr,
                     protocol_hint,
+                    automatic_content_digest,
+                    digest_body.clone(),
                 )
                 .await?;
+            if let Some(value) = current_headers.get(AUTHORIZATION).cloned() {
+                cache_request_headers.insert(AUTHORIZATION, value);
+            }
 
             match self.core.post_execute(
                 &resp,
@@ -225,7 +266,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             resp,
                             &current_method,
                             current_uri,
-                            &current_headers,
+                            &cache_request_headers,
                             read_timeout,
                             no_decompression,
                         )
@@ -268,6 +309,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         write_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
+        automatic_content_digest: bool,
+        mut digest_body: ContentDigestBody,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -293,6 +336,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .map_err(|never| match never {})
                 .boxed_unsync(),
         };
+        let mut body_replaced = None;
+        let retry_body =
+            if automatic_content_digest && matches!(digest_body, ContentDigestBody::Buffered(_)) {
+                let (tracked_body, replaced) = track_body_replacement(retry_body);
+                body_replaced = Some(replaced);
+                tracked_body
+            } else {
+                retry_body
+            };
 
         let retry_uri: Uri = match uri.path_and_query() {
             Some(pq) => Uri::from(pq.clone()),
@@ -307,6 +359,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         if !self.core.middleware.is_empty() {
             self.core.middleware.apply_request(&mut retry_request, uri);
         }
+        if body_replaced
+            .as_ref()
+            .is_some_and(|replaced| replaced.load(Ordering::Relaxed))
+        {
+            digest_body = ContentDigestBody::Unavailable;
+        }
         // Strip framing headers on retry — after middleware.
         retry_request
             .headers_mut()
@@ -314,6 +372,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         retry_request
             .headers_mut()
             .remove(http::header::CONTENT_LENGTH);
+        self.core.apply_automatic_content_digest(
+            automatic_content_digest,
+            retry_request.headers_mut(),
+            &digest_body,
+        )?;
         self.core.sign_final_request(uri, &mut retry_request)?;
         let retry_headers_for_stale = retry_request.headers().clone();
         self.execute_single_with_hint_send(
@@ -377,5 +440,54 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         }
 
         Ok(resp)
+    }
+}
+
+struct BodyReplacementTracker {
+    inner: RequestBodySend,
+    replaced: Arc<AtomicBool>,
+}
+
+impl http_body::Body for BodyReplacementTracker {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl Drop for BodyReplacementTracker {
+    fn drop(&mut self) {
+        self.replaced.store(true, Ordering::Relaxed);
+    }
+}
+
+fn track_body_replacement(body: RequestBodySend) -> (RequestBodySend, Arc<AtomicBool>) {
+    let replaced = Arc::new(AtomicBool::new(false));
+    let tracked = BodyReplacementTracker {
+        inner: body,
+        replaced: Arc::clone(&replaced),
+    }
+    .boxed_unsync();
+    (tracked, replaced)
+}
+
+fn sync_cache_validators(source: &HeaderMap, target: &mut HeaderMap) {
+    for name in [http::header::IF_NONE_MATCH, http::header::IF_MODIFIED_SINCE] {
+        if let Some(value) = source.get(&name).cloned() {
+            target.insert(name, value);
+        }
     }
 }

@@ -2,13 +2,15 @@
 
 aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
 response signature-base helpers, parsed verification helpers,
-`Accept-Signature` negotiation helpers, and native automatic request signing. The
+`Accept-Signature` negotiation helpers, native automatic request signing, and
+native buffered `Content-Digest` generation. The
 portable helpers build signature bases, format and parse `Signature-Input` /
 `Signature` header values, turn accepted signature requests into concrete signing
 configs, apply verification policy checks, and expose the bytes callers pass to
 cryptographic code. Callers still choose the cryptographic signing and
-verification algorithms. Native clients can also run a synchronous signer
-automatically for each finalized request attempt.
+verification algorithms. Native clients can also insert SHA-256 `Content-Digest`
+for buffered request bodies and run a synchronous signer automatically for each
+finalized request attempt.
 
 ## Core Flow
 
@@ -109,6 +111,26 @@ Forwarded requests are signed after hop-by-hop cleanup, upstream URI rewriting,
 explicit header forwarding/removal, and `on_request` hooks. Components derived
 from the target URI use the upstream URI; `@request-target` uses the final URI
 form sent on the wire.
+
+## Automatic Content-Digest
+
+Native clients can opt in to SHA-256 `Content-Digest` generation with
+`HttpEngineBuilder::automatic_content_digest(true)` or override it per request
+with `RequestBuilderSend::automatic_content_digest(...)` /
+`RequestBuilderLocal::automatic_content_digest(...)`. When enabled, aioduct
+inserts `Content-Digest: sha-256=:...:` for buffered request bodies that do not
+already have a `Content-Digest` header. Requests without a configured body are
+left unchanged; use an explicitly empty buffered body to sign an empty-body
+digest.
+
+Digest insertion happens after middleware and framing-header cleanup and before
+automatic message signing. A signature that covers `content-digest` therefore
+covers the generated value. If a request already has `Content-Digest`, aioduct
+preserves it and signs that caller-supplied value.
+
+aioduct does not auto-buffer streaming bodies and does not generate digest or
+signature trailers. Streaming bodies and middleware-replaced bodies must provide
+an explicit `Content-Digest` header when automatic digest generation is enabled.
 
 ## Manual And Async Signers
 
@@ -390,8 +412,9 @@ send signatures for an earlier request shape.
 
 The helpers are portable and can be used with native, blocking, wasm, and wasi-p2
 request builders by inserting the generated headers manually. Native automatic
-request signing is available for tokio, smol, and compio request dispatch.
-Blocking clients inherit it when they wrap a configured native client.
+request signing and buffered automatic `Content-Digest` generation are available
+for tokio, smol, and compio request dispatch. Blocking clients inherit them when
+they wrap a configured native client.
 
 Browser Fetch and WASI hosts can still alter or reject some headers at the host
 boundary. That host behavior is outside aioduct's control.
@@ -423,7 +446,7 @@ work lands.
 | Message verification policy API | Supported | `verification_policy_calls_verifier_with_rebuilt_base`, `verification_policy_calls_verifier_with_response_base`, `verification_policy_calls_verifier_with_related_request_response_base`, `parsed_response_signature_can_verify_with_policy`, `verification_policy_reports_selection_and_header_errors`, `verification_policy_rejects_unacceptable_signature_metadata`, `verification_policy_rejects_failed_verifier_callback` | Current | Applies required-component, accepted-algorithm, accepted-key-id, timestamp, max-age, and verifier-callback checks for selected request, response, and request-response signatures. Cryptographic verification remains caller-owned. |
 | `Accept-Signature` parser and builder | Supported | `accept_signature_parses_rfc_style_request`, `accept_signature_formats_and_inserts_header`, `accept_signature_from_headers_combines_field_values`, `accept_signature_reports_header_errors`, `accept_signature_validates_target_message_components` | Current | Parses and formats requested signature dictionaries, exposes requested metadata, and validates request, response, or request-response target component applicability. |
 | `Accept-Signature` fulfillment helpers | Supported | `accept_signature_fulfills_response_with_related_request`, `accept_signature_fulfills_next_request`, `accept_signature_fulfillment_reports_unfulfillable_requests`, `accept_signature_allows_ignoring_requests_and_adding_signatures` | Current | Converts accepted entries into concrete `MessageSignatureConfig` values, fills requested metadata, rejects missing or conflicting requested parameters, supports caller-selected ignored requests, and allows additional signatures. Cryptography and header attachment remain caller-owned. |
-| Buffered automatic `Content-Digest` generation | Planned | Matrix only | Body digest | Current support signs caller-supplied `Content-Digest` fields. |
+| Buffered automatic `Content-Digest` generation | Supported | `automatic_content_digest_is_inserted_before_signing`, `automatic_content_digest_preserves_manual_header`, `automatic_content_digest_rejects_streaming_body_without_manual_digest`, `automatic_content_digest_rejects_middleware_replaced_body_without_manual_digest` | Current | Native dispatch can insert SHA-256 `Content-Digest` for buffered bodies before automatic signing. Existing digest fields are preserved; streaming or middleware-replaced bodies need explicit digest fields. |
 | Async automatic signing | Planned | Matrix only | Async signing | Sync automatic signing remains supported; async signing will use explicit send/local APIs. |
 | Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs cross-runtime request-trailer semantics first. |
 | Cryptographic algorithm validation | Not in scope | Matrix only | Caller-owned | aioduct builds bases and header values; callers own keys, algorithms, signing, and verification cryptography. |
@@ -432,6 +455,6 @@ work lands.
 
 - Async automatic signer callbacks.
 - Component parameter `;tr`.
-- Automatic `Content-Digest` generation for buffered request bodies.
+- `Content-Digest` verification before signature verification when body bytes are available.
 - Precomputed digest helpers for streaming bodies.
 - Automatic trailer-based digest/signature generation after trailer semantics are proven across runtimes.

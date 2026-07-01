@@ -199,6 +199,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
                 bandwidth_limiter: self.bandwidth_limiter,
                 digest_auth: self.digest_auth,
                 message_signature: self.message_signature,
+                automatic_content_digest: self.automatic_content_digest,
                 cache: self.cache,
                 hsts: self.hsts,
                 h2c_probe_cache: self

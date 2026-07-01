@@ -6,6 +6,7 @@ use http::{Method, StatusCode, Uri};
 
 use super::HttpEngineCore;
 use crate::body::RequestBody;
+use crate::digest_fields::{self, ContentDigestBody};
 use crate::error::Error;
 use crate::observer::RequestPhase;
 use crate::redirect::RedirectAction;
@@ -46,6 +47,32 @@ impl std::fmt::Debug for PostExecuteAction {
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
 impl<B> HttpEngineCore<B> {
+    pub(crate) fn apply_automatic_content_digest(
+        &self,
+        enabled: bool,
+        headers: &mut HeaderMap,
+        body: &ContentDigestBody,
+    ) -> Result<(), Error> {
+        if !enabled || digest_fields::has_content_digest(headers) {
+            return Ok(());
+        }
+
+        match body {
+            ContentDigestBody::None => Ok(()),
+            ContentDigestBody::Buffered(body) => {
+                digest_fields::insert_sha256_content_digest(headers, body).map_err(|source| {
+                    Error::InvalidHeader(format!(
+                        "generated Content-Digest header value is invalid: {source}"
+                    ))
+                })
+            }
+            ContentDigestBody::Unavailable => Err(Error::Unsupported(
+                "automatic Content-Digest requires a buffered request body or an explicit Content-Digest header"
+                    .to_owned(),
+            )),
+        }
+    }
+
     pub(crate) fn sign_final_request<ReqBody>(
         &self,
         target_uri: &Uri,

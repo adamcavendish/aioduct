@@ -152,6 +152,50 @@ fn test_compio_automatic_message_signature() {
     });
 }
 
+#[test]
+fn test_compio_automatic_content_digest_before_signature() {
+    let addr = start_server_with_tokio(|req| async move {
+        let content_digest = req
+            .headers()
+            .get("content-digest")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "content-digest={content_digest}\nbody={}",
+            String::from_utf8_lossy(&body)
+        )))))
+    });
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::method())
+            .component(MessageSignatureComponent::header(
+                http::HeaderName::from_static("content-digest"),
+            ));
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .automatic_content_digest(true)
+            .message_signature(config, compio_signature)
+            .build_local()
+            .unwrap();
+
+        let resp = client
+            .post_local(&format!("http://{addr}/digest"))
+            .unwrap()
+            .body("hello")
+            .send()
+            .await
+            .unwrap();
+        let body = resp.text().await.unwrap();
+        let expected = "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:";
+        assert!(
+            body.contains(&format!("content-digest={expected}")),
+            "{body}"
+        );
+        assert!(body.contains("body=hello"), "{body}");
+    });
+}
+
 #[cfg(feature = "gzip")]
 #[test]
 fn test_compio_per_request_no_decompression() {
