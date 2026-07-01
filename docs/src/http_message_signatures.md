@@ -1,12 +1,12 @@
 # HTTP Message Signatures
 
 aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
-parsed signature helpers, and native automatic request signing. The portable
-helpers build signature bases, format and parse `Signature-Input` / `Signature`
-header values, and expose the bytes callers pass to cryptographic code. Callers
-still choose the cryptographic signing and verification algorithms. Native
-clients can also run a synchronous signer automatically for each finalized
-request attempt.
+parsed request verification helpers, and native automatic request signing. The
+portable helpers build signature bases, format and parse `Signature-Input` /
+`Signature` header values, apply request verification policy checks, and expose
+the bytes callers pass to cryptographic code. Callers still choose the
+cryptographic signing and verification algorithms. Native clients can also run a
+synchronous signer automatically for each finalized request attempt.
 
 ## Core Flow
 
@@ -113,7 +113,7 @@ The synchronous `MessageSignatureSigner` trait is used by native automatic
 signing and local CPU-bound signing. Do not use a blocking network or device
 call inside that synchronous signer on an async runtime thread.
 
-## Parsed Signatures
+## Request Verification
 
 `MessageSignature::from_headers(&headers, "sig1")` parses existing
 `Signature-Input` and `Signature` fields, selects one label, exposes known
@@ -121,8 +121,8 @@ metadata parameters such as `created`, `expires`, `alg`, and `keyid`, and return
 the decoded signature bytes. It rejects malformed dictionaries, duplicate
 labels, mismatched labels, and unknown selected labels.
 
-The parsed value can rebuild the request signature base for caller-owned crypto
-verification:
+The parsed value can rebuild the request signature base for fully manual
+caller-owned crypto verification:
 
 ```rust,no_run
 use aioduct::MessageSignature;
@@ -140,10 +140,65 @@ verify_with_your_key(base.as_bytes(), parsed.signature(), parsed.params());
 # fn verify_with_your_key(_: &[u8], _: &[u8], _: &aioduct::MessageSignatureParams) {}
 ```
 
-This is the lower-level verification building block. Policy checks such as
-required components, accepted algorithms, key lookup, clock skew, and trust
-decisions remain caller-owned until the higher-level verification policy API
-lands.
+For common request verification policy checks, use
+`MessageSignatureVerificationPolicy`. The policy parses a selected label,
+requires covered components, filters accepted `alg` and `keyid` metadata, checks
+`created` / `expires` timestamps with optional clock skew and maximum age, then
+calls your verifier with the selected label, parsed params, rebuilt base bytes,
+and decoded signature bytes.
+
+When the selected signature carries `created` or `expires`, configure
+`validation_time()` so the policy can validate those timestamps. Without a
+validation time, verification fails closed with `MissingValidationTime`.
+
+```rust,no_run
+use aioduct::{
+    MessageSignatureComponent, MessageSignatureVerificationInput,
+    MessageSignatureVerificationPolicy,
+};
+use http::{HeaderMap, Method, Uri};
+
+# fn example(headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
+let target_uri: Uri = "https://example.com/foo?param=Value".parse()?;
+let request_target: Uri = "/foo?param=Value".parse()?;
+
+let policy = MessageSignatureVerificationPolicy::new()
+    .required_component(MessageSignatureComponent::method())
+    .required_component(MessageSignatureComponent::authority())
+    .accepted_algorithm("ed25519")
+    .accepted_key_id("test-key")
+    .validation_time(1_618_884_500)
+    .max_age(300)
+    .clock_skew(5);
+
+policy.verify_request(
+    &headers,
+    "sig1",
+    &Method::GET,
+    &target_uri,
+    &request_target,
+    &|input: MessageSignatureVerificationInput<'_>| {
+        Ok(verify_with_your_key(
+            input.params(),
+            input.signature_base(),
+            input.signature(),
+        ))
+    },
+)?;
+# Ok(())
+# }
+# fn verify_with_your_key(
+#     _: &aioduct::MessageSignatureParams,
+#     _: &[u8],
+#     _: &[u8],
+# ) -> bool {
+#     true
+# }
+```
+
+`MessageSignature::verify_request()` applies the same policy to an already parsed
+signature. Response `@status` and related-request `;req` verification remain
+future response-support work.
 
 ## Header Ownership
 
@@ -188,7 +243,7 @@ work lands.
 | Related request components `;req` | Planned | Matrix only | Response support | Requires request-response pair contexts. |
 | Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
 | Parsed signature selection and request-base rebuild | Supported | `parsed_signature_selects_label_and_rebuilds_request_base`, `parsed_signature_handles_component_parameters`, `parsed_signature_reports_selection_and_header_errors` | Current | Parses selected `Signature-Input` / `Signature` labels, exposes known metadata and signature bytes, preserves extension metadata in the rebuilt base, and rejects malformed or mismatched fields. |
-| Verification API | Planned | Matrix only | Verification | Requires typed verification policy and caller-owned verifier callbacks. |
+| Request verification policy API | Supported | `verification_policy_calls_verifier_with_rebuilt_base`, `parsed_signature_can_verify_with_policy`, `verification_policy_reports_selection_and_header_errors`, `verification_policy_rejects_unacceptable_signature_metadata`, `verification_policy_rejects_failed_verifier_callback` | Current | Applies required-component, accepted-algorithm, accepted-key-id, timestamp, max-age, and verifier-callback checks for selected request signatures. Cryptographic verification remains caller-owned. |
 | `Accept-Signature` negotiation | Planned | Matrix only | Negotiation | Requires parser, builder, and fulfillment logic for requested signatures. |
 | Buffered automatic `Content-Digest` generation | Planned | Matrix only | Body digest | Current support signs caller-supplied `Content-Digest` fields. |
 | Async automatic signing | Planned | Matrix only | Async signing | Sync automatic signing remains supported; async signing will use explicit send/local APIs. |
@@ -198,7 +253,7 @@ work lands.
 ## Future Work
 
 - Async automatic signer callbacks.
-- Response signature verification.
+- Response signature verification, including `@status` and `;req` support.
 - `Accept-Signature` negotiation.
 - Component parameter `;tr`.
 - Trailer coverage and response `;req` / `@status` components.
