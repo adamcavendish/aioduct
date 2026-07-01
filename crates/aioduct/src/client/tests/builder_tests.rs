@@ -560,6 +560,7 @@ async fn execute_rejects_http_when_https_only() {
             false,
             None,
             crate::pool::ProtocolHint::Auto,
+            false,
             None,
         )
         .await;
@@ -589,6 +590,7 @@ async fn execute_allows_https_when_https_only() {
             false,
             None,
             crate::pool::ProtocolHint::Auto,
+            false,
             None,
         )
         .await;

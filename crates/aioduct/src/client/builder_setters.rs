@@ -608,6 +608,20 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
+    /// Enable or disable automatic `Content-Digest` generation.
+    ///
+    /// When enabled, native dispatch inserts `Content-Digest: sha-256=:...:`
+    /// for buffered request bodies that do not already have a `Content-Digest`
+    /// header. The digest is inserted after middleware and before automatic
+    /// message signing, so signatures that cover `content-digest` cover the
+    /// generated value. Streaming or middleware-replaced bodies are never
+    /// buffered automatically; set `Content-Digest` explicitly for those
+    /// requests.
+    pub fn automatic_content_digest(mut self, enable: bool) -> Self {
+        self.automatic_content_digest = enable;
+        self
+    }
+
     /// Enable HTTP response caching with the given cache instance.
     pub fn cache(mut self, cache: crate::cache::HttpCache) -> Self {
         self.cache = Some(cache);
