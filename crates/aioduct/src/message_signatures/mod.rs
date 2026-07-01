@@ -24,7 +24,9 @@ pub use params::MessageSignatureParams;
 pub use parsed::MessageSignature;
 pub use signer::MessageSignatureSigner;
 pub use verification::{
-    MessageSignatureVerificationInput, MessageSignatureVerificationPolicy, MessageSignatureVerifier,
+    MessageSignatureRequestContext, MessageSignatureResponseContext,
+    MessageSignatureVerificationInput, MessageSignatureVerificationPolicy,
+    MessageSignatureVerifier,
 };
 
 #[cfg(test)]
