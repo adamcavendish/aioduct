@@ -7,6 +7,7 @@ use super::structured_fields;
 
 pub(crate) const SIGNATURE_INPUT: &str = "signature-input";
 pub(crate) const SIGNATURE: &str = "signature";
+pub(crate) const ACCEPT_SIGNATURE: &str = "accept-signature";
 
 /// Generated `Signature-Input` and `Signature` header values.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -207,6 +208,7 @@ fn header_display_name(name: &'static str) -> &'static str {
     match name {
         SIGNATURE_INPUT => "Signature-Input",
         SIGNATURE => "Signature",
+        ACCEPT_SIGNATURE => "Accept-Signature",
         _ => name,
     }
 }

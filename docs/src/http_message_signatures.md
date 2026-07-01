@@ -1,13 +1,13 @@
 # HTTP Message Signatures
 
 aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
-response signature-base helpers, parsed request verification helpers, and native
-automatic request signing. The portable helpers build signature bases, format
-and parse `Signature-Input` / `Signature` header values, apply request
-verification policy checks, and expose the bytes callers pass to cryptographic
-code. Callers still choose the cryptographic signing and verification
-algorithms. Native clients can also run a synchronous signer automatically for
-each finalized request attempt.
+response signature-base helpers, parsed verification helpers,
+`Accept-Signature` header helpers, and native automatic request signing. The
+portable helpers build signature bases, format and parse `Signature-Input` /
+`Signature` header values, apply verification policy checks, and expose the bytes
+callers pass to cryptographic code. Callers still choose the cryptographic
+signing and verification algorithms. Native clients can also run a synchronous
+signer automatically for each finalized request attempt.
 
 ## Core Flow
 
@@ -166,6 +166,40 @@ let signature_headers = config.headers_from_signature(my_signing_function(base.a
 related request, sign `request_response_signature_base()` output and pass the
 signature bytes to `headers_from_signature()`. Native automatic response signing
 is not configured by `HttpEngineBuilder::message_signature()`.
+
+## Accept-Signature
+
+Use `AcceptSignature` to parse or build RFC 9421 `Accept-Signature` dictionaries.
+Each `AcceptSignatureEntry` names the requested output signature label, the
+covered components, and requested metadata such as `created`, `expires`, `alg`,
+`keyid`, `nonce`, and `tag`.
+
+```rust,no_run
+use aioduct::{AcceptSignature, AcceptSignatureEntry, MessageSignatureComponent};
+use http::HeaderMap;
+
+# fn example(mut headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
+let accept = AcceptSignature::new().entry(
+    AcceptSignatureEntry::new("sig1")?
+        .component(MessageSignatureComponent::status())
+        .component(MessageSignatureComponent::method().related_request())
+        .created()
+        .key_id("test-key"),
+);
+
+accept.validate_request_response_target()?;
+accept.insert_into(&mut headers)?;
+# Ok(())
+# }
+```
+
+Use `validate_request_target()` when an `Accept-Signature` response asks the
+client to sign its next request. Use `validate_request_response_target()` when an
+`Accept-Signature` request asks the server to sign the response and that response
+signature can cover related request components with `;req`. Fulfillment remains
+explicit: callers still choose signing keys, generate any requested timestamp
+parameters, build the target signature base, and attach the resulting
+`Signature-Input` / `Signature` fields.
 
 ## Request Verification
 
@@ -347,7 +381,8 @@ work lands.
 | Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
 | Parsed signature selection and request-base rebuild | Supported | `parsed_signature_selects_label_and_rebuilds_request_base`, `parsed_signature_handles_component_parameters`, `parsed_signature_reports_selection_and_header_errors` | Current | Parses selected `Signature-Input` / `Signature` labels, exposes known metadata and signature bytes, preserves extension metadata in the rebuilt base, and rejects malformed or mismatched fields. |
 | Message verification policy API | Supported | `verification_policy_calls_verifier_with_rebuilt_base`, `verification_policy_calls_verifier_with_response_base`, `verification_policy_calls_verifier_with_related_request_response_base`, `parsed_response_signature_can_verify_with_policy`, `verification_policy_reports_selection_and_header_errors`, `verification_policy_rejects_unacceptable_signature_metadata`, `verification_policy_rejects_failed_verifier_callback` | Current | Applies required-component, accepted-algorithm, accepted-key-id, timestamp, max-age, and verifier-callback checks for selected request, response, and request-response signatures. Cryptographic verification remains caller-owned. |
-| `Accept-Signature` negotiation | Planned | Matrix only | Negotiation | Requires parser, builder, and fulfillment logic for requested signatures. |
+| `Accept-Signature` parser and builder | Supported | `accept_signature_parses_rfc_style_request`, `accept_signature_formats_and_inserts_header`, `accept_signature_from_headers_combines_field_values`, `accept_signature_reports_header_errors`, `accept_signature_validates_target_message_components` | Current | Parses and formats requested signature dictionaries, exposes requested metadata, and validates request, response, or request-response target component applicability. Fulfillment remains caller-owned. |
+| `Accept-Signature` fulfillment helpers | Planned | Matrix only | Negotiation | Requires helper logic to match requested labels/components/params, generate missing metadata, and attach resulting signatures. |
 | Buffered automatic `Content-Digest` generation | Planned | Matrix only | Body digest | Current support signs caller-supplied `Content-Digest` fields. |
 | Async automatic signing | Planned | Matrix only | Async signing | Sync automatic signing remains supported; async signing will use explicit send/local APIs. |
 | Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs cross-runtime request-trailer semantics first. |
@@ -356,7 +391,7 @@ work lands.
 ## Future Work
 
 - Async automatic signer callbacks.
-- `Accept-Signature` negotiation.
+- `Accept-Signature` fulfillment helpers.
 - Component parameter `;tr`.
 - Automatic `Content-Digest` generation for buffered request bodies.
 - Precomputed digest helpers for streaming bodies.
