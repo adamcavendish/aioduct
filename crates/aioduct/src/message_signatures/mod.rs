@@ -13,7 +13,7 @@ mod signer;
 mod structured_fields;
 mod verification;
 
-pub use accept_signature::{AcceptSignature, AcceptSignatureEntry};
+pub use accept_signature::{AcceptSignature, AcceptSignatureEntry, AcceptSignatureFulfillment};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use automatic::AutomaticMessageSignature;
 pub use base::MessageSignatureBase;

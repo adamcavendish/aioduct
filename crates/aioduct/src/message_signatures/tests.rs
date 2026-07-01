@@ -1436,6 +1436,178 @@ fn accept_signature_validates_target_message_components() {
 }
 
 #[test]
+fn accept_signature_fulfills_response_with_related_request() {
+    let accept = AcceptSignature::parse(
+        r#"sig1=("@status" "content-type" "@method";req);created;nonce="server-nonce";alg="test-alg";keyid="server-key""#,
+    )
+    .unwrap();
+    let fulfillment = AcceptSignatureFulfillment::new()
+        .created(100)
+        .algorithm("test-alg")
+        .key_id("server-key");
+    let configs = accept
+        .request_response_signature_configs(&fulfillment)
+        .unwrap();
+    let config = &configs[0];
+    let target_uri: Uri = "https://example.com/api".parse().unwrap();
+    let request_target: Uri = "/api".parse().unwrap();
+    let request_headers = HeaderMap::new();
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    let base = config
+        .request_response_signature_base(
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &request_headers,
+            StatusCode::CREATED,
+            &response_headers,
+        )
+        .unwrap();
+    assert_eq!(
+        base.as_str(),
+        "\
+\"@status\": 201\n\
+\"content-type\": application/json\n\
+\"@method\";req: POST\n\
+\"@signature-params\": (\"@status\" \"content-type\" \"@method\";req);created=100;nonce=\"server-nonce\";alg=\"test-alg\";keyid=\"server-key\""
+    );
+
+    config
+        .headers_from_signature([9, 8, 7])
+        .unwrap()
+        .insert_into(&mut response_headers)
+        .unwrap();
+    assert_eq!(
+        response_headers["signature-input"],
+        r#"sig1=("@status" "content-type" "@method";req);created=100;nonce="server-nonce";alg="test-alg";keyid="server-key""#,
+    );
+    assert_eq!(response_headers["signature"], "sig1=:CQgH:");
+}
+
+#[test]
+fn accept_signature_fulfills_next_request() {
+    let accept =
+        AcceptSignature::parse(r#"sig1=("@method" "@path");created;keyid="client-key";tag="next""#)
+            .unwrap();
+    let fulfillment = AcceptSignatureFulfillment::new()
+        .created(200)
+        .key_id("client-key");
+    let configs = accept.request_signature_configs(&fulfillment).unwrap();
+    let config = &configs[0];
+    let target_uri: Uri = "https://example.com/next".parse().unwrap();
+    let request_target: Uri = "/next".parse().unwrap();
+    let mut headers = HeaderMap::new();
+
+    config
+        .sign_request(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &headers,
+            &|base: &[u8]| {
+                assert_eq!(
+                    std::str::from_utf8(base).unwrap(),
+                    "\
+\"@method\": GET\n\
+\"@path\": /next\n\
+\"@signature-params\": (\"@method\" \"@path\");created=200;keyid=\"client-key\";tag=\"next\""
+                );
+                Ok(vec![1, 2, 3])
+            },
+        )
+        .unwrap()
+        .insert_into(&mut headers)
+        .unwrap();
+
+    assert_eq!(
+        headers["signature-input"],
+        r#"sig1=("@method" "@path");created=200;keyid="client-key";tag="next""#,
+    );
+    assert_eq!(headers["signature"], "sig1=:AQID:");
+}
+
+#[test]
+fn accept_signature_fulfillment_reports_unfulfillable_requests() {
+    let missing_created = AcceptSignature::parse(r#"sig1=("@method");created"#).unwrap();
+    let err = missing_created
+        .request_signature_configs(&AcceptSignatureFulfillment::new())
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnfulfillableAcceptSignatureParameter("created")
+    ));
+
+    let conflicting_algorithm =
+        AcceptSignature::parse(r#"sig1=("@method");alg="ed25519""#).unwrap();
+    let err = conflicting_algorithm
+        .request_signature_configs(&AcceptSignatureFulfillment::new().algorithm("rsa-pss-sha512"))
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnfulfillableAcceptSignatureParameter("alg")
+    ));
+
+    let response_only = AcceptSignature::parse(r#"sig1=("@status")"#).unwrap();
+    let err = response_only
+        .request_signature_configs(&AcceptSignatureFulfillment::new())
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::ComponentNotAvailable {
+            context: "request",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn accept_signature_allows_ignoring_requests_and_adding_signatures() {
+    let accept =
+        AcceptSignature::parse(r#"ignored=("@status"), good=("@method");created"#).unwrap();
+    let fulfillment = AcceptSignatureFulfillment::new().created(2);
+    let target_uri: Uri = "https://example.com/next".parse().unwrap();
+    let request_target: Uri = "/next".parse().unwrap();
+    let mut headers = HeaderMap::new();
+
+    MessageSignatureConfig::new("extra")
+        .unwrap()
+        .component(MessageSignatureComponent::path())
+        .created(1)
+        .sign_request(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &headers,
+            &|_: &[u8]| Ok(vec![1]),
+        )
+        .unwrap()
+        .insert_into(&mut headers)
+        .unwrap();
+
+    accept.entries()[1]
+        .request_signature_config(&fulfillment)
+        .unwrap()
+        .sign_request(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &headers,
+            &|_: &[u8]| Ok(vec![2]),
+        )
+        .unwrap()
+        .insert_into(&mut headers)
+        .unwrap();
+
+    assert_eq!(
+        headers["signature-input"],
+        r#"extra=("@path");created=1, good=("@method");created=2"#,
+    );
+    assert_eq!(headers["signature"], "extra=:AQ==:, good=:Ag==:");
+}
+
+#[test]
 fn verification_policy_calls_verifier_with_response_base() {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
