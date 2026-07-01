@@ -170,6 +170,8 @@ pub use message_signatures::{
     MessageSignature, MessageSignatureBase, MessageSignatureComponent,
     MessageSignatureComponentParameter, MessageSignatureConfig, MessageSignatureError,
     MessageSignatureHeaders, MessageSignatureParams, MessageSignatureSigner,
+    MessageSignatureVerificationInput, MessageSignatureVerificationPolicy,
+    MessageSignatureVerifier,
 };
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};

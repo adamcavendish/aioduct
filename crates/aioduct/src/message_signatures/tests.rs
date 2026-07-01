@@ -14,6 +14,31 @@ fn config() -> MessageSignatureConfig {
         .key_id("test-key-rsa-pss")
 }
 
+fn verification_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(
+            r#"sig1=("@method" "@path" "content-type");created=100;expires=150;keyid="test-key";alg="test-alg""#,
+        ),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    headers
+}
+
+fn accept_verification(
+    _: MessageSignatureVerificationInput<'_>,
+) -> Result<bool, MessageSignatureError> {
+    Ok(true)
+}
+
+fn reject_verification(
+    _: MessageSignatureVerificationInput<'_>,
+) -> Result<bool, MessageSignatureError> {
+    Ok(false)
+}
+
 #[test]
 fn builds_signature_base_for_core_components() {
     let mut headers = HeaderMap::new();
@@ -1027,4 +1052,257 @@ fn sign_request_uses_signer_callback() {
         .unwrap();
 
     assert_eq!(headers.signature.to_str().unwrap(), "sig1=:CQgH:");
+}
+
+#[test]
+fn verification_policy_calls_verifier_with_rebuilt_base() {
+    let headers = verification_headers();
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+    let policy = MessageSignatureVerificationPolicy::new()
+        .required_component(MessageSignatureComponent::method())
+        .required_component(MessageSignatureComponent::header(CONTENT_TYPE))
+        .accepted_algorithm("test-alg")
+        .accepted_key_id("test-key")
+        .validation_time(125)
+        .max_age(60);
+
+    policy
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &|input: MessageSignatureVerificationInput<'_>| {
+                assert_eq!(input.label(), "sig1");
+                assert_eq!(input.params().created(), Some(100));
+                assert_eq!(input.params().expires(), Some(150));
+                assert_eq!(input.params().algorithm(), Some("test-alg"));
+                assert_eq!(input.params().key_id(), Some("test-key"));
+                assert_eq!(input.signature(), &[9, 8, 7]);
+                assert_eq!(
+                    std::str::from_utf8(input.signature_base()).unwrap(),
+                    "\
+\"@method\": POST\n\
+\"@path\": /foo\n\
+\"content-type\": application/json\n\
+\"@signature-params\": (\"@method\" \"@path\" \"content-type\");created=100;expires=150;keyid=\"test-key\";alg=\"test-alg\""
+                );
+                Ok(true)
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn parsed_signature_can_verify_with_policy() {
+    let headers = verification_headers();
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+    let signature = MessageSignature::from_headers(&headers, "sig1").unwrap();
+    let policy = MessageSignatureVerificationPolicy::new()
+        .accepted_algorithm("test-alg")
+        .accepted_key_id("test-key")
+        .validation_time(125);
+
+    signature
+        .verify_request(
+            &policy,
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &headers,
+            &accept_verification,
+        )
+        .unwrap();
+}
+
+#[test]
+fn verification_policy_reports_selection_and_header_errors() {
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let policy = MessageSignatureVerificationPolicy::new();
+
+    let headers = verification_headers();
+    let err = policy
+        .verify_request(
+            &headers,
+            "sig2",
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(err, MessageSignatureError::MissingSignatureLabel(label) if label == "sig2"));
+
+    let mut malformed = HeaderMap::new();
+    malformed.insert("signature-input", HeaderValue::from_static("sig1=("));
+    malformed.insert("signature", HeaderValue::from_static("sig1=:AA:"));
+    let err = policy
+        .verify_request(
+            &malformed,
+            "sig1",
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MalformedSignatureHeader("signature-input")
+    ));
+
+    let mut duplicate = HeaderMap::new();
+    duplicate.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@method"), sig1=("@path")"#),
+    );
+    duplicate.insert("signature", HeaderValue::from_static("sig1=:AA:"));
+    let err = policy
+        .verify_request(
+            &duplicate,
+            "sig1",
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::DuplicateSignatureLabel { header, label }
+            if header == "signature-input" && label == "sig1"
+    ));
+}
+
+#[test]
+fn verification_policy_rejects_unacceptable_signature_metadata() {
+    let headers = verification_headers();
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(err, MessageSignatureError::MissingValidationTime));
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .required_component(MessageSignatureComponent::authority())
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MissingRequiredComponent(component)
+            if component == "\"@authority\""
+    ));
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .accepted_algorithm("other")
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnacceptableAlgorithm(Some(algorithm))
+            if algorithm == "test-alg"
+    ));
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .accepted_key_id("other")
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnknownKeyId(Some(key_id)) if key_id == "test-key"
+    ));
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .validation_time(151)
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::SignatureExpired {
+            expires: 150,
+            now: 151
+        }
+    ));
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .validation_time(125)
+        .max_age(20)
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &accept_verification,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::SignatureTooOld {
+            created: 100,
+            now: 125,
+            max_age: 20,
+        }
+    ));
+}
+
+#[test]
+fn verification_policy_rejects_failed_verifier_callback() {
+    let headers = verification_headers();
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let err = MessageSignatureVerificationPolicy::new()
+        .validation_time(125)
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &reject_verification,
+        )
+        .unwrap_err();
+
+    assert!(matches!(err, MessageSignatureError::VerificationFailed));
 }
