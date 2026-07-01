@@ -1,6 +1,6 @@
 use super::*;
 use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DATE, HOST};
-use http::{HeaderMap, HeaderValue, Method, Uri};
+use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 
 fn config() -> MessageSignatureConfig {
     MessageSignatureConfig::new("sig1")
@@ -599,7 +599,7 @@ fn dictionary_key_rejects_duplicate_member_identities() {
                 .unwrap(),
         )
         .component(
-            MessageSignatureComponent::header(name)
+            MessageSignatureComponent::header(name.clone())
                 .structured_field()
                 .key("a")
                 .unwrap(),
@@ -616,6 +616,38 @@ fn dictionary_key_rejects_duplicate_member_identities() {
         err,
         MessageSignatureError::DuplicateComponent(component)
             if component == "\"example-dict\";sf;key=\"a\""
+    ));
+
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(
+            MessageSignatureComponent::header(name.clone())
+                .key("a")
+                .unwrap()
+                .related_request(),
+        )
+        .component(
+            MessageSignatureComponent::header(name)
+                .structured_field()
+                .key("a")
+                .unwrap()
+                .related_request(),
+        );
+    let err = cfg
+        .request_response_signature_base(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &headers,
+            StatusCode::OK,
+            &headers,
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        MessageSignatureError::DuplicateComponent(component)
+            if component == "\"example-dict\";sf;key=\"a\";req"
     ));
 }
 
@@ -1049,6 +1081,185 @@ fn sign_request_uses_signer_callback() {
                 Ok(vec![9, 8, 7])
             },
         )
+        .unwrap();
+
+    assert_eq!(headers.signature.to_str().unwrap(), "sig1=:CQgH:");
+}
+
+#[test]
+fn builds_response_signature_base_for_status_and_headers() {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status())
+        .component(MessageSignatureComponent::header(CONTENT_TYPE))
+        .created(1_618_884_479);
+
+    let base = cfg
+        .response_signature_base(StatusCode::SERVICE_UNAVAILABLE, &headers)
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\
+\"@status\": 503\n\
+\"content-type\": application/json\n\
+\"@signature-params\": (\"@status\" \"content-type\");created=1618884479"
+    );
+}
+
+#[test]
+fn request_response_signature_base_uses_related_request_components() {
+    let mut request_headers = HeaderMap::new();
+    request_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/problem+json"),
+    );
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status())
+        .component(MessageSignatureComponent::header(CONTENT_TYPE))
+        .component(MessageSignatureComponent::method().related_request())
+        .component(MessageSignatureComponent::path().related_request())
+        .component(MessageSignatureComponent::header(CONTENT_TYPE).related_request());
+
+    let base = cfg
+        .request_response_signature_base(
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &request_headers,
+            StatusCode::SERVICE_UNAVAILABLE,
+            &response_headers,
+        )
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\
+\"@status\": 503\n\
+\"content-type\": application/problem+json\n\
+\"@method\";req: POST\n\
+\"@path\";req: /foo\n\
+\"content-type\";req: application/json\n\
+\"@signature-params\": (\"@status\" \"content-type\" \"@method\";req \"@path\";req \"content-type\";req)"
+    );
+}
+
+#[test]
+fn response_signature_rejects_components_from_wrong_context() {
+    let response_headers = HeaderMap::new();
+    let method = Method::GET;
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request_headers = HeaderMap::new();
+
+    let err = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::method())
+        .response_signature_base(StatusCode::OK, &response_headers)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::ComponentNotAvailable {
+            context: "response",
+            ..
+        }
+    ));
+
+    let err = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::method().related_request())
+        .response_signature_base(StatusCode::OK, &response_headers)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::ComponentNotAvailable {
+            context: "response",
+            ..
+        }
+    ));
+
+    let err = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status().related_request())
+        .request_response_signature_base(
+            &method,
+            &target_uri,
+            &request_target,
+            &request_headers,
+            StatusCode::OK,
+            &response_headers,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnsupportedComponentParameters(component)
+            if component == "\"@status\";req"
+    ));
+}
+
+#[test]
+fn parsed_signature_rebuilds_response_and_related_request_base() {
+    let mut request_headers = HeaderMap::new();
+    request_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/problem+json"),
+    );
+    response_headers.insert(
+        "signature-input",
+        HeaderValue::from_static(
+            r#"sig1=("@status" "content-type" "@method";req "content-type";req);created=2"#,
+        ),
+    );
+    response_headers.insert("signature", HeaderValue::from_static("sig1=:AQID:"));
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+
+    let signature = MessageSignature::from_headers(&response_headers, "sig1").unwrap();
+    let base = signature
+        .request_response_signature_base(
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &request_headers,
+            StatusCode::SERVICE_UNAVAILABLE,
+            &response_headers,
+        )
+        .unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\
+\"@status\": 503\n\
+\"content-type\": application/problem+json\n\
+\"@method\";req: POST\n\
+\"content-type\";req: application/json\n\
+\"@signature-params\": (\"@status\" \"content-type\" \"@method\";req \"content-type\";req);created=2"
+    );
+}
+
+#[test]
+fn sign_response_uses_signer_callback() {
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status());
+
+    let headers = cfg
+        .sign_response(StatusCode::OK, &HeaderMap::new(), &|base: &[u8]| {
+            assert_eq!(
+                std::str::from_utf8(base).unwrap(),
+                "\"@status\": 200\n\"@signature-params\": (\"@status\")"
+            );
+            Ok(vec![9, 8, 7])
+        })
         .unwrap();
 
     assert_eq!(headers.signature.to_str().unwrap(), "sig1=:CQgH:");
