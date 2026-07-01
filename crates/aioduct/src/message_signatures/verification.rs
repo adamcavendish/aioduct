@@ -1,5 +1,5 @@
 use http::header::HeaderMap;
-use http::{Method, Uri};
+use http::{Method, StatusCode, Uri};
 
 use super::{
     MessageSignature, MessageSignatureComponent, MessageSignatureError, MessageSignatureParams,
@@ -15,7 +15,25 @@ pub struct MessageSignatureVerificationInput<'a> {
     signature: &'a [u8],
 }
 
-/// Verification policy for RFC 9421 request signatures.
+/// Borrowed request data used to verify RFC 9421 signatures.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct MessageSignatureRequestContext<'a> {
+    method: &'a Method,
+    target_uri: &'a Uri,
+    request_target: &'a Uri,
+    headers: &'a HeaderMap,
+}
+
+/// Borrowed response data used to verify RFC 9421 signatures.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct MessageSignatureResponseContext<'a> {
+    status: StatusCode,
+    headers: &'a HeaderMap,
+}
+
+/// Verification policy for RFC 9421 message signatures.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct MessageSignatureVerificationPolicy {
@@ -26,6 +44,64 @@ pub struct MessageSignatureVerificationPolicy {
     max_age: Option<u64>,
     clock_skew: u64,
     require_created: bool,
+}
+
+impl<'a> MessageSignatureRequestContext<'a> {
+    /// Create a request verification context.
+    ///
+    /// `target_uri` is the full request URI used for scheme, authority, path,
+    /// query, and target-uri derived components. `request_target` is the final
+    /// request URI form that was sent on the wire, used for `@request-target`.
+    pub fn new(
+        method: &'a Method,
+        target_uri: &'a Uri,
+        request_target: &'a Uri,
+        headers: &'a HeaderMap,
+    ) -> Self {
+        Self {
+            method,
+            target_uri,
+            request_target,
+            headers,
+        }
+    }
+
+    /// Return the request method.
+    pub fn method(&self) -> &'a Method {
+        self.method
+    }
+
+    /// Return the full target URI.
+    pub fn target_uri(&self) -> &'a Uri {
+        self.target_uri
+    }
+
+    /// Return the request target sent on the wire.
+    pub fn request_target(&self) -> &'a Uri {
+        self.request_target
+    }
+
+    /// Return the request header fields.
+    pub fn headers(&self) -> &'a HeaderMap {
+        self.headers
+    }
+}
+
+impl<'a> MessageSignatureResponseContext<'a> {
+    /// Create a response verification context.
+    pub fn new(status: StatusCode, headers: &'a HeaderMap) -> Self {
+        Self { status, headers }
+    }
+
+    /// Return the response status code.
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    /// Return the response header fields.
+    pub fn headers(&self) -> &'a HeaderMap {
+        self.headers
+    }
 }
 
 /// Caller-owned cryptographic verifier for RFC 9421 signatures.
@@ -183,6 +259,29 @@ impl MessageSignatureVerificationPolicy {
         )
     }
 
+    /// Parse and verify one response signature selected by label.
+    pub fn verify_response(
+        &self,
+        response: MessageSignatureResponseContext<'_>,
+        label: impl AsRef<str>,
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
+        let signature = MessageSignature::from_headers(response.headers(), label)?;
+        self.verify_parsed_response(&signature, response, verifier)
+    }
+
+    /// Parse and verify one response signature against its related request.
+    pub fn verify_request_response(
+        &self,
+        request: MessageSignatureRequestContext<'_>,
+        response: MessageSignatureResponseContext<'_>,
+        label: impl AsRef<str>,
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
+        let signature = MessageSignature::from_headers(response.headers(), label)?;
+        self.verify_parsed_request_response(&signature, request, response, verifier)
+    }
+
     pub(crate) fn verify_parsed_request(
         &self,
         signature: &MessageSignature,
@@ -194,10 +293,49 @@ impl MessageSignatureVerificationPolicy {
     ) -> Result<(), MessageSignatureError> {
         self.validate_policy(signature)?;
         let base = signature.signature_base(method, target_uri, request_target, headers)?;
+        self.verify_base(signature, base.as_bytes(), verifier)
+    }
+
+    pub(crate) fn verify_parsed_response(
+        &self,
+        signature: &MessageSignature,
+        response: MessageSignatureResponseContext<'_>,
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
+        self.validate_policy(signature)?;
+        let base = signature.response_signature_base(response.status(), response.headers())?;
+        self.verify_base(signature, base.as_bytes(), verifier)
+    }
+
+    pub(crate) fn verify_parsed_request_response(
+        &self,
+        signature: &MessageSignature,
+        request: MessageSignatureRequestContext<'_>,
+        response: MessageSignatureResponseContext<'_>,
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
+        self.validate_policy(signature)?;
+        let base = signature.request_response_signature_base(
+            request.method(),
+            request.target_uri(),
+            request.request_target(),
+            request.headers(),
+            response.status(),
+            response.headers(),
+        )?;
+        self.verify_base(signature, base.as_bytes(), verifier)
+    }
+
+    fn verify_base(
+        &self,
+        signature: &MessageSignature,
+        signature_base: &[u8],
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
         if verifier.verify(MessageSignatureVerificationInput::new(
             signature.label(),
             signature.params(),
-            base.as_bytes(),
+            signature_base,
             signature.signature(),
         ))? {
             Ok(())
@@ -339,5 +477,26 @@ impl MessageSignature {
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
         policy.verify_parsed_request(self, method, target_uri, request_target, headers, verifier)
+    }
+
+    /// Verify this parsed signature against a response and policy.
+    pub fn verify_response(
+        &self,
+        policy: &MessageSignatureVerificationPolicy,
+        response: MessageSignatureResponseContext<'_>,
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
+        policy.verify_parsed_response(self, response, verifier)
+    }
+
+    /// Verify this parsed signature against a response, related request, and policy.
+    pub fn verify_request_response(
+        &self,
+        policy: &MessageSignatureVerificationPolicy,
+        request: MessageSignatureRequestContext<'_>,
+        response: MessageSignatureResponseContext<'_>,
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
+        policy.verify_parsed_request_response(self, request, response, verifier)
     }
 }

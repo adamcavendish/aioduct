@@ -27,6 +27,22 @@ fn verification_headers() -> HeaderMap {
     headers
 }
 
+fn response_verification_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/problem+json"),
+    );
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(
+            r#"sig1=("@status" "content-type" "@method";req);created=100;expires=150;keyid="test-key";alg="test-alg""#,
+        ),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    headers
+}
+
 fn accept_verification(
     _: MessageSignatureVerificationInput<'_>,
 ) -> Result<bool, MessageSignatureError> {
@@ -1263,6 +1279,125 @@ fn sign_response_uses_signer_callback() {
         .unwrap();
 
     assert_eq!(headers.signature.to_str().unwrap(), "sig1=:CQgH:");
+}
+
+#[test]
+fn verification_policy_calls_verifier_with_response_base() {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(
+            r#"sig1=("@status" "content-type");created=100;expires=150;keyid="test-key";alg="test-alg""#,
+        ),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    let response = MessageSignatureResponseContext::new(StatusCode::SERVICE_UNAVAILABLE, &headers);
+    let policy = MessageSignatureVerificationPolicy::new()
+        .required_component(MessageSignatureComponent::status())
+        .required_component(MessageSignatureComponent::header(CONTENT_TYPE))
+        .accepted_algorithm("test-alg")
+        .accepted_key_id("test-key")
+        .validation_time(125)
+        .max_age(60);
+
+    policy
+        .verify_response(
+            response,
+            "sig1",
+            &|input: MessageSignatureVerificationInput<'_>| {
+                assert_eq!(input.label(), "sig1");
+                assert_eq!(input.signature(), &[9, 8, 7]);
+                assert_eq!(
+                    std::str::from_utf8(input.signature_base()).unwrap(),
+                    "\
+\"@status\": 503\n\
+\"content-type\": application/json\n\
+\"@signature-params\": (\"@status\" \"content-type\");created=100;expires=150;keyid=\"test-key\";alg=\"test-alg\""
+                );
+                Ok(true)
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn verification_policy_calls_verifier_with_related_request_response_base() {
+    let mut request_headers = HeaderMap::new();
+    request_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let response_headers = response_verification_headers();
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+    let request = MessageSignatureRequestContext::new(
+        &Method::POST,
+        &target_uri,
+        &request_target,
+        &request_headers,
+    );
+    let response = MessageSignatureResponseContext::new(StatusCode::BAD_GATEWAY, &response_headers);
+    let policy = MessageSignatureVerificationPolicy::new()
+        .required_component(MessageSignatureComponent::status())
+        .required_component(MessageSignatureComponent::method().related_request())
+        .accepted_algorithm("test-alg")
+        .accepted_key_id("test-key")
+        .validation_time(125);
+
+    policy
+        .verify_request_response(
+            request,
+            response,
+            "sig1",
+            &|input: MessageSignatureVerificationInput<'_>| {
+                assert_eq!(input.params().created(), Some(100));
+                assert_eq!(
+                    std::str::from_utf8(input.signature_base()).unwrap(),
+                    "\
+\"@status\": 502\n\
+\"content-type\": application/problem+json\n\
+\"@method\";req: POST\n\
+\"@signature-params\": (\"@status\" \"content-type\" \"@method\";req);created=100;expires=150;keyid=\"test-key\";alg=\"test-alg\""
+                );
+                Ok(true)
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn parsed_response_signature_can_verify_with_policy() {
+    let response_headers = response_verification_headers();
+    let response = MessageSignatureResponseContext::new(StatusCode::OK, &response_headers);
+    let signature = MessageSignature::from_headers(&response_headers, "sig1").unwrap();
+    let policy = MessageSignatureVerificationPolicy::new()
+        .accepted_algorithm("test-alg")
+        .accepted_key_id("test-key")
+        .validation_time(125);
+
+    let err = signature
+        .verify_response(&policy, response, &accept_verification)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::ComponentNotAvailable {
+            context: "response",
+            ..
+        }
+    ));
+
+    let mut request_headers = HeaderMap::new();
+    request_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+    let request = MessageSignatureRequestContext::new(
+        &Method::POST,
+        &target_uri,
+        &request_target,
+        &request_headers,
+    );
+
+    signature
+        .verify_request_response(&policy, request, response, &accept_verification)
+        .unwrap();
 }
 
 #[test]

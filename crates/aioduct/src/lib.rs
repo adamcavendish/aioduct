@@ -169,9 +169,9 @@ pub use link::Link;
 pub use message_signatures::{
     MessageSignature, MessageSignatureBase, MessageSignatureComponent,
     MessageSignatureComponentParameter, MessageSignatureConfig, MessageSignatureError,
-    MessageSignatureHeaders, MessageSignatureParams, MessageSignatureSigner,
-    MessageSignatureVerificationInput, MessageSignatureVerificationPolicy,
-    MessageSignatureVerifier,
+    MessageSignatureHeaders, MessageSignatureParams, MessageSignatureRequestContext,
+    MessageSignatureResponseContext, MessageSignatureSigner, MessageSignatureVerificationInput,
+    MessageSignatureVerificationPolicy, MessageSignatureVerifier,
 };
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
