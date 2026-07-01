@@ -6,7 +6,7 @@ use super::headers::{ACCEPT_SIGNATURE, existing_dictionary, reject_duplicate_lab
 use super::params::AcceptSignatureParams;
 use super::parsed::parse_accept_signature_member;
 use super::structured_fields;
-use super::{MessageSignatureComponent, MessageSignatureError};
+use super::{MessageSignatureComponent, MessageSignatureConfig, MessageSignatureError};
 
 /// Parsed or generated RFC 9421 `Accept-Signature` requests.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -23,6 +23,18 @@ pub struct AcceptSignatureEntry {
     components: Vec<MessageSignatureComponent>,
     params: AcceptSignatureParams,
     parsed_value: Option<String>,
+}
+
+/// Concrete metadata values used to fulfill an RFC 9421 `Accept-Signature` request.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct AcceptSignatureFulfillment {
+    created: Option<u64>,
+    expires: Option<u64>,
+    nonce: Option<String>,
+    algorithm: Option<String>,
+    key_id: Option<String>,
+    tag: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,14 +99,48 @@ impl AcceptSignature {
         self.validate_target(AcceptSignatureTarget::Request)
     }
 
+    /// Build signature configurations for fulfilling all entries on a request message.
+    pub fn request_signature_configs(
+        &self,
+        fulfillment: &AcceptSignatureFulfillment,
+    ) -> Result<Vec<MessageSignatureConfig>, MessageSignatureError> {
+        self.entries
+            .iter()
+            .map(|entry| entry.request_signature_config(fulfillment))
+            .collect()
+    }
+
     /// Validate that all entries can target a response message.
     pub fn validate_response_target(&self) -> Result<(), MessageSignatureError> {
         self.validate_target(AcceptSignatureTarget::Response)
     }
 
+    /// Build signature configurations for fulfilling all entries on a response message.
+    pub fn response_signature_configs(
+        &self,
+        fulfillment: &AcceptSignatureFulfillment,
+    ) -> Result<Vec<MessageSignatureConfig>, MessageSignatureError> {
+        self.entries
+            .iter()
+            .map(|entry| entry.response_signature_config(fulfillment))
+            .collect()
+    }
+
     /// Validate that all entries can target a response with its related request.
     pub fn validate_request_response_target(&self) -> Result<(), MessageSignatureError> {
         self.validate_target(AcceptSignatureTarget::RequestResponse)
+    }
+
+    /// Build signature configurations for fulfilling all entries on a response
+    /// that can also cover components from its related request with `;req`.
+    pub fn request_response_signature_configs(
+        &self,
+        fulfillment: &AcceptSignatureFulfillment,
+    ) -> Result<Vec<MessageSignatureConfig>, MessageSignatureError> {
+        self.entries
+            .iter()
+            .map(|entry| entry.request_response_signature_config(fulfillment))
+            .collect()
     }
 
     fn from_dictionary_entries(
@@ -131,6 +177,49 @@ impl AcceptSignature {
             entry.validate_target(target)?;
         }
         Ok(())
+    }
+}
+
+impl AcceptSignatureFulfillment {
+    /// Create empty fulfillment metadata.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the `created` metadata value to include in fulfilled signatures.
+    pub fn created(mut self, created: u64) -> Self {
+        self.created = Some(created);
+        self
+    }
+
+    /// Set the `expires` metadata value to include in fulfilled signatures.
+    pub fn expires(mut self, expires: u64) -> Self {
+        self.expires = Some(expires);
+        self
+    }
+
+    /// Set the `nonce` metadata value to include in fulfilled signatures.
+    pub fn nonce(mut self, nonce: impl Into<String>) -> Self {
+        self.nonce = Some(nonce.into());
+        self
+    }
+
+    /// Set the `alg` metadata value to include in fulfilled signatures.
+    pub fn algorithm(mut self, algorithm: impl Into<String>) -> Self {
+        self.algorithm = Some(algorithm.into());
+        self
+    }
+
+    /// Set the `keyid` metadata value to include in fulfilled signatures.
+    pub fn key_id(mut self, key_id: impl Into<String>) -> Self {
+        self.key_id = Some(key_id.into());
+        self
+    }
+
+    /// Set the `tag` metadata value to include in fulfilled signatures.
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
     }
 }
 
@@ -226,14 +315,89 @@ impl AcceptSignatureEntry {
         self.validate_target(AcceptSignatureTarget::Request)
     }
 
+    /// Build a signature configuration for fulfilling this request on a request message.
+    pub fn request_signature_config(
+        &self,
+        fulfillment: &AcceptSignatureFulfillment,
+    ) -> Result<MessageSignatureConfig, MessageSignatureError> {
+        self.validate_request_target()?;
+        self.signature_config(fulfillment)
+    }
+
     /// Validate that this request can target a response message.
     pub fn validate_response_target(&self) -> Result<(), MessageSignatureError> {
         self.validate_target(AcceptSignatureTarget::Response)
     }
 
+    /// Build a signature configuration for fulfilling this request on a response message.
+    pub fn response_signature_config(
+        &self,
+        fulfillment: &AcceptSignatureFulfillment,
+    ) -> Result<MessageSignatureConfig, MessageSignatureError> {
+        self.validate_response_target()?;
+        self.signature_config(fulfillment)
+    }
+
     /// Validate that this request can target a response with its related request.
     pub fn validate_request_response_target(&self) -> Result<(), MessageSignatureError> {
         self.validate_target(AcceptSignatureTarget::RequestResponse)
+    }
+
+    /// Build a signature configuration for fulfilling this request on a response
+    /// that can also cover components from its related request with `;req`.
+    pub fn request_response_signature_config(
+        &self,
+        fulfillment: &AcceptSignatureFulfillment,
+    ) -> Result<MessageSignatureConfig, MessageSignatureError> {
+        self.validate_request_response_target()?;
+        self.signature_config(fulfillment)
+    }
+
+    fn signature_config(
+        &self,
+        fulfillment: &AcceptSignatureFulfillment,
+    ) -> Result<MessageSignatureConfig, MessageSignatureError> {
+        let mut config = MessageSignatureConfig::new(self.label.clone())?
+            .components_iter(self.components.iter().cloned());
+
+        if let Some(created) = fulfill_requested_integer(
+            "created",
+            self.params.created_requested(),
+            fulfillment.created,
+        )? {
+            config = config.created(created);
+        }
+        if let Some(expires) = fulfill_requested_integer(
+            "expires",
+            self.params.expires_requested(),
+            fulfillment.expires,
+        )? {
+            config = config.expires(expires);
+        }
+        if let Some(nonce) =
+            fulfill_requested_string("nonce", self.params.nonce(), fulfillment.nonce.as_deref())?
+        {
+            config = config.nonce(nonce);
+        }
+        if let Some(algorithm) = fulfill_requested_string(
+            "alg",
+            self.params.algorithm(),
+            fulfillment.algorithm.as_deref(),
+        )? {
+            config = config.algorithm(algorithm);
+        }
+        if let Some(key_id) =
+            fulfill_requested_string("keyid", self.params.key_id(), fulfillment.key_id.as_deref())?
+        {
+            config = config.key_id(key_id);
+        }
+        if let Some(tag) =
+            fulfill_requested_string("tag", self.params.tag(), fulfillment.tag.as_deref())?
+        {
+            config = config.tag(tag);
+        }
+
+        Ok(config)
     }
 
     fn member_value(&self) -> Result<String, MessageSignatureError> {
@@ -261,6 +425,32 @@ impl AcceptSignatureEntry {
             validate_component_target(component, target)?;
         }
         Ok(())
+    }
+}
+
+fn fulfill_requested_integer(
+    parameter: &'static str,
+    requested: bool,
+    fulfilled: Option<u64>,
+) -> Result<Option<u64>, MessageSignatureError> {
+    if requested && fulfilled.is_none() {
+        return Err(MessageSignatureError::UnfulfillableAcceptSignatureParameter(parameter));
+    }
+    Ok(fulfilled)
+}
+
+fn fulfill_requested_string(
+    parameter: &'static str,
+    requested: Option<&str>,
+    fulfilled: Option<&str>,
+) -> Result<Option<String>, MessageSignatureError> {
+    match (requested, fulfilled) {
+        (Some(requested), Some(fulfilled)) if requested != fulfilled => {
+            Err(MessageSignatureError::UnfulfillableAcceptSignatureParameter(parameter))
+        }
+        (Some(requested), _) => Ok(Some(requested.to_owned())),
+        (None, Some(fulfilled)) => Ok(Some(fulfilled.to_owned())),
+        (None, None) => Ok(None),
     }
 }
 

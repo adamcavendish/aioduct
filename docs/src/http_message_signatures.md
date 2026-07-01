@@ -2,12 +2,13 @@
 
 aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
 response signature-base helpers, parsed verification helpers,
-`Accept-Signature` header helpers, and native automatic request signing. The
+`Accept-Signature` negotiation helpers, and native automatic request signing. The
 portable helpers build signature bases, format and parse `Signature-Input` /
-`Signature` header values, apply verification policy checks, and expose the bytes
-callers pass to cryptographic code. Callers still choose the cryptographic
-signing and verification algorithms. Native clients can also run a synchronous
-signer automatically for each finalized request attempt.
+`Signature` header values, turn accepted signature requests into concrete signing
+configs, apply verification policy checks, and expose the bytes callers pass to
+cryptographic code. Callers still choose the cryptographic signing and
+verification algorithms. Native clients can also run a synchronous signer
+automatically for each finalized request attempt.
 
 ## Core Flow
 
@@ -196,10 +197,49 @@ accept.insert_into(&mut headers)?;
 Use `validate_request_target()` when an `Accept-Signature` response asks the
 client to sign its next request. Use `validate_request_response_target()` when an
 `Accept-Signature` request asks the server to sign the response and that response
-signature can cover related request components with `;req`. Fulfillment remains
-explicit: callers still choose signing keys, generate any requested timestamp
-parameters, build the target signature base, and attach the resulting
-`Signature-Input` / `Signature` fields.
+signature can cover related request components with `;req`.
+
+`AcceptSignatureFulfillment` provides concrete metadata values, such as generated
+`created` and `expires` timestamps. The `*_signature_config()` helpers validate
+target-message applicability, copy requested components and metadata into a
+`MessageSignatureConfig`, and fail closed when a requested timestamp is missing
+or a supplied metadata value conflicts with the request.
+
+```rust,no_run
+use aioduct::{AcceptSignature, AcceptSignatureFulfillment};
+use http::{HeaderMap, Method, StatusCode, Uri};
+
+# fn example(request_headers: HeaderMap, mut response_headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
+let accept = AcceptSignature::from_headers(&request_headers)?;
+let fulfillment = AcceptSignatureFulfillment::new()
+    .created(1_618_884_500)
+    .key_id("test-key");
+
+let target_uri: Uri = "https://example.com/foo".parse()?;
+let request_target: Uri = "/foo".parse()?;
+
+for config in accept.request_response_signature_configs(&fulfillment)? {
+    let base = config.request_response_signature_base(
+        &Method::GET,
+        &target_uri,
+        &request_target,
+        &request_headers,
+        StatusCode::OK,
+        &response_headers,
+    )?;
+    let signature = my_signing_function(base.as_bytes());
+    config.headers_from_signature(signature)?.insert_into(&mut response_headers)?;
+}
+# Ok(())
+# }
+# fn my_signing_function(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
+```
+
+Fulfillment remains explicit: callers still choose which requests to honor,
+select signing keys, generate timestamps, run cryptography, and attach the
+resulting `Signature-Input` / `Signature` fields. Receivers can ignore an
+unacceptable request by selecting individual `AcceptSignatureEntry` values
+instead of fulfilling the whole dictionary.
 
 ## Request Verification
 
@@ -381,8 +421,8 @@ work lands.
 | Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
 | Parsed signature selection and request-base rebuild | Supported | `parsed_signature_selects_label_and_rebuilds_request_base`, `parsed_signature_handles_component_parameters`, `parsed_signature_reports_selection_and_header_errors` | Current | Parses selected `Signature-Input` / `Signature` labels, exposes known metadata and signature bytes, preserves extension metadata in the rebuilt base, and rejects malformed or mismatched fields. |
 | Message verification policy API | Supported | `verification_policy_calls_verifier_with_rebuilt_base`, `verification_policy_calls_verifier_with_response_base`, `verification_policy_calls_verifier_with_related_request_response_base`, `parsed_response_signature_can_verify_with_policy`, `verification_policy_reports_selection_and_header_errors`, `verification_policy_rejects_unacceptable_signature_metadata`, `verification_policy_rejects_failed_verifier_callback` | Current | Applies required-component, accepted-algorithm, accepted-key-id, timestamp, max-age, and verifier-callback checks for selected request, response, and request-response signatures. Cryptographic verification remains caller-owned. |
-| `Accept-Signature` parser and builder | Supported | `accept_signature_parses_rfc_style_request`, `accept_signature_formats_and_inserts_header`, `accept_signature_from_headers_combines_field_values`, `accept_signature_reports_header_errors`, `accept_signature_validates_target_message_components` | Current | Parses and formats requested signature dictionaries, exposes requested metadata, and validates request, response, or request-response target component applicability. Fulfillment remains caller-owned. |
-| `Accept-Signature` fulfillment helpers | Planned | Matrix only | Negotiation | Requires helper logic to match requested labels/components/params, generate missing metadata, and attach resulting signatures. |
+| `Accept-Signature` parser and builder | Supported | `accept_signature_parses_rfc_style_request`, `accept_signature_formats_and_inserts_header`, `accept_signature_from_headers_combines_field_values`, `accept_signature_reports_header_errors`, `accept_signature_validates_target_message_components` | Current | Parses and formats requested signature dictionaries, exposes requested metadata, and validates request, response, or request-response target component applicability. |
+| `Accept-Signature` fulfillment helpers | Supported | `accept_signature_fulfills_response_with_related_request`, `accept_signature_fulfills_next_request`, `accept_signature_fulfillment_reports_unfulfillable_requests`, `accept_signature_allows_ignoring_requests_and_adding_signatures` | Current | Converts accepted entries into concrete `MessageSignatureConfig` values, fills requested metadata, rejects missing or conflicting requested parameters, supports caller-selected ignored requests, and allows additional signatures. Cryptography and header attachment remain caller-owned. |
 | Buffered automatic `Content-Digest` generation | Planned | Matrix only | Body digest | Current support signs caller-supplied `Content-Digest` fields. |
 | Async automatic signing | Planned | Matrix only | Async signing | Sync automatic signing remains supported; async signing will use explicit send/local APIs. |
 | Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs cross-runtime request-trailer semantics first. |
@@ -391,7 +431,6 @@ work lands.
 ## Future Work
 
 - Async automatic signer callbacks.
-- `Accept-Signature` fulfillment helpers.
 - Component parameter `;tr`.
 - Automatic `Content-Digest` generation for buffered request bodies.
 - Precomputed digest helpers for streaming bodies.
