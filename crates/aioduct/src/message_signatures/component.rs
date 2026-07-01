@@ -39,12 +39,14 @@ pub(crate) enum MessageSignatureComponentKind {
     Path,
     Query,
     QueryParam,
+    Status,
     Header(HeaderName),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MessageSignatureComponentTarget {
     Request,
+    Response,
     RequestOrResponse,
 }
 
@@ -92,6 +94,11 @@ impl MessageSignatureComponent {
         let name = name.into();
         let name = encode_query_param_component(&name);
         Self::new(MessageSignatureComponentKind::QueryParam).name(name)
+    }
+
+    /// The response status code (`@status`).
+    pub fn status() -> Self {
+        Self::new(MessageSignatureComponentKind::Status)
     }
 
     /// A request or response header field.
@@ -154,8 +161,36 @@ impl MessageSignatureComponent {
             MessageSignatureComponentKind::Header(_) => {
                 MessageSignatureComponentTarget::RequestOrResponse
             }
+            MessageSignatureComponentKind::Status => MessageSignatureComponentTarget::Response,
             _ => MessageSignatureComponentTarget::Request,
         }
+    }
+
+    pub(crate) fn related_request_parameter_count(&self) -> usize {
+        self.parameters
+            .iter()
+            .filter(|parameter| {
+                matches!(
+                    parameter,
+                    MessageSignatureComponentParameter::RelatedRequest
+                )
+            })
+            .count()
+    }
+
+    pub(crate) fn has_related_request_parameter(&self) -> bool {
+        self.related_request_parameter_count() > 0
+    }
+
+    pub(crate) fn without_related_request_parameter(&self) -> Self {
+        let mut out = self.clone();
+        out.parameters.retain(|parameter| {
+            !matches!(
+                parameter,
+                MessageSignatureComponentParameter::RelatedRequest
+            )
+        });
+        out
     }
 
     pub(crate) fn has_parameters(&self) -> bool {
@@ -187,18 +222,24 @@ impl MessageSignatureComponent {
                 MessageSignatureComponentParameter::Key(value) if key.is_none() => {
                     key = Some(value.as_str());
                 }
+                MessageSignatureComponentParameter::RelatedRequest => {}
                 _ => return None,
             }
         }
         key
     }
 
-    pub(crate) fn dictionary_key_identity(&self) -> Option<(HeaderName, String)> {
+    pub(crate) fn dictionary_key_identity(&self) -> Option<(HeaderName, String, bool)> {
         let MessageSignatureComponentKind::Header(name) = &self.kind else {
             return None;
         };
-        self.dictionary_key()
-            .map(|key| (name.clone(), key.to_owned()))
+        self.dictionary_key().map(|key| {
+            (
+                name.clone(),
+                key.to_owned(),
+                self.has_related_request_parameter(),
+            )
+        })
     }
 
     pub(crate) fn with_parsed_parameter(
@@ -245,6 +286,7 @@ impl MessageSignatureComponent {
             MessageSignatureComponentKind::Path => "\"@path\"".to_owned(),
             MessageSignatureComponentKind::Query => "\"@query\"".to_owned(),
             MessageSignatureComponentKind::QueryParam => "\"@query-param\"".to_owned(),
+            MessageSignatureComponentKind::Status => "\"@status\"".to_owned(),
             MessageSignatureComponentKind::Header(name) => {
                 format!("\"{}\"", name.as_str().to_ascii_lowercase())
             }
@@ -265,6 +307,7 @@ impl MessageSignatureComponent {
             MessageSignatureComponentKind::Path => "@path".to_owned(),
             MessageSignatureComponentKind::Query => "@query".to_owned(),
             MessageSignatureComponentKind::QueryParam => "@query-param".to_owned(),
+            MessageSignatureComponentKind::Status => "@status".to_owned(),
             MessageSignatureComponentKind::Header(name) => name.as_str().to_ascii_lowercase(),
         };
         let mut parameters = self

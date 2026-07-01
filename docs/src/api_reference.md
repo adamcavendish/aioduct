@@ -244,7 +244,7 @@ or a `ClientBuilder` that is never built, produces a compiler warning.
 `MessageSignatureConfig` builds RFC 9421 request signature bases and formats the
 `Signature-Input` / `Signature` headers from caller-provided signature bytes.
 `MessageSignature` parses existing signature fields by label and rebuilds the
-request signature base for caller-owned verification.
+request or response signature base for caller-owned verification.
 `MessageSignatureVerificationPolicy` applies request verification policy checks
 before invoking caller-owned cryptographic verification. The helpers are portable
 and do not choose a cryptographic algorithm.
@@ -269,6 +269,36 @@ let signature_headers = config.headers_from_signature(signature)?;
 # Ok(())
 # }
 # fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
+```
+
+Response bases can cover `@status`, response fields, and selected related
+request components with `;req`:
+
+```rust,no_run
+# use aioduct::{MessageSignatureComponent, MessageSignatureConfig};
+# use http::{HeaderMap, Method, StatusCode, Uri};
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let target_uri: Uri = "https://example.com/api".parse()?;
+let request_target: Uri = "/api".parse()?;
+let request_headers = HeaderMap::new();
+let response_headers = HeaderMap::new();
+
+let config = MessageSignatureConfig::new("reqres")?
+    .component(MessageSignatureComponent::status())
+    .component(MessageSignatureComponent::method().related_request())
+    .created(1_618_884_479);
+
+let base = config.request_response_signature_base(
+    &Method::POST,
+    &target_uri,
+    &request_target,
+    &request_headers,
+    StatusCode::OK,
+    &response_headers,
+)?;
+# let _ = base;
+# Ok(())
+# }
 ```
 
 Native clients can also sign each finalized request attempt automatically:
@@ -339,6 +369,9 @@ policy.verify_request(
 If the selected signature includes `created` or `expires`, set
 `validation_time()`; otherwise the policy fails closed with
 `MissingValidationTime` instead of silently accepting stale metadata.
+
+Response signature verification policy is not automatic yet; use parsed
+`MessageSignature` response-base rebuilders plus caller-owned cryptography.
 
 ### Sending
 
