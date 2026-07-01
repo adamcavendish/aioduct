@@ -288,6 +288,11 @@ where
         }));
 
         let mut request = http::Request::from_parts(parts, boxed_body);
+        self.client.core.apply_automatic_content_digest(
+            self.client.core.automatic_content_digest,
+            request.headers_mut(),
+            &crate::digest_fields::ContentDigestBody::Unavailable,
+        )?;
         self.client
             .core
             .sign_final_request(&full_uri, &mut request)?;

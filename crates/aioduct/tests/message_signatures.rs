@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{
-    Error, HttpEngineSend, MessageSignatureComponent, MessageSignatureConfig, MessageSignatureError,
+    Error, HttpCache, HttpEngineSend, MessageSignatureComponent, MessageSignatureConfig,
+    MessageSignatureError,
 };
 use bytes::Bytes;
-use http::header::{AUTHORIZATION, HeaderName};
-use http_body_util::Full;
+use http::header::{AUTHORIZATION, CACHE_CONTROL, HeaderName, HeaderValue, VARY};
+use http_body_util::{BodyExt, Full};
 use hyper::Response;
 
 use aioduct_test_server::h1::h1_server_with;
@@ -249,6 +250,245 @@ async fn digest_retry_signature_covers_retry_authorization() {
         bases[1].contains(r#""authorization": Digest "#),
         "{}",
         bases[1]
+    );
+}
+
+#[tokio::test]
+async fn automatic_content_digest_is_inserted_before_signing() {
+    let bases = Arc::new(Mutex::new(Vec::new()));
+    let signer_bases = bases.clone();
+    let signer = move |base: &[u8]| -> Result<Vec<u8>, MessageSignatureError> {
+        signer_bases
+            .lock()
+            .unwrap()
+            .push(String::from_utf8(base.to_vec()).unwrap());
+        Ok(b"signed".to_vec())
+    };
+    let content_digest = HeaderName::from_static("content-digest");
+    let config = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::header(content_digest.clone()));
+
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let content_digest = req
+            .headers()
+            .get("content-digest")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "content-digest={content_digest}\nbody={}",
+            String::from_utf8_lossy(&body)
+        )))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .automatic_content_digest(true)
+        .message_signature(config, signer)
+        .build()
+        .unwrap();
+    let resp = client
+        .post(&format!("http://{addr}/digest"))
+        .unwrap()
+        .body("hello")
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    let expected = "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:";
+    assert!(
+        body.contains(&format!("content-digest={expected}")),
+        "{body}"
+    );
+    assert!(body.contains("body=hello"), "{body}");
+
+    let bases = bases.lock().unwrap();
+    assert_eq!(bases.len(), 1);
+    assert!(
+        bases[0].contains(&format!(r#""content-digest": {expected}"#)),
+        "{}",
+        bases[0]
+    );
+}
+
+#[tokio::test]
+async fn automatic_content_digest_preserves_manual_header() {
+    let bases = Arc::new(Mutex::new(Vec::new()));
+    let signer_bases = bases.clone();
+    let signer = move |base: &[u8]| -> Result<Vec<u8>, MessageSignatureError> {
+        signer_bases
+            .lock()
+            .unwrap()
+            .push(String::from_utf8(base.to_vec()).unwrap());
+        Ok(b"signed".to_vec())
+    };
+    let config =
+        MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::header(HeaderName::from_static(
+                "content-digest",
+            )));
+
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let content_digest = req
+            .headers()
+            .get("content-digest")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let _ = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(content_digest))))
+    })
+    .await;
+
+    let manual = "sha-256=:bWFudWFs:";
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .automatic_content_digest(true)
+        .message_signature(config, signer)
+        .build()
+        .unwrap();
+    let resp = client
+        .post(&format!("http://{addr}/digest"))
+        .unwrap()
+        .header_str("content-digest", manual)
+        .unwrap()
+        .body("hello")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.text().await.unwrap(), manual);
+    let bases = bases.lock().unwrap();
+    assert_eq!(bases.len(), 1);
+    assert!(
+        bases[0].contains(&format!(r#""content-digest": {manual}"#)),
+        "{}",
+        bases[0]
+    );
+}
+
+#[tokio::test]
+async fn automatic_content_digest_participates_in_cache_vary() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let server_hits = hits.clone();
+    let (addr, _counter) = h1_server_with(move |req| {
+        let server_hits = server_hits.clone();
+        async move {
+            let hit = server_hits.fetch_add(1, Ordering::SeqCst) + 1;
+            let content_digest = req
+                .headers()
+                .get("content-digest")
+                .map(|v| v.to_str().unwrap().to_owned())
+                .unwrap_or_else(|| "none".to_owned());
+            let mut resp = Response::new(Full::new(Bytes::from(format!(
+                "hit={hit}\ncontent-digest={content_digest}"
+            ))));
+            resp.headers_mut()
+                .insert(CACHE_CONTROL, HeaderValue::from_static("max-age=60"));
+            resp.headers_mut()
+                .insert(VARY, HeaderValue::from_static("Content-Digest"));
+            Ok::<_, Infallible>(resp)
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .automatic_content_digest(true)
+        .cache(HttpCache::new())
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/vary-content-digest");
+
+    let first = client
+        .get(&url)
+        .unwrap()
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(first.contains("hit=1"), "{first}");
+    assert!(first.contains("content-digest=none"), "{first}");
+
+    let second = client
+        .get(&url)
+        .unwrap()
+        .body("hello")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let expected = "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:";
+    assert!(second.contains("hit=2"), "{second}");
+    assert!(
+        second.contains(&format!("content-digest={expected}")),
+        "{second}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn automatic_content_digest_rejects_streaming_body_without_manual_digest() {
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let _ = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .automatic_content_digest(true)
+        .build()
+        .unwrap();
+    let stream_body = Full::new(Bytes::from_static(b"hello"))
+        .map_err(|never| match never {})
+        .boxed_unsync();
+    let err = client
+        .post(&format!("http://{addr}/digest"))
+        .unwrap()
+        .body_stream(stream_body)
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err.into_error(), Error::Unsupported(message) if message.contains("automatic Content-Digest"))
+    );
+}
+
+#[tokio::test]
+async fn automatic_content_digest_rejects_middleware_replaced_body_without_manual_digest() {
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let _ = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .automatic_content_digest(true)
+        .middleware(
+            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
+                *req.body_mut() = Full::new(Bytes::from_static(b"changed"))
+                    .map_err(|never| match never {})
+                    .boxed_unsync();
+            },
+        )
+        .build()
+        .unwrap();
+    let err = client
+        .post(&format!("http://{addr}/digest"))
+        .unwrap()
+        .body("hello")
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err.into_error(), Error::Unsupported(message) if message.contains("automatic Content-Digest"))
     );
 }
 

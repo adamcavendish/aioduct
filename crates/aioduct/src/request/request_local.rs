@@ -32,6 +32,7 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     force_no_timeout: bool,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
+    automatic_content_digest: Option<bool>,
     builder_error: Option<BuilderError>,
     /// Original URL fragment from the user-provided URL string.
     /// Preserved across redirects per RFC 7231 Section 7.1.2.
@@ -70,6 +71,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             force_no_timeout: false,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            automatic_content_digest: None,
             builder_error: None,
             fragment,
         }
@@ -96,6 +98,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             force_no_timeout: false,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            automatic_content_digest: None,
             builder_error: None,
             fragment,
         }
@@ -220,6 +223,17 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
     /// is called after this, the body will be silently replaced.
     pub fn body_stream(mut self, body: RequestBodySend) -> Self {
         self.body = Some(RequestBody::Streaming(body));
+        self
+    }
+
+    /// Override automatic `Content-Digest` generation for this request.
+    ///
+    /// When enabled, dispatch inserts a SHA-256 `Content-Digest` header for a
+    /// buffered body that does not already have one. Streaming or
+    /// middleware-replaced bodies are not buffered; set `Content-Digest`
+    /// explicitly for those requests.
+    pub fn automatic_content_digest(mut self, enable: bool) -> Self {
+        self.automatic_content_digest = Some(enable);
         self
     }
 
@@ -486,6 +500,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             force_no_timeout: self.force_no_timeout,
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
+            automatic_content_digest: self.automatic_content_digest,
             builder_error: self.builder_error.clone(),
             fragment: self.fragment.clone(),
         })
@@ -504,6 +519,9 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         let effective_connect_timeout = self.connect_timeout.or(self.client.core.connect_timeout);
         let effective_write_timeout = self.write_timeout.or(self.client.core.write_timeout);
         let effective_read_timeout = self.read_timeout.or(self.client.core.read_timeout);
+        let automatic_content_digest = self
+            .automatic_content_digest
+            .unwrap_or(self.client.core.automatic_content_digest);
 
         let execute_fut = self.client.execute_local(
             self.method,
@@ -517,6 +535,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             self.no_decompression,
             self.force_addr,
             self.protocol_hint,
+            automatic_content_digest,
             self.fragment,
         );
 

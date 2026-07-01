@@ -37,6 +37,7 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     retry: Option<RetryConfig>,
     force_addr: Option<std::net::SocketAddr>,
     protocol_hint: ProtocolHint,
+    automatic_content_digest: Option<bool>,
     builder_error: Option<BuilderError>,
     /// Original URL fragment from the user-provided URL string.
     /// Preserved across redirects per RFC 7231 Section 7.1.2.
@@ -77,6 +78,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            automatic_content_digest: None,
             builder_error: None,
             fragment,
             _runtime: PhantomData,
@@ -105,6 +107,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: None,
             force_addr: None,
             protocol_hint: ProtocolHint::Auto,
+            automatic_content_digest: None,
             builder_error: None,
             fragment,
             _runtime: PhantomData,
@@ -237,6 +240,17 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     /// is called after this, the body will be silently replaced.
     pub fn body_stream(mut self, body: RequestBodySend) -> Self {
         self.body = Some(RequestBody::Streaming(body));
+        self
+    }
+
+    /// Override automatic `Content-Digest` generation for this request.
+    ///
+    /// When enabled, dispatch inserts a SHA-256 `Content-Digest` header for a
+    /// buffered body that does not already have one. Streaming or
+    /// middleware-replaced bodies are not buffered; set `Content-Digest`
+    /// explicitly for those requests.
+    pub fn automatic_content_digest(mut self, enable: bool) -> Self {
+        self.automatic_content_digest = Some(enable);
         self
     }
 
@@ -520,6 +534,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             retry: self.retry.clone(),
             force_addr: self.force_addr,
             protocol_hint: self.protocol_hint,
+            automatic_content_digest: self.automatic_content_digest,
             builder_error: self.builder_error.clone(),
             fragment: self.fragment.clone(),
             _runtime: PhantomData,
@@ -563,6 +578,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             .or(self.client.default_connect_timeout());
         let effective_write_timeout = self.write_timeout.or(self.client.default_write_timeout());
         let effective_read_timeout = self.read_timeout.or(self.client.default_read_timeout());
+        let automatic_content_digest = self
+            .automatic_content_digest
+            .unwrap_or(self.client.core.automatic_content_digest);
         let method = self.method.clone();
         let uri = self.uri.clone();
         let execute_fut = self.client.execute_send(
@@ -577,6 +595,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             self.no_decompression,
             self.force_addr,
             self.protocol_hint,
+            automatic_content_digest,
             self.fragment,
         );
 
@@ -617,6 +636,9 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             .or(self.client.default_connect_timeout());
         let effective_write_timeout = self.write_timeout.or(self.client.default_write_timeout());
         let effective_read_timeout = self.read_timeout.or(self.client.default_read_timeout());
+        let automatic_content_digest = self
+            .automatic_content_digest
+            .unwrap_or(self.client.core.automatic_content_digest);
         let mut last_error = None;
         let mut body = self.body;
         let mut retry_after_delay: Option<Duration> = None;
@@ -647,6 +669,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 self.no_decompression,
                 self.force_addr,
                 self.protocol_hint,
+                automatic_content_digest,
                 self.fragment.clone(),
             );
 

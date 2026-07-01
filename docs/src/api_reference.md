@@ -88,6 +88,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `proxy_settings(ProxySettings)` | None | Fine-grained HTTP/HTTPS proxy with bypass rules |
 | `http2(Http2Config)`    | None   | Configure HTTP/2 parameters (window sizes, keepalive, frame size) |
 | `middleware(impl Middleware)` | None | Add a middleware layer that can inspect/modify requests and responses |
+| `automatic_content_digest(bool)` | false | Insert SHA-256 `Content-Digest` for buffered native request bodies before automatic signing |
 | `retry(RetryConfig)`    | None        | Default retry policy for all requests |
 | `cookie_jar(CookieJar)` | None       | Enable automatic cookie management   |
 | `rate_limiter(RateLimiter)` | None   | Token-bucket rate limiter for outgoing requests |
@@ -210,6 +211,7 @@ let rb = client.get("http://example.com").unwrap()
     .connect_timeout(Duration::from_secs(2)) // per-request connection timeout
     .read_timeout(Duration::from_secs(30))   // per-request response read-gap timeout
     .write_timeout(Duration::from_secs(10))  // per-request upload timeout
+    .automatic_content_digest(true)          // per-request SHA-256 Content-Digest
     .no_decompression()                      // per-request: skip Accept-Encoding + decoding
     .version(http::Version::HTTP_11);    // force HTTP version
 
@@ -324,6 +326,14 @@ Automatic signing runs after default headers, cookies, cache validators,
 middleware, digest-auth retry headers, forwarding request rewrites, and framing
 cleanup. When configured, it replaces only its configured label in
 `Signature-Input` and `Signature` on every native dispatch attempt.
+
+Use `automatic_content_digest(true)` on the client builder or a request builder
+to insert `Content-Digest: sha-256=:...:` for buffered native request bodies that
+do not already have `Content-Digest`. The header is generated after middleware
+and before automatic signing, so signatures covering `content-digest` cover the
+generated value. Requests without a configured body are left unchanged. Streaming
+and middleware-replaced bodies are not buffered; provide `Content-Digest`
+explicitly for those requests.
 
 `AcceptSignature` parses and formats RFC 9421 `Accept-Signature` negotiation
 fields. `AcceptSignatureFulfillment` turns accepted entries into concrete
