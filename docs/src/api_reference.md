@@ -244,7 +244,9 @@ or a `ClientBuilder` that is never built, produces a compiler warning.
 `MessageSignatureConfig` builds RFC 9421 request signature bases and formats the
 `Signature-Input` / `Signature` headers from caller-provided signature bytes.
 `MessageSignature` parses existing signature fields by label and rebuilds the
-request signature base for caller-owned verification. The helpers are portable
+request signature base for caller-owned verification.
+`MessageSignatureVerificationPolicy` applies request verification policy checks
+before invoking caller-owned cryptographic verification. The helpers are portable
 and do not choose a cryptographic algorithm.
 
 ```rust,no_run
@@ -293,23 +295,50 @@ middleware, digest-auth retry headers, forwarding request rewrites, and framing
 cleanup. When configured, it replaces only its configured label in
 `Signature-Input` and `Signature` on every native dispatch attempt.
 
-For verification, parse a selected label, rebuild the base, then pass the base,
-signature bytes, and metadata to your own verifier:
+For verification, configure a request policy, then pass the selected label,
+rebuilt base, signature bytes, and metadata to your own verifier:
 
 ```rust,no_run
-# use aioduct::MessageSignature;
+# use aioduct::{
+#     MessageSignatureComponent, MessageSignatureVerificationInput,
+#     MessageSignatureVerificationPolicy,
+# };
 # use http::{HeaderMap, Method, Uri};
 # fn example(headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
 let target_uri: Uri = "https://example.com/api".parse()?;
 let request_target: Uri = "/api".parse()?;
-let signature = MessageSignature::from_headers(&headers, "sig1")?;
-let base = signature.signature_base(&Method::GET, &target_uri, &request_target, &headers)?;
 
-verify_with_your_key(base.as_bytes(), signature.signature(), signature.params());
+let policy = MessageSignatureVerificationPolicy::new()
+    .required_component(MessageSignatureComponent::method())
+    .accepted_algorithm("ed25519")
+    .accepted_key_id("test-key")
+    .validation_time(1_618_884_500)
+    .max_age(300);
+
+policy.verify_request(
+    &headers,
+    "sig1",
+    &Method::GET,
+    &target_uri,
+    &request_target,
+    &|input: MessageSignatureVerificationInput<'_>| {
+        Ok(verify_with_your_key(
+            input.signature_base(),
+            input.signature(),
+            input.params(),
+        ))
+    },
+)?;
 # Ok(())
 # }
-# fn verify_with_your_key(_: &[u8], _: &[u8], _: &aioduct::MessageSignatureParams) {}
+# fn verify_with_your_key(_: &[u8], _: &[u8], _: &aioduct::MessageSignatureParams) -> bool {
+#     true
+# }
 ```
+
+If the selected signature includes `created` or `expires`, set
+`validation_time()`; otherwise the policy fails closed with
+`MissingValidationTime` instead of silently accepting stale metadata.
 
 ### Sending
 

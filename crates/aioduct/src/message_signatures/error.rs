@@ -59,6 +59,49 @@ pub enum MessageSignatureError {
     /// A covered component is not supported by the current implementation.
     #[error("covered component {0} is not supported")]
     UnsupportedComponent(String),
+    /// A verification policy required a component that was not covered.
+    #[error("signature does not cover required component {0}")]
+    MissingRequiredComponent(String),
+    /// A verification policy required a metadata parameter that is missing.
+    #[error("signature metadata parameter `{0}` is missing")]
+    MissingSignatureParameter(&'static str),
+    /// A verification policy needs a validation time but none was configured.
+    #[error("signature verification policy needs a validation time")]
+    MissingValidationTime,
+    /// The signature's algorithm metadata is not accepted by policy.
+    #[error("signature algorithm is not accepted")]
+    UnacceptableAlgorithm(Option<String>),
+    /// The signature's key identifier metadata is not accepted by policy.
+    #[error("signature key id is not accepted")]
+    UnknownKeyId(Option<String>),
+    /// The signature expired before the policy validation time.
+    #[error("signature expired at {expires}, before validation time {now}")]
+    SignatureExpired {
+        /// The `expires` metadata value.
+        expires: u64,
+        /// The validation time.
+        now: u64,
+    },
+    /// The signature creation time is after the policy validation time.
+    #[error("signature was created at {created}, after validation time {now}")]
+    SignatureCreatedInFuture {
+        /// The `created` metadata value.
+        created: u64,
+        /// The validation time.
+        now: u64,
+    },
+    /// The signature is older than the policy's maximum age.
+    #[error(
+        "signature created at {created} is older than maximum age {max_age} at validation time {now}"
+    )]
+    SignatureTooOld {
+        /// The `created` metadata value.
+        created: u64,
+        /// The validation time.
+        now: u64,
+        /// The maximum accepted age in seconds.
+        max_age: u64,
+    },
     /// A covered component is not available in the selected message context.
     #[error("covered component {component} is not available in {context} context")]
     ComponentNotAvailable {
@@ -109,4 +152,10 @@ pub enum MessageSignatureError {
     /// The caller-provided signer failed.
     #[error("message signer failed: {0}")]
     Signer(String),
+    /// The caller-provided verifier rejected the signature.
+    #[error("message signature verification failed")]
+    VerificationFailed,
+    /// The caller-provided verifier failed.
+    #[error("message verifier failed: {0}")]
+    Verifier(String),
 }

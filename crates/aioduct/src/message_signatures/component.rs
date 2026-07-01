@@ -255,6 +255,31 @@ impl MessageSignatureComponent {
         Ok(out)
     }
 
+    pub(crate) fn comparison_key(&self) -> String {
+        let name = match &self.kind {
+            MessageSignatureComponentKind::Method => "@method".to_owned(),
+            MessageSignatureComponentKind::Scheme => "@scheme".to_owned(),
+            MessageSignatureComponentKind::Authority => "@authority".to_owned(),
+            MessageSignatureComponentKind::RequestTarget => "@request-target".to_owned(),
+            MessageSignatureComponentKind::TargetUri => "@target-uri".to_owned(),
+            MessageSignatureComponentKind::Path => "@path".to_owned(),
+            MessageSignatureComponentKind::Query => "@query".to_owned(),
+            MessageSignatureComponentKind::QueryParam => "@query-param".to_owned(),
+            MessageSignatureComponentKind::Header(name) => name.as_str().to_ascii_lowercase(),
+        };
+        let mut parameters = self
+            .parameters
+            .iter()
+            .map(MessageSignatureComponentParameter::comparison_key)
+            .collect::<Vec<_>>();
+        parameters.sort();
+        if parameters.is_empty() {
+            name
+        } else {
+            format!("{};{}", name, parameters.join(";"))
+        }
+    }
+
     fn new(kind: MessageSignatureComponentKind) -> Self {
         Self {
             kind,
@@ -288,6 +313,17 @@ impl MessageSignatureComponentParameter {
             }
         }
         Ok(())
+    }
+
+    fn comparison_key(&self) -> String {
+        match self {
+            Self::StructuredField => "sf".to_owned(),
+            Self::Key(key) => format!("key:{}:{key}", key.len()),
+            Self::ByteSequence => "bs".to_owned(),
+            Self::Trailer => "tr".to_owned(),
+            Self::RelatedRequest => "req".to_owned(),
+            Self::Name(name) => format!("name:{}:{name}", name.len()),
+        }
     }
 }
 

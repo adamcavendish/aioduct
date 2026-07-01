@@ -216,7 +216,7 @@ pub(crate) fn validate_component_set(
     let mut seen_dictionary_keys = HashSet::new();
     for component in components {
         let identifier = component.identifier()?;
-        if !seen.insert(identifier.clone()) {
+        if !seen.insert(component.comparison_key()) {
             return Err(MessageSignatureError::DuplicateComponent(identifier));
         }
         if let Some(identity) = component.dictionary_key_identity()
