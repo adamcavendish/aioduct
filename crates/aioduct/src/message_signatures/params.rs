@@ -15,6 +15,36 @@ pub struct MessageSignatureParams {
 }
 
 impl MessageSignatureParams {
+    /// Return the `created` metadata parameter.
+    pub fn created(&self) -> Option<u64> {
+        self.created
+    }
+
+    /// Return the `expires` metadata parameter.
+    pub fn expires(&self) -> Option<u64> {
+        self.expires
+    }
+
+    /// Return the `nonce` metadata parameter.
+    pub fn nonce(&self) -> Option<&str> {
+        self.nonce.as_deref()
+    }
+
+    /// Return the `alg` metadata parameter.
+    pub fn algorithm(&self) -> Option<&str> {
+        self.algorithm.as_deref()
+    }
+
+    /// Return the `keyid` metadata parameter.
+    pub fn key_id(&self) -> Option<&str> {
+        self.key_id.as_deref()
+    }
+
+    /// Return the `tag` metadata parameter.
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+
     pub(crate) fn serialize(&self) -> Result<String, MessageSignatureError> {
         let mut out = String::new();
         if let Some(created) = self.created {

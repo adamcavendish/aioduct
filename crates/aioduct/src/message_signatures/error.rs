@@ -53,6 +53,9 @@ pub enum MessageSignatureError {
     /// Existing `Signature-Input` and `Signature` dictionaries cover different labels.
     #[error("existing `Signature-Input` and `Signature` labels do not match")]
     MismatchedSignatureLabels,
+    /// The requested signature label is not present.
+    #[error("signature label `{0}` is not present")]
+    MissingSignatureLabel(String),
     /// A covered component is not supported by the current implementation.
     #[error("covered component {0} is not supported")]
     UnsupportedComponent(String),
