@@ -837,6 +837,172 @@ fn insert_into_rejects_invalid_existing_signature_dictionaries() {
 }
 
 #[test]
+fn parsed_signature_selects_label_and_rebuilds_request_base() {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(
+            r#"old=("@method");created=1, sig1=("@method" "@path" "content-type");created=2;expires=3;keyid="test-key";ext="preserved""#,
+        ),
+    );
+    headers.insert(
+        "signature",
+        HeaderValue::from_static("old=:b2xk:, sig1=:AQID:"),
+    );
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+
+    let signature = MessageSignature::from_headers(&headers, "sig1").unwrap();
+    let base = signature
+        .signature_base(&Method::POST, &target_uri, &request_target, &headers)
+        .unwrap();
+
+    assert_eq!(signature.label(), "sig1");
+    assert_eq!(signature.signature(), &[1, 2, 3]);
+    assert_eq!(signature.params().created(), Some(2));
+    assert_eq!(signature.params().expires(), Some(3));
+    assert_eq!(signature.params().key_id(), Some("test-key"));
+    assert_eq!(signature.params().algorithm(), None);
+    assert_eq!(signature.components().len(), 3);
+    assert_eq!(
+        signature.signature_params_value(),
+        r#"("@method" "@path" "content-type");created=2;expires=3;keyid="test-key";ext="preserved""#
+    );
+    assert_eq!(
+        base.as_str(),
+        "\
+\"@method\": POST\n\
+\"@path\": /foo\n\
+\"content-type\": application/json\n\
+\"@signature-params\": (\"@method\" \"@path\" \"content-type\");created=2;expires=3;keyid=\"test-key\";ext=\"preserved\""
+    );
+}
+
+#[test]
+fn parsed_signature_handles_component_parameters() {
+    let dict = http::header::HeaderName::from_static("example-dict");
+    let bin = http::header::HeaderName::from_static("x-bin");
+    let mut headers = HeaderMap::new();
+    headers.insert(dict.clone(), HeaderValue::from_static("a=1, b=2"));
+    headers.insert(bin.clone(), HeaderValue::from_static(" value\t"));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(
+            r#"sig1=("@query-param";name="Pet" "example-dict";key="a" "x-bin";bs);created=1;nonce="n";alg="test";tag="api""#,
+        ),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:AA:"));
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+
+    let signature = MessageSignature::from_headers(&headers, "sig1").unwrap();
+    let base = signature
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap();
+
+    assert_eq!(signature.params().created(), Some(1));
+    assert_eq!(signature.params().nonce(), Some("n"));
+    assert_eq!(signature.params().algorithm(), Some("test"));
+    assert_eq!(signature.params().tag(), Some("api"));
+    assert_eq!(
+        base.as_str(),
+        "\
+\"@query-param\";name=\"Pet\": dog\n\
+\"example-dict\";key=\"a\": 1\n\
+\"x-bin\";bs: :dmFsdWU=:\n\
+\"@signature-params\": (\"@query-param\";name=\"Pet\" \"example-dict\";key=\"a\" \"x-bin\";bs);created=1;nonce=\"n\";alg=\"test\";tag=\"api\""
+    );
+}
+
+#[test]
+fn parsed_signature_rejects_empty_covered_set() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=();created=1;keyid="empty""#),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=::"));
+
+    let err = MessageSignature::from_headers(&headers, "sig1").unwrap_err();
+
+    assert!(matches!(err, MessageSignatureError::EmptyComponents));
+}
+
+#[test]
+fn parsed_signature_reports_selection_and_header_errors() {
+    let mut missing = HeaderMap::new();
+    missing.insert("signature-input", HeaderValue::from_static("sig1=()"));
+    missing.insert("signature", HeaderValue::from_static("sig1=::"));
+    let err = MessageSignature::from_headers(&missing, "sig2").unwrap_err();
+    assert!(matches!(err, MessageSignatureError::MissingSignatureLabel(label) if label == "sig2"));
+
+    let mut mismatched = HeaderMap::new();
+    mismatched.insert("signature-input", HeaderValue::from_static("sig1=()"));
+    mismatched.insert("signature", HeaderValue::from_static("sig2=::"));
+    let err = MessageSignature::from_headers(&mismatched, "sig1").unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MismatchedSignatureLabels
+    ));
+
+    let mut duplicate = HeaderMap::new();
+    duplicate.insert(
+        "signature-input",
+        HeaderValue::from_static("sig1=(), sig1=()"),
+    );
+    duplicate.insert("signature", HeaderValue::from_static("sig1=::"));
+    let err = MessageSignature::from_headers(&duplicate, "sig1").unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::DuplicateSignatureLabel { header, label }
+            if header == "signature-input" && label == "sig1"
+    ));
+
+    let mut malformed_input = HeaderMap::new();
+    malformed_input.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1="not-list""#),
+    );
+    malformed_input.insert("signature", HeaderValue::from_static("sig1=::"));
+    let err = MessageSignature::from_headers(&malformed_input, "sig1").unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MalformedSignatureHeader("signature-input")
+    ));
+
+    let mut malformed_signature = HeaderMap::new();
+    malformed_signature.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@method")"#),
+    );
+    malformed_signature.insert("signature", HeaderValue::from_static(r#"sig1="not-bytes""#));
+    let err = MessageSignature::from_headers(&malformed_signature, "sig1").unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MalformedSignatureHeader("signature")
+    ));
+}
+
+#[test]
+fn parsed_signature_rejects_signature_params_component() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@signature-params")"#),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=::"));
+
+    let err = MessageSignature::from_headers(&headers, "sig1").unwrap_err();
+
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnsupportedComponent(component)
+            if component == "\"@signature-params\""
+    ));
+}
+
+#[test]
 fn sign_request_uses_signer_callback() {
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()

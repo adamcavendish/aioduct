@@ -186,24 +186,7 @@ impl MessageSignatureConfig {
     }
 
     fn validate_components(&self) -> Result<(), MessageSignatureError> {
-        if self.components.is_empty() {
-            return Err(MessageSignatureError::EmptyComponents);
-        }
-
-        let mut seen = HashSet::new();
-        let mut seen_dictionary_keys = HashSet::new();
-        for component in &self.components {
-            let identifier = component.identifier()?;
-            if !seen.insert(identifier.clone()) {
-                return Err(MessageSignatureError::DuplicateComponent(identifier));
-            }
-            if let Some(identity) = component.dictionary_key_identity()
-                && !seen_dictionary_keys.insert(identity)
-            {
-                return Err(MessageSignatureError::DuplicateComponent(identifier));
-            }
-        }
-        Ok(())
+        validate_component_set(&self.components, false)
     }
 
     fn signature_params_value(&self) -> Result<String, MessageSignatureError> {
@@ -221,7 +204,31 @@ impl MessageSignatureConfig {
     }
 }
 
-fn ensure_component_value(
+pub(crate) fn validate_component_set(
+    components: &[MessageSignatureComponent],
+    allow_empty: bool,
+) -> Result<(), MessageSignatureError> {
+    if components.is_empty() && !allow_empty {
+        return Err(MessageSignatureError::EmptyComponents);
+    }
+
+    let mut seen = HashSet::new();
+    let mut seen_dictionary_keys = HashSet::new();
+    for component in components {
+        let identifier = component.identifier()?;
+        if !seen.insert(identifier.clone()) {
+            return Err(MessageSignatureError::DuplicateComponent(identifier));
+        }
+        if let Some(identity) = component.dictionary_key_identity()
+            && !seen_dictionary_keys.insert(identity)
+        {
+            return Err(MessageSignatureError::DuplicateComponent(identifier));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_component_value(
     component: &MessageSignatureComponent,
     value: &str,
 ) -> Result<(), MessageSignatureError> {
@@ -243,7 +250,7 @@ fn ensure_component_value(
     Ok(())
 }
 
-fn validate_label(label: &str) -> Result<(), MessageSignatureError> {
+pub(crate) fn validate_label(label: &str) -> Result<(), MessageSignatureError> {
     let mut chars = label.chars();
     let Some(first) = chars.next() else {
         return Err(MessageSignatureError::InvalidLabel(label.to_owned()));

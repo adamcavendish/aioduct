@@ -1,10 +1,12 @@
 # HTTP Message Signatures
 
-aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers and
-native automatic request signing. The portable helpers build signature bases and
-format `Signature-Input` and `Signature` header values; callers still choose the
-cryptographic signing algorithm. Native clients can also run a synchronous
-signer automatically for each finalized request attempt.
+aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
+parsed signature helpers, and native automatic request signing. The portable
+helpers build signature bases, format and parse `Signature-Input` / `Signature`
+header values, and expose the bytes callers pass to cryptographic code. Callers
+still choose the cryptographic signing and verification algorithms. Native
+clients can also run a synchronous signer automatically for each finalized
+request attempt.
 
 ## Core Flow
 
@@ -111,6 +113,38 @@ The synchronous `MessageSignatureSigner` trait is used by native automatic
 signing and local CPU-bound signing. Do not use a blocking network or device
 call inside that synchronous signer on an async runtime thread.
 
+## Parsed Signatures
+
+`MessageSignature::from_headers(&headers, "sig1")` parses existing
+`Signature-Input` and `Signature` fields, selects one label, exposes known
+metadata parameters such as `created`, `expires`, `alg`, and `keyid`, and returns
+the decoded signature bytes. It rejects malformed dictionaries, duplicate
+labels, mismatched labels, and unknown selected labels.
+
+The parsed value can rebuild the request signature base for caller-owned crypto
+verification:
+
+```rust,no_run
+use aioduct::MessageSignature;
+use http::{HeaderMap, Method, Uri};
+
+# fn example(headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
+let target_uri: Uri = "https://example.com/foo?param=Value".parse()?;
+let request_target: Uri = "/foo?param=Value".parse()?;
+let parsed = MessageSignature::from_headers(&headers, "sig1")?;
+let base = parsed.signature_base(&Method::GET, &target_uri, &request_target, &headers)?;
+
+verify_with_your_key(base.as_bytes(), parsed.signature(), parsed.params());
+# Ok(())
+# }
+# fn verify_with_your_key(_: &[u8], _: &[u8], _: &aioduct::MessageSignatureParams) {}
+```
+
+This is the lower-level verification building block. Policy checks such as
+required components, accepted algorithms, key lookup, clock skew, and trust
+decisions remain caller-owned until the higher-level verification policy API
+lands.
+
 ## Header Ownership
 
 When automatic signing is not configured, user-supplied `Signature` and
@@ -153,7 +187,8 @@ work lands.
 | Response `@status` and response signatures | Planned | Matrix only | Response support | Requires response signature contexts and response verification support. |
 | Related request components `;req` | Planned | Matrix only | Response support | Requires request-response pair contexts. |
 | Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
-| Verification API | Planned | Matrix only | Verification | Requires parsed signatures, typed verification policy, and caller-owned verifier callbacks. |
+| Parsed signature selection and request-base rebuild | Supported | `parsed_signature_selects_label_and_rebuilds_request_base`, `parsed_signature_handles_component_parameters`, `parsed_signature_reports_selection_and_header_errors` | Current | Parses selected `Signature-Input` / `Signature` labels, exposes known metadata and signature bytes, preserves extension metadata in the rebuilt base, and rejects malformed or mismatched fields. |
+| Verification API | Planned | Matrix only | Verification | Requires typed verification policy and caller-owned verifier callbacks. |
 | `Accept-Signature` negotiation | Planned | Matrix only | Negotiation | Requires parser, builder, and fulfillment logic for requested signatures. |
 | Buffered automatic `Content-Digest` generation | Planned | Matrix only | Body digest | Current support signs caller-supplied `Content-Digest` fields. |
 | Async automatic signing | Planned | Matrix only | Async signing | Sync automatic signing remains supported; async signing will use explicit send/local APIs. |
