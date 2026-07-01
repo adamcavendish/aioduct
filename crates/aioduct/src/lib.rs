@@ -167,11 +167,12 @@ pub use hsts::HstsStore;
 pub use http2::Http2Config;
 pub use link::Link;
 pub use message_signatures::{
-    MessageSignature, MessageSignatureBase, MessageSignatureComponent,
-    MessageSignatureComponentParameter, MessageSignatureConfig, MessageSignatureError,
-    MessageSignatureHeaders, MessageSignatureParams, MessageSignatureRequestContext,
-    MessageSignatureResponseContext, MessageSignatureSigner, MessageSignatureVerificationInput,
-    MessageSignatureVerificationPolicy, MessageSignatureVerifier,
+    AcceptSignature, AcceptSignatureEntry, AcceptSignatureParams, MessageSignature,
+    MessageSignatureBase, MessageSignatureComponent, MessageSignatureComponentParameter,
+    MessageSignatureConfig, MessageSignatureError, MessageSignatureHeaders, MessageSignatureParams,
+    MessageSignatureRequestContext, MessageSignatureResponseContext, MessageSignatureSigner,
+    MessageSignatureVerificationInput, MessageSignatureVerificationPolicy,
+    MessageSignatureVerifier,
 };
 pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};

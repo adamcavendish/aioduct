@@ -1282,6 +1282,160 @@ fn sign_response_uses_signer_callback() {
 }
 
 #[test]
+fn accept_signature_parses_rfc_style_request() {
+    let accept = AcceptSignature::parse(
+        r#"sig1=("@method" "@target-uri" "@authority" "content-digest" "cache-control");keyid="test-key-rsa-pss";created;tag="app-123""#,
+    )
+    .unwrap();
+
+    assert_eq!(accept.entries().len(), 1);
+    let entry = &accept.entries()[0];
+    assert_eq!(entry.label(), "sig1");
+    assert_eq!(entry.components().len(), 5);
+    assert_eq!(entry.params().key_id(), Some("test-key-rsa-pss"));
+    assert!(entry.params().created_requested());
+    assert!(!entry.params().expires_requested());
+    assert_eq!(entry.params().tag(), Some("app-123"));
+    entry.validate_request_target().unwrap();
+    assert!(matches!(
+        entry.validate_response_target().unwrap_err(),
+        MessageSignatureError::ComponentNotAvailable {
+            context: "response",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn accept_signature_formats_and_inserts_header() {
+    let accept = AcceptSignature::new().entry(
+        AcceptSignatureEntry::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::status())
+            .component(MessageSignatureComponent::method().related_request())
+            .created()
+            .key_id("test-key"),
+    );
+
+    let value = accept.header_value().unwrap();
+    assert_eq!(
+        value.to_str().unwrap(),
+        r#"sig1=("@status" "@method";req);created;keyid="test-key""#
+    );
+    accept.validate_request_response_target().unwrap();
+
+    let mut headers = HeaderMap::new();
+    accept.insert_into(&mut headers).unwrap();
+    assert_eq!(headers["accept-signature"], value);
+}
+
+#[test]
+fn accept_signature_from_headers_combines_field_values() {
+    let mut headers = HeaderMap::new();
+    headers.append(
+        "accept-signature",
+        HeaderValue::from_static(r#"sig1=("@status")"#),
+    );
+    headers.append(
+        "accept-signature",
+        HeaderValue::from_static(r#"sig2=("content-type");expires"#),
+    );
+
+    let accept = AcceptSignature::from_headers(&headers).unwrap();
+
+    assert_eq!(accept.entries().len(), 2);
+    assert_eq!(accept.entries()[0].label(), "sig1");
+    assert_eq!(accept.entries()[1].label(), "sig2");
+    assert!(accept.entries()[1].params().expires_requested());
+    accept.validate_response_target().unwrap();
+}
+
+#[test]
+fn accept_signature_reports_header_errors() {
+    let err = AcceptSignature::parse(r#"sig1=("@method");created=100"#).unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MalformedSignatureHeader("accept-signature")
+    ));
+
+    let err = AcceptSignature::parse(r#"sig1=("@method");unknown="dropped""#).unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::MalformedSignatureHeader("accept-signature")
+    ));
+
+    let err = AcceptSignature::parse(r#"sig1=("@method"), sig1=("@path")"#).unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::DuplicateSignatureLabel { header, label }
+            if header == "accept-signature" && label == "sig1"
+    ));
+
+    let err = AcceptSignature::new()
+        .entry(
+            AcceptSignatureEntry::new("sig1")
+                .unwrap()
+                .component(MessageSignatureComponent::method()),
+        )
+        .entry(
+            AcceptSignatureEntry::new("sig1")
+                .unwrap()
+                .component(MessageSignatureComponent::path()),
+        )
+        .header_value()
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::DuplicateSignatureLabel { header, label }
+            if header == "accept-signature" && label == "sig1"
+    ));
+}
+
+#[test]
+fn accept_signature_validates_target_message_components() {
+    let request = AcceptSignatureEntry::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::method());
+    request.validate_request_target().unwrap();
+    assert!(matches!(
+        request.validate_request_response_target().unwrap_err(),
+        MessageSignatureError::ComponentNotAvailable {
+            context: "response",
+            ..
+        }
+    ));
+
+    let response = AcceptSignatureEntry::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status());
+    response.validate_response_target().unwrap();
+    assert!(matches!(
+        response.validate_request_target().unwrap_err(),
+        MessageSignatureError::ComponentNotAvailable {
+            context: "request",
+            ..
+        }
+    ));
+
+    let related_request_response = AcceptSignatureEntry::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status())
+        .component(MessageSignatureComponent::method().related_request());
+    related_request_response
+        .validate_request_response_target()
+        .unwrap();
+    assert!(matches!(
+        related_request_response
+            .validate_response_target()
+            .unwrap_err(),
+        MessageSignatureError::ComponentNotAvailable {
+            context: "response",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn verification_policy_calls_verifier_with_response_base() {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));

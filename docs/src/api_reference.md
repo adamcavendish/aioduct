@@ -325,6 +325,31 @@ middleware, digest-auth retry headers, forwarding request rewrites, and framing
 cleanup. When configured, it replaces only its configured label in
 `Signature-Input` and `Signature` on every native dispatch attempt.
 
+`AcceptSignature` parses and formats RFC 9421 `Accept-Signature` negotiation
+fields. Validate the requested target shape before fulfilling it:
+
+```rust,no_run
+# use aioduct::{AcceptSignature, AcceptSignatureEntry, MessageSignatureComponent};
+# use http::HeaderMap;
+# fn example(mut headers: HeaderMap) -> Result<(), Box<dyn std::error::Error>> {
+let accept = AcceptSignature::new().entry(
+    AcceptSignatureEntry::new("sig1")?
+        .component(MessageSignatureComponent::status())
+        .component(MessageSignatureComponent::method().related_request())
+        .created()
+        .key_id("test-key"),
+);
+
+accept.validate_request_response_target()?;
+accept.insert_into(&mut headers)?;
+# Ok(())
+# }
+```
+
+`AcceptSignature::from_headers()` parses combined field values. The helpers do
+not choose keys or automatically fulfill requests; callers still generate the
+requested signature and attach `Signature-Input` / `Signature` fields.
+
 For verification, configure a policy, then pass the selected label, rebuilt base,
 signature bytes, and metadata to your own verifier:
 

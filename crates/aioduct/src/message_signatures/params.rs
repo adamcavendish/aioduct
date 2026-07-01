@@ -14,6 +14,18 @@ pub struct MessageSignatureParams {
     pub(crate) tag: Option<String>,
 }
 
+/// Metadata requested by an RFC 9421 `Accept-Signature` member.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct AcceptSignatureParams {
+    pub(crate) created: bool,
+    pub(crate) expires: bool,
+    pub(crate) nonce: Option<String>,
+    pub(crate) algorithm: Option<String>,
+    pub(crate) key_id: Option<String>,
+    pub(crate) tag: Option<String>,
+}
+
 impl MessageSignatureParams {
     /// Return the `created` metadata parameter.
     pub fn created(&self) -> Option<u64> {
@@ -54,6 +66,65 @@ impl MessageSignatureParams {
         if let Some(expires) = self.expires {
             out.push_str(";expires=");
             out.push_str(&serialize_sf_integer("expires", expires)?);
+        }
+        if let Some(ref nonce) = self.nonce {
+            out.push_str(";nonce=");
+            out.push_str(&serialize_sf_string(nonce)?);
+        }
+        if let Some(ref algorithm) = self.algorithm {
+            out.push_str(";alg=");
+            out.push_str(&serialize_sf_string(algorithm)?);
+        }
+        if let Some(ref key_id) = self.key_id {
+            out.push_str(";keyid=");
+            out.push_str(&serialize_sf_string(key_id)?);
+        }
+        if let Some(ref tag) = self.tag {
+            out.push_str(";tag=");
+            out.push_str(&serialize_sf_string(tag)?);
+        }
+        Ok(out)
+    }
+}
+
+impl AcceptSignatureParams {
+    /// Return whether the signer is requested to include `created`.
+    pub fn created_requested(&self) -> bool {
+        self.created
+    }
+
+    /// Return whether the signer is requested to include `expires`.
+    pub fn expires_requested(&self) -> bool {
+        self.expires
+    }
+
+    /// Return the requested `nonce` metadata parameter.
+    pub fn nonce(&self) -> Option<&str> {
+        self.nonce.as_deref()
+    }
+
+    /// Return the requested `alg` metadata parameter.
+    pub fn algorithm(&self) -> Option<&str> {
+        self.algorithm.as_deref()
+    }
+
+    /// Return the requested `keyid` metadata parameter.
+    pub fn key_id(&self) -> Option<&str> {
+        self.key_id.as_deref()
+    }
+
+    /// Return the requested `tag` metadata parameter.
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+
+    pub(crate) fn serialize(&self) -> Result<String, MessageSignatureError> {
+        let mut out = String::new();
+        if self.created {
+            out.push_str(";created");
+        }
+        if self.expires {
+            out.push_str(";expires");
         }
         if let Some(ref nonce) = self.nonce {
             out.push_str(";nonce=");
