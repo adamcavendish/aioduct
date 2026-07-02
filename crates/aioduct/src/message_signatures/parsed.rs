@@ -43,7 +43,7 @@ impl MessageSignature {
         let signature_params_value = find_label(&signature_input, label)?;
         let signature_value = find_label(&signature, label)?;
         let (components, params) = parse_signature_input_member(signature_params_value)?;
-        validate_component_set(&components, false)?;
+        validate_component_set(&components, true)?;
         let signature = parse_signature_bytes(signature_value)?;
 
         Ok(Self {
@@ -175,7 +175,7 @@ impl MessageSignature {
         &self,
         context: &MessageSignatureContext<'_>,
     ) -> Result<MessageSignatureBase, MessageSignatureError> {
-        validate_component_set(&self.components, false)?;
+        validate_component_set(&self.components, true)?;
 
         let mut lines = Vec::with_capacity(self.components.len() + 1);
         for component in &self.components {

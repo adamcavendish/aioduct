@@ -300,7 +300,7 @@ impl MessageSignatureConfig {
     }
 
     fn validate_components(&self) -> Result<(), MessageSignatureError> {
-        validate_component_set(&self.components, false)
+        validate_component_set(&self.components, true)
     }
 
     fn signature_params_value(&self) -> Result<String, MessageSignatureError> {
