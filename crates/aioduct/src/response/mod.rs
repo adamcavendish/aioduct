@@ -257,6 +257,11 @@ impl<B> Response<B> {
         self.inner.version()
     }
 
+    /// Consume this response and return the underlying `http::Response`.
+    pub fn into_http_response(self) -> http::Response<B> {
+        self.inner
+    }
+
     /// Returns an error if the response status is a client (4xx) or server (5xx) error.
     pub fn error_for_status(self) -> Result<Self, Error> {
         let status = self.inner.status();

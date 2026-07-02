@@ -1,9 +1,15 @@
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
+use http_body::Body;
 use http_body::Frame;
 use pin_project_lite::pin_project;
 
@@ -36,6 +42,134 @@ where
                 Poll::Pending
             }
         }
+    }
+}
+
+pin_project! {
+    /// Body wrapper that records when request upload has ended.
+    pub(crate) struct BodyCompletion<B> {
+        #[pin]
+        inner: B,
+        complete: Arc<AtomicBool>,
+    }
+}
+
+pub(crate) fn mark_body_completion<B>(body: B) -> (BodyCompletion<B>, Arc<AtomicBool>)
+where
+    B: Body,
+{
+    let complete = Arc::new(AtomicBool::new(body.is_end_stream()));
+    (
+        BodyCompletion {
+            inner: body,
+            complete: complete.clone(),
+        },
+        complete,
+    )
+}
+
+impl<B> Body for BodyCompletion<B>
+where
+    B: Body<Data = Bytes, Error = crate::error::Error>,
+{
+    type Data = Bytes;
+    type Error = crate::error::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let mut this = self.project();
+        match this.inner.as_mut().poll_frame(cx) {
+            Poll::Ready(None) => {
+                this.complete.store(true, Ordering::Release);
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(Err(error))) => {
+                this.complete.store(true, Ordering::Release);
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(Some(Ok(frame))) => {
+                if this.inner.is_end_stream() {
+                    this.complete.store(true, Ordering::Release);
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+pin_project! {
+    /// Timeout that starts after request upload completes.
+    pub(crate) struct FirstByteTimeout<F, R>
+    where
+        R: crate::runtime::RuntimeCompletion,
+    {
+        #[pin]
+        future: F,
+        request_body_complete: Arc<AtomicBool>,
+        duration: Duration,
+        #[pin]
+        sleep: Option<R::Sleep>,
+        _runtime: PhantomData<R>,
+    }
+}
+
+impl<F, R> FirstByteTimeout<F, R>
+where
+    R: crate::runtime::RuntimeCompletion,
+{
+    pub(crate) fn new(
+        future: F,
+        request_body_complete: Arc<AtomicBool>,
+        duration: Duration,
+    ) -> Self {
+        Self {
+            future,
+            request_body_complete,
+            duration,
+            sleep: None,
+            _runtime: PhantomData,
+        }
+    }
+}
+
+impl<F, R, T, E> Future for FirstByteTimeout<F, R>
+where
+    F: Future<Output = Result<T, E>>,
+    R: crate::runtime::RuntimeCompletion,
+    E: From<crate::error::Error>,
+{
+    type Output = Result<T, E>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        if let Poll::Ready(result) = this.future.as_mut().poll(cx) {
+            return Poll::Ready(result);
+        }
+
+        if this.request_body_complete.load(Ordering::Acquire) {
+            if this.sleep.as_ref().get_ref().is_none() {
+                this.sleep.set(Some(R::sleep(*this.duration)));
+            }
+            if let Some(sleep) = this.sleep.as_mut().as_pin_mut()
+                && let Poll::Ready(()) = sleep.poll(cx)
+            {
+                this.sleep.set(None);
+                return Poll::Ready(Err(crate::error::Error::Timeout.into()));
+            }
+        }
+
+        Poll::Pending
     }
 }
 

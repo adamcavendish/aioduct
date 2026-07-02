@@ -167,8 +167,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     replay_bytes_for_stale,
                     connect_timeout,
                     write_timeout,
+                    None,
                     force_addr,
                     protocol_hint,
+                    true,
                 )
                 .await
             {
@@ -359,8 +361,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             replay_for_stale,
             connect_timeout,
             write_timeout,
+            None,
             force_addr,
             protocol_hint,
+            true,
         )
         .await
     }
