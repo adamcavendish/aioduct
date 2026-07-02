@@ -198,6 +198,8 @@ where
     /// the response already has `Content-Digest`, it is preserved and the body is
     /// not buffered. When combined with response message signing, digest
     /// generation runs before signing so `content-digest` can be covered.
+    /// Responses that cannot carry content, such as `HEAD`, `204`, `205`, and
+    /// `304`, are not assigned synthesized digest fields.
     pub fn response_content_digest(mut self, max_bytes: usize) -> Self {
         self.response_content_digest_max_bytes = Some(max_bytes);
         self
@@ -402,6 +404,7 @@ where
         let response_content_digest_max_bytes = self.response_content_digest_max_bytes;
         let response_processing_enabled =
             response_signing_enabled || response_content_digest_max_bytes.is_some();
+        let response_request_method = request.method().clone();
         let mut on_response = self.on_response;
         let on_response_before_signing = if response_processing_enabled {
             on_response.take()
@@ -443,9 +446,12 @@ where
                 hop_by_hop::strip_hop_by_hop(resp.headers_mut());
             }
 
-            let mut resp =
-                apply_forward_response_content_digest(resp, response_content_digest_max_bytes)
-                    .await?;
+            let mut resp = apply_forward_response_content_digest(
+                resp,
+                response_content_digest_max_bytes,
+                &response_request_method,
+            )
+            .await?;
 
             if let Some(signature) = response_message_signature {
                 let status = resp.status();

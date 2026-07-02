@@ -295,7 +295,9 @@ let resp = client
 Response digest generation runs after upstream response hop-by-hop cleanup and
 `on_response`, then before response signing. It preserves an existing
 `Content-Digest` without buffering. If the response body exceeds `max_bytes`, the
-forward returns an error instead of producing an undigested response.
+forward returns an error instead of producing an undigested response. Bodyless
+responses such as `HEAD`, `204`, `205`, and `304` are not assigned synthesized
+digest fields.
 
 Automatic response finalization is fail-closed: signer failures, malformed
 existing `Signature-Input` / `Signature` dictionaries, unsupported trailer
