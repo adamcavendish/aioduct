@@ -134,11 +134,15 @@ fn is_full_uri(uri: &Uri) -> bool {
 pub(crate) async fn apply_forward_response_content_digest(
     resp: Response,
     max_bytes: Option<usize>,
+    request_method: &http::Method,
 ) -> Result<Response, Error> {
     let Some(max_bytes) = max_bytes else {
         return Ok(resp);
     };
     if crate::digest_fields::has_content_digest(resp.headers()) {
+        return Ok(resp);
+    }
+    if response_has_no_content(request_method, resp.status()) {
         return Ok(resp);
     }
 
@@ -153,6 +157,14 @@ pub(crate) async fn apply_forward_response_content_digest(
         },
     )?;
     Ok(resp)
+}
+
+fn response_has_no_content(request_method: &http::Method, status: http::StatusCode) -> bool {
+    *request_method == http::Method::HEAD
+        || status.is_informational()
+        || status == http::StatusCode::NO_CONTENT
+        || status == http::StatusCode::RESET_CONTENT
+        || status == http::StatusCode::NOT_MODIFIED
 }
 
 /// Builder for forwarding an incoming HTTP request to an upstream server.
@@ -361,6 +373,8 @@ where
     /// the response already has `Content-Digest`, it is preserved and the body is
     /// not buffered. When combined with response message signing, digest
     /// generation runs before signing so `content-digest` can be covered.
+    /// Responses that cannot carry content, such as `HEAD`, `204`, `205`, and
+    /// `304`, are not assigned synthesized digest fields.
     pub fn response_content_digest(mut self, max_bytes: usize) -> Self {
         self.response_content_digest_max_bytes = Some(max_bytes);
         self
@@ -578,6 +592,7 @@ where
         let response_content_digest_max_bytes = self.response_content_digest_max_bytes;
         let response_processing_enabled =
             response_signing_enabled || response_content_digest_max_bytes.is_some();
+        let response_request_method = request.method().clone();
         let mut on_response = self.on_response;
         let on_response_before_signing = if response_processing_enabled {
             on_response.take()
@@ -636,9 +651,12 @@ where
                 hop_by_hop::strip_hop_by_hop(resp.headers_mut());
             }
 
-            let mut resp =
-                apply_forward_response_content_digest(resp, response_content_digest_max_bytes)
-                    .await?;
+            let mut resp = apply_forward_response_content_digest(
+                resp,
+                response_content_digest_max_bytes,
+                &response_request_method,
+            )
+            .await?;
 
             if let Some(signature) = response_message_signature {
                 let status = resp.status();
