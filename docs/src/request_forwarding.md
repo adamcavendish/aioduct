@@ -46,6 +46,7 @@ println!("status: {}", resp.status());
 | `.on_request(fn)` | Mutate request parts just before sending |
 | `.on_response(fn)` | Mutate the response before returning |
 | `.downstream_target_uri(uri)` | Full downstream URI for related-request response signatures |
+| `.response_content_digest(max_bytes)` | Buffer the downstream response up to a cap and insert SHA-256 `Content-Digest` |
 | `.response_message_signature(config, signer)` | Sign the downstream response with a sync RFC 9421 signer |
 | `.response_message_signature_async(config, signer)` | Sign the downstream response with a send-runtime async signer (send builders) |
 | `.response_message_signature_async_local(config, signer)` | Sign the downstream response with a local-runtime async signer (local builders) |
@@ -257,11 +258,50 @@ let resp = client
 # fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
 ```
 
-Automatic response signing is fail-closed: signer failures, malformed existing
-`Signature-Input` / `Signature` dictionaries, unsupported trailer components,
-`CONNECT`, known upgrade requests, and HTTP/1.1 `101 Switching Protocols`
-responses return an error instead of an unsigned response. It does not buffer
-response bodies and does not generate response `Content-Digest` fields.
+Use `.response_content_digest(max_bytes)` when the gateway should add a
+downstream response body digest before response signing:
+
+```rust,no_run
+# use aioduct::{MessageSignatureComponent, MessageSignatureConfig, TokioClient};
+# use bytes::Bytes;
+# use http_body_util::Full;
+# async fn example() -> Result<(), aioduct::Error> {
+let client = TokioClient::new();
+let incoming_req = http::Request::builder()
+    .method("GET")
+    .uri("/api/report")
+    .body(Full::new(Bytes::new()))
+    .unwrap();
+
+let config = MessageSignatureConfig::new("sig1")?
+    .component(MessageSignatureComponent::status())
+    .component(MessageSignatureComponent::header(
+        http::header::HeaderName::from_static(aioduct::CONTENT_DIGEST),
+    ));
+
+let resp = client
+    .forward(incoming_req)
+    .upstream("http://backend:8080".parse::<http::Uri>().unwrap())
+    .response_content_digest(64 * 1024)
+    .response_message_signature(config, |base: &[u8]| Ok(sign_with_your_key(base)))
+    .send()
+    .await?;
+# let _ = resp;
+# Ok(())
+# }
+# fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
+```
+
+Response digest generation runs after upstream response hop-by-hop cleanup and
+`on_response`, then before response signing. It preserves an existing
+`Content-Digest` without buffering. If the response body exceeds `max_bytes`, the
+forward returns an error instead of producing an undigested response.
+
+Automatic response finalization is fail-closed: signer failures, malformed
+existing `Signature-Input` / `Signature` dictionaries, unsupported trailer
+components, response digest bodies over the configured cap, `CONNECT`, known
+upgrade requests, and HTTP/1.1 `101 Switching Protocols` responses return an
+error instead of an unsigned or undigested response.
 
 ## gRPC / h2c Forwarding
 
@@ -331,9 +371,9 @@ let client = TokioClient::builder()
 
 ## What ForwardBuilder Does NOT Do
 
-- **No body buffering** — the body streams through as-is
+- **No request body buffering** — the incoming request body streams through as-is
 - **No middleware** — redirects, cookies, cache, and decompression are all bypassed
-- **No response body digesting** — response signing does not buffer the body or generate `Content-Digest`
+- **No streaming response digesting** — response `Content-Digest` generation uses bounded full-body buffering, not trailers
 - **No WebSocket framing** — aioduct is transport-level; use a WS library for frame parsing
 - **No bidirectional splice** — the caller is responsible for splicing `Upgraded` streams
 - **No plaintext h2 by default** — HTTPS forwards negotiate HTTP/2 via TLS ALPN as usual; use `.h2c()` or `.adaptive_h2c()` when the upstream requires cleartext HTTP/2 (h2c)

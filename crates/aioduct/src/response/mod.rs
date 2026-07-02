@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 
 use crate::clock::Instant;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http::header::{CONTENT_LENGTH, HeaderMap, SET_COOKIE};
 use http::{Method, StatusCode, Uri, Version};
 use http_body_util::BodyExt;
@@ -19,6 +19,50 @@ use http_body_util::BodyExt;
 use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::observer::RequestObserver;
+
+struct BufferedBody {
+    data: Option<Bytes>,
+    trailers: Option<HeaderMap>,
+}
+
+impl BufferedBody {
+    fn new(data: Bytes, trailers: Option<HeaderMap>) -> Self {
+        Self {
+            data: (!data.is_empty()).then_some(data),
+            trailers,
+        }
+    }
+}
+
+impl http_body::Body for BufferedBody {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if let Some(data) = this.data.take() {
+            return Poll::Ready(Some(Ok(http_body::Frame::data(data))));
+        }
+        if let Some(trailers) = this.trailers.take() {
+            return Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))));
+        }
+        Poll::Ready(None)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.data.is_none() && self.trailers.is_none()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        let mut hint = http_body::SizeHint::new();
+        let len = self.data.as_ref().map(|data| data.len()).unwrap_or(0);
+        hint.set_exact(len as u64);
+        hint
+    }
+}
 
 pin_project_lite::pin_project! {
     #[project = ResponseBodySendProj]
@@ -269,6 +313,110 @@ impl<B> Response<B> {
 // ── Body consumption methods available for all body types ───────────────────
 
 impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
+    pub(crate) async fn into_buffered_with_limit(
+        self,
+        max_bytes: usize,
+        operation: &str,
+    ) -> Result<(Response, Bytes), Error> {
+        let Response {
+            inner,
+            url,
+            remote_addr,
+            tls_info,
+            observer_ctx,
+            fragment,
+        } = self;
+        let response_started = observer_ctx.as_ref().map(|ctx| ctx.response_started);
+        let (parts, body) = inner.into_parts();
+        let mut body = std::pin::pin!(body);
+        let mut buf = BytesMut::new();
+        let mut cumulative_bytes: u64 = 0;
+        let mut trailers: Option<HeaderMap> = None;
+
+        loop {
+            match body.as_mut().frame().await {
+                Some(Ok(frame)) => match frame.into_data() {
+                    Ok(data) => {
+                        let new_len = buf.len().checked_add(data.len()).ok_or_else(|| {
+                            Error::Unsupported(format!(
+                                "{operation} response body exceeds the configured buffer limit of {max_bytes} bytes"
+                            ))
+                        })?;
+                        if new_len > max_bytes {
+                            return Err(Error::Unsupported(format!(
+                                "{operation} response body exceeds the configured buffer limit of {max_bytes} bytes"
+                            )));
+                        }
+                        cumulative_bytes += data.len() as u64;
+                        buf.extend_from_slice(&data);
+                    }
+                    Err(frame) => {
+                        if let Ok(frame_trailers) = frame.into_trailers() {
+                            match &mut trailers {
+                                Some(existing) => existing.extend(frame_trailers),
+                                None => trailers = Some(frame_trailers),
+                            }
+                        }
+                    }
+                },
+                Some(Err(error)) => {
+                    if let Some(ctx) = &observer_ctx {
+                        ctx.observer.on_event(&crate::observer::RequestEvent {
+                            method: ctx.method.clone(),
+                            uri: ctx.uri.clone(),
+                            phase: crate::observer::RequestPhase::TransferAborted {
+                                direction: crate::observer::TransferDirection::Download,
+                                bytes_transferred: cumulative_bytes,
+                                elapsed: response_started.map(|t| t.elapsed()).unwrap_or_default(),
+                                error: error.to_string(),
+                            },
+                            at: crate::observer::Instant::now(),
+                        });
+                    }
+                    return Err(error);
+                }
+                None => {
+                    let body_bytes = buf.freeze();
+                    if let Some(ctx) = &observer_ctx {
+                        let total_bytes = body_bytes.len() as u64;
+                        let transfer_duration = ctx.response_started.elapsed();
+                        let throughput = if transfer_duration.as_secs_f64() > 0.0 {
+                            (total_bytes as f64 / transfer_duration.as_secs_f64()) as f32
+                        } else {
+                            0.0
+                        };
+                        ctx.observer.on_event(&crate::observer::RequestEvent {
+                            method: ctx.method.clone(),
+                            uri: ctx.uri.clone(),
+                            phase: crate::observer::RequestPhase::TransferComplete {
+                                direction: crate::observer::TransferDirection::Download,
+                                total_bytes,
+                                transfer_duration,
+                                throughput_bytes_per_sec: throughput,
+                            },
+                            at: crate::observer::Instant::now(),
+                        });
+                    }
+
+                    let buffered_body =
+                        BufferedBody::new(body_bytes.clone(), trailers).boxed_unsync();
+                    let response = Response {
+                        inner: http::Response::from_parts(
+                            parts,
+                            ResponseBodySend::from_boxed(buffered_body),
+                        ),
+                        url,
+                        remote_addr,
+                        tls_info,
+                        observer_ctx: None,
+                        fragment,
+                    };
+                    return Ok((response, body_bytes));
+                }
+            }
+        }
+    }
+
     /// Consume the response body and return it as bytes.
     pub async fn bytes(self) -> Result<Bytes, Error> {
         use http_body_util::BodyExt;

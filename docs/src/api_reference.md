@@ -354,6 +354,11 @@ snapshot for related-request components. Use `downstream_target_uri(...)` when a
 origin-form inbound request needs related-request `@scheme`, `@authority`, or
 `@target-uri` coverage.
 
+Forward builders can also call `response_content_digest(max_bytes)` to buffer the
+downstream response body up to a caller-supplied cap and insert SHA-256
+`Content-Digest` before response signing. Existing `Content-Digest` fields are
+preserved without buffering, and bodies over the cap fail closed.
+
 Use `automatic_content_digest(true)` on the client builder or a request builder
 to insert `Content-Digest: sha-256=:...:` for buffered native request bodies that
 do not already have `Content-Digest`. The header is generated after middleware

@@ -44,19 +44,19 @@ pub(crate) fn is_h1_upgrade_request(headers: &HeaderMap) -> bool {
         })
 }
 
-pub(crate) fn reject_response_signing_for_tunnel_or_upgrade(
+pub(crate) fn reject_response_finalization_for_tunnel_or_upgrade(
     parts: &http::request::Parts,
     force_h1_upgrade: bool,
 ) -> Result<(), Error> {
     if parts.method == http::Method::CONNECT {
         return Err(Error::Unsupported(
-            "automatic response message signing does not support forwarded CONNECT requests"
+            "automatic forward response finalization does not support forwarded CONNECT requests"
                 .to_owned(),
         ));
     }
     if force_h1_upgrade || is_h1_upgrade_request(&parts.headers) {
         return Err(Error::Unsupported(
-            "automatic response message signing does not support forwarded HTTP/1.1 upgrade requests"
+            "automatic forward response finalization does not support forwarded HTTP/1.1 upgrade requests"
                 .to_owned(),
         ));
     }
@@ -79,7 +79,7 @@ pub(crate) fn prepare_forward_response_related_request(
             "automatic response message signing does not support trailer components".to_owned(),
         ));
     }
-    reject_response_signing_for_tunnel_or_upgrade(parts, force_h1_upgrade)?;
+    reject_response_finalization_for_tunnel_or_upgrade(parts, force_h1_upgrade)?;
 
     if !requirements.has_related_request_components {
         return Ok(None);
@@ -131,6 +131,30 @@ fn is_full_uri(uri: &Uri) -> bool {
     uri.scheme().is_some() && uri.authority().is_some()
 }
 
+pub(crate) async fn apply_forward_response_content_digest(
+    resp: Response,
+    max_bytes: Option<usize>,
+) -> Result<Response, Error> {
+    let Some(max_bytes) = max_bytes else {
+        return Ok(resp);
+    };
+    if crate::digest_fields::has_content_digest(resp.headers()) {
+        return Ok(resp);
+    }
+
+    let (mut resp, body) = resp
+        .into_buffered_with_limit(max_bytes, "forward response Content-Digest")
+        .await?;
+    crate::digest_fields::insert_sha256_content_digest(resp.headers_mut(), &body).map_err(
+        |source| {
+            Error::InvalidHeader(format!(
+                "generated response Content-Digest header value is invalid: {source}"
+            ))
+        },
+    )?;
+    Ok(resp)
+}
+
 /// Builder for forwarding an incoming HTTP request to an upstream server.
 ///
 /// Created via [`HttpEngineSend::forward`]. Strips hop-by-hop headers, rewrites the URI
@@ -152,6 +176,7 @@ pub struct ForwardBuilder<'a, R: RuntimePoll, C: ConnectorSend, B> {
     on_response: Option<ResponseHook>,
     force_h1_upgrade: bool,
     downstream_target_uri: Option<Uri>,
+    response_content_digest_max_bytes: Option<usize>,
     response_message_signature: Option<AutomaticMessageSignature>,
 }
 
@@ -182,6 +207,7 @@ where
             on_response: None,
             force_h1_upgrade: false,
             downstream_target_uri: None,
+            response_content_digest_max_bytes: None,
             response_message_signature: None,
         }
     }
@@ -328,6 +354,18 @@ where
         self
     }
 
+    /// Generate a SHA-256 `Content-Digest` header for the downstream response.
+    ///
+    /// The response body is buffered up to `max_bytes` after upstream response
+    /// hop-by-hop cleanup and after [`on_response`](Self::on_response) runs. If
+    /// the response already has `Content-Digest`, it is preserved and the body is
+    /// not buffered. When combined with response message signing, digest
+    /// generation runs before signing so `content-digest` can be covered.
+    pub fn response_content_digest(mut self, max_bytes: usize) -> Self {
+        self.response_content_digest_max_bytes = Some(max_bytes);
+        self
+    }
+
     /// Sign the downstream response with an async signer on send runtimes.
     ///
     /// The returned signing future must be [`Send`]. Use
@@ -364,6 +402,8 @@ where
             return Err(error.into_error());
         }
         let (mut parts, body) = self.request.into_parts();
+        let response_finalization_enabled = self.response_message_signature.is_some()
+            || self.response_content_digest_max_bytes.is_some();
 
         let response_related_request = prepare_forward_response_related_request(
             self.response_message_signature.as_ref(),
@@ -371,6 +411,9 @@ where
             self.force_h1_upgrade,
             &parts,
         )?;
+        if response_finalization_enabled {
+            reject_response_finalization_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
+        }
 
         // Detect upgrade requests
         let is_h1_upgrade = self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers);
@@ -481,8 +524,8 @@ where
             hook(&mut parts);
         }
 
-        if self.response_message_signature.is_some() {
-            reject_response_signing_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
+        if response_finalization_enabled {
+            reject_response_finalization_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
         }
 
         // 8. Build the request URI for hyper.
@@ -532,8 +575,11 @@ where
         let protocol_hint = self.protocol_hint;
         let response_message_signature = self.response_message_signature;
         let response_signing_enabled = response_message_signature.is_some();
+        let response_content_digest_max_bytes = self.response_content_digest_max_bytes;
+        let response_processing_enabled =
+            response_signing_enabled || response_content_digest_max_bytes.is_some();
         let mut on_response = self.on_response;
-        let on_response_before_signing = if response_signing_enabled {
+        let on_response_before_signing = if response_processing_enabled {
             on_response.take()
         } else {
             None
@@ -568,9 +614,10 @@ where
                 )
                 .await?;
 
-            if response_signing_enabled && resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+            if response_processing_enabled && resp.status() == http::StatusCode::SWITCHING_PROTOCOLS
+            {
                 return Err(Error::Unsupported(
-                    "automatic response message signing does not support HTTP/1.1 switching protocols responses"
+                    "automatic forward response finalization does not support HTTP/1.1 switching protocols responses"
                         .to_owned(),
                 ));
             }
@@ -585,8 +632,15 @@ where
                 hook(&mut resp);
             }
 
-            if let Some(signature) = response_message_signature {
+            if response_processing_enabled {
                 hop_by_hop::strip_hop_by_hop(resp.headers_mut());
+            }
+
+            let mut resp =
+                apply_forward_response_content_digest(resp, response_content_digest_max_bytes)
+                    .await?;
+
+            if let Some(signature) = response_message_signature {
                 let status = resp.status();
                 let prepared = if let Some(related_request) = response_related_request.as_ref() {
                     signature.prepare_request_response_headers(

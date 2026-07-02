@@ -1,18 +1,19 @@
 # HTTP Message Signatures
 
-aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
-response signature-base helpers, parsed verification helpers,
-`Accept-Signature` negotiation helpers, covered `Content-Digest` verification,
-caller-supplied trailer field coverage with `;tr`, native automatic request
-signing, forward-only automatic response signing, and native buffered
-`Content-Digest` generation. The portable helpers build signature bases, format
-and parse `Signature-Input` / `Signature` header values, turn accepted signature
-requests into concrete signing configs, apply verification policy checks, and
-expose the bytes callers pass to cryptographic code. Callers still choose the
-cryptographic signing and verification algorithms. Native clients can also insert
-SHA-256 `Content-Digest` for buffered request bodies and run synchronous or
-asynchronous signers automatically for each finalized request attempt or for a
-forwarded downstream response.
+aioduct provides RFC 9421 HTTP Message Signatures helpers for request and
+response signature bases, parsed verification, `Accept-Signature` negotiation,
+covered `Content-Digest` verification, caller-supplied trailer field coverage
+with `;tr`, native automatic request signing, native buffered request
+`Content-Digest` generation, bounded forward response `Content-Digest`
+generation, and forward-only automatic response signing. The portable helpers
+build signature bases, format and parse `Signature-Input` / `Signature` header
+values, turn accepted signature requests into concrete signing configs, apply
+verification policy checks, and expose the bytes callers pass to cryptographic
+code. Callers still choose the cryptographic signing and verification algorithms.
+Native clients can also insert SHA-256 `Content-Digest` for buffered request
+bodies, generate bounded downstream response digests for forwards, and run
+synchronous or asynchronous signers automatically for each finalized request
+attempt or for a forwarded downstream response.
 
 ## Core Flow
 
@@ -158,8 +159,10 @@ components use the inbound request snapshot, not the rewritten upstream request.
 For origin-form inbound requests, set `downstream_target_uri(...)` when the
 response signature covers related-request `@scheme`, `@authority`, or
 `@target-uri`. Automatic response signing rejects `CONNECT`, known upgrade
-requests, HTTP/1.1 `101 Switching Protocols` responses, and trailer components;
-it does not buffer response bodies or generate response `Content-Digest` fields.
+requests, HTTP/1.1 `101 Switching Protocols` responses, and trailer components.
+Use `response_content_digest(max_bytes)` to buffer a forwarded response up to a
+fixed cap and insert `Content-Digest` before response signing, allowing the
+signature to cover `content-digest` without unbounded buffering.
 
 ## Automatic Content-Digest
 
@@ -257,8 +260,9 @@ let signature_headers = config.headers_from_signature(my_signing_function(base.a
 `sign_request()` for response-only bases. For response bases that also cover a
 related request, sign `request_response_signature_base()` output and pass the
 signature bytes to `headers_from_signature()`. Native automatic response signing
-is available on forward builders only; `HttpEngineBuilder::message_signature()`
-continues to configure request signing.
+is available on forward builders only. Forward builders can also generate a
+bounded response `Content-Digest` before signing;
+`HttpEngineBuilder::message_signature()` continues to configure request signing.
 
 ## Accept-Signature
 
@@ -534,8 +538,9 @@ trailer generation. Native automatic request signing supports synchronous and
 asynchronous signers for tokio, smol, and compio request dispatch. Forward-only
 automatic response signing supports synchronous signers, send-runtime async
 signers for tokio/smol, and local async signers for compio. Buffered automatic
-`Content-Digest` generation is also available for native request bodies.
-Blocking clients inherit configured native-client behavior.
+`Content-Digest` generation is available for native request bodies, and bounded
+forward response `Content-Digest` generation is available on native forward
+builders. Blocking clients inherit configured native-client behavior.
 
 Browser Fetch and WASI hosts can still alter or reject some headers at the host
 boundary. That host behavior is outside aioduct's control.
@@ -570,11 +575,11 @@ work lands.
 | `Accept-Signature` fulfillment helpers | Supported | `accept_signature_fulfills_response_with_related_request`, `accept_signature_fulfills_next_request`, `accept_signature_fulfillment_reports_unfulfillable_requests`, `accept_signature_allows_ignoring_requests_and_adding_signatures` | Current | Converts accepted entries into concrete `MessageSignatureConfig` values, fills requested metadata, rejects missing or conflicting requested parameters, supports caller-selected ignored requests, and allows additional signatures. Cryptography and header attachment remain caller-owned. |
 | SHA-256 `Content-Digest` value helpers | Supported | `formats_sha256_content_digest`, `formats_precomputed_sha256_content_digest`, `inserts_sha256_content_digest` | Current | Builds explicit `Content-Digest` field values from complete body bytes or a precomputed 32-byte SHA-256 digest. |
 | Buffered automatic `Content-Digest` generation | Supported | `automatic_content_digest_is_inserted_before_signing`, `automatic_content_digest_preserves_manual_header`, `automatic_content_digest_rejects_streaming_body_without_manual_digest`, `automatic_content_digest_rejects_middleware_replaced_body_without_manual_digest` | Current | Native dispatch can insert SHA-256 `Content-Digest` for buffered bodies before automatic signing. Existing digest fields are preserved; streaming or middleware-replaced bodies need explicit digest fields. |
+| Bounded forward response `Content-Digest` generation | Supported | `forward_response_content_digest_is_signed_and_preserves_body`, `forward_response_content_digest_rejects_body_over_limit`, `forward_response_content_digest_rejects_connect_before_upstream`, `forward_response_content_digest_preserves_existing_field`, `test_compio_forward_response_content_digest_is_signed` | Current | Native forward builders can buffer downstream response bodies up to a caller cap, insert SHA-256 `Content-Digest` before response signing, preserve existing digest fields, and fail closed over the cap. |
 | Async automatic signing | Supported | `async_automatic_signing_adds_headers_after_middleware`, `async_signer_error_aborts_request_before_dispatch`, `test_compio_async_local_message_signature` | Current | Send-runtime signing uses `message_signature_async` with a `Send` future; local-runtime signing uses `message_signature_async_local` and can await a non-`Send` future. Sync automatic signing remains supported. |
 | Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs cross-runtime request-trailer semantics first. |
 | Cryptographic algorithm validation | Not in scope | Matrix only | Caller-owned | aioduct builds bases and header values; callers own keys, algorithms, signing, and verification cryptography. |
 
 ## Future Work
 
-- Native automatic response signing.
 - Automatic trailer-based digest/signature generation after trailer semantics are proven across runtimes.
