@@ -35,7 +35,8 @@ use hyper::{Request, Response};
 
 use aioduct::runtime::compio_rt::{CompioRuntime, TcpConnector};
 use aioduct::{
-    HttpEngineLocal, MessageSignatureBase, MessageSignatureComponent, MessageSignatureConfig,
+    CONTENT_DIGEST, HttpEngineLocal, MessageSignatureBase, MessageSignatureComponent,
+    MessageSignatureConfig, sha256_content_digest_value,
 };
 
 async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {

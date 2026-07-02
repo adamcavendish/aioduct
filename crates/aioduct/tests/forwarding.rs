@@ -16,8 +16,8 @@ use tokio::net::TcpListener;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{
-    Error, HttpEngineSend, MessageSignatureBase, MessageSignatureComponent, MessageSignatureConfig,
-    MessageSignatureError,
+    CONTENT_DIGEST, Error, HttpEngineSend, MessageSignatureBase, MessageSignatureComponent,
+    MessageSignatureConfig, MessageSignatureError, sha256_content_digest_value,
 };
 
 use aioduct_test_server::TokioExec;
@@ -608,6 +608,218 @@ async fn forward_response_signature_covers_response_hook_and_strips_hop_by_hop()
     assert!(bases[0].contains(r#""x-gateway": aioduct"#));
     assert!(!bases[0].contains("x-upstream-hop"));
     assert!(!bases[0].contains("x-hook-hop"));
+}
+
+#[tokio::test]
+async fn forward_response_content_digest_is_signed_and_preserves_body() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|_req: Request<hyper::body::Incoming>| async move {
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("signed body"))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let bases = Arc::new(Mutex::new(Vec::new()));
+    let signer_bases = bases.clone();
+    let signer = move |base: &[u8]| -> Result<Vec<u8>, MessageSignatureError> {
+        signer_bases
+            .lock()
+            .unwrap()
+            .push(std::str::from_utf8(base).unwrap().to_owned());
+        Ok(b"digest".to_vec())
+    };
+    let config = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status())
+        .component(MessageSignatureComponent::header(HeaderName::from_static(
+            CONTENT_DIGEST,
+        )));
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/digest")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .response_content_digest(1024)
+        .response_message_signature(config, signer)
+        .send()
+        .await
+        .unwrap();
+
+    let expected_digest = sha256_content_digest_value(b"signed body").unwrap();
+    assert_eq!(
+        resp.headers().get(CONTENT_DIGEST).unwrap(),
+        &expected_digest
+    );
+    assert_eq!(resp.headers().get("signature").unwrap(), "sig1=:ZGlnZXN0:");
+    assert_eq!(resp.text().await.unwrap(), "signed body");
+
+    let bases = bases.lock().unwrap();
+    assert_eq!(bases.len(), 1);
+    assert!(bases[0].contains(r#""@status": 200"#));
+    assert!(bases[0].contains(&format!(
+        r#""content-digest": {}"#,
+        expected_digest.to_str().unwrap()
+    )));
+}
+
+#[tokio::test]
+async fn forward_response_content_digest_rejects_body_over_limit() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|_req: Request<hyper::body::Incoming>| async move {
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("too large"))))
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/too-large")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let result = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .response_content_digest(4)
+        .send()
+        .await;
+
+    match result.unwrap_err() {
+        Error::Unsupported(message) => assert!(message.contains("buffer limit")),
+        other => panic!("expected unsupported error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn forward_response_content_digest_rejects_connect_before_upstream() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = attempts.clone();
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        server_attempts.fetch_add(1, Ordering::SeqCst);
+        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+        let _ = server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|_req: Request<hyper::body::Incoming>| async move {
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
+                }),
+            )
+            .await;
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let incoming_req = http::Request::builder()
+        .method(http::Method::CONNECT)
+        .uri("example.com:443")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let result = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .response_content_digest(1024)
+        .send()
+        .await;
+
+    match result.unwrap_err() {
+        Error::Unsupported(message) => assert!(message.contains("CONNECT")),
+        other => panic!("expected unsupported error, got {other:?}"),
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn forward_response_content_digest_preserves_existing_field() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.unwrap();
+        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+        server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|_req: Request<hyper::body::Incoming>| async move {
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .header(CONTENT_DIGEST, "sha-256=:YWJj:")
+                            .body(Full::new(Bytes::from("existing digest body")))
+                            .unwrap(),
+                    )
+                }),
+            )
+            .await
+            .unwrap();
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let incoming_req = http::Request::builder()
+        .method("GET")
+        .uri("/existing")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let resp = client
+        .forward(incoming_req)
+        .upstream(
+            format!("http://127.0.0.1:{}", upstream_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .response_content_digest(0)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.headers().get(CONTENT_DIGEST).unwrap(),
+        "sha-256=:YWJj:"
+    );
+    assert_eq!(resp.text().await.unwrap(), "existing digest body");
 }
 
 #[tokio::test]

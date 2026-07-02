@@ -201,6 +201,68 @@ fn test_compio_forward_response_message_signature() {
 }
 
 #[test]
+fn test_compio_forward_response_content_digest_is_signed() {
+    let upstream_addr = start_server_with_tokio(|_req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("local signed body"))))
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let bases = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let signer_bases = bases.clone();
+        let signer = move |base: &[u8]| -> Result<Vec<u8>, aioduct::MessageSignatureError> {
+            signer_bases
+                .lock()
+                .unwrap()
+                .push(std::str::from_utf8(base).unwrap().to_owned());
+            Ok(b"local-digest".to_vec())
+        };
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::status())
+            .component(MessageSignatureComponent::header(
+                http::header::HeaderName::from_static(CONTENT_DIGEST),
+            ));
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/digest")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let resp = client
+            .forward_local(incoming)
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .response_content_digest(1024)
+            .response_message_signature(config, signer)
+            .send()
+            .await
+            .unwrap();
+
+        let expected_digest = sha256_content_digest_value(b"local signed body").unwrap();
+        assert_eq!(
+            resp.headers().get(CONTENT_DIGEST).unwrap(),
+            &expected_digest
+        );
+        assert_eq!(
+            resp.headers().get("signature").unwrap().to_str().unwrap(),
+            "sig1=:bG9jYWwtZGlnZXN0:"
+        );
+        assert_eq!(resp.text().await.unwrap(), "local signed body");
+
+        let bases = bases.lock().unwrap();
+        assert_eq!(bases.len(), 1);
+        assert!(bases[0].contains(&format!(
+            r#""content-digest": {}"#,
+            expected_digest.to_str().unwrap()
+        )));
+    });
+}
+
+#[test]
 fn test_compio_forward_response_async_signing_is_included_in_timeout() {
     let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let server_attempts = attempts.clone();

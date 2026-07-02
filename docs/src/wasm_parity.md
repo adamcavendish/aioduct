@@ -51,7 +51,8 @@ WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 | RFC 9421 caller-supplied `;tr` trailer field components | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Covered `Content-Digest` verification with caller-supplied body bytes | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SHA-256 `Content-Digest` value helpers for explicit headers | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Automatic buffered `Content-Digest` generation | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
+| Automatic buffered request `Content-Digest` generation | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
+| Forward bounded response `Content-Digest` generation | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ no native forwarding | ✗ no native forwarding |
 | Sync automatic request signing | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
 | Async automatic request signing | ✓ `Send` future | ✓ `Send` future | ✓ local future | ✗ manual headers only | ✗ manual headers only |
 | Forward automatic response signing | ✓ sync/`Send` async | ✓ sync/`Send` async | ✓ sync/local async | ✗ no native forwarding | ✗ no native forwarding |
@@ -70,7 +71,8 @@ plus async send-runtime signers for tokio/smol and async local-runtime signing
 futures for compio. It runs after default headers, cookies, cache validators,
 middleware, digest-auth retry headers, forwarding request rewrites, framing
 cleanup, and digest insertion have finalized each request attempt. Native forward
-builders can also sign downstream responses after response cleanup and
+builders can also buffer downstream responses up to a caller cap to generate
+`Content-Digest` before signing downstream responses after response cleanup and
 `on_response`; this is not available on browser Fetch or WASI because those
 targets do not expose the native forwarding builder. Browser Fetch and WASI
 request dispatch do not expose automatic digest/signing hooks; use the portable
