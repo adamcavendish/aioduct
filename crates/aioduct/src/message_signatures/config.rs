@@ -299,7 +299,7 @@ impl MessageSignatureConfig {
         self.headers_from_signature(signature)
     }
 
-    fn validate_components(&self) -> Result<(), MessageSignatureError> {
+    pub(crate) fn validate_components(&self) -> Result<(), MessageSignatureError> {
         validate_component_set(&self.components, true)
     }
 

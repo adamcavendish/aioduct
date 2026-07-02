@@ -345,6 +345,15 @@ future does not need to be `Send`. Async signers receive an owned
 `MessageSignatureBase`, so request/header borrows are not held across the signer
 await point.
 
+Forward builders can sign the downstream response with
+`response_message_signature(...)`, `response_message_signature_async(...)`, or
+`response_message_signature_async_local(...)`. Forward response signing runs
+after upstream response hop-by-hop cleanup and `on_response`, preserves unrelated
+signature labels, replaces its configured label, and uses the inbound request
+snapshot for related-request components. Use `downstream_target_uri(...)` when an
+origin-form inbound request needs related-request `@scheme`, `@authority`, or
+`@target-uri` coverage.
+
 Use `automatic_content_digest(true)` on the client builder or a request builder
 to insert `Content-Digest: sha-256=:...:` for buffered native request bodies that
 do not already have `Content-Digest`. The header is generated after middleware

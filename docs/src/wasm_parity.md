@@ -54,6 +54,7 @@ WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 | Automatic buffered `Content-Digest` generation | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
 | Sync automatic request signing | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
 | Async automatic request signing | ✓ `Send` future | ✓ `Send` future | ✓ local future | ✗ manual headers only | ✗ manual headers only |
+| Forward automatic response signing | ✓ sync/`Send` async | ✓ sync/`Send` async | ✓ sync/local async | ✗ no native forwarding | ✗ no native forwarding |
 
 `message_signatures` is portable: callers can build request or response
 signature bases, sign them with their own key material, verify signed request or
@@ -64,11 +65,14 @@ caller-supplied trailer fields with `;tr`, verify covered SHA-256
 format SHA-256 `Content-Digest` values for explicit headers, and attach
 `Signature-Input` / `Signature` through the normal header APIs on every runtime.
 Native clients can also generate SHA-256 `Content-Digest` for buffered request
-bodies before signing. Native automatic signing supports sync signers plus async
-send-runtime signers for tokio/smol and async local-runtime signing futures for
-compio. It runs after default headers, cookies, cache validators, middleware,
-digest-auth retry headers, forwarding request rewrites, framing cleanup, and
-digest insertion have finalized each request attempt. Browser Fetch and WASI
+bodies before signing. Native automatic request signing supports sync signers
+plus async send-runtime signers for tokio/smol and async local-runtime signing
+futures for compio. It runs after default headers, cookies, cache validators,
+middleware, digest-auth retry headers, forwarding request rewrites, framing
+cleanup, and digest insertion have finalized each request attempt. Native forward
+builders can also sign downstream responses after response cleanup and
+`on_response`; this is not available on browser Fetch or WASI because those
+targets do not expose the native forwarding builder. Browser Fetch and WASI
 request dispatch do not expose automatic digest/signing hooks; use the portable
 helper flow and manual headers there.
 
