@@ -304,7 +304,7 @@ pub use tls::TlsInfo;
 #[cfg(not(target_arch = "wasm32"))]
 pub use tls::TlsVersion;
 #[cfg(feature = "rustls")]
-pub use tls::{Certificate, Identity};
+pub use tls::{Certificate, Identity, TlsPemBundleError};
 
 pub use http::{HeaderMap, Method, StatusCode, Uri, Version};
 #[cfg(not(target_arch = "wasm32"))]

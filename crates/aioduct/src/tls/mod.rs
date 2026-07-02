@@ -205,6 +205,36 @@ pub struct Certificate {
 }
 
 #[cfg(feature = "rustls")]
+/// Error returned when parsing a strict PEM CA bundle.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TlsPemBundleError {
+    /// The PEM input is empty or contains only ASCII whitespace.
+    #[error("PEM CA bundle is empty")]
+    Empty,
+
+    /// The PEM input contains private key material.
+    #[error("PEM CA bundle contains private key material")]
+    PrivateKey,
+
+    /// The PEM input did not contain any certificates.
+    #[error("PEM CA bundle does not contain certificates")]
+    NoCertificates,
+
+    /// The PEM input contains a non-certificate section.
+    #[error("PEM CA bundle contains unsupported section: {0}")]
+    UnsupportedSection(&'static str),
+
+    /// The PEM input could not be parsed.
+    #[error("malformed PEM CA bundle: {0}")]
+    Malformed(#[from] io::Error),
+
+    /// A certificate in the PEM input is not accepted by rustls as a trust root.
+    #[error("invalid certificate in PEM CA bundle: {0}")]
+    InvalidCertificate(#[from] rustls::Error),
+}
+
+#[cfg(feature = "rustls")]
 impl Certificate {
     /// Create a certificate from DER-encoded bytes.
     pub fn from_der(der: Vec<u8>) -> Self {
@@ -220,6 +250,131 @@ impl Certificate {
             rustls_pemfile::certs(&mut reader).collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(certs.into_iter().map(|der| Self { der }).collect())
     }
+
+    /// Parse a PEM-encoded CA bundle for operator configuration.
+    ///
+    /// Unlike [`Certificate::from_pem`], this rejects empty input, bundles
+    /// without certificates, private keys, unsupported PEM sections, malformed
+    /// input, and certificates rustls will not accept as trust roots.
+    pub fn from_pem_bundle(pem: &[u8]) -> Result<Vec<Self>, TlsPemBundleError> {
+        if pem.iter().all(u8::is_ascii_whitespace) {
+            return Err(TlsPemBundleError::Empty);
+        }
+        validate_pem_bundle_sections(pem)?;
+
+        let mut reader = io::BufReader::new(pem);
+        let mut certs = Vec::new();
+        while let Some(item) = rustls_pemfile::read_one(&mut reader)? {
+            match item {
+                rustls_pemfile::Item::X509Certificate(der) => {
+                    certs.push(Self { der });
+                }
+                rustls_pemfile::Item::Pkcs1Key(_)
+                | rustls_pemfile::Item::Pkcs8Key(_)
+                | rustls_pemfile::Item::Sec1Key(_) => {
+                    return Err(TlsPemBundleError::PrivateKey);
+                }
+                rustls_pemfile::Item::SubjectPublicKeyInfo(_) => {
+                    return Err(TlsPemBundleError::UnsupportedSection("PUBLIC KEY"));
+                }
+                rustls_pemfile::Item::Crl(_) => {
+                    return Err(TlsPemBundleError::UnsupportedSection("X509 CRL"));
+                }
+                rustls_pemfile::Item::Csr(_) => {
+                    return Err(TlsPemBundleError::UnsupportedSection("CERTIFICATE REQUEST"));
+                }
+                _ => {
+                    return Err(TlsPemBundleError::UnsupportedSection("unknown"));
+                }
+            }
+        }
+
+        if certs.is_empty() {
+            return Err(TlsPemBundleError::NoCertificates);
+        }
+
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in &certs {
+            roots.add(cert.der.clone())?;
+        }
+
+        Ok(certs)
+    }
+}
+
+#[cfg(feature = "rustls")]
+fn validate_pem_bundle_sections(pem: &[u8]) -> Result<(), TlsPemBundleError> {
+    let mut rest = pem;
+    loop {
+        rest = trim_ascii(rest);
+        if rest.is_empty() {
+            return Ok(());
+        }
+
+        let Some(after_begin) = rest.strip_prefix(b"-----BEGIN ") else {
+            return Err(TlsPemBundleError::UnsupportedSection("unknown"));
+        };
+        let Some(label_end) = find_subslice(after_begin, b"-----") else {
+            return Err(malformed_pem_bundle("missing PEM begin marker terminator"));
+        };
+        let label = &after_begin[..label_end];
+        validate_pem_bundle_label(label)?;
+
+        let content = &after_begin[label_end + b"-----".len()..];
+        let mut end_marker = b"-----END ".to_vec();
+        end_marker.extend_from_slice(label);
+        end_marker.extend_from_slice(b"-----");
+        let Some(end_start) = find_subslice(content, &end_marker) else {
+            return Err(malformed_pem_bundle("missing PEM end marker"));
+        };
+        rest = &content[end_start + end_marker.len()..];
+    }
+}
+
+#[cfg(feature = "rustls")]
+fn validate_pem_bundle_label(label: &[u8]) -> Result<(), TlsPemBundleError> {
+    match label {
+        b"CERTIFICATE" => Ok(()),
+        b"PUBLIC KEY" => Err(TlsPemBundleError::UnsupportedSection("PUBLIC KEY")),
+        b"X509 CRL" => Err(TlsPemBundleError::UnsupportedSection("X509 CRL")),
+        b"CERTIFICATE REQUEST" => Err(TlsPemBundleError::UnsupportedSection("CERTIFICATE REQUEST")),
+        label if contains_ascii(label, b"PRIVATE KEY") => Err(TlsPemBundleError::PrivateKey),
+        _ => Err(TlsPemBundleError::UnsupportedSection("unknown")),
+    }
+}
+
+#[cfg(feature = "rustls")]
+fn malformed_pem_bundle(message: &'static str) -> TlsPemBundleError {
+    TlsPemBundleError::Malformed(io::Error::new(io::ErrorKind::InvalidData, message))
+}
+
+#[cfg(feature = "rustls")]
+fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
+    while let Some((first, rest)) = bytes.split_first()
+        && first.is_ascii_whitespace()
+    {
+        bytes = rest;
+    }
+    while let Some((last, rest)) = bytes.split_last()
+        && last.is_ascii_whitespace()
+    {
+        bytes = rest;
+    }
+    bytes
+}
+
+#[cfg(feature = "rustls")]
+fn contains_ascii(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+#[cfg(feature = "rustls")]
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 #[cfg(feature = "rustls")]
@@ -385,6 +540,57 @@ mod tests {
     fn certificate_from_pem_empty() {
         let certs = Certificate::from_pem(b"").unwrap();
         assert!(certs.is_empty());
+    }
+
+    #[test]
+    fn certificate_from_pem_bundle_rejects_empty() {
+        assert!(matches!(
+            Certificate::from_pem_bundle(b" \n\t"),
+            Err(TlsPemBundleError::Empty)
+        ));
+    }
+
+    #[test]
+    fn certificate_from_pem_bundle_rejects_private_key() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let mut pem = ca.cert.pem();
+        pem.push_str(&ca.signing_key.serialize_pem());
+        assert!(matches!(
+            Certificate::from_pem_bundle(pem.as_bytes()),
+            Err(TlsPemBundleError::PrivateKey)
+        ));
+    }
+
+    #[test]
+    fn certificate_from_pem_bundle_rejects_unknown_section() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let mut pem = ca.cert.pem();
+        pem.push_str("-----BEGIN BREAKFAST CLUB-----\nqw==\n-----END BREAKFAST CLUB-----\n");
+        assert!(matches!(
+            Certificate::from_pem_bundle(pem.as_bytes()),
+            Err(TlsPemBundleError::UnsupportedSection("unknown"))
+        ));
+    }
+
+    #[test]
+    fn certificate_from_pem_bundle_rejects_non_pem_junk() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let pem = format!("{}\nnot a pem block\n", ca.cert.pem());
+        assert!(matches!(
+            Certificate::from_pem_bundle(pem.as_bytes()),
+            Err(TlsPemBundleError::UnsupportedSection("unknown"))
+        ));
+    }
+
+    #[test]
+    fn certificate_from_pem_bundle_accepts_valid_ca_bundle() {
+        install_crypto();
+        let ca = rcgen::generate_simple_self_signed(vec!["test.local".into()]).unwrap();
+        let certs = Certificate::from_pem_bundle(ca.cert.pem().as_bytes()).unwrap();
+        assert_eq!(certs.len(), 1);
     }
 
     #[test]
