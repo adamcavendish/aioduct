@@ -140,6 +140,25 @@ preserves it and signs that caller-supplied value.
 aioduct does not auto-buffer streaming bodies and does not generate digest or
 signature trailers. Streaming bodies and middleware-replaced bodies must provide
 an explicit `Content-Digest` header when automatic digest generation is enabled.
+Use `sha256_content_digest_value(...)` when the complete body is already in
+memory, or `sha256_content_digest_value_from_digest(...)` when a streaming caller
+has precomputed the 32-byte SHA-256 digest out-of-band.
+
+```rust,no_run
+use aioduct::{CONTENT_DIGEST, sha256_content_digest_value_from_digest};
+use http::{HeaderMap, HeaderName};
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let mut headers = HeaderMap::new();
+let digest = precomputed_stream_digest();
+headers.insert(
+    HeaderName::from_static(CONTENT_DIGEST),
+    sha256_content_digest_value_from_digest(digest)?,
+);
+# Ok(())
+# }
+# fn precomputed_stream_digest() -> [u8; 32] { [0_u8; 32] }
+```
 
 ## Manual And Async Signers
 
@@ -505,6 +524,7 @@ work lands.
 | Covered `Content-Digest` verification | Supported | `verification_policy_checks_request_content_digest_before_signature`, `verification_policy_rejects_mismatched_request_content_digest_before_signature`, `verification_policy_rejects_malformed_and_unsupported_content_digest_before_signature`, `verification_policy_checks_response_content_digest_before_signature`, `verification_policy_checks_related_request_content_digest_before_signature`, `verification_policy_skips_content_digest_check_when_body_is_unavailable` | Current | Verifies SHA-256 `Content-Digest` before caller-owned signature verification when body bytes are attached and the selected signature covers the whole `content-digest` field or its `sha-256` dictionary member, including related request fields with `;req`. |
 | `Accept-Signature` parser and builder | Supported | `accept_signature_parses_rfc_style_request`, `accept_signature_formats_and_inserts_header`, `accept_signature_from_headers_combines_field_values`, `accept_signature_reports_header_errors`, `accept_signature_validates_target_message_components` | Current | Parses and formats requested signature dictionaries, exposes requested metadata, and validates request, response, or request-response target component applicability. |
 | `Accept-Signature` fulfillment helpers | Supported | `accept_signature_fulfills_response_with_related_request`, `accept_signature_fulfills_next_request`, `accept_signature_fulfillment_reports_unfulfillable_requests`, `accept_signature_allows_ignoring_requests_and_adding_signatures` | Current | Converts accepted entries into concrete `MessageSignatureConfig` values, fills requested metadata, rejects missing or conflicting requested parameters, supports caller-selected ignored requests, and allows additional signatures. Cryptography and header attachment remain caller-owned. |
+| SHA-256 `Content-Digest` value helpers | Supported | `formats_sha256_content_digest`, `formats_precomputed_sha256_content_digest`, `inserts_sha256_content_digest` | Current | Builds explicit `Content-Digest` field values from complete body bytes or a precomputed 32-byte SHA-256 digest. |
 | Buffered automatic `Content-Digest` generation | Supported | `automatic_content_digest_is_inserted_before_signing`, `automatic_content_digest_preserves_manual_header`, `automatic_content_digest_rejects_streaming_body_without_manual_digest`, `automatic_content_digest_rejects_middleware_replaced_body_without_manual_digest` | Current | Native dispatch can insert SHA-256 `Content-Digest` for buffered bodies before automatic signing. Existing digest fields are preserved; streaming or middleware-replaced bodies need explicit digest fields. |
 | Async automatic signing | Planned | Matrix only | Async signing | Sync automatic signing remains supported; async signing will use explicit send/local APIs. |
 | Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs cross-runtime request-trailer semantics first. |
@@ -513,5 +533,4 @@ work lands.
 ## Future Work
 
 - Async automatic signer callbacks.
-- Precomputed digest helpers for streaming bodies.
 - Automatic trailer-based digest/signature generation after trailer semantics are proven across runtimes.

@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{
-    Error, HttpCache, HttpEngineSend, MessageSignatureComponent, MessageSignatureConfig,
-    MessageSignatureError,
+    CONTENT_DIGEST, Error, HttpCache, HttpEngineSend, MessageSignatureComponent,
+    MessageSignatureConfig, MessageSignatureError, sha256_content_digest_value_from_digest,
 };
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, CACHE_CONTROL, HeaderName, HeaderValue, VARY};
@@ -457,6 +457,77 @@ async fn automatic_content_digest_rejects_streaming_body_without_manual_digest()
 
     assert!(
         matches!(err.into_error(), Error::Unsupported(message) if message.contains("automatic Content-Digest"))
+    );
+}
+
+#[tokio::test]
+async fn automatic_content_digest_accepts_streaming_body_with_explicit_helper_value() {
+    let bases = Arc::new(Mutex::new(Vec::new()));
+    let signer_bases = bases.clone();
+    let signer = move |base: &[u8]| -> Result<Vec<u8>, MessageSignatureError> {
+        signer_bases
+            .lock()
+            .unwrap()
+            .push(String::from_utf8(base.to_vec()).unwrap());
+        Ok(b"signed".to_vec())
+    };
+    let content_digest = HeaderName::from_static(CONTENT_DIGEST);
+    let config = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::header(content_digest.clone()));
+
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let content_digest = req
+            .headers()
+            .get("content-digest")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "content-digest={content_digest}\nbody={}",
+            String::from_utf8_lossy(&body)
+        )))))
+    })
+    .await;
+
+    let digest = sha256_content_digest_value_from_digest([
+        0x2c, 0xf2, 0x4d, 0xba, 0x5f, 0xb0, 0xa3, 0x0e, 0x26, 0xe8, 0x3b, 0x2a, 0xc5, 0xb9, 0xe2,
+        0x9e, 0x1b, 0x16, 0x1e, 0x5c, 0x1f, 0xa7, 0x42, 0x5e, 0x73, 0x04, 0x33, 0x62, 0x93, 0x8b,
+        0x98, 0x24,
+    ])
+    .unwrap();
+    let stream_body = Full::new(Bytes::from_static(b"hello"))
+        .map_err(|never| match never {})
+        .boxed_unsync();
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .automatic_content_digest(true)
+        .message_signature(config, signer)
+        .build()
+        .unwrap();
+    let resp = client
+        .post(&format!("http://{addr}/digest"))
+        .unwrap()
+        .header(content_digest, digest.clone())
+        .body_stream(stream_body)
+        .send()
+        .await
+        .unwrap();
+
+    let body = resp.text().await.unwrap();
+    let expected = digest.to_str().unwrap();
+    assert!(
+        body.contains(&format!("content-digest={expected}")),
+        "{body}"
+    );
+    assert!(body.contains("body=hello"), "{body}");
+
+    let bases = bases.lock().unwrap();
+    assert_eq!(bases.len(), 1);
+    assert!(
+        bases[0].contains(&format!(r#""content-digest": {expected}"#)),
+        "{}",
+        bases[0]
     );
 }
 
