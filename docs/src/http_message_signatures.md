@@ -4,14 +4,15 @@ aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
 response signature-base helpers, parsed verification helpers,
 `Accept-Signature` negotiation helpers, covered `Content-Digest` verification,
 caller-supplied trailer field coverage with `;tr`, native automatic request
-signing, and native buffered `Content-Digest` generation. The portable helpers
-build signature bases, format and parse `Signature-Input` / `Signature` header
-values, turn accepted signature requests into concrete signing configs, apply
-verification policy checks, and expose the bytes callers pass to cryptographic
-code. Callers still choose the cryptographic signing and verification
-algorithms. Native clients can also insert SHA-256 `Content-Digest` for buffered
-request bodies and run synchronous or asynchronous signers automatically for each
-finalized request attempt.
+signing, forward-only automatic response signing, and native buffered
+`Content-Digest` generation. The portable helpers build signature bases, format
+and parse `Signature-Input` / `Signature` header values, turn accepted signature
+requests into concrete signing configs, apply verification policy checks, and
+expose the bytes callers pass to cryptographic code. Callers still choose the
+cryptographic signing and verification algorithms. Native clients can also insert
+SHA-256 `Content-Digest` for buffered request bodies and run synchronous or
+asynchronous signers automatically for each finalized request attempt or for a
+forwarded downstream response.
 
 ## Core Flow
 
@@ -148,6 +149,18 @@ explicit header forwarding/removal, and `on_request` hooks. Components derived
 from the target URI use the upstream URI; `@request-target` uses the final URI
 form sent on the wire.
 
+Forward builders can also sign the response returned downstream with
+`response_message_signature(...)`, `response_message_signature_async(...)`, or
+`response_message_signature_async_local(...)`. Response signing runs after
+upstream response hop-by-hop headers are stripped and after `on_response` runs,
+then strips hop-by-hop headers again before generating the base. Related-request
+components use the inbound request snapshot, not the rewritten upstream request.
+For origin-form inbound requests, set `downstream_target_uri(...)` when the
+response signature covers related-request `@scheme`, `@authority`, or
+`@target-uri`. Automatic response signing rejects `CONNECT`, known upgrade
+requests, HTTP/1.1 `101 Switching Protocols` responses, and trailer components;
+it does not buffer response bodies or generate response `Content-Digest` fields.
+
 ## Automatic Content-Digest
 
 Native clients can opt in to SHA-256 `Content-Digest` generation with
@@ -244,7 +257,8 @@ let signature_headers = config.headers_from_signature(my_signing_function(base.a
 `sign_request()` for response-only bases. For response bases that also cover a
 related request, sign `request_response_signature_base()` output and pass the
 signature bytes to `headers_from_signature()`. Native automatic response signing
-is not configured by `HttpEngineBuilder::message_signature()`.
+is available on forward builders only; `HttpEngineBuilder::message_signature()`
+continues to configure request signing.
 
 ## Accept-Signature
 
@@ -504,11 +518,12 @@ policy.verify_request_response(
 ## Header Ownership
 
 When automatic signing is not configured, user-supplied `Signature` and
-`Signature-Input` headers are ordinary request headers and are preserved. Native
-automatic signing owns its configured label in those two fields when configured:
-it replaces that label on each final dispatch so redirects, retries,
-digest-auth retries, forwarding rewrites, and stale connection replays cannot
-send signatures for an earlier request shape.
+`Signature-Input` headers are ordinary headers and are preserved. Native
+automatic request and forward-response signing own their configured label in
+those two fields when configured: they replace that label on each signed message
+while preserving unrelated labels, so redirects, retries, digest-auth retries,
+forwarding rewrites, stale connection replays, and forwarded response mutations
+cannot send signatures for an earlier message shape.
 
 ## Runtime Coverage
 
@@ -516,9 +531,11 @@ The helpers are portable and can be used with native, blocking, wasm, and wasi-p
 request builders by inserting the generated headers manually. Caller-supplied
 trailer maps for `;tr` components are portable context inputs, not automatic
 trailer generation. Native automatic request signing supports synchronous and
-asynchronous signers for tokio, smol, and compio request dispatch. Buffered
-automatic `Content-Digest` generation is also available for those native
-runtimes. Blocking clients inherit configured native-client behavior.
+asynchronous signers for tokio, smol, and compio request dispatch. Forward-only
+automatic response signing supports synchronous signers, send-runtime async
+signers for tokio/smol, and local async signers for compio. Buffered automatic
+`Content-Digest` generation is also available for native request bodies.
+Blocking clients inherit configured native-client behavior.
 
 Browser Fetch and WASI hosts can still alter or reject some headers at the host
 boundary. That host behavior is outside aioduct's control.
@@ -543,7 +560,7 @@ work lands.
 | Component parameter `;key` | Supported | `dictionary_key_header_values_are_signed_as_structured_field_members`, `dictionary_key_missing_malformed_and_duplicate_values` | Current | Covers Dictionary Structured Field member selection, strict member serialization, missing key errors, malformed dictionary errors, and duplicate source keys using the RFC 9651 last-value rule. |
 | Component parameter `;sf` | Supported | `structured_field_header_values_are_signed_with_strict_serialization` | Current | Covers strict serialization for valid RFC 9651 Dictionary, List, and Item field values. |
 | Component parameter `;tr` | Supported | `response_context_uses_caller_supplied_trailer_fields`, `trailer_fields_are_distinct_from_headers_and_support_field_parameters`, `trailer_components_require_attached_trailer_fields`, `verification_policy_calls_verifier_with_trailer_components` | Current | Covers caller-supplied request and response trailer fields, keeps same-name header and trailer fields separate, composes with `;sf`, `;key`, `;bs`, and related request `;req`. Automatic trailer generation remains future work. |
-| Response `@status` and response signature bases | Supported | `builds_response_signature_base_for_status_and_headers`, `section_24_response_with_related_request_base`, `sign_response_uses_signer_callback` | Current | Builds response signature bases and formats response signature headers from caller-supplied signature bytes. Native automatic response signing remains future work. |
+| Response `@status` and response signature bases | Supported | `builds_response_signature_base_for_status_and_headers`, `section_24_response_with_related_request_base`, `sign_response_uses_signer_callback`, `forward_response_signature_covers_response_hook_and_strips_hop_by_hop`, `test_compio_forward_response_message_signature` | Current | Builds response signature bases, formats response signature headers from caller-supplied signature bytes, and can automatically sign forwarded downstream responses on native send/local runtimes. |
 | Related request components `;req` | Supported | `request_response_signature_base_uses_related_request_components`, `parsed_signature_rebuilds_response_and_related_request_base`, `response_signature_rejects_components_from_wrong_context` | Current | Routes `;req` components to the related request when building response bases and rejects `;req` on request targets or without related request context. |
 | Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
 | Parsed signature selection and request-base rebuild | Supported | `parsed_signature_selects_label_and_rebuilds_request_base`, `parsed_signature_handles_component_parameters`, `parsed_signature_reports_selection_and_header_errors` | Current | Parses selected `Signature-Input` / `Signature` labels, exposes known metadata and signature bytes, preserves extension metadata in the rebuilt base, and rejects malformed or mismatched fields. |

@@ -45,6 +45,10 @@ println!("status: {}", resp.status());
 | `.remove_header(name)` | Remove a header before sending |
 | `.on_request(fn)` | Mutate request parts just before sending |
 | `.on_response(fn)` | Mutate the response before returning |
+| `.downstream_target_uri(uri)` | Full downstream URI for related-request response signatures |
+| `.response_message_signature(config, signer)` | Sign the downstream response with a sync RFC 9421 signer |
+| `.response_message_signature_async(config, signer)` | Sign the downstream response with a send-runtime async signer (send builders) |
+| `.response_message_signature_async_local(config, signer)` | Sign the downstream response with a local-runtime async signer (local builders) |
 | `.h2c()` | Force HTTP/2 prior knowledge (h2c) on this forward |
 | `.adaptive_h2c()` | Probe h2c, fall back to h1; result cached per-authority |
 | `.upgrade()` | Force upgrade header preservation (usually auto-detected) |
@@ -174,6 +178,91 @@ let resp = client
 # }
 ```
 
+## Response Message Signatures
+
+Forward builders can sign the response that a gateway returns downstream with RFC
+9421 HTTP Message Signatures. Response signing runs after upstream response
+hop-by-hop headers are stripped and after `on_response` runs, then strips
+hop-by-hop headers again before building the signature base. This means response
+mutations from the hook are covered, but `Connection`-listed fields are not.
+
+```rust,no_run
+# use aioduct::{MessageSignatureComponent, MessageSignatureConfig, TokioClient};
+# use bytes::Bytes;
+# use http_body_util::Full;
+# async fn example() -> Result<(), aioduct::Error> {
+let client = TokioClient::new();
+let incoming_req = http::Request::builder()
+    .method("GET")
+    .uri("/api/users")
+    .header("host", "gateway.example.com")
+    .body(Full::new(Bytes::new()))
+    .unwrap();
+
+let config = MessageSignatureConfig::new("sig1")?
+    .component(MessageSignatureComponent::status())
+    .component(MessageSignatureComponent::header(
+        http::header::HeaderName::from_static("x-gateway"),
+    ));
+
+let resp = client
+    .forward(incoming_req)
+    .upstream("http://backend:8080".parse::<http::Uri>().unwrap())
+    .on_response(|resp| {
+        resp.headers_mut().insert("x-gateway", "aioduct".parse().unwrap());
+    })
+    .response_message_signature(config, |base: &[u8]| Ok(sign_with_your_key(base)))
+    .send()
+    .await?;
+# let _ = resp;
+# Ok(())
+# }
+# fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
+```
+
+When the response signature covers related request components with `;req`, the
+request data comes from the inbound request snapshot, not the rewritten upstream
+request. If the inbound request uses origin-form and the signature covers
+related-request `@scheme`, `@authority`, or `@target-uri`, provide the full
+downstream URI explicitly:
+
+```rust,no_run
+# use aioduct::{MessageSignatureComponent, MessageSignatureConfig, TokioClient};
+# use bytes::Bytes;
+# use http_body_util::Full;
+# async fn example() -> Result<(), aioduct::Error> {
+let client = TokioClient::new();
+let incoming_req = http::Request::builder()
+    .method("GET")
+    .uri("/api/users?limit=10")
+    .header("host", "gateway.example.com")
+    .body(Full::new(Bytes::new()))
+    .unwrap();
+
+let config = MessageSignatureConfig::new("sig1")?
+    .component(MessageSignatureComponent::status())
+    .component(MessageSignatureComponent::target_uri().related_request())
+    .component(MessageSignatureComponent::authority().related_request());
+
+let resp = client
+    .forward(incoming_req)
+    .upstream("http://backend:8080".parse::<http::Uri>().unwrap())
+    .downstream_target_uri("https://gateway.example.com/api/users?limit=10")
+    .response_message_signature(config, |base: &[u8]| Ok(sign_with_your_key(base)))
+    .send()
+    .await?;
+# let _ = resp;
+# Ok(())
+# }
+# fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
+```
+
+Automatic response signing is fail-closed: signer failures, malformed existing
+`Signature-Input` / `Signature` dictionaries, unsupported trailer components,
+`CONNECT`, known upgrade requests, and HTTP/1.1 `101 Switching Protocols`
+responses return an error instead of an unsigned response. It does not buffer
+response bodies and does not generate response `Content-Digest` fields.
+
 ## gRPC / h2c Forwarding
 
 For gRPC or other HTTP/2 cleartext (h2c) upstreams, use `.h2c()` to force HTTP/2 prior knowledge on an individual forward without requiring `http2_prior_knowledge()` on the entire client:
@@ -244,6 +333,7 @@ let client = TokioClient::builder()
 
 - **No body buffering** — the body streams through as-is
 - **No middleware** — redirects, cookies, cache, and decompression are all bypassed
+- **No response body digesting** — response signing does not buffer the body or generate `Content-Digest`
 - **No WebSocket framing** — aioduct is transport-level; use a WS library for frame parsing
 - **No bidirectional splice** — the caller is responsible for splicing `Upgraded` streams
 - **No plaintext h2 by default** — HTTPS forwards negotiate HTTP/2 via TLS ALPN as usual; use `.h2c()` or `.adaptive_h2c()` when the upstream requires cleartext HTTP/2 (h2c)
