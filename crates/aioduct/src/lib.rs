@@ -163,6 +163,10 @@ pub use body::BodyStreamLocal;
 pub use body::{BodyStreamSend, RequestBody};
 pub use cache::{CacheConfig, CacheEntry, CacheStore, HttpCache, InMemoryCacheStore};
 pub use cookie::{Cookie, CookieJar, SameSite};
+pub use digest_fields::{
+    CONTENT_DIGEST, insert_sha256_content_digest, sha256_content_digest_value,
+    sha256_content_digest_value_from_digest,
+};
 pub use error::{Error, PoolError, PoolLimitError, PoolLimitKind, SendError};
 pub use forwarded::ForwardedElement;
 pub use hsts::HstsStore;

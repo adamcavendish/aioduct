@@ -342,7 +342,9 @@ do not already have `Content-Digest`. The header is generated after middleware
 and before automatic signing, so signatures covering `content-digest` cover the
 generated value. Requests without a configured body are left unchanged. Streaming
 and middleware-replaced bodies are not buffered; provide `Content-Digest`
-explicitly for those requests.
+explicitly for those requests. Use `sha256_content_digest_value(...)` for an
+in-memory body, or `sha256_content_digest_value_from_digest(...)` after hashing a
+streaming body out-of-band.
 
 `AcceptSignature` parses and formats RFC 9421 `Accept-Signature` negotiation
 fields. `AcceptSignatureFulfillment` turns accepted entries into concrete

@@ -50,6 +50,7 @@ WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 | RFC 9421 `Accept-Signature` parser/builder/fulfillment configs | ✓ | ✓ | ✓ | ✓ | ✓ |
 | RFC 9421 caller-supplied `;tr` trailer field components | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Covered `Content-Digest` verification with caller-supplied body bytes | ✓ | ✓ | ✓ | ✓ | ✓ |
+| SHA-256 `Content-Digest` value helpers for explicit headers | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Automatic buffered `Content-Digest` generation | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
 | Automatic request signing | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
 
@@ -59,9 +60,10 @@ response headers with caller-owned cryptography, parse or build
 `Accept-Signature`, convert accepted entries into signing configs, cover
 caller-supplied trailer fields with `;tr`, verify covered SHA-256
 `Content-Digest` fields when callers attach body bytes to verification contexts,
-and attach `Signature-Input` / `Signature` through the normal header APIs on
-every runtime. Native clients can also generate SHA-256 `Content-Digest` for
-buffered request bodies before signing. Native automatic signing runs after
+format SHA-256 `Content-Digest` values for explicit headers, and attach
+`Signature-Input` / `Signature` through the normal header APIs on every runtime.
+Native clients can also generate SHA-256 `Content-Digest` for buffered request
+bodies before signing. Native automatic signing runs after
 default headers, cookies, cache validators, middleware, digest-auth retry
 headers, forwarding request rewrites, framing cleanup, and digest insertion have
 finalized each tokio, smol, or compio request attempt. Browser Fetch and WASI
