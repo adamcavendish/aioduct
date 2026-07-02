@@ -10,6 +10,10 @@ for a directory connector. The embedding host owns origin allow-lists, TLS
 roots, insecure test mode, secret header injection, request and response size
 limits, deadline budgets, and diagnostic redaction.
 
+`aioduct-wasmtime` has an empty default feature set. Enable the host runtime
+you want, such as `tokio`, `smol`, or `compio`, and enable one rustls provider
+when the host transport needs TLS.
+
 ## Shape
 
 ```rust,no_run
@@ -43,25 +47,40 @@ let hooks = WasiHttpHost::builder()
 ```
 
 The same hook can use a smol transport by building a `SmolClient` and passing
-it to `.transport(...)`. The adapter defaults to a Tokio transport only when
-the `tokio` feature is enabled and no explicit transport is supplied.
+it to `.transport(...)`. The adapter can also use compio through
+`CompioHostTransport`, which starts a local-runtime worker. Use a builder
+factory so local-runtime connector slots are created on the worker thread:
+
+```rust,no_run
+use aioduct_wasmtime::{CompioHostTransport, ExactOriginPolicy, WasiHttpHost};
+
+# fn build() -> Result<WasiHttpHost, Box<dyn std::error::Error>> {
+let hooks = WasiHttpHost::builder()
+    .transport(CompioHostTransport::from_builder_factory(
+        aioduct::CompioClient::builder,
+    )?)
+    .policy(ExactOriginPolicy::new("http://127.0.0.1:8080")?)
+    .build()?;
+# Ok(hooks)
+# }
+```
+
+If the `tokio` feature is explicitly enabled, the builder creates a default
+Tokio transport when no explicit transport is supplied. With `smol` or
+`compio`, pass the host transport explicitly.
 
 ## Runtime Line
 
 The adapter forwards through native `HttpEngineSend<R, C>` transports where
 `R: RuntimePoll` and `C: ConnectorSend`. That covers the current Send-capable
-native runtimes:
+native runtimes. Compio is supported through a separate local-runtime worker
+bridge because its `HttpEngineLocal` body and connection state are not `Send`:
 
 | Host transport | Supported by `aioduct-wasmtime` | Notes |
 |----------------|----------------------------------|-------|
-| `TokioClient`  | Yes                              | Default feature path |
+| `TokioClient`  | Yes                              | Explicit `tokio` feature; can be default-built after feature selection |
 | `SmolClient`   | Yes                              | Explicit `smol` feature and transport |
-| `CompioClient` | No                               | Requires a local-runtime worker and bounded body bridge |
-
-Compio uses `HttpEngineLocal` and `RuntimeLocal`; its response and request body
-types are intentionally not `Send`. Supporting it in a Wasmtime host hook
-requires a separate worker bridge rather than pretending it is another
-`RuntimePoll` transport.
+| `CompioClient` | Yes                              | Explicit `compio` feature via `CompioHostTransport` |
 
 Browser `wasm` also does not have a host adapter. Browser WASM delegates
 networking to Fetch in the browser process; there is no Wasmtime host hook to

@@ -11,10 +11,16 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+#[cfg(feature = "compio")]
+use std::sync::mpsc as std_mpsc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+#[cfg(feature = "compio")]
+use futures_channel::{mpsc, oneshot};
+#[cfg(feature = "compio")]
+use futures_util::{SinkExt, StreamExt};
 use http::header::{
     AUTHORIZATION, CONTENT_LENGTH, COOKIE, HeaderName, HeaderValue, PROXY_AUTHORIZATION,
 };
@@ -45,9 +51,40 @@ pub type SmolTransportBuilder = aioduct::client::HttpEngineBuilder<
     aioduct::runtime::smol_rt::TcpConnector,
 >;
 
+/// Compio transport builder accepted by [`CompioHostTransport`].
+#[cfg(feature = "compio")]
+pub type CompioTransportBuilder = aioduct::client::HttpEngineBuilder<
+    aioduct::runtime::compio_rt::CompioRuntime,
+    aioduct::runtime::compio_rt::TcpConnector,
+>;
+
 /// Boxed future returned by host transports.
 #[doc(hidden)]
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+type RejectionObserver = Arc<dyn Fn(RejectionReason) + Send + Sync>;
+
+/// Native response returned by host transports.
+#[doc(hidden)]
+pub struct HostResponse {
+    response: http::Response<aioduct::body::RequestBodySend>,
+    worker: Option<wasmtime_wasi::runtime::AbortOnDropJoinHandle<()>>,
+}
+
+impl HostResponse {
+    fn new(response: http::Response<aioduct::body::RequestBodySend>) -> Self {
+        Self {
+            response,
+            worker: None,
+        }
+    }
+
+    #[cfg(feature = "compio")]
+    fn with_worker(mut self, worker: wasmtime_wasi::runtime::AbortOnDropJoinHandle<()>) -> Self {
+        self.worker = Some(worker);
+        self
+    }
+}
 
 /// Forwarding options passed from the Wasmtime host hook to the native transport.
 #[doc(hidden)]
@@ -66,7 +103,8 @@ pub struct HostForwardOptions {
 /// This trait is public so the host type can name its transport boundary, but
 /// it is sealed because aioduct still owns the compatibility contract for the
 /// bridge. Built-in implementations cover `HttpEngineSend<R, C>` for
-/// `RuntimePoll` runtimes such as Tokio and smol.
+/// `RuntimePoll` runtimes such as Tokio and smol, plus `CompioHostTransport`
+/// when the `compio` feature is enabled.
 pub trait WasiHostTransport: sealed::Sealed + Send + Sync + 'static {
     /// Forward a validated WASI HTTP request through native aioduct.
     #[doc(hidden)]
@@ -74,7 +112,7 @@ pub trait WasiHostTransport: sealed::Sealed + Send + Sync + 'static {
         &self,
         request: http::Request<aioduct::body::RequestBodySend>,
         options: HostForwardOptions,
-    ) -> BoxFuture<Result<aioduct::Response, aioduct::Error>>;
+    ) -> BoxFuture<Result<HostResponse, aioduct::Error>>;
 }
 
 impl<R, C> WasiHostTransport for aioduct::HttpEngineSend<R, C>
@@ -86,7 +124,7 @@ where
         &self,
         request: http::Request<aioduct::body::RequestBodySend>,
         options: HostForwardOptions,
-    ) -> BoxFuture<Result<aioduct::Response, aioduct::Error>> {
+    ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
         let transport = self.clone();
         Box::pin(async move {
             let mut forward = transport
@@ -104,9 +142,272 @@ where
                 forward = forward.write_timeout(write_timeout);
             }
 
-            forward.send().await
+            let response = forward.send().await?;
+            let (parts, body) = response.into_http_response().into_parts();
+            Ok(HostResponse::new(http::Response::from_parts(
+                parts,
+                body.boxed_unsync(),
+            )))
         })
     }
+}
+
+#[cfg(feature = "compio")]
+const LOCAL_WORKER_QUEUE: usize = 64;
+#[cfg(feature = "compio")]
+const BODY_CHANNEL_CAPACITY: usize = 16;
+
+#[cfg(feature = "compio")]
+type BodyFrame = Result<Frame<Bytes>, aioduct::Error>;
+#[cfg(feature = "compio")]
+type BodyFrameSender = mpsc::Sender<BodyFrame>;
+#[cfg(feature = "compio")]
+type BodyFrameReceiver = mpsc::Receiver<BodyFrame>;
+
+/// Host transport wrapper for compio's thread-local native runtime.
+///
+/// `CompioClient` uses `HttpEngineLocal`, so it cannot implement
+/// [`WasiHostTransport`] directly. This wrapper owns a dedicated compio worker
+/// thread and moves request and response body frames across bounded channels.
+#[cfg(feature = "compio")]
+pub struct CompioHostTransport {
+    requests: std::sync::Mutex<mpsc::Sender<LocalForwardRequest>>,
+}
+
+#[cfg(feature = "compio")]
+impl CompioHostTransport {
+    /// Start a host transport worker from a factory that creates the compio
+    /// transport builder on the worker thread.
+    pub fn from_builder_factory(
+        transport: impl FnOnce() -> CompioTransportBuilder + Send + 'static,
+    ) -> Result<Self, BuildError> {
+        let (sender, receiver) = mpsc::channel(LOCAL_WORKER_QUEUE);
+        spawn_compio_worker(transport, receiver)?;
+        Ok(Self {
+            requests: std::sync::Mutex::new(sender),
+        })
+    }
+
+    /// Start a host transport worker with the default compio transport.
+    pub fn new() -> Result<Self, BuildError> {
+        Self::from_builder_factory(aioduct::CompioClient::builder)
+    }
+}
+
+#[cfg(feature = "compio")]
+impl WasiHostTransport for CompioHostTransport {
+    fn forward_wasi_http(
+        &self,
+        request: http::Request<aioduct::body::RequestBodySend>,
+        options: HostForwardOptions,
+    ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+        let request_sender = match self.requests.lock() {
+            Ok(sender) => sender.clone(),
+            Err(_) => {
+                return Box::pin(async { Err(local_worker_closed_error()) });
+            }
+        };
+
+        Box::pin(async move {
+            let (parts, body) = request.into_parts();
+            let body_is_end_stream = body.is_end_stream();
+            let (body_sender, body_receiver) = mpsc::channel(BODY_CHANNEL_CAPACITY);
+            let body_pump = spawn_send_body_pump(body, body_sender);
+            let request = http::Request::from_parts(
+                parts,
+                ChannelBody::new(body_receiver, body_is_end_stream),
+            );
+            let (response_sender, response_receiver) = oneshot::channel();
+
+            let mut request_sender = request_sender;
+            request_sender
+                .send(LocalForwardRequest {
+                    request,
+                    options,
+                    response_sender,
+                })
+                .await
+                .map_err(|_| local_worker_closed_error())?;
+            let response = response_receiver
+                .await
+                .map_err(|_| local_worker_closed_error())?;
+            match response {
+                Ok(response) => {
+                    // A full-duplex peer can return headers before upload drain.
+                    // Keep pumping until the response body is consumed or dropped.
+                    Ok(response.with_worker(body_pump))
+                }
+                Err(error) => {
+                    drop(body_pump);
+                    Err(error)
+                }
+            }
+        })
+    }
+}
+
+#[cfg(feature = "compio")]
+struct LocalForwardRequest {
+    request: http::Request<ChannelBody>,
+    options: HostForwardOptions,
+    response_sender: oneshot::Sender<Result<HostResponse, aioduct::Error>>,
+}
+
+#[cfg(feature = "compio")]
+fn spawn_compio_worker(
+    transport: impl FnOnce() -> CompioTransportBuilder + Send + 'static,
+    mut receiver: mpsc::Receiver<LocalForwardRequest>,
+) -> Result<(), BuildError> {
+    let (ready_sender, ready_receiver) = std_mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("aioduct-wasmtime-compio".into())
+        .spawn(move || {
+            let transport = transport();
+            let ready_sender_for_task = ready_sender.clone();
+            let result = <aioduct::runtime::compio_rt::CompioRuntime as aioduct::RuntimeCompletion>::block_on(async move {
+                let transport = match transport.build_local() {
+                    Ok(transport) => transport,
+                    Err(error) => {
+                        let _ = ready_sender_for_task.send(Err(error));
+                        return;
+                    }
+                };
+                let _ = ready_sender_for_task.send(Ok(()));
+                while let Some(request) = receiver.next().await {
+                    let transport = transport.clone();
+                    <aioduct::runtime::compio_rt::CompioRuntime as aioduct::RuntimeLocal>::spawn_local(
+                        async move {
+                            let response =
+                                forward_compio_request(transport, request.request, request.options)
+                                    .await;
+                            let _ = request.response_sender.send(response);
+                        },
+                    );
+                }
+            });
+            if let Err(error) = result {
+                let _ = ready_sender.send(Err(error));
+            }
+        })
+        .map_err(BuildError::WorkerThread)?;
+    ready_receiver
+        .recv()
+        .map_err(|_| BuildError::WorkerStartup)??;
+    Ok(())
+}
+
+#[cfg(feature = "compio")]
+async fn forward_compio_request(
+    transport: aioduct::CompioClient,
+    request: http::Request<ChannelBody>,
+    options: HostForwardOptions,
+) -> Result<HostResponse, aioduct::Error> {
+    let mut forward = transport
+        .forward_local(request)
+        .upstream(options.upstream)
+        .without_message_signature()
+        .connect_timeout(options.connect_timeout)
+        .first_byte_timeout(options.first_byte_timeout)
+        .read_timeout(options.read_timeout);
+
+    if let Some(timeout) = options.timeout {
+        forward = forward.timeout(timeout);
+    }
+    if let Some(write_timeout) = options.write_timeout {
+        forward = forward.write_timeout(write_timeout);
+    }
+
+    let response = forward.send().await?;
+    let (parts, body) = response.into_http_response().into_parts();
+    let (body_sender, body_receiver) = mpsc::channel(BODY_CHANNEL_CAPACITY);
+    <aioduct::runtime::compio_rt::CompioRuntime as aioduct::RuntimeLocal>::spawn_local(
+        pump_local_response_body(body, body_sender),
+    );
+    Ok(HostResponse::new(http::Response::from_parts(
+        parts,
+        ChannelBody::new(body_receiver, false).boxed_unsync(),
+    )))
+}
+
+#[cfg(feature = "compio")]
+fn spawn_send_body_pump(
+    body: aioduct::body::RequestBodySend,
+    sender: BodyFrameSender,
+) -> wasmtime_wasi::runtime::AbortOnDropJoinHandle<()> {
+    wasmtime_wasi::runtime::spawn(async move {
+        pump_send_body(body, sender).await;
+    })
+}
+
+#[cfg(feature = "compio")]
+async fn pump_send_body(mut body: aioduct::body::RequestBodySend, mut sender: BodyFrameSender) {
+    while let Some(frame) = body.frame().await {
+        let should_stop = frame.is_err();
+        if sender.send(frame).await.is_err() || should_stop {
+            break;
+        }
+    }
+}
+
+#[cfg(feature = "compio")]
+async fn pump_local_response_body(
+    mut body: aioduct::body::ResponseBodyLocal,
+    mut sender: BodyFrameSender,
+) {
+    while let Some(frame) = std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
+        let should_stop = frame.is_err();
+        if sender.send(frame).await.is_err() || should_stop {
+            break;
+        }
+    }
+}
+
+#[cfg(feature = "compio")]
+pin_project! {
+    struct ChannelBody {
+        #[pin]
+        receiver: BodyFrameReceiver,
+        end_stream: bool,
+    }
+}
+
+#[cfg(feature = "compio")]
+impl ChannelBody {
+    fn new(receiver: BodyFrameReceiver, end_stream: bool) -> Self {
+        Self {
+            receiver,
+            end_stream,
+        }
+    }
+}
+
+#[cfg(feature = "compio")]
+impl Body for ChannelBody {
+    type Data = Bytes;
+    type Error = aioduct::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.project();
+        match futures_core::Stream::poll_next(this.receiver, cx) {
+            Poll::Ready(None) => {
+                *this.end_stream = true;
+                Poll::Ready(None)
+            }
+            other => other,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.end_stream
+    }
+}
+
+#[cfg(feature = "compio")]
+fn local_worker_closed_error() -> aioduct::Error {
+    aioduct::Error::Other("WASI HTTP local transport worker closed".into())
 }
 
 #[doc(hidden)]
@@ -120,6 +421,9 @@ pub mod sealed {
         C: aioduct::ConnectorSend,
     {
     }
+
+    #[cfg(feature = "compio")]
+    impl Sealed for super::CompioHostTransport {}
 }
 
 /// Host-side implementation of Wasmtime's WASI HTTP hooks.
@@ -140,31 +444,33 @@ impl WasiHttpHost {
         request: hyper::Request<HyperOutgoingBody>,
         config: OutgoingRequestConfig,
     ) -> Result<IncomingResponse, ErrorCode> {
-        let deadline = self.policy.deadline;
         let native_request = self.prepare_request(request, config.use_tls)?;
-        let connect_timeout = cap_with_deadline(config.connect_timeout, deadline)?;
-        let first_byte_timeout = cap_with_deadline(config.first_byte_timeout, deadline)?;
-        let between_bytes_timeout = cap_with_deadline(config.between_bytes_timeout, deadline)?;
+        let connect_timeout = self.policy.cap_with_deadline(config.connect_timeout)?;
+        let first_byte_timeout = self.policy.cap_with_deadline(config.first_byte_timeout)?;
+        let read_timeout = self
+            .policy
+            .cap_with_deadline(config.between_bytes_timeout)?;
 
-        let total_timeout = deadline_remaining(deadline)?;
+        let total_timeout = self.policy.deadline_remaining()?;
         let options = HostForwardOptions {
             upstream: self.policy.origin_uri.clone(),
             timeout: total_timeout,
             connect_timeout,
             first_byte_timeout,
             write_timeout: total_timeout,
-            read_timeout: between_bytes_timeout,
+            read_timeout,
         };
 
         let response = self
             .transport
             .forward_wasi_http(native_request, options)
             .await
-            .map_err(map_aioduct_error)?;
+            .map_err(|error| self.policy.map_forward_error(error))?;
         self.policy
-            .check_response_header_limit(response.headers())?;
+            .check_response_header_limit(response.response.headers())?;
 
-        let (parts, body) = response.into_http_response().into_parts();
+        let worker = response.worker;
+        let (parts, body) = response.response.into_parts();
         let mut body: HyperIncomingBody = body.map_err(map_aioduct_error).boxed_unsync();
 
         if self.policy.body_limit.is_some() || self.policy.header_limit.is_some() {
@@ -172,17 +478,19 @@ impl WasiHttpHost {
                 body,
                 self.policy.body_limit,
                 self.policy.header_limit,
+                self.policy.rejection_observer.clone(),
             )
             .boxed_unsync();
         }
-        if let Some(deadline) = deadline {
-            body = DeadlineBody::new(body, deadline).boxed_unsync();
+        if let Some(deadline) = self.policy.deadline {
+            body = DeadlineBody::new(body, deadline, self.policy.rejection_observer.clone())
+                .boxed_unsync();
         }
 
         Ok(IncomingResponse {
             resp: hyper::Response::from_parts(parts, body),
-            worker: None,
-            between_bytes_timeout,
+            worker,
+            between_bytes_timeout: config.between_bytes_timeout,
         })
     }
 
@@ -307,7 +615,7 @@ pub struct ExactOriginPolicy {
     header_limit: Option<usize>,
     body_limit: Option<u64>,
     deadline: Option<Instant>,
-    rejection_observer: Option<Arc<dyn Fn(RejectionReason) + Send + Sync>>,
+    rejection_observer: Option<RejectionObserver>,
 }
 
 impl ExactOriginPolicy {
@@ -478,6 +786,39 @@ impl ExactOriginPolicy {
             observer(reason);
         }
     }
+
+    fn deadline_remaining(&self) -> Result<Option<Duration>, ErrorCode> {
+        let Some(deadline) = self.deadline else {
+            return Ok(None);
+        };
+        let now = Instant::now();
+        if deadline <= now {
+            self.notify_rejection(RejectionReason::Deadline);
+            return Err(ErrorCode::HttpResponseTimeout);
+        }
+        Ok(Some(deadline.duration_since(now)))
+    }
+
+    fn cap_with_deadline(&self, duration: Duration) -> Result<Duration, ErrorCode> {
+        match self.deadline_remaining()? {
+            Some(remaining) => Ok(duration.min(remaining)),
+            None => Ok(duration),
+        }
+    }
+
+    fn map_forward_error(&self, error: aioduct::Error) -> ErrorCode {
+        if self.deadline_expired() && timeout_code_from_aioduct_error(&error).is_some() {
+            self.notify_rejection(RejectionReason::Deadline);
+        }
+        map_aioduct_error(error)
+    }
+
+    fn deadline_expired(&self) -> bool {
+        match self.deadline {
+            Some(deadline) => Instant::now() >= deadline,
+            None => false,
+        }
+    }
 }
 
 /// Build errors for [`WasiHttpHost`].
@@ -499,6 +840,16 @@ pub enum BuildError {
     /// The native transport could not be built.
     #[error(transparent)]
     Transport(#[from] aioduct::Error),
+
+    /// The local-runtime host transport worker could not be started.
+    #[cfg(feature = "compio")]
+    #[error("failed to start WASI HTTP local transport worker")]
+    WorkerThread(#[source] std::io::Error),
+
+    /// The local-runtime host transport worker exited before it was ready.
+    #[cfg(feature = "compio")]
+    #[error("WASI HTTP local transport worker exited during startup")]
+    WorkerStartup,
 }
 
 /// Policy construction errors.
@@ -614,49 +965,33 @@ fn limit_to_u32(limit: usize) -> u32 {
     u32::try_from(limit).unwrap_or(u32::MAX)
 }
 
-fn deadline_remaining(deadline: Option<Instant>) -> Result<Option<Duration>, ErrorCode> {
-    let Some(deadline) = deadline else {
-        return Ok(None);
-    };
-    let now = Instant::now();
-    if deadline <= now {
-        return Err(ErrorCode::HttpResponseTimeout);
-    }
-    Ok(Some(deadline.duration_since(now)))
-}
-
-fn cap_with_deadline(duration: Duration, deadline: Option<Instant>) -> Result<Duration, ErrorCode> {
-    match deadline_remaining(deadline)? {
-        Some(remaining) => Ok(duration.min(remaining)),
-        None => Ok(duration),
-    }
-}
-
 fn map_wasi_body_error(code: ErrorCode) -> aioduct::Error {
-    aioduct::Error::Other(Box::new(WasiOutgoingBodyError {
-        code: format!("{code:?}"),
-    }))
+    aioduct::Error::Other(Box::new(WasiOutgoingBodyError { code }))
 }
 
 fn map_aioduct_error(error: aioduct::Error) -> ErrorCode {
+    if let Some(code) = timeout_code_from_aioduct_error(&error) {
+        return code;
+    }
     if let Some(code) = request_trailer_policy_error_code_from_error(&error) {
         return code;
     }
 
     match error {
-        aioduct::Error::Timeout => ErrorCode::HttpResponseTimeout,
-        aioduct::Error::ConnectTimeout => ErrorCode::ConnectionTimeout,
-        aioduct::Error::ReadTimeout => ErrorCode::ConnectionReadTimeout,
-        aioduct::Error::WriteTimeout => ErrorCode::ConnectionWriteTimeout,
         aioduct::Error::InvalidUrl(_) => ErrorCode::HttpRequestUriInvalid,
         aioduct::Error::HttpsOnly(_) => ErrorCode::HttpRequestDenied,
         aioduct::Error::Tls(_) => ErrorCode::TlsProtocolError,
-        aioduct::Error::Hyper(error) => request_trailer_policy_error_code_from_error(&error)
-            .or_else(|| {
-                request_body_limit_from_error(&error)
-                    .map(|limit| ErrorCode::HttpRequestBodySize(Some(limit)))
-            })
-            .unwrap_or(ErrorCode::HttpProtocolError),
+        aioduct::Error::Hyper(error) => {
+            if let Some(code) = request_trailer_policy_error_code_from_error(&error) {
+                code
+            } else if let Some(limit) = request_body_limit_from_error(&error) {
+                ErrorCode::HttpRequestBodySize(Some(limit))
+            } else if let Some(code) = wasi_body_error_from_error(&error) {
+                code
+            } else {
+                ErrorCode::HttpProtocolError
+            }
+        }
         aioduct::Error::Pool(_) => ErrorCode::ConnectionLimitReached,
         aioduct::Error::Io(error) => io_error_code(&error),
         aioduct::Error::Other(source) => {
@@ -664,6 +999,8 @@ fn map_aioduct_error(error: aioduct::Error) -> ErrorCode {
                 code
             } else if let Some(limit) = request_body_limit_from_error(source.as_ref()) {
                 ErrorCode::HttpRequestBodySize(Some(limit))
+            } else if let Some(code) = wasi_body_error_from_error(source.as_ref()) {
+                code
             } else {
                 ErrorCode::InternalError(Some("transport".into()))
             }
@@ -677,6 +1014,37 @@ fn map_aioduct_error(error: aioduct::Error) -> ErrorCode {
         }
         _ => ErrorCode::InternalError(Some("transport".into())),
     }
+}
+
+fn timeout_code_from_aioduct_error(error: &aioduct::Error) -> Option<ErrorCode> {
+    match error {
+        aioduct::Error::Timeout => Some(ErrorCode::HttpResponseTimeout),
+        aioduct::Error::ConnectTimeout => Some(ErrorCode::ConnectionTimeout),
+        aioduct::Error::ReadTimeout => Some(ErrorCode::ConnectionReadTimeout),
+        aioduct::Error::WriteTimeout => Some(ErrorCode::ConnectionWriteTimeout),
+        aioduct::Error::Hyper(error) => timeout_code_from_error(error),
+        aioduct::Error::Other(source) => timeout_code_from_error(source.as_ref()),
+        aioduct::Error::RemoteAddr { source, .. } => timeout_code_from_error(source.as_ref()),
+        _ => None,
+    }
+}
+
+fn timeout_code_from_error(error: &(dyn StdError + 'static)) -> Option<ErrorCode> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error) = error.downcast_ref::<aioduct::Error>()
+            && let Some(code) = timeout_code_from_aioduct_error(error)
+        {
+            return Some(code);
+        }
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && error.kind() == std::io::ErrorKind::TimedOut
+        {
+            return Some(ErrorCode::ConnectionTimeout);
+        }
+        current = error.source();
+    }
+    None
 }
 
 fn io_error_code(error: &std::io::Error) -> ErrorCode {
@@ -725,14 +1093,30 @@ fn request_trailer_policy_error_code_from_error(
     None
 }
 
+fn wasi_body_error_from_error(error: &(dyn StdError + 'static)) -> Option<ErrorCode> {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(error) = error.downcast_ref::<WasiOutgoingBodyError>() {
+            return Some(error.code.clone());
+        }
+        if let Some(aioduct::Error::Other(source)) = error.downcast_ref::<aioduct::Error>()
+            && let Some(error) = source.downcast_ref::<WasiOutgoingBodyError>()
+        {
+            return Some(error.code.clone());
+        }
+        current = error.source();
+    }
+    None
+}
+
 #[derive(Debug)]
 struct WasiOutgoingBodyError {
-    code: String,
+    code: ErrorCode,
 }
 
 impl fmt::Display for WasiOutgoingBodyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "WASI outgoing body error: {}", self.code)
+        write!(f, "WASI outgoing body error: {:?}", self.code)
     }
 }
 
@@ -797,13 +1181,19 @@ impl RequestTrailerPolicy {
         }
     }
 
-    fn check(&self, trailers: &HeaderMap) -> Result<(), aioduct::Error> {
+    fn check(
+        &self,
+        trailers: &HeaderMap,
+        observer: &Option<RejectionObserver>,
+        rejected: &mut bool,
+    ) -> Result<(), aioduct::Error> {
         for (name, value) in trailers {
             if DEFAULT_FORBIDDEN_HEADERS.contains(name)
                 || self.injected_headers.contains_key(name)
                 || (self.forbid_sensitive_headers
                     && (is_sensitive_header_name(name) || value.is_sensitive()))
             {
+                notify_rejection_once(observer, rejected, RejectionReason::ProtectedHeader);
                 return Err(aioduct::Error::Other(Box::new(
                     RequestTrailerPolicyError::ProtectedHeader,
                 )));
@@ -813,6 +1203,7 @@ impl RequestTrailerPolicy {
         if let Some(limit) = self.header_limit
             && header_section_size(trailers) > limit
         {
+            notify_rejection_once(observer, rejected, RejectionReason::HeaderLimit);
             return Err(aioduct::Error::Other(Box::new(
                 RequestTrailerPolicyError::HeaderLimit { limit },
             )));
@@ -822,13 +1213,29 @@ impl RequestTrailerPolicy {
     }
 }
 
+fn notify_rejection_once(
+    observer: &Option<RejectionObserver>,
+    rejected: &mut bool,
+    reason: RejectionReason,
+) {
+    if *rejected {
+        return;
+    }
+    *rejected = true;
+    if let Some(observer) = observer {
+        observer(reason);
+    }
+}
+
 pin_project! {
     struct RequestLimitBody<B> {
         #[pin]
         inner: B,
         body_limit: Option<u64>,
         seen: u64,
-        trailer_policy: RequestTrailerPolicy,
+        trailer_policy: Option<RequestTrailerPolicy>,
+        rejection_observer: Option<RejectionObserver>,
+        rejected: bool,
     }
 }
 
@@ -838,7 +1245,9 @@ impl<B> RequestLimitBody<B> {
             inner,
             body_limit,
             seen: 0,
-            trailer_policy: RequestTrailerPolicy::from_policy(policy),
+            trailer_policy: Some(RequestTrailerPolicy::from_policy(policy)),
+            rejection_observer: policy.rejection_observer.clone(),
+            rejected: false,
         }
     }
 }
@@ -862,6 +1271,11 @@ where
                 {
                     let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
                     if this.seen.saturating_add(len) > *limit {
+                        notify_rejection_once(
+                            this.rejection_observer,
+                            this.rejected,
+                            RejectionReason::BodyLimit,
+                        );
                         return Poll::Ready(Some(Err(aioduct::Error::Other(Box::new(
                             RequestBodyLimitExceeded { limit: *limit },
                         )))));
@@ -869,7 +1283,9 @@ where
                     *this.seen = this.seen.saturating_add(len);
                 }
                 if let Some(trailers) = frame.trailers_ref()
-                    && let Err(error) = this.trailer_policy.check(trailers)
+                    && let Some(policy) = this.trailer_policy
+                    && let Err(error) =
+                        policy.check(trailers, this.rejection_observer, this.rejected)
                 {
                     return Poll::Ready(Some(Err(error)));
                 }
@@ -895,16 +1311,25 @@ pin_project! {
         body_limit: Option<u64>,
         header_limit: Option<usize>,
         seen: u64,
+        rejection_observer: Option<RejectionObserver>,
+        rejected: bool,
     }
 }
 
 impl<B> ResponseLimitBody<B> {
-    fn new_policy(inner: B, body_limit: Option<u64>, header_limit: Option<usize>) -> Self {
+    fn new_policy(
+        inner: B,
+        body_limit: Option<u64>,
+        header_limit: Option<usize>,
+        rejection_observer: Option<RejectionObserver>,
+    ) -> Self {
         Self {
             inner,
             body_limit,
             header_limit,
             seen: 0,
+            rejection_observer,
+            rejected: false,
         }
     }
 }
@@ -928,6 +1353,11 @@ where
                 {
                     let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
                     if this.seen.saturating_add(len) > *limit {
+                        notify_rejection_once(
+                            this.rejection_observer,
+                            this.rejected,
+                            RejectionReason::BodyLimit,
+                        );
                         return Poll::Ready(Some(Err(ErrorCode::HttpResponseBodySize(Some(
                             *limit,
                         )))));
@@ -938,6 +1368,11 @@ where
                     && let Some(limit) = this.header_limit
                     && header_section_size(trailers) > *limit
                 {
+                    notify_rejection_once(
+                        this.rejection_observer,
+                        this.rejected,
+                        RejectionReason::HeaderLimit,
+                    );
                     return Poll::Ready(Some(Err(ErrorCode::HttpResponseTrailerSectionSize(
                         Some(limit_to_u32(*limit)),
                     ))));
@@ -962,17 +1397,21 @@ pin_project! {
         #[pin]
         inner: B,
         deadline: Instant,
+        rejection_observer: Option<RejectionObserver>,
+        rejected: bool,
         #[pin]
-        sleep: Option<tokio::time::Sleep>,
+        timer: Option<async_io::Timer>,
     }
 }
 
 impl<B> DeadlineBody<B> {
-    fn new(inner: B, deadline: Instant) -> Self {
+    fn new(inner: B, deadline: Instant, rejection_observer: Option<RejectionObserver>) -> Self {
         Self {
             inner,
             deadline,
-            sleep: None,
+            rejection_observer,
+            rejected: false,
+            timer: None,
         }
     }
 }
@@ -990,24 +1429,29 @@ where
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let mut this = self.project();
         if Instant::now() >= *this.deadline {
+            notify_rejection_once(
+                this.rejection_observer,
+                this.rejected,
+                RejectionReason::Deadline,
+            );
             return Poll::Ready(Some(Err(ErrorCode::HttpResponseTimeout)));
         }
 
         match this.inner.as_mut().poll_frame(cx) {
-            Poll::Ready(result) => {
-                this.sleep.set(None);
-                Poll::Ready(result)
-            }
+            Poll::Ready(result) => Poll::Ready(result),
             Poll::Pending => {
-                if this.sleep.as_ref().get_ref().is_none() {
-                    this.sleep.set(Some(tokio::time::sleep_until(
-                        tokio::time::Instant::from_std(*this.deadline),
-                    )));
+                if this.timer.as_ref().get_ref().is_none() {
+                    this.timer.set(Some(async_io::Timer::at(*this.deadline)));
                 }
-                if let Some(sleep) = this.sleep.as_mut().as_pin_mut()
-                    && let Poll::Ready(()) = sleep.poll(cx)
+                if let Some(timer) = this.timer.as_mut().as_pin_mut()
+                    && let Poll::Ready(_) = timer.poll(cx)
                 {
-                    this.sleep.set(None);
+                    this.timer.set(None);
+                    notify_rejection_once(
+                        this.rejection_observer,
+                        this.rejected,
+                        RejectionReason::Deadline,
+                    );
                     return Poll::Ready(Some(Err(ErrorCode::HttpResponseTimeout)));
                 }
                 Poll::Pending
@@ -1028,10 +1472,12 @@ where
 mod tests {
     use super::*;
     use http::header::AUTHORIZATION;
-    use http_body_util::{Empty, Full};
+    use http_body_util::{Empty, Full, StreamBody};
     use std::marker::PhantomData;
     use std::sync::Mutex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use wasmtime_wasi::p2::{InputStream, Pollable, StreamError};
+    use wasmtime_wasi_http::p2::body::HostIncomingBody;
 
     fn config(use_tls: bool) -> OutgoingRequestConfig {
         OutgoingRequestConfig {
@@ -1055,26 +1501,41 @@ mod tests {
     }
 
     fn request_trailers_body(headers: HeaderMap) -> HyperOutgoingBody {
-        TrailerOnlyBody::<ErrorCode>::new(headers).boxed_unsync()
+        StreamBody::new(futures_util::stream::once(async move {
+            Ok::<Frame<Bytes>, ErrorCode>(Frame::trailers(headers))
+        }))
+        .boxed_unsync()
     }
 
-    struct TrailerOnlyBody<E> {
-        trailers: Option<HeaderMap>,
-        _error: PhantomData<fn() -> E>,
+    fn native_trailers_body(headers: HeaderMap) -> aioduct::body::RequestBodySend {
+        StreamBody::new(futures_util::stream::once(async move {
+            Ok::<Frame<Bytes>, aioduct::Error>(Frame::trailers(headers))
+        }))
+        .boxed_unsync()
     }
 
-    impl<E> TrailerOnlyBody<E> {
-        fn new(trailers: HeaderMap) -> Self {
-            Self {
-                trailers: Some(trailers),
-                _error: PhantomData,
-            }
-        }
+    fn failing_body(code: ErrorCode) -> HyperOutgoingBody {
+        StreamBody::new(futures_util::stream::once(async move {
+            Err::<Frame<Bytes>, ErrorCode>(code)
+        }))
+        .boxed_unsync()
     }
 
-    impl<E> Unpin for TrailerOnlyBody<E> {}
+    fn pending_body() -> HyperOutgoingBody {
+        PendingBody::<ErrorCode>(PhantomData).boxed_unsync()
+    }
 
-    impl<E> Body for TrailerOnlyBody<E> {
+    fn pending_incoming_body() -> HyperIncomingBody {
+        PendingBody::<ErrorCode>(PhantomData).boxed_unsync()
+    }
+
+    fn pending_native_body() -> aioduct::body::RequestBodySend {
+        PendingBody::<aioduct::Error>(PhantomData).boxed_unsync()
+    }
+
+    struct PendingBody<E>(PhantomData<fn() -> E>);
+
+    impl<E> Body for PendingBody<E> {
         type Data = Bytes;
         type Error = E;
 
@@ -1082,15 +1543,33 @@ mod tests {
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
         ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-            Poll::Ready(
-                self.get_mut().trailers.take().map(|trailers| {
-                    Ok::<Frame<Self::Data>, Self::Error>(Frame::trailers(trailers))
-                }),
-            )
+            Poll::Pending
         }
 
         fn is_end_stream(&self) -> bool {
-            self.trailers.is_none()
+            false
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct PendingResponseTransport;
+
+    impl sealed::Sealed for PendingResponseTransport {}
+
+    impl WasiHostTransport for PendingResponseTransport {
+        fn forward_wasi_http(
+            &self,
+            _request: http::Request<aioduct::body::RequestBodySend>,
+            _options: HostForwardOptions,
+        ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+            Box::pin(async {
+                Ok(HostResponse::new(
+                    http::Response::builder()
+                        .status(http::StatusCode::OK)
+                        .body(pending_native_body())
+                        .expect("response should build"),
+                ))
+            })
         }
     }
 
@@ -1104,11 +1583,43 @@ mod tests {
             &self,
             request: http::Request<aioduct::body::RequestBodySend>,
             _options: HostForwardOptions,
-        ) -> BoxFuture<Result<aioduct::Response, aioduct::Error>> {
+        ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
             Box::pin(async move {
                 request.into_body().collect().await?;
-                Err(aioduct::Error::Other(
-                    "request body unexpectedly passed host policy".into(),
+                Ok(HostResponse::new(
+                    http::Response::builder()
+                        .status(http::StatusCode::OK)
+                        .body(
+                            Empty::<Bytes>::new()
+                                .map_err(|never| match never {})
+                                .boxed_unsync(),
+                        )
+                        .expect("response should build"),
+                ))
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct TrailerResponseTransport {
+        trailers: HeaderMap,
+    }
+
+    impl sealed::Sealed for TrailerResponseTransport {}
+
+    impl WasiHostTransport for TrailerResponseTransport {
+        fn forward_wasi_http(
+            &self,
+            _request: http::Request<aioduct::body::RequestBodySend>,
+            _options: HostForwardOptions,
+        ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+            let trailers = self.trailers.clone();
+            Box::pin(async move {
+                Ok(HostResponse::new(
+                    http::Response::builder()
+                        .status(http::StatusCode::OK)
+                        .body(native_trailers_body(trailers))
+                        .expect("response should build"),
                 ))
             })
         }
@@ -1161,9 +1672,17 @@ mod tests {
                 .build()
                 .expect("host should build")
         }
-        #[cfg(all(not(feature = "tokio"), not(feature = "smol")))]
+        #[cfg(all(not(feature = "tokio"), not(feature = "smol"), feature = "compio"))]
         {
-            panic!("tests require a tokio or smol transport feature")
+            let transport = CompioHostTransport::new().expect("compio host transport should start");
+            builder
+                .transport(transport)
+                .build()
+                .expect("host should build")
+        }
+        #[cfg(all(not(feature = "tokio"), not(feature = "smol"), not(feature = "compio")))]
+        {
+            panic!("tests require a tokio, smol, or compio transport feature")
         }
     }
 
@@ -1186,7 +1705,10 @@ mod tests {
         ));
     }
 
-    #[cfg(all(not(feature = "tokio"), feature = "smol"))]
+    #[cfg(any(
+        all(not(feature = "tokio"), feature = "smol"),
+        all(not(feature = "tokio"), not(feature = "smol"), feature = "compio")
+    ))]
     #[test]
     fn builder_requires_explicit_transport_without_tokio_default() {
         let policy = ExactOriginPolicy::new("http://example.com").expect("policy should build");
@@ -1286,9 +1808,14 @@ mod tests {
 
     #[tokio::test]
     async fn request_trailer_injected_header_is_denied() {
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
         let policy = ExactOriginPolicy::new("http://example.com")
             .expect("policy should build")
-            .inject_header(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+            .inject_header(AUTHORIZATION, HeaderValue::from_static("Bearer secret"))
+            .on_rejection(move |reason| {
+                observed.lock().expect("observer lock").push(reason);
+            });
         let host = WasiHttpHost::builder()
             .transport(CollectingTransport)
             .policy(policy)
@@ -1308,13 +1835,20 @@ mod tests {
             .expect_err("injected header trailer should be rejected");
 
         assert!(matches!(err, ErrorCode::HttpRequestDenied));
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::ProtectedHeader]);
     }
 
     #[tokio::test]
     async fn request_trailer_header_limit_is_enforced() {
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
         let policy = ExactOriginPolicy::new("http://example.com")
             .expect("policy should build")
-            .header_limit(8);
+            .header_limit(8)
+            .on_rejection(move |reason| {
+                observed.lock().expect("observer lock").push(reason);
+            });
         let host = WasiHttpHost::builder()
             .transport(CollectingTransport)
             .policy(policy)
@@ -1337,30 +1871,45 @@ mod tests {
             err,
             ErrorCode::HttpRequestTrailerSectionSize(Some(8))
         ));
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::HeaderLimit]);
     }
 
     #[tokio::test]
     async fn response_trailer_header_limit_is_enforced() {
-        let response = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n0\r\nx-large: abcdefghijklmnopqrstuvwxyz\r\n\r\n";
-        let (addr, _seen) = raw_server(response).await;
-        let policy = ExactOriginPolicy::new(&format!("http://{addr}"))
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
+        let policy = ExactOriginPolicy::new("http://example.com")
             .expect("policy should build")
-            .header_limit(32);
-        let host = test_host(policy);
+            .header_limit(8)
+            .on_rejection(move |reason| {
+                observed.lock().expect("observer lock").push(reason);
+            });
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-large", HeaderValue::from_static("abcdefghijklmnop"));
+        let host = WasiHttpHost::builder()
+            .transport(TrailerResponseTransport { trailers })
+            .policy(policy)
+            .build()
+            .expect("host should build");
+
         let incoming = host
-            .send_inner(request(format!("http://{addr}/")), config(false))
+            .send_inner(request("http://example.com/".into()), config(false))
             .await
-            .expect("response headers should pass");
+            .expect("response headers should succeed");
         let err = incoming
             .resp
             .into_body()
             .collect()
             .await
             .expect_err("oversized response trailers should be rejected");
+
         assert!(matches!(
             err,
-            ErrorCode::HttpResponseTrailerSectionSize(Some(32))
+            ErrorCode::HttpResponseTrailerSectionSize(Some(8))
         ));
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::HeaderLimit]);
     }
 
     #[tokio::test]
@@ -1390,6 +1939,258 @@ mod tests {
                 .is_err(),
             "known oversized body should be rejected before opening upstream connection"
         );
+    }
+
+    #[tokio::test]
+    async fn streaming_request_body_limit_notifies_rejection() {
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
+        let policy = ExactOriginPolicy::new("http://example.com")
+            .expect("policy should build")
+            .body_limit(2)
+            .on_rejection(move |reason| {
+                observed.lock().expect("observer lock").push(reason);
+            });
+        let body: aioduct::body::RequestBodySend = full_body(b"abcd")
+            .map_err(map_wasi_body_error)
+            .boxed_unsync();
+        let err = RequestLimitBody::new_policy(body, policy.body_limit, &policy)
+            .collect()
+            .await
+            .expect_err("request body should exceed limit");
+        assert!(request_body_limit_from_error(&err).is_some());
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::BodyLimit]);
+    }
+
+    #[tokio::test]
+    async fn response_body_limit_notifies_rejection() {
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
+        let observer: RejectionObserver = Arc::new(move |reason| {
+            observed.lock().expect("observer lock").push(reason);
+        });
+        let body: HyperIncomingBody = Full::new(Bytes::from_static(b"abcd"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let err = ResponseLimitBody::new_policy(body, Some(2), None, Some(observer))
+            .collect()
+            .await
+            .expect_err("response body should exceed limit");
+        assert!(matches!(err, ErrorCode::HttpResponseBodySize(Some(2))));
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::BodyLimit]);
+    }
+
+    #[tokio::test]
+    async fn deadline_body_notifies_rejection() {
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
+        let observer: RejectionObserver = Arc::new(move |reason| {
+            observed.lock().expect("observer lock").push(reason);
+        });
+        let body: HyperIncomingBody = Empty::<Bytes>::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let err = DeadlineBody::new(
+            body,
+            Instant::now() - Duration::from_millis(1),
+            Some(observer),
+        )
+        .collect()
+        .await
+        .expect_err("deadline should expire");
+        assert!(matches!(err, ErrorCode::HttpResponseTimeout));
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::Deadline]);
+    }
+
+    #[tokio::test]
+    async fn deadline_body_wakes_pending_body() {
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
+        let observer: RejectionObserver = Arc::new(move |reason| {
+            observed.lock().expect("observer lock").push(reason);
+        });
+        let err = DeadlineBody::new(
+            pending_incoming_body(),
+            Instant::now() + Duration::from_millis(10),
+            Some(observer),
+        )
+        .collect()
+        .await
+        .expect_err("deadline should wake stalled response body");
+        assert!(matches!(err, ErrorCode::HttpResponseTimeout));
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::Deadline]);
+    }
+
+    #[tokio::test]
+    async fn wasmtime_body_wrapper_preserves_host_deadline_mapping() {
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
+        let policy = ExactOriginPolicy::new("http://example.com")
+            .expect("policy should build")
+            .deadline(Instant::now() + Duration::from_millis(10))
+            .on_rejection(move |reason| {
+                observed.lock().expect("observer lock").push(reason);
+            });
+        let host = WasiHttpHost::builder()
+            .transport(PendingResponseTransport)
+            .policy(policy)
+            .build()
+            .expect("host should build");
+        let cfg = config(false);
+        let guest_between_bytes_timeout = cfg.between_bytes_timeout;
+        let incoming = host
+            .send_inner(request("http://example.com/".to_string()), cfg)
+            .await
+            .expect("host should return response headers");
+
+        assert_eq!(incoming.between_bytes_timeout, guest_between_bytes_timeout);
+
+        let IncomingResponse {
+            resp,
+            worker,
+            between_bytes_timeout,
+        } = incoming;
+        let mut body = HostIncomingBody::new(resp.into_body(), between_bytes_timeout);
+        if let Some(worker) = worker {
+            body.retain_worker(worker);
+        }
+        let mut stream = body.take_stream().expect("body stream should be available");
+        stream.ready().await;
+        let err = stream.read(1).expect_err("deadline should surface");
+        match err {
+            StreamError::LastOperationFailed(error) => {
+                assert!(matches!(
+                    error.downcast_ref::<ErrorCode>(),
+                    Some(ErrorCode::HttpResponseTimeout)
+                ));
+            }
+            other => panic!("expected last operation failure, got {other:?}"),
+        }
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::Deadline]);
+    }
+
+    #[test]
+    fn wasi_body_error_mapping_preserves_error_code() {
+        let err = map_wasi_body_error(ErrorCode::ConnectionWriteTimeout);
+        assert!(matches!(
+            map_aioduct_error(err),
+            ErrorCode::ConnectionWriteTimeout
+        ));
+    }
+
+    #[tokio::test]
+    async fn wasi_body_error_mapping_preserves_hyper_wrapped_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let policy =
+            ExactOriginPolicy::new(&format!("http://{addr}")).expect("policy should build");
+        let host = test_host(policy);
+        let req = hyper::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://{addr}/"))
+            .body(failing_body(ErrorCode::ConnectionWriteTimeout))
+            .expect("request should build");
+        let err = host
+            .send_inner(req, config(false))
+            .await
+            .expect_err("request body error should be preserved");
+        assert!(matches!(err, ErrorCode::ConnectionWriteTimeout));
+    }
+
+    #[tokio::test]
+    async fn native_forward_deadline_timeout_notifies_rejection() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                .await;
+        });
+
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
+        let policy = ExactOriginPolicy::new(&format!("http://{addr}"))
+            .expect("policy should build")
+            .deadline(Instant::now() + Duration::from_millis(10))
+            .on_rejection(move |reason| {
+                observed.lock().expect("observer lock").push(reason);
+            });
+        let host = test_host(policy);
+        let err = host
+            .send_inner(request(format!("http://{addr}/")), config(false))
+            .await
+            .expect_err("host deadline should time out native forward");
+        assert!(matches!(
+            err,
+            ErrorCode::HttpResponseTimeout | ErrorCode::ConnectionReadTimeout
+        ));
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::Deadline]);
+    }
+
+    #[tokio::test]
+    async fn deadline_upload_timeout_notifies_rejection() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have address");
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0_u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let observed = reasons.clone();
+        let policy = ExactOriginPolicy::new(&format!("http://{addr}"))
+            .expect("policy should build")
+            .deadline(Instant::now() + Duration::from_millis(10))
+            .on_rejection(move |reason| {
+                observed.lock().expect("observer lock").push(reason);
+            });
+        let host = test_host(policy);
+        let req = hyper::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://{addr}/"))
+            .body(pending_body())
+            .expect("request should build");
+        let err = host
+            .send_inner(req, config(false))
+            .await
+            .expect_err("host deadline should time out stalled upload");
+        assert!(matches!(
+            err,
+            ErrorCode::HttpResponseTimeout | ErrorCode::ConnectionWriteTimeout
+        ));
+        let captured = reasons.lock().expect("observer lock");
+        assert_eq!(captured.as_slice(), &[RejectionReason::Deadline]);
     }
 
     #[tokio::test]
@@ -1450,6 +2251,35 @@ mod tests {
         assert!(
             text.to_ascii_lowercase()
                 .contains("authorization: bearer smol-secret")
+        );
+    }
+
+    #[cfg(feature = "compio")]
+    #[tokio::test]
+    async fn compio_transport_services_wasi_http_request() {
+        let response = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+        let (addr, seen) = raw_server(response).await;
+        let policy = ExactOriginPolicy::new(&format!("http://{addr}"))
+            .expect("policy should build")
+            .inject_header(
+                AUTHORIZATION,
+                HeaderValue::from_static("Bearer compio-secret"),
+            );
+        let transport = CompioHostTransport::new().expect("compio host transport should start");
+        let host = WasiHttpHost::builder()
+            .transport(transport)
+            .policy(policy)
+            .build()
+            .expect("host should build");
+        let incoming = host
+            .send_inner(request(format!("http://{addr}/")), config(false))
+            .await
+            .expect("compio transport should forward request");
+        assert_eq!(incoming.resp.status(), http::StatusCode::OK);
+        let text = seen.await.expect("server should capture request");
+        assert!(
+            text.to_ascii_lowercase()
+                .contains("authorization: bearer compio-secret")
         );
     }
 

@@ -10,25 +10,33 @@ keywords = ["http", "wasi", "wasmtime", "webassembly"]
 categories = ["network-programming", "wasm"]
 
 [features]
-default = ["tokio", "rustls-ring"]
+default = []
 tokio = ["aioduct/tokio"]
 smol = ["aioduct/smol"]
+compio = ["aioduct/compio"]
 rustls-ring = ["aioduct/rustls", "aioduct/rustls-ring"]
 rustls-aws-lc-rs = ["aioduct/rustls", "aioduct/rustls-aws-lc-rs"]
 
 [dependencies]
-aioduct = { workspace = true }
+aioduct = { workspace = true, features = ["__internal-no-runtime"] }
+async-io.workspace = true
 bytes.workspace = true
+futures-channel.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "http1", "http2"] }
 pin-project-lite.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "time"] }
 wasmtime.workspace = true
 wasmtime-wasi = { workspace = true, features = ["p2"] }
 wasmtime-wasi-http = { workspace = true, features = ["p2"] }
+
+[package.metadata.docs.rs]
+features = ["tokio", "rustls-ring"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 aioduct-test-server = { workspace = true, features = ["rustls"] }

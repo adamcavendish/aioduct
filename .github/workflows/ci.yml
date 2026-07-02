@@ -97,13 +97,16 @@ jobs:
         include:
           - crypto: ring
             features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
-            adapter_args: ""
+            adapter_args: "--no-default-features --features tokio,rustls-ring"
           - crypto: aws-lc-rs
             features: "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
             adapter_args: "--no-default-features --features tokio,rustls-aws-lc-rs"
           - crypto: smol-ring
             features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
             adapter_args: "--no-default-features --features smol,rustls-ring"
+          - crypto: compio-ring
+            features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
+            adapter_args: "--no-default-features --features compio,rustls-ring"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
