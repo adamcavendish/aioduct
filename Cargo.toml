@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.94"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/adamcavendish/aioduct"
 
@@ -79,6 +79,9 @@ wasi = "0.14"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
+wasmtime = { version = "46.0.1", default-features = false }
+wasmtime-wasi = { version = "46.0.1", default-features = false }
+wasmtime-wasi-http = { version = "46.0.1", default-features = false }
 web-sys = "0.3"
 webpki-roots = "1"
 zstd = { version = "0.13", default-features = false }
