@@ -683,6 +683,20 @@ impl<R, C> HttpEngineBuilder<R, C> {
     }
 
     #[cfg(feature = "rustls")]
+    /// Parse and add a PEM CA bundle as custom trusted roots.
+    ///
+    /// This is the fallible operator-config path. It rejects empty input,
+    /// private keys, unsupported PEM sections, malformed input, and
+    /// certificates rustls will not accept as trust roots.
+    pub fn add_root_certificates_pem_bundle(
+        self,
+        pem: &[u8],
+    ) -> Result<Self, crate::tls::TlsPemBundleError> {
+        let certs = crate::tls::Certificate::from_pem_bundle(pem)?;
+        Ok(self.add_root_certificates(&certs))
+    }
+
+    #[cfg(feature = "rustls")]
     /// Set a client identity (certificate + key) for mutual TLS authentication.
     pub fn identity(mut self, identity: crate::tls::Identity) -> Self {
         self.client_identity = Some(identity);
