@@ -548,6 +548,19 @@ impl std::fmt::Debug for WasiResponse {
     }
 }
 
+impl Drop for WasiResponse {
+    fn drop(&mut self) {
+        if let WasiBody::Stream {
+            incoming_body,
+            stream,
+        } = std::mem::replace(&mut self.body, WasiBody::Consumed)
+        {
+            drop(stream);
+            wasi::http::types::IncomingBody::finish(incoming_body);
+        }
+    }
+}
+
 enum WasiBody {
     Stream {
         incoming_body: wasi::http::types::IncomingBody,

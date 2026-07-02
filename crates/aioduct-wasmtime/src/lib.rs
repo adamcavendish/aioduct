@@ -3,6 +3,15 @@
 //! This crate is for hosts embedding WASI Preview 2 components with
 //! `wasi:http`. Guests keep using `aioduct::WasiClient`; the host installs
 //! [`WasiHttpHost`] as the Wasmtime HTTP hook and owns transport trust policy.
+//!
+//! The default feature set is empty. Enable exactly the native host transport
+//! runtime you want to use, such as `tokio`, `smol`, or `compio`, plus a rustls
+//! provider when the native transport needs TLS.
+//!
+//! Runnable host examples live under `examples/wasmtime-host` in the workspace.
+//! They show a WASI guest component using `aioduct::WasiClient` while the host
+//! validates origin policy, injects a host-owned header, and forwards through
+//! Tokio, smol, or compio native transports.
 
 #![deny(missing_docs)]
 

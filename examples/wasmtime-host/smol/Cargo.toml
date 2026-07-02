@@ -1,0 +1,14 @@
+[package]
+name = "example-wasmtime-host-smol"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol", "rustls", "rustls-ring"] }
+aioduct-wasmtime = { workspace = true, features = ["smol", "rustls-ring"] }
+http.workspace = true
+smol.workspace = true
+wasmtime = { workspace = true, features = ["cranelift"] }
+wasmtime-wasi = { workspace = true, features = ["p2"] }
+wasmtime-wasi-http = { workspace = true, features = ["p2"] }

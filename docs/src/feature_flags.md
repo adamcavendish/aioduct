@@ -113,7 +113,9 @@ aioduct-wasmtime = { version = "0.2.0", default-features = false, features = ["c
 `aioduct-wasmtime` accepts native `RuntimePoll` transports such as
 `TokioClient` and `SmolClient`. It also provides `CompioHostTransport`, which
 owns a local-runtime worker bridge for `CompioClient` builders. It does not
-enable browser `wasm`, because browser Fetch has no Wasmtime host hook.
+enable browser `wasm`, because browser Fetch has no Wasmtime host hook. See
+`examples/wasmtime-host` for runnable host examples for each native forwarding
+transport.
 
 ## Core Dependencies (Always Included)
 
