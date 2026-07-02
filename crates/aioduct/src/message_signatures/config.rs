@@ -6,7 +6,8 @@ use http::{Method, StatusCode, Uri};
 
 use super::{
     MessageSignatureBase, MessageSignatureComponent, MessageSignatureContext,
-    MessageSignatureError, MessageSignatureHeaders, MessageSignatureParams, MessageSignatureSigner,
+    MessageSignatureError, MessageSignatureHeaders, MessageSignatureParams,
+    MessageSignatureRequestContext, MessageSignatureResponseContext, MessageSignatureSigner,
 };
 
 /// Configuration for generating an RFC 9421 request signature base and headers.
@@ -116,6 +117,24 @@ impl MessageSignatureConfig {
         self.signature_base_for_context(&context)
     }
 
+    /// Build the RFC 9421 signature base for a request context.
+    ///
+    /// Use `MessageSignatureRequestContext::with_trailers(...)` when the
+    /// signature covers caller-supplied trailer fields with `;tr`.
+    pub fn signature_base_for_request_context(
+        &self,
+        request: MessageSignatureRequestContext<'_>,
+    ) -> Result<MessageSignatureBase, MessageSignatureError> {
+        let context = MessageSignatureContext::request_with_trailers(
+            request.method(),
+            request.target_uri(),
+            request.request_target(),
+            request.headers(),
+            request.trailers(),
+        );
+        self.signature_base_for_context(&context)
+    }
+
     /// Build the RFC 9421 signature base for a response.
     pub fn response_signature_base(
         &self,
@@ -123,6 +142,22 @@ impl MessageSignatureConfig {
         headers: &HeaderMap,
     ) -> Result<MessageSignatureBase, MessageSignatureError> {
         let context = MessageSignatureContext::response(status, headers);
+        self.signature_base_for_context(&context)
+    }
+
+    /// Build the RFC 9421 signature base for a response context.
+    ///
+    /// Use `MessageSignatureResponseContext::with_trailers(...)` when the
+    /// signature covers caller-supplied trailer fields with `;tr`.
+    pub fn response_signature_base_for_context(
+        &self,
+        response: MessageSignatureResponseContext<'_>,
+    ) -> Result<MessageSignatureBase, MessageSignatureError> {
+        let context = MessageSignatureContext::response_with_trailers(
+            response.status(),
+            response.headers(),
+            response.trailers(),
+        );
         self.signature_base_for_context(&context)
     }
 
@@ -144,6 +179,20 @@ impl MessageSignatureConfig {
             status,
             response_headers,
         );
+        self.signature_base_for_context(&context)
+    }
+
+    /// Build the RFC 9421 signature base for a response context with its related request.
+    ///
+    /// Use `with_trailers(...)` on either context when the signature covers
+    /// caller-supplied trailer fields with `;tr`, including related request
+    /// trailer fields with `;req`.
+    pub fn request_response_signature_base_for_context(
+        &self,
+        request: MessageSignatureRequestContext<'_>,
+        response: MessageSignatureResponseContext<'_>,
+    ) -> Result<MessageSignatureBase, MessageSignatureError> {
+        let context = MessageSignatureContext::from_request_response_contexts(request, response);
         self.signature_base_for_context(&context)
     }
 
@@ -216,6 +265,17 @@ impl MessageSignatureConfig {
         self.headers_from_signature(signature)
     }
 
+    /// Build a request context signature base, sign it, and format signature headers.
+    pub fn sign_request_context(
+        &self,
+        request: MessageSignatureRequestContext<'_>,
+        signer: &(impl MessageSignatureSigner + ?Sized),
+    ) -> Result<MessageSignatureHeaders, MessageSignatureError> {
+        let base = self.signature_base_for_request_context(request)?;
+        let signature = signer.sign(base.as_bytes())?;
+        self.headers_from_signature(signature)
+    }
+
     /// Build a response signature base, sign it, and format signature headers.
     pub fn sign_response(
         &self,
@@ -224,6 +284,17 @@ impl MessageSignatureConfig {
         signer: &(impl MessageSignatureSigner + ?Sized),
     ) -> Result<MessageSignatureHeaders, MessageSignatureError> {
         let base = self.response_signature_base(status, headers)?;
+        let signature = signer.sign(base.as_bytes())?;
+        self.headers_from_signature(signature)
+    }
+
+    /// Build a response context signature base, sign it, and format signature headers.
+    pub fn sign_response_context(
+        &self,
+        response: MessageSignatureResponseContext<'_>,
+        signer: &(impl MessageSignatureSigner + ?Sized),
+    ) -> Result<MessageSignatureHeaders, MessageSignatureError> {
+        let base = self.response_signature_base_for_context(response)?;
         let signature = signer.sign(base.as_bytes())?;
         self.headers_from_signature(signature)
     }

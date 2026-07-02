@@ -178,8 +178,19 @@ impl MessageSignatureComponent {
             .count()
     }
 
+    pub(crate) fn trailer_parameter_count(&self) -> usize {
+        self.parameters
+            .iter()
+            .filter(|parameter| matches!(parameter, MessageSignatureComponentParameter::Trailer))
+            .count()
+    }
+
     pub(crate) fn has_related_request_parameter(&self) -> bool {
         self.related_request_parameter_count() > 0
+    }
+
+    pub(crate) fn has_trailer_parameter(&self) -> bool {
+        self.trailer_parameter_count() > 0
     }
 
     pub(crate) fn without_related_request_parameter(&self) -> Self {
@@ -190,6 +201,13 @@ impl MessageSignatureComponent {
                 MessageSignatureComponentParameter::RelatedRequest
             )
         });
+        out
+    }
+
+    pub(crate) fn without_trailer_parameter(&self) -> Self {
+        let mut out = self.clone();
+        out.parameters
+            .retain(|parameter| !matches!(parameter, MessageSignatureComponentParameter::Trailer));
         out
     }
 
@@ -222,14 +240,15 @@ impl MessageSignatureComponent {
                 MessageSignatureComponentParameter::Key(value) if key.is_none() => {
                     key = Some(value.as_str());
                 }
-                MessageSignatureComponentParameter::RelatedRequest => {}
+                MessageSignatureComponentParameter::Trailer
+                | MessageSignatureComponentParameter::RelatedRequest => {}
                 _ => return None,
             }
         }
         key
     }
 
-    pub(crate) fn dictionary_key_identity(&self) -> Option<(HeaderName, String, bool)> {
+    pub(crate) fn dictionary_key_identity(&self) -> Option<(HeaderName, String, bool, bool)> {
         let MessageSignatureComponentKind::Header(name) = &self.kind else {
             return None;
         };
@@ -237,6 +256,7 @@ impl MessageSignatureComponent {
             (
                 name.clone(),
                 key.to_owned(),
+                self.has_trailer_parameter(),
                 self.has_related_request_parameter(),
             )
         })

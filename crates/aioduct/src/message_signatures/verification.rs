@@ -17,7 +17,7 @@ pub struct MessageSignatureVerificationInput<'a> {
     signature: &'a [u8],
 }
 
-/// Borrowed request data used to verify RFC 9421 signatures.
+/// Borrowed request data used to build or verify RFC 9421 signatures.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct MessageSignatureRequestContext<'a> {
@@ -25,15 +25,17 @@ pub struct MessageSignatureRequestContext<'a> {
     target_uri: &'a Uri,
     request_target: &'a Uri,
     headers: &'a HeaderMap,
+    trailers: Option<&'a HeaderMap>,
     body: Option<&'a [u8]>,
 }
 
-/// Borrowed response data used to verify RFC 9421 signatures.
+/// Borrowed response data used to build or verify RFC 9421 signatures.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct MessageSignatureResponseContext<'a> {
     status: StatusCode,
     headers: &'a HeaderMap,
+    trailers: Option<&'a HeaderMap>,
     body: Option<&'a [u8]>,
 }
 
@@ -67,8 +69,15 @@ impl<'a> MessageSignatureRequestContext<'a> {
             target_uri,
             request_target,
             headers,
+            trailers: None,
             body: None,
         }
+    }
+
+    /// Attach request trailer fields for covered `;tr` components.
+    pub fn with_trailers(mut self, trailers: &'a HeaderMap) -> Self {
+        self.trailers = Some(trailers);
+        self
     }
 
     /// Attach request body bytes for covered `Content-Digest` verification.
@@ -97,6 +106,11 @@ impl<'a> MessageSignatureRequestContext<'a> {
         self.headers
     }
 
+    /// Return request trailer fields when they are available.
+    pub fn trailers(&self) -> Option<&'a HeaderMap> {
+        self.trailers
+    }
+
     /// Return the request body bytes when they are available for verification.
     pub fn body(&self) -> Option<&'a [u8]> {
         self.body
@@ -109,8 +123,15 @@ impl<'a> MessageSignatureResponseContext<'a> {
         Self {
             status,
             headers,
+            trailers: None,
             body: None,
         }
+    }
+
+    /// Attach response trailer fields for covered `;tr` components.
+    pub fn with_trailers(mut self, trailers: &'a HeaderMap) -> Self {
+        self.trailers = Some(trailers);
+        self
     }
 
     /// Attach response body bytes for covered `Content-Digest` verification.
@@ -127,6 +148,11 @@ impl<'a> MessageSignatureResponseContext<'a> {
     /// Return the response header fields.
     pub fn headers(&self) -> &'a HeaderMap {
         self.headers
+    }
+
+    /// Return response trailer fields when they are available.
+    pub fn trailers(&self) -> Option<&'a HeaderMap> {
+        self.trailers
     }
 
     /// Return the response body bytes when they are available for verification.
@@ -327,12 +353,7 @@ impl MessageSignatureVerificationPolicy {
     ) -> Result<(), MessageSignatureError> {
         self.validate_policy(signature)?;
         verify_covered_content_digests(signature, Some(request), None)?;
-        let base = signature.signature_base(
-            request.method(),
-            request.target_uri(),
-            request.request_target(),
-            request.headers(),
-        )?;
+        let base = signature.signature_base_for_request_context(request)?;
         self.verify_base(signature, base.as_bytes(), verifier)
     }
 
@@ -344,7 +365,7 @@ impl MessageSignatureVerificationPolicy {
     ) -> Result<(), MessageSignatureError> {
         self.validate_policy(signature)?;
         verify_covered_content_digests(signature, None, Some(response))?;
-        let base = signature.response_signature_base(response.status(), response.headers())?;
+        let base = signature.response_signature_base_for_context(response)?;
         self.verify_base(signature, base.as_bytes(), verifier)
     }
 
@@ -357,14 +378,7 @@ impl MessageSignatureVerificationPolicy {
     ) -> Result<(), MessageSignatureError> {
         self.validate_policy(signature)?;
         verify_covered_content_digests(signature, Some(request), Some(response))?;
-        let base = signature.request_response_signature_base(
-            request.method(),
-            request.target_uri(),
-            request.request_target(),
-            request.headers(),
-            response.status(),
-            response.headers(),
-        )?;
+        let base = signature.request_response_signature_base_for_context(request, response)?;
         self.verify_base(signature, base.as_bytes(), verifier)
     }
 
@@ -512,46 +526,79 @@ fn verify_covered_content_digests(
     request: Option<MessageSignatureRequestContext<'_>>,
     response: Option<MessageSignatureResponseContext<'_>>,
 ) -> Result<(), MessageSignatureError> {
-    let mut checked_request = false;
-    let mut checked_response = false;
+    let mut checked_request_headers = false;
+    let mut checked_request_trailers = false;
+    let mut checked_response_headers = false;
+    let mut checked_response_trailers = false;
 
     for component in signature.components() {
-        if !covers_regular_content_digest(component) {
+        if !covers_sha256_content_digest(component) {
             continue;
         }
+        let is_trailer = component.has_trailer_parameter();
 
         if component.has_related_request_parameter() {
             if response.is_none() {
                 continue;
             }
-            if checked_request {
+            if already_checked(
+                is_trailer,
+                checked_request_headers,
+                checked_request_trailers,
+            ) {
                 continue;
             }
             if let Some(request) = request
                 && let Some(body) = request.body()
             {
-                crate::digest_fields::verify_sha256_content_digest(request.headers(), body)?;
-                checked_request = true;
+                let fields =
+                    content_digest_fields(component, request.headers(), request.trailers())?;
+                crate::digest_fields::verify_sha256_content_digest(fields, body)?;
+                mark_checked(
+                    is_trailer,
+                    &mut checked_request_headers,
+                    &mut checked_request_trailers,
+                );
             }
         } else if response.is_some() {
-            if checked_response {
+            if already_checked(
+                is_trailer,
+                checked_response_headers,
+                checked_response_trailers,
+            ) {
                 continue;
             }
             if let Some(response) = response
                 && let Some(body) = response.body()
             {
-                crate::digest_fields::verify_sha256_content_digest(response.headers(), body)?;
-                checked_response = true;
+                let fields =
+                    content_digest_fields(component, response.headers(), response.trailers())?;
+                crate::digest_fields::verify_sha256_content_digest(fields, body)?;
+                mark_checked(
+                    is_trailer,
+                    &mut checked_response_headers,
+                    &mut checked_response_trailers,
+                );
             }
         } else {
-            if checked_request {
+            if already_checked(
+                is_trailer,
+                checked_request_headers,
+                checked_request_trailers,
+            ) {
                 continue;
             }
             if let Some(request) = request
                 && let Some(body) = request.body()
             {
-                crate::digest_fields::verify_sha256_content_digest(request.headers(), body)?;
-                checked_request = true;
+                let fields =
+                    content_digest_fields(component, request.headers(), request.trailers())?;
+                crate::digest_fields::verify_sha256_content_digest(fields, body)?;
+                mark_checked(
+                    is_trailer,
+                    &mut checked_request_headers,
+                    &mut checked_request_trailers,
+                );
             }
         }
     }
@@ -559,13 +606,9 @@ fn verify_covered_content_digests(
     Ok(())
 }
 
-fn covers_regular_content_digest(component: &MessageSignatureComponent) -> bool {
+fn covers_sha256_content_digest(component: &MessageSignatureComponent) -> bool {
     let content_digest = HeaderName::from_static(crate::digest_fields::CONTENT_DIGEST);
     if !matches!(component.kind(), MessageSignatureComponentKind::Header(name) if name == content_digest)
-        || component
-            .parameters()
-            .iter()
-            .any(|parameter| matches!(parameter, MessageSignatureComponentParameter::Trailer))
     {
         return false;
     }
@@ -575,6 +618,40 @@ fn covers_regular_content_digest(component: &MessageSignatureComponent) -> bool 
         .iter()
         .any(|parameter| matches!(parameter, MessageSignatureComponentParameter::Key(_)));
     !has_key || component.dictionary_key() == Some("sha-256")
+}
+
+fn content_digest_fields<'a>(
+    component: &MessageSignatureComponent,
+    headers: &'a HeaderMap,
+    trailers: Option<&'a HeaderMap>,
+) -> Result<&'a HeaderMap, MessageSignatureError> {
+    if component.has_trailer_parameter() {
+        match trailers {
+            Some(trailers) => Ok(trailers),
+            None => Err(MessageSignatureError::ComponentNotAvailable {
+                component: component.identifier()?,
+                context: "trailers",
+            }),
+        }
+    } else {
+        Ok(headers)
+    }
+}
+
+fn already_checked(is_trailer: bool, checked_headers: bool, checked_trailers: bool) -> bool {
+    if is_trailer {
+        checked_trailers
+    } else {
+        checked_headers
+    }
+}
+
+fn mark_checked(is_trailer: bool, checked_headers: &mut bool, checked_trailers: &mut bool) {
+    if is_trailer {
+        *checked_trailers = true;
+    } else {
+        *checked_headers = true;
+    }
 }
 
 impl MessageSignature {
