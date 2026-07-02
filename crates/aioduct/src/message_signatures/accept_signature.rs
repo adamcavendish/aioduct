@@ -151,7 +151,7 @@ impl AcceptSignature {
         for (label, member) in dictionary_entries {
             validate_label(&label)?;
             let (components, params) = parse_accept_signature_member(&member)?;
-            validate_component_set(&components, false)?;
+            validate_component_set(&components, true)?;
             entries.push(AcceptSignatureEntry {
                 label,
                 components,
@@ -401,7 +401,7 @@ impl AcceptSignatureEntry {
     }
 
     fn member_value(&self) -> Result<String, MessageSignatureError> {
-        validate_component_set(&self.components, false)?;
+        validate_component_set(&self.components, true)?;
         if let Some(ref value) = self.parsed_value {
             return Ok(value.clone());
         }
@@ -420,7 +420,7 @@ impl AcceptSignatureEntry {
     }
 
     fn validate_target(&self, target: AcceptSignatureTarget) -> Result<(), MessageSignatureError> {
-        validate_component_set(&self.components, false)?;
+        validate_component_set(&self.components, true)?;
         for component in &self.components {
             validate_component_target(component, target)?;
         }

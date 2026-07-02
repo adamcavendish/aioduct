@@ -740,13 +740,36 @@ fn duplicate_components_error() {
 }
 
 #[test]
-fn headers_from_signature_requires_components() {
-    let err = MessageSignatureConfig::new("sig1")
+fn empty_covered_component_set_builds_signature_params_only_base() {
+    let cfg = MessageSignatureConfig::new("sig-b21")
         .unwrap()
-        .headers_from_signature([1_u8, 2, 3])
-        .unwrap_err();
+        .created(1_618_884_473)
+        .key_id("test-key-rsa-pss")
+        .nonce("b3k2pp5k7z-50gnwp.yemd");
+    let target_uri: Uri = "https://example.com/foo?param=Value&Pet=dog"
+        .parse()
+        .unwrap();
+    let request_target: Uri = "/foo?param=Value&Pet=dog".parse().unwrap();
 
-    assert!(matches!(err, MessageSignatureError::EmptyComponents));
+    let base = cfg
+        .signature_base(
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &HeaderMap::new(),
+        )
+        .unwrap();
+    let headers = cfg.headers_from_signature([1_u8, 2, 3]).unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        r#""@signature-params": ();created=1618884473;nonce="b3k2pp5k7z-50gnwp.yemd";keyid="test-key-rsa-pss""#
+    );
+    assert_eq!(
+        headers.signature_input.to_str().unwrap(),
+        r#"sig-b21=();created=1618884473;nonce="b3k2pp5k7z-50gnwp.yemd";keyid="test-key-rsa-pss""#
+    );
+    assert_eq!(headers.signature.to_str().unwrap(), "sig-b21=:AQID:");
 }
 
 #[test]
@@ -1013,17 +1036,36 @@ fn parsed_signature_handles_component_parameters() {
 }
 
 #[test]
-fn parsed_signature_rejects_empty_covered_set() {
+fn parsed_signature_accepts_empty_covered_set() {
     let mut headers = HeaderMap::new();
     headers.insert(
         "signature-input",
-        HeaderValue::from_static(r#"sig1=();created=1;keyid="empty""#),
+        HeaderValue::from_static(
+            r#"sig-b21=();created=1618884473;keyid="test-key-rsa-pss";nonce="b3k2pp5k7z-50gnwp.yemd""#,
+        ),
     );
-    headers.insert("signature", HeaderValue::from_static("sig1=::"));
+    headers.insert("signature", HeaderValue::from_static("sig-b21=::"));
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
 
-    let err = MessageSignature::from_headers(&headers, "sig1").unwrap_err();
+    let signature = MessageSignature::from_headers(&headers, "sig-b21").unwrap();
+    let base = signature
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap();
 
-    assert!(matches!(err, MessageSignatureError::EmptyComponents));
+    assert!(signature.components().is_empty());
+    assert_eq!(signature.params().created(), Some(1_618_884_473));
+    assert_eq!(signature.params().key_id(), Some("test-key-rsa-pss"));
+    assert_eq!(signature.params().nonce(), Some("b3k2pp5k7z-50gnwp.yemd"));
+    assert_eq!(signature.signature(), &[]);
+    assert_eq!(
+        signature.signature_params_value(),
+        r#"();created=1618884473;keyid="test-key-rsa-pss";nonce="b3k2pp5k7z-50gnwp.yemd""#
+    );
+    assert_eq!(
+        base.as_str(),
+        r#""@signature-params": ();created=1618884473;keyid="test-key-rsa-pss";nonce="b3k2pp5k7z-50gnwp.yemd""#
+    );
 }
 
 #[test]
@@ -1495,6 +1537,41 @@ fn accept_signature_from_headers_combines_field_values() {
 }
 
 #[test]
+fn accept_signature_allows_empty_covered_component_request() {
+    let accept = AcceptSignature::parse(r#"sig1=();created;keyid="test-key""#).unwrap();
+    let fulfillment = AcceptSignatureFulfillment::new().created(100);
+    let configs = accept.request_signature_configs(&fulfillment).unwrap();
+    let cfg = &configs[0];
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+
+    assert!(accept.entries()[0].components().is_empty());
+    accept.validate_request_target().unwrap();
+    let base = cfg
+        .signature_base(
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &HeaderMap::new(),
+        )
+        .unwrap();
+
+    assert_eq!(cfg.components(), &[]);
+    assert_eq!(
+        base.as_str(),
+        r#""@signature-params": ();created=100;keyid="test-key""#
+    );
+    assert_eq!(
+        cfg.headers_from_signature([1_u8, 2, 3])
+            .unwrap()
+            .signature_input
+            .to_str()
+            .unwrap(),
+        r#"sig1=();created=100;keyid="test-key""#
+    );
+}
+
+#[test]
 fn accept_signature_reports_header_errors() {
     let err = AcceptSignature::parse(r#"sig1=("@method");created=100"#).unwrap_err();
     assert!(matches!(
@@ -1960,6 +2037,42 @@ fn verification_policy_calls_verifier_with_rebuilt_base() {
 \"@path\": /foo\n\
 \"content-type\": application/json\n\
 \"@signature-params\": (\"@method\" \"@path\" \"content-type\");created=100;expires=150;keyid=\"test-key\";alg=\"test-alg\""
+                );
+                Ok(true)
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn verification_policy_allows_empty_covered_component_set() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=();created=100;keyid="test-key""#),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    let target_uri: Uri = "https://example.com/foo?Pet=dog".parse().unwrap();
+    let request_target: Uri = "/foo?Pet=dog".parse().unwrap();
+    let policy = MessageSignatureVerificationPolicy::new()
+        .accepted_key_id("test-key")
+        .validation_time(125);
+
+    policy
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &|input: MessageSignatureVerificationInput<'_>| {
+                assert_eq!(input.label(), "sig1");
+                assert_eq!(input.params().created(), Some(100));
+                assert_eq!(input.params().key_id(), Some("test-key"));
+                assert_eq!(input.signature(), &[9, 8, 7]);
+                assert_eq!(
+                    std::str::from_utf8(input.signature_base()).unwrap(),
+                    r#""@signature-params": ();created=100;keyid="test-key""#
                 );
                 Ok(true)
             },
