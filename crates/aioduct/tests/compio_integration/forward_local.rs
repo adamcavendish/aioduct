@@ -263,6 +263,42 @@ fn test_compio_forward_response_content_digest_is_signed() {
 }
 
 #[test]
+fn test_compio_forward_response_content_digest_skips_not_modified_response() {
+    let upstream_addr = start_server_with_tokio(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(http::StatusCode::NOT_MODIFIED)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/cached")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let resp = client
+            .forward_local(incoming)
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .response_content_digest(0)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::NOT_MODIFIED);
+        assert!(!resp.headers().contains_key(CONTENT_DIGEST));
+    });
+}
+
+#[test]
 fn test_compio_forward_response_async_signing_is_included_in_timeout() {
     let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let server_attempts = attempts.clone();

@@ -31,7 +31,9 @@ request snapshot, not the rewritten upstream request. Response finalization is
 fail-closed for signer errors, malformed existing signature dictionaries,
 unsupported trailer components, response digest bodies over the configured cap,
 `CONNECT`, known upgrade requests, and HTTP/1.1 `101 Switching Protocols`
-responses. Automatic trailer generation remains Future Work.
+responses. Synthesized response digest fields are skipped for bodyless responses
+such as `HEAD`, `204`, `205`, and `304`. Automatic trailer generation remains
+Future Work.
 
 ## Platform-Managed Runtimes
 
