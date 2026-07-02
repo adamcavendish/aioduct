@@ -15,11 +15,17 @@ build:
 build-all:
     cargo build -p aioduct --features {{ all_features_ring }}
     cargo build -p aioduct --features {{ all_features_aws_lc_rs }}
+    cargo build -p aioduct-wasmtime
+    cargo build -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs
+    cargo build -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
 
-# Check MSRV (1.88)
+# Check MSRV (1.94)
 msrv:
-    cargo +1.88.0 check -p aioduct --features {{ all_features_ring }}
-    cargo +1.88.0 check -p aioduct --features {{ all_features_aws_lc_rs }}
+    cargo +1.94.0 check -p aioduct --features {{ all_features_ring }}
+    cargo +1.94.0 check -p aioduct --features {{ all_features_aws_lc_rs }}
+    cargo +1.94.0 check -p aioduct-wasmtime
+    cargo +1.94.0 check -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs
+    cargo +1.94.0 check -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
 
 # ---------- Lint ----------
 
@@ -37,6 +43,9 @@ clippy:
 clippy-all:
     cargo clippy -p aioduct --features {{ all_features_ring }} --all-targets -- -D warnings
     cargo clippy -p aioduct --features {{ all_features_aws_lc_rs }} --all-targets -- -D warnings
+    cargo clippy -p aioduct-wasmtime --all-targets -- -D warnings
+    cargo clippy -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs --all-targets -- -D warnings
+    cargo clippy -p aioduct-wasmtime --no-default-features --features smol,rustls-ring --all-targets -- -D warnings
     cargo check --workspace --all-targets
 
 # Run clippy with a specific feature set
@@ -61,6 +70,9 @@ test:
 test-all:
     cargo nextest run -p aioduct --features {{ all_features_ring }}
     cargo nextest run -p aioduct --features {{ all_features_aws_lc_rs }}
+    cargo nextest run -p aioduct-wasmtime
+    cargo nextest run -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs
+    cargo nextest run -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
 
 # Run tests with a specific feature set
 test-features features:
@@ -129,6 +141,9 @@ doc:
 doc-check:
     RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct --features {{ all_features_ring }} --no-deps
     RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct --features {{ all_features_aws_lc_rs }} --no-deps
+    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct-wasmtime --no-deps
+    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs --no-deps
+    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct-wasmtime --no-default-features --features smol,rustls-ring --no-deps
 
 # Build the mdbook
 book:

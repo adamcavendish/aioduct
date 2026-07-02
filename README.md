@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/aioduct/badge.svg)](https://docs.rs/aioduct)
 [![CI](https://github.com/adamcavendish/aioduct/actions/workflows/ci.yml/badge.svg)](https://github.com/adamcavendish/aioduct/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
-[![MSRV: 1.88](https://img.shields.io/badge/MSRV-1.88-brightgreen.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0.html)
+[![MSRV: 1.94](https://img.shields.io/badge/MSRV-1.94-brightgreen.svg)](https://blog.rust-lang.org/2026/03/05/Rust-1.94.0/)
 
 Async-native Rust HTTP client built directly on **hyper 1.x** — no hyper-util, no legacy APIs.
 
@@ -485,7 +485,7 @@ pub trait Resolve: Send + Sync + 'static {
 
 ## MSRV
 
-The minimum supported Rust version is **1.88.0** (edition 2024).
+The minimum supported Rust version is **1.94.0** (edition 2024).
 
 ## License
 

@@ -1,0 +1,35 @@
+[package]
+name = "aioduct-wasmtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Host-side Wasmtime WASI HTTP adapter backed by aioduct"
+keywords = ["http", "wasi", "wasmtime", "webassembly"]
+categories = ["network-programming", "wasm"]
+
+[features]
+default = ["tokio", "rustls-ring"]
+tokio = ["aioduct/tokio"]
+smol = ["aioduct/smol"]
+rustls-ring = ["aioduct/rustls", "aioduct/rustls-ring"]
+rustls-aws-lc-rs = ["aioduct/rustls", "aioduct/rustls-aws-lc-rs"]
+
+[dependencies]
+aioduct = { workspace = true }
+bytes.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1", "http2"] }
+pin-project-lite.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+wasmtime.workspace = true
+wasmtime-wasi = { workspace = true, features = ["p2"] }
+wasmtime-wasi-http = { workspace = true, features = ["p2"] }
+
+[dev-dependencies]
+aioduct-test-server = { workspace = true, features = ["rustls"] }
+tokio = { workspace = true, features = ["macros", "net", "io-util", "rt-multi-thread", "time", "sync"] }
