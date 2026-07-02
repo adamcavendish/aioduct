@@ -1,5 +1,7 @@
 use super::*;
-use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DATE, HOST};
+use std::cell::Cell;
+
+use http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, DATE, HOST, HeaderName};
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 
 fn config() -> MessageSignatureConfig {
@@ -38,6 +40,28 @@ fn response_verification_headers() -> HeaderMap {
         HeaderValue::from_static(
             r#"sig1=("@status" "content-type" "@method";req);created=100;expires=150;keyid="test-key";alg="test-alg""#,
         ),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    headers
+}
+
+fn request_digest_verification_headers(content_digest: HeaderValue) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("content-digest", content_digest);
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@method" "content-digest")"#),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    headers
+}
+
+fn response_digest_verification_headers(content_digest: HeaderValue) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("content-digest", content_digest);
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@status" "content-digest")"#),
     );
     headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
     headers
@@ -1765,6 +1789,264 @@ fn verification_policy_calls_verifier_with_rebuilt_base() {
             },
         )
         .unwrap();
+}
+
+#[test]
+fn verification_policy_checks_request_content_digest_before_signature() {
+    let headers = request_digest_verification_headers(HeaderValue::from_static(
+        "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:",
+    ));
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request =
+        MessageSignatureRequestContext::new(&Method::POST, &target_uri, &request_target, &headers)
+            .with_body(b"hello");
+    let verifier_calls = Cell::new(0);
+
+    MessageSignatureVerificationPolicy::new()
+        .required_component(MessageSignatureComponent::header(HeaderName::from_static(
+            "content-digest",
+        )))
+        .verify_request_context(
+            request,
+            "sig1",
+            &|input: MessageSignatureVerificationInput<'_>| {
+                verifier_calls.set(verifier_calls.get() + 1);
+                assert_eq!(input.signature(), &[9, 8, 7]);
+                assert!(
+                    std::str::from_utf8(input.signature_base())
+                        .unwrap()
+                        .contains(r#""content-digest": sha-256=:"#)
+                );
+                Ok(true)
+            },
+        )
+        .unwrap();
+
+    assert_eq!(verifier_calls.get(), 1);
+}
+
+#[test]
+fn verification_policy_rejects_mismatched_request_content_digest_before_signature() {
+    let headers = request_digest_verification_headers(HeaderValue::from_static(
+        "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:",
+    ));
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request =
+        MessageSignatureRequestContext::new(&Method::POST, &target_uri, &request_target, &headers)
+            .with_body(b"goodbye");
+    let verifier_calls = Cell::new(0);
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .verify_request_context(request, "sig1", &|_: MessageSignatureVerificationInput<
+            '_,
+        >| {
+            verifier_calls.set(verifier_calls.get() + 1);
+            Ok(true)
+        })
+        .unwrap_err();
+
+    assert!(matches!(err, MessageSignatureError::ContentDigestMismatch));
+    assert_eq!(verifier_calls.get(), 0);
+}
+
+#[test]
+fn verification_policy_checks_sha256_content_digest_dictionary_member_before_signature() {
+    let mut headers = request_digest_verification_headers(HeaderValue::from_static(
+        "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:, sha-512=:AQID:",
+    ));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@method" "content-digest";key="sha-256")"#),
+    );
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request =
+        MessageSignatureRequestContext::new(&Method::POST, &target_uri, &request_target, &headers)
+            .with_body(b"goodbye");
+    let verifier_calls = Cell::new(0);
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .verify_request_context(request, "sig1", &|_: MessageSignatureVerificationInput<
+            '_,
+        >| {
+            verifier_calls.set(verifier_calls.get() + 1);
+            Ok(true)
+        })
+        .unwrap_err();
+
+    assert!(matches!(err, MessageSignatureError::ContentDigestMismatch));
+    assert_eq!(verifier_calls.get(), 0);
+}
+
+#[test]
+fn verification_policy_skips_content_digest_member_that_is_not_covered() {
+    let mut headers = request_digest_verification_headers(HeaderValue::from_static(
+        "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:, sha-512=:AQID:",
+    ));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@method" "content-digest";key="sha-512")"#),
+    );
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request =
+        MessageSignatureRequestContext::new(&Method::POST, &target_uri, &request_target, &headers)
+            .with_body(b"goodbye");
+    let verifier_calls = Cell::new(0);
+
+    MessageSignatureVerificationPolicy::new()
+        .verify_request_context(request, "sig1", &|_: MessageSignatureVerificationInput<
+            '_,
+        >| {
+            verifier_calls.set(verifier_calls.get() + 1);
+            Ok(true)
+        })
+        .unwrap();
+
+    assert_eq!(verifier_calls.get(), 1);
+}
+
+#[test]
+fn verification_policy_rejects_malformed_and_unsupported_content_digest_before_signature() {
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+
+    for (content_digest, expected) in [
+        (
+            HeaderValue::from_static("sha-256=123"),
+            MessageSignatureError::MalformedContentDigest,
+        ),
+        (
+            HeaderValue::from_static("sha-512=:AQID:"),
+            MessageSignatureError::UnsupportedContentDigestAlgorithm,
+        ),
+    ] {
+        let headers = request_digest_verification_headers(content_digest);
+        let request = MessageSignatureRequestContext::new(
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &headers,
+        )
+        .with_body(b"hello");
+        let verifier_calls = Cell::new(0);
+        let err = MessageSignatureVerificationPolicy::new()
+            .verify_request_context(request, "sig1", &|_: MessageSignatureVerificationInput<
+                '_,
+            >| {
+                verifier_calls.set(verifier_calls.get() + 1);
+                Ok(true)
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            std::mem::discriminant(&err),
+            std::mem::discriminant(&expected)
+        );
+        assert_eq!(verifier_calls.get(), 0);
+    }
+}
+
+#[test]
+fn verification_policy_checks_response_content_digest_before_signature() {
+    let headers = response_digest_verification_headers(HeaderValue::from_static(
+        "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:",
+    ));
+    let response =
+        MessageSignatureResponseContext::new(StatusCode::OK, &headers).with_body(b"hello");
+    let verifier_calls = Cell::new(0);
+
+    MessageSignatureVerificationPolicy::new()
+        .verify_response(
+            response,
+            "sig1",
+            &|input: MessageSignatureVerificationInput<'_>| {
+                verifier_calls.set(verifier_calls.get() + 1);
+                assert!(
+                    std::str::from_utf8(input.signature_base())
+                        .unwrap()
+                        .contains(r#""@status": 200"#)
+                );
+                Ok(true)
+            },
+        )
+        .unwrap();
+
+    assert_eq!(verifier_calls.get(), 1);
+}
+
+#[test]
+fn verification_policy_checks_related_request_content_digest_before_signature() {
+    let mut request_headers = HeaderMap::new();
+    request_headers.insert(
+        "content-digest",
+        HeaderValue::from_static("sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:"),
+    );
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        "content-digest",
+        HeaderValue::from_static("sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:"),
+    );
+    response_headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@status" "content-digest" "content-digest";req)"#),
+    );
+    response_headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request = MessageSignatureRequestContext::new(
+        &Method::POST,
+        &target_uri,
+        &request_target,
+        &request_headers,
+    )
+    .with_body(b"goodbye");
+    let response =
+        MessageSignatureResponseContext::new(StatusCode::OK, &response_headers).with_body(b"hello");
+    let verifier_calls = Cell::new(0);
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .verify_request_response(
+            request,
+            response,
+            "sig1",
+            &|_: MessageSignatureVerificationInput<'_>| {
+                verifier_calls.set(verifier_calls.get() + 1);
+                Ok(true)
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(err, MessageSignatureError::ContentDigestMismatch));
+    assert_eq!(verifier_calls.get(), 0);
+}
+
+#[test]
+fn verification_policy_skips_content_digest_check_when_body_is_unavailable() {
+    let headers = request_digest_verification_headers(HeaderValue::from_static(
+        "sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:",
+    ));
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let verifier_calls = Cell::new(0);
+
+    MessageSignatureVerificationPolicy::new()
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::POST,
+            &target_uri,
+            &request_target,
+            &|_: MessageSignatureVerificationInput<'_>| {
+                verifier_calls.set(verifier_calls.get() + 1);
+                Ok(true)
+            },
+        )
+        .unwrap();
+
+    assert_eq!(verifier_calls.get(), 1);
 }
 
 #[test]
