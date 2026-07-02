@@ -41,3 +41,4 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dev-dependencies]
 aioduct-test-server = { workspace = true, features = ["rustls"] }
 tokio = { workspace = true, features = ["macros", "net", "io-util", "rt-multi-thread", "time", "sync"] }
+wasmtime = { workspace = true, features = ["cranelift"] }

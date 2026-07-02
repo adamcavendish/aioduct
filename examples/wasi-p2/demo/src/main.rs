@@ -5,10 +5,13 @@ fn main() {
         .user_agent("aioduct-wasi-p2-demo/0.2")
         .build()
         .unwrap();
+    let base_url =
+        std::env::var("AIODUCT_WASI_DEMO_URL").unwrap_or_else(|_| "https://httpbin.org".into());
 
     // Simple GET
-    println!("=== GET https://httpbin.org/get ===");
-    match client.get("https://httpbin.org/get") {
+    let get_url = format!("{base_url}/get");
+    println!("=== GET {get_url} ===");
+    match client.get(&get_url) {
         Ok(req) => match req.send() {
             Ok(resp) => {
                 println!("Status: {}", resp.status());
@@ -28,12 +31,13 @@ fn main() {
     }
 
     // POST JSON
-    println!("\n=== POST https://httpbin.org/post ===");
+    let post_url = format!("{base_url}/post");
+    println!("\n=== POST {post_url} ===");
     let payload = serde_json::json!({
         "message": "hello from WASI",
         "runtime": "wasm32-wasip2"
     });
-    match client.post("https://httpbin.org/post") {
+    match client.post(&post_url) {
         Ok(req) => match req.json(&payload) {
             Ok(req) => match req.send() {
                 Ok(resp) => {
@@ -56,8 +60,9 @@ fn main() {
     }
 
     // Error handling
-    println!("\n=== GET https://httpbin.org/status/404 ===");
-    match client.get("https://httpbin.org/status/404") {
+    let not_found_url = format!("{base_url}/status/404");
+    println!("\n=== GET {not_found_url} ===");
+    match client.get(&not_found_url) {
         Ok(req) => match req.send() {
             Ok(resp) => match resp.error_for_status() {
                 Ok(_) => println!("Unexpected success"),

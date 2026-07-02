@@ -1,0 +1,14 @@
+[package]
+name = "example-wasmtime-host-compio"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio", "rustls", "rustls-ring"] }
+aioduct-wasmtime = { workspace = true, features = ["compio", "rustls-ring"] }
+compio-runtime.workspace = true
+http.workspace = true
+wasmtime = { workspace = true, features = ["cranelift"] }
+wasmtime-wasi = { workspace = true, features = ["p2"] }
+wasmtime-wasi-http = { workspace = true, features = ["p2"] }

@@ -8,3 +8,7 @@ slow-timeout = { period = "10s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = "test(write_timeout_triggers_on_slow_server) | test(write_timeout_not_retried) | test(blocking_send_error)"
 slow-timeout = { period = "10s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+filter = "test(guest_wasi_client_is_serviced_by_host_adapter)"
+slow-timeout = { period = "30s", terminate-after = 2 }

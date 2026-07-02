@@ -448,3 +448,7 @@ The host transport line covers `RuntimePoll` native clients (`TokioClient` and
 `CompioHostTransport`, which owns the local-runtime worker and bounded body
 bridge needed for non-`Send` compio state. Browser `wasm` has no Wasmtime host
 hook; it remains browser Fetch managed.
+
+This narrows the WASI-P2 host-side policy gap for Wasmtime embeddings. It does
+not change the guest `aioduct::WasiClient` API and it does not make browser
+`wasm` host-policy configurable.

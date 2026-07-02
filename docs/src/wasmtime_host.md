@@ -14,6 +14,35 @@ limits, deadline budgets, and diagnostic redaction.
 you want, such as `tokio`, `smol`, or `compio`, and enable one rustls provider
 when the host transport needs TLS.
 
+## Quick Start
+
+The fastest local path is the runnable examples. They build the WASI Preview 2
+guest demo, start a local HTTP server, install `WasiHttpHost` into Wasmtime,
+and show host policy forwarding through a native transport:
+
+```sh
+rustup target add wasm32-wasip2
+cargo run -p example-wasmtime-host-tokio
+cargo run -p example-wasmtime-host-smol
+cargo run -p example-wasmtime-host-compio
+```
+
+Successful output includes the guest `Status: 200` path, the expected
+`error_for_status` path, and host observations like:
+
+```text
+host observations:
+  GET /get HTTP/1.1 | authorization injected: yes
+  POST /post HTTP/1.1 | authorization injected: yes
+  GET /status/404 HTTP/1.1 | authorization injected: yes
+host-owned secret header value was withheld from host output
+```
+
+The examples live under `examples/wasmtime-host`. They use local HTTP so they
+can be run without external network access. Pass a component path after `--` if
+you want to run an already-built WASI command component instead of the bundled
+demo.
+
 ## Shape
 
 ```rust,no_run
@@ -46,6 +75,72 @@ let hooks = WasiHttpHost::builder()
 # }
 ```
 
+The hooks become active when the Wasmtime host state exposes them through
+`WasiHttpView` and the component linker installs the WASI HTTP interfaces:
+
+```rust,no_run
+use aioduct_wasmtime::WasiHttpHost;
+use wasmtime::component::{Component, Linker, ResourceTable};
+use wasmtime::{Config, Engine, Store};
+use wasmtime_wasi::p2::bindings::Command as WasiCommand;
+use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi_http::WasiHttpCtx;
+use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+
+struct HostState {
+    table: ResourceTable,
+    wasi: WasiCtx,
+    http: WasiHttpCtx,
+    hooks: WasiHttpHost,
+}
+
+impl WasiView for HostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiHttpView for HostState {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: &mut self.hooks,
+        }
+    }
+}
+
+# async fn run(component_path: &std::path::Path, hooks: WasiHttpHost) -> Result<(), Box<dyn std::error::Error>> {
+let mut config = Config::new();
+config.wasm_component_model(true);
+let engine = Engine::new(&config)?;
+let component = Component::from_file(&engine, component_path)?;
+let mut store = Store::new(
+    &engine,
+    HostState {
+        table: ResourceTable::new(),
+        wasi: WasiCtx::builder().build(),
+        http: WasiHttpCtx::new(),
+        hooks,
+    },
+);
+
+let mut linker = Linker::new(&engine);
+wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
+let command = WasiCommand::instantiate_async(&mut store, &component, &linker).await?;
+command
+    .wasi_cli_run()
+    .call_run(&mut store)
+    .await?
+    .map_err(|()| std::io::Error::other("guest returned failure"))?;
+# Ok(())
+# }
+```
+
 The same hook can use a smol transport by building a `SmolClient` and passing
 it to `.transport(...)`. The adapter can also use compio through
 `CompioHostTransport`, which starts a local-runtime worker. Use a builder
@@ -67,7 +162,8 @@ let hooks = WasiHttpHost::builder()
 
 If the `tokio` feature is explicitly enabled, the builder creates a default
 Tokio transport when no explicit transport is supplied. With `smol` or
-`compio`, pass the host transport explicitly.
+`compio`, pass the host transport explicitly. The `examples/wasmtime-host`
+directory contains runnable Tokio, smol, and compio host examples.
 
 ## Runtime Line
 
