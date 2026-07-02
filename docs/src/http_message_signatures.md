@@ -3,14 +3,15 @@
 aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
 response signature-base helpers, parsed verification helpers,
 `Accept-Signature` negotiation helpers, covered `Content-Digest` verification,
-native automatic request signing, and native buffered `Content-Digest`
-generation. The portable helpers build signature bases, format and parse
-`Signature-Input` / `Signature` header values, turn accepted signature requests
-into concrete signing configs, apply verification policy checks, and expose the
-bytes callers pass to cryptographic code. Callers still choose the cryptographic
-signing and verification algorithms. Native clients can also insert SHA-256
-`Content-Digest` for buffered request bodies and run a synchronous signer
-automatically for each finalized request attempt.
+caller-supplied trailer field coverage with `;tr`, native automatic request
+signing, and native buffered `Content-Digest` generation. The portable helpers
+build signature bases, format and parse `Signature-Input` / `Signature` header
+values, turn accepted signature requests into concrete signing configs, apply
+verification policy checks, and expose the bytes callers pass to cryptographic
+code. Callers still choose the cryptographic signing and verification
+algorithms. Native clients can also insert SHA-256 `Content-Digest` for buffered
+request bodies and run a synchronous signer automatically for each finalized
+request attempt.
 
 ## Core Flow
 
@@ -48,6 +49,14 @@ actual request URI form that will be sent on the wire and is used for
 `@request-target`. This distinction matters for forwarding and CONNECT-style
 requests.
 
+Use `MessageSignatureRequestContext::with_trailers(...)` or
+`MessageSignatureResponseContext::with_trailers(...)` with the `*_for_context()`
+helpers when a signature covers a trailer field with `;tr`. aioduct reads those
+values only from the attached trailer map; header fields with the same name are
+signed separately, matching RFC 9421. Trailer components can also use `;sf`,
+`;key`, `;bs`, and response related-request `;req` where those parameters are
+otherwise valid.
+
 ## Supported Components
 
 | Component | Source |
@@ -60,7 +69,7 @@ requests.
 | `@path` | Target URI path, with an empty path normalized to `/`. |
 | `@query` | Target URI query with a leading `?`; absent query signs as `?`. |
 | `@status` | Response status code with no reason phrase. |
-| Header fields | Lowercase field names; repeated values are joined with `, `. Supports `;sf`, `;key`, and `;bs` component parameters. |
+| Header and trailer fields | Lowercase field names; repeated values are joined with `, `. Supports `;sf`, `;key`, `;bs`, and caller-supplied `;tr` component parameters. |
 
 When building a response signature base with a related request,
 `MessageSignatureComponent::related_request()` adds the `;req` parameter and
@@ -146,7 +155,8 @@ call inside that synchronous signer on an async runtime thread.
 
 Use `response_signature_base()` for response-only signatures and
 `request_response_signature_base()` when the response signature covers parts of
-the related request with `;req`.
+the related request with `;req`. Use the `*_for_context()` variants when the
+covered components include caller-supplied trailer fields with `;tr`.
 
 ```rust,no_run
 use aioduct::{MessageSignatureComponent, MessageSignatureConfig};
@@ -306,6 +316,9 @@ related request field with `;req`, attach the related request body to
 preserves the previous signature-only behavior and does not check the digest
 field. Malformed digest fields, digest fields without `sha-256`, and mismatched
 body bytes fail closed with `MessageSignatureError` before your verifier runs.
+Attach trailer maps with `with_trailers(...)` when the selected signature covers
+trailer fields with `;tr`; without an attached trailer map, those covered
+components fail closed before the verifier runs.
 
 When the selected signature carries `created` or `expires`, configure
 `validation_time()` so the policy can validate those timestamps. Without a
@@ -454,10 +467,12 @@ send signatures for an earlier request shape.
 ## Runtime Coverage
 
 The helpers are portable and can be used with native, blocking, wasm, and wasi-p2
-request builders by inserting the generated headers manually. Native automatic
-request signing and buffered automatic `Content-Digest` generation are available
-for tokio, smol, and compio request dispatch. Blocking clients inherit them when
-they wrap a configured native client.
+request builders by inserting the generated headers manually. Caller-supplied
+trailer maps for `;tr` components are portable context inputs, not automatic
+trailer generation. Native automatic request signing and buffered automatic
+`Content-Digest` generation are available for tokio, smol, and compio request
+dispatch. Blocking clients inherit them when they wrap a configured native
+client.
 
 Browser Fetch and WASI hosts can still alter or reject some headers at the host
 boundary. That host behavior is outside aioduct's control.
@@ -481,7 +496,7 @@ work lands.
 | Component parameter `;bs` | Supported | `byte_sequence_header_values_are_signed_as_structured_field_list` | Current | Covers Byte Sequence wrapping for caller-supplied header field values. |
 | Component parameter `;key` | Supported | `dictionary_key_header_values_are_signed_as_structured_field_members`, `dictionary_key_missing_malformed_and_duplicate_values` | Current | Covers Dictionary Structured Field member selection, strict member serialization, missing key errors, malformed dictionary errors, and duplicate source keys using the RFC 9651 last-value rule. |
 | Component parameter `;sf` | Supported | `structured_field_header_values_are_signed_with_strict_serialization` | Current | Covers strict serialization for valid RFC 9651 Dictionary, List, and Item field values. |
-| Component parameter `;tr` | Planned | Matrix only | Component parameters | `;tr` covers caller-supplied trailer fields only in the first pass. |
+| Component parameter `;tr` | Supported | `response_context_uses_caller_supplied_trailer_fields`, `trailer_fields_are_distinct_from_headers_and_support_field_parameters`, `trailer_components_require_attached_trailer_fields`, `verification_policy_calls_verifier_with_trailer_components` | Current | Covers caller-supplied request and response trailer fields, keeps same-name header and trailer fields separate, composes with `;sf`, `;key`, `;bs`, and related request `;req`. Automatic trailer generation remains future work. |
 | Response `@status` and response signature bases | Supported | `builds_response_signature_base_for_status_and_headers`, `section_24_response_with_related_request_base`, `sign_response_uses_signer_callback` | Current | Builds response signature bases and formats response signature headers from caller-supplied signature bytes. Native automatic response signing remains future work. |
 | Related request components `;req` | Supported | `request_response_signature_base_uses_related_request_components`, `parsed_signature_rebuilds_response_and_related_request_base`, `response_signature_rejects_components_from_wrong_context` | Current | Routes `;req` components to the related request when building response bases and rejects `;req` on request targets or without related request context. |
 | Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
@@ -498,6 +513,5 @@ work lands.
 ## Future Work
 
 - Async automatic signer callbacks.
-- Component parameter `;tr`.
 - Precomputed digest helpers for streaming bodies.
 - Automatic trailer-based digest/signature generation after trailer semantics are proven across runtimes.

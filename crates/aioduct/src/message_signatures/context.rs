@@ -6,6 +6,7 @@ use super::component::{
     MessageSignatureComponentKind, MessageSignatureComponentTarget, encode_query_param_component,
 };
 use super::structured_fields;
+use super::verification::{MessageSignatureRequestContext, MessageSignatureResponseContext};
 use super::{MessageSignatureComponent, MessageSignatureError};
 
 #[allow(dead_code)]
@@ -15,18 +16,22 @@ pub(crate) enum MessageSignatureContext<'a> {
         target_uri: &'a Uri,
         request_target: &'a Uri,
         headers: &'a HeaderMap,
+        trailers: Option<&'a HeaderMap>,
     },
     Response {
         status: StatusCode,
         headers: &'a HeaderMap,
+        trailers: Option<&'a HeaderMap>,
     },
     RequestResponse {
         method: &'a Method,
         target_uri: &'a Uri,
         request_target: &'a Uri,
         request_headers: &'a HeaderMap,
+        request_trailers: Option<&'a HeaderMap>,
         status: StatusCode,
         response_headers: &'a HeaderMap,
+        response_trailers: Option<&'a HeaderMap>,
     },
 }
 
@@ -37,17 +42,41 @@ impl<'a> MessageSignatureContext<'a> {
         request_target: &'a Uri,
         headers: &'a HeaderMap,
     ) -> Self {
+        Self::request_with_trailers(method, target_uri, request_target, headers, None)
+    }
+
+    pub(crate) fn request_with_trailers(
+        method: &'a Method,
+        target_uri: &'a Uri,
+        request_target: &'a Uri,
+        headers: &'a HeaderMap,
+        trailers: Option<&'a HeaderMap>,
+    ) -> Self {
         Self::Request {
             method,
             target_uri,
             request_target,
             headers,
+            trailers,
         }
     }
 
     #[allow(dead_code)]
     pub(crate) fn response(status: StatusCode, headers: &'a HeaderMap) -> Self {
-        Self::Response { status, headers }
+        Self::response_with_trailers(status, headers, None)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn response_with_trailers(
+        status: StatusCode,
+        headers: &'a HeaderMap,
+        trailers: Option<&'a HeaderMap>,
+    ) -> Self {
+        Self::Response {
+            status,
+            headers,
+            trailers,
+        }
     }
 
     #[allow(dead_code)]
@@ -64,8 +93,27 @@ impl<'a> MessageSignatureContext<'a> {
             target_uri,
             request_target,
             request_headers,
+            request_trailers: None,
             status,
             response_headers,
+            response_trailers: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn from_request_response_contexts(
+        request: MessageSignatureRequestContext<'a>,
+        response: MessageSignatureResponseContext<'a>,
+    ) -> Self {
+        Self::RequestResponse {
+            method: request.method(),
+            target_uri: request.target_uri(),
+            request_target: request.request_target(),
+            request_headers: request.headers(),
+            request_trailers: request.trailers(),
+            status: response.status(),
+            response_headers: response.headers(),
+            response_trailers: response.trailers(),
         }
     }
 
@@ -84,6 +132,7 @@ impl<'a> MessageSignatureContext<'a> {
                 target_uri,
                 request_target,
                 headers,
+                trailers,
             } => {
                 if component.has_related_request_parameter() {
                     return Err(unsupported_component_parameters(component)?);
@@ -93,9 +142,20 @@ impl<'a> MessageSignatureContext<'a> {
                     &identifier,
                     MessageSignatureContextKind::Request,
                 )?;
-                request_component_value(component, method, target_uri, request_target, headers)
+                request_component_value(
+                    component,
+                    method,
+                    target_uri,
+                    request_target,
+                    headers,
+                    *trailers,
+                )
             }
-            Self::Response { status, headers } => {
+            Self::Response {
+                status,
+                headers,
+                trailers,
+            } => {
                 if component.has_related_request_parameter() {
                     return Err(MessageSignatureError::ComponentNotAvailable {
                         component: identifier,
@@ -107,15 +167,17 @@ impl<'a> MessageSignatureContext<'a> {
                     &identifier,
                     MessageSignatureContextKind::Response,
                 )?;
-                response_component_value(component, *status, headers)
+                response_component_value(component, *status, headers, *trailers)
             }
             Self::RequestResponse {
                 method,
                 target_uri,
                 request_target,
                 request_headers,
+                request_trailers,
                 status,
                 response_headers,
+                response_trailers,
             } => {
                 if component.has_related_request_parameter() {
                     if matches!(
@@ -131,6 +193,7 @@ impl<'a> MessageSignatureContext<'a> {
                         target_uri,
                         request_target,
                         request_headers,
+                        *request_trailers,
                     );
                 }
                 ensure_component_target(
@@ -138,7 +201,7 @@ impl<'a> MessageSignatureContext<'a> {
                     &identifier,
                     MessageSignatureContextKind::Response,
                 )?;
-                response_component_value(component, *status, response_headers)
+                response_component_value(component, *status, response_headers, *response_trailers)
             }
         }
     }
@@ -186,11 +249,12 @@ fn request_component_value(
     target_uri: &Uri,
     request_target: &Uri,
     headers: &HeaderMap,
+    trailers: Option<&HeaderMap>,
 ) -> Result<String, MessageSignatureError> {
     match component.kind() {
         MessageSignatureComponentKind::QueryParam => query_param_value(component, target_uri),
         MessageSignatureComponentKind::Header(name) => {
-            header_component_value(component, headers, name)
+            header_component_value(component, headers, trailers, name)
         }
         _ if component.has_parameters() => Err(unsupported_component_parameters(component)?),
         MessageSignatureComponentKind::Method => Ok(method.as_str().to_owned()),
@@ -221,6 +285,7 @@ fn response_component_value(
     component: &MessageSignatureComponent,
     status: StatusCode,
     headers: &HeaderMap,
+    trailers: Option<&HeaderMap>,
 ) -> Result<String, MessageSignatureError> {
     match component.kind() {
         MessageSignatureComponentKind::Status if component.has_parameters() => {
@@ -228,7 +293,7 @@ fn response_component_value(
         }
         MessageSignatureComponentKind::Status => Ok(status.as_u16().to_string()),
         MessageSignatureComponentKind::Header(name) => {
-            header_component_value(component, headers, name)
+            header_component_value(component, headers, trailers, name)
         }
         _ => Err(unsupported_component(component)?),
     }
@@ -237,18 +302,46 @@ fn response_component_value(
 fn header_component_value(
     component: &MessageSignatureComponent,
     headers: &HeaderMap,
+    trailers: Option<&HeaderMap>,
     name: &HeaderName,
 ) -> Result<String, MessageSignatureError> {
-    if let Some(key) = component.dictionary_key() {
-        canonical_header_dictionary_member_value(headers, name, key)
-    } else if component.has_only_structured_field_parameter() {
-        canonical_header_structured_field_value(headers, name)
-    } else if component.has_only_byte_sequence_parameter() {
-        canonical_header_byte_sequence_value(headers, name)
-    } else if component.has_parameters() {
-        Err(unsupported_component_parameters(component)?)
+    let original_component = component;
+    if component.trailer_parameter_count() > 1 {
+        return Err(unsupported_component_parameters(component)?);
+    }
+
+    let fields = if component.has_trailer_parameter() {
+        match trailers {
+            Some(trailers) => trailers,
+            None => {
+                return Err(MessageSignatureError::ComponentNotAvailable {
+                    component: component.identifier()?,
+                    context: "trailers",
+                });
+            }
+        }
     } else {
-        canonical_header_value(headers, name)
+        headers
+    };
+
+    let field_component;
+    let component = if component.has_trailer_parameter() {
+        field_component = component.without_trailer_parameter();
+        &field_component
+    } else {
+        component
+    };
+
+    if let Some(key) = component.dictionary_key() {
+        canonical_header_dictionary_member_value(fields, name, key)
+    } else if component.has_only_structured_field_parameter() {
+        canonical_header_structured_field_value(fields, name)
+    } else if component.has_only_byte_sequence_parameter() {
+        canonical_header_byte_sequence_value(fields, name)
+    } else if component.has_parameters() {
+        Err(unsupported_component_parameters(original_component)?)
+    } else {
+        canonical_header_value(fields, name)
     }
 }
 

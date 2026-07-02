@@ -1150,6 +1150,126 @@ fn builds_response_signature_base_for_status_and_headers() {
 }
 
 #[test]
+fn response_context_uses_caller_supplied_trailer_fields() {
+    let trailer_name = HeaderName::from_static("trailer");
+    let expires = HeaderName::from_static("expires");
+    let mut headers = HeaderMap::new();
+    headers.insert(trailer_name.clone(), HeaderValue::from_static("Expires"));
+    let mut trailers = HeaderMap::new();
+    trailers.insert(
+        expires.clone(),
+        HeaderValue::from_static("Wed, 9 Nov 2022 07:28:00 GMT"),
+    );
+    let response =
+        MessageSignatureResponseContext::new(StatusCode::OK, &headers).with_trailers(&trailers);
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status())
+        .component(MessageSignatureComponent::header(trailer_name))
+        .component(MessageSignatureComponent::header(expires).trailer());
+
+    let signature_headers = cfg
+        .sign_response_context(response, &|base: &[u8]| {
+            assert_eq!(
+                std::str::from_utf8(base).unwrap(),
+                "\
+\"@status\": 200\n\
+\"trailer\": Expires\n\
+\"expires\";tr: Wed, 9 Nov 2022 07:28:00 GMT\n\
+\"@signature-params\": (\"@status\" \"trailer\" \"expires\";tr)"
+            );
+            Ok(vec![9, 8, 7])
+        })
+        .unwrap();
+
+    assert_eq!(
+        signature_headers.signature_input.to_str().unwrap(),
+        r#"sig1=("@status" "trailer" "expires";tr)"#
+    );
+    assert_eq!(signature_headers.signature.to_str().unwrap(), "sig1=:CQgH:");
+}
+
+#[test]
+fn trailer_fields_are_distinct_from_headers_and_support_field_parameters() {
+    let dict = HeaderName::from_static("example-dict");
+    let list = HeaderName::from_static("example-list");
+    let raw = HeaderName::from_static("example-raw");
+    let mut headers = HeaderMap::new();
+    headers.insert(dict.clone(), HeaderValue::from_static("a=1"));
+    let mut trailers = HeaderMap::new();
+    trailers.insert(dict.clone(), HeaderValue::from_static("a=2;x=1"));
+    trailers.append(list.clone(), HeaderValue::from_static(" 1;foo=bar "));
+    trailers.append(list.clone(), HeaderValue::from_static(" (a   b);q=01.200 "));
+    trailers.insert(
+        raw.clone(),
+        HeaderValue::from_static(" value, with, lots\t"),
+    );
+    let method = Method::GET;
+    let target_uri: Uri = "https://example.com/path".parse().unwrap();
+    let request_target: Uri = "/path".parse().unwrap();
+    let request =
+        MessageSignatureRequestContext::new(&method, &target_uri, &request_target, &headers)
+            .with_trailers(&trailers);
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(
+            MessageSignatureComponent::header(dict.clone())
+                .key("a")
+                .unwrap(),
+        )
+        .component(
+            MessageSignatureComponent::header(dict)
+                .trailer()
+                .key("a")
+                .unwrap(),
+        )
+        .component(
+            MessageSignatureComponent::header(list)
+                .trailer()
+                .structured_field(),
+        )
+        .component(
+            MessageSignatureComponent::header(raw)
+                .trailer()
+                .byte_sequence(),
+        );
+
+    let base = cfg.signature_base_for_request_context(request).unwrap();
+
+    assert_eq!(
+        base.as_str(),
+        "\
+\"example-dict\";key=\"a\": 1\n\
+\"example-dict\";tr;key=\"a\": 2;x=1\n\
+\"example-list\";tr;sf: 1;foo=bar, (a b);q=1.2\n\
+\"example-raw\";tr;bs: :dmFsdWUsIHdpdGgsIGxvdHM=:\n\
+\"@signature-params\": (\"example-dict\";key=\"a\" \"example-dict\";tr;key=\"a\" \"example-list\";tr;sf \"example-raw\";tr;bs)"
+    );
+}
+
+#[test]
+fn trailer_components_require_attached_trailer_fields() {
+    let expires = HeaderName::from_static("expires");
+    let cfg = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::header(expires).trailer());
+    let headers = HeaderMap::new();
+    let response = MessageSignatureResponseContext::new(StatusCode::OK, &headers);
+
+    let err = cfg
+        .response_signature_base_for_context(response)
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        MessageSignatureError::ComponentNotAvailable {
+            context: "trailers",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn request_response_signature_base_uses_related_request_components() {
     let mut request_headers = HeaderMap::new();
     request_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -1714,6 +1834,62 @@ fn verification_policy_calls_verifier_with_related_request_response_base() {
 }
 
 #[test]
+fn verification_policy_calls_verifier_with_trailer_components() {
+    let expires = HeaderName::from_static("expires");
+    let request_headers = HeaderMap::new();
+    let mut request_trailers = HeaderMap::new();
+    request_trailers.insert(
+        expires.clone(),
+        HeaderValue::from_static("Wed, 9 Nov 2022 07:29:00 GMT"),
+    );
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@status" "expires";tr "expires";tr;req)"#),
+    );
+    response_headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    let mut response_trailers = HeaderMap::new();
+    response_trailers.insert(
+        expires,
+        HeaderValue::from_static("Wed, 9 Nov 2022 07:28:00 GMT"),
+    );
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request = MessageSignatureRequestContext::new(
+        &Method::POST,
+        &target_uri,
+        &request_target,
+        &request_headers,
+    )
+    .with_trailers(&request_trailers);
+    let response = MessageSignatureResponseContext::new(StatusCode::OK, &response_headers)
+        .with_trailers(&response_trailers);
+    let verifier_calls = Cell::new(0);
+
+    MessageSignatureVerificationPolicy::new()
+        .verify_request_response(
+            request,
+            response,
+            "sig1",
+            &|input: MessageSignatureVerificationInput<'_>| {
+                verifier_calls.set(verifier_calls.get() + 1);
+                assert_eq!(
+                    std::str::from_utf8(input.signature_base()).unwrap(),
+                    "\
+\"@status\": 200\n\
+\"expires\";tr: Wed, 9 Nov 2022 07:28:00 GMT\n\
+\"expires\";tr;req: Wed, 9 Nov 2022 07:29:00 GMT\n\
+\"@signature-params\": (\"@status\" \"expires\";tr \"expires\";tr;req)"
+                );
+                Ok(true)
+            },
+        )
+        .unwrap();
+
+    assert_eq!(verifier_calls.get(), 1);
+}
+
+#[test]
 fn parsed_response_signature_can_verify_with_policy() {
     let response_headers = response_verification_headers();
     let response = MessageSignatureResponseContext::new(StatusCode::OK, &response_headers);
@@ -1978,6 +2154,71 @@ fn verification_policy_checks_response_content_digest_before_signature() {
 }
 
 #[test]
+fn verification_policy_checks_request_trailer_content_digest_before_signature() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@method" "content-digest";tr)"#),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    let mut trailers = HeaderMap::new();
+    trailers.insert(
+        "content-digest",
+        HeaderValue::from_static("sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:"),
+    );
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request =
+        MessageSignatureRequestContext::new(&Method::POST, &target_uri, &request_target, &headers)
+            .with_trailers(&trailers)
+            .with_body(b"goodbye");
+    let verifier_calls = Cell::new(0);
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .verify_request_context(request, "sig1", &|_: MessageSignatureVerificationInput<
+            '_,
+        >| {
+            verifier_calls.set(verifier_calls.get() + 1);
+            Ok(true)
+        })
+        .unwrap_err();
+
+    assert!(matches!(err, MessageSignatureError::ContentDigestMismatch));
+    assert_eq!(verifier_calls.get(), 0);
+}
+
+#[test]
+fn verification_policy_checks_response_trailer_content_digest_before_signature() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@status" "content-digest";tr)"#),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    let mut trailers = HeaderMap::new();
+    trailers.insert(
+        "content-digest",
+        HeaderValue::from_static("sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:"),
+    );
+    let response = MessageSignatureResponseContext::new(StatusCode::OK, &headers)
+        .with_trailers(&trailers)
+        .with_body(b"goodbye");
+    let verifier_calls = Cell::new(0);
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .verify_response(response, "sig1", &|_: MessageSignatureVerificationInput<
+            '_,
+        >| {
+            verifier_calls.set(verifier_calls.get() + 1);
+            Ok(true)
+        })
+        .unwrap_err();
+
+    assert!(matches!(err, MessageSignatureError::ContentDigestMismatch));
+    assert_eq!(verifier_calls.get(), 0);
+}
+
+#[test]
 fn verification_policy_checks_related_request_content_digest_before_signature() {
     let mut request_headers = HeaderMap::new();
     request_headers.insert(
@@ -2005,6 +2246,49 @@ fn verification_policy_checks_related_request_content_digest_before_signature() 
     .with_body(b"goodbye");
     let response =
         MessageSignatureResponseContext::new(StatusCode::OK, &response_headers).with_body(b"hello");
+    let verifier_calls = Cell::new(0);
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .verify_request_response(
+            request,
+            response,
+            "sig1",
+            &|_: MessageSignatureVerificationInput<'_>| {
+                verifier_calls.set(verifier_calls.get() + 1);
+                Ok(true)
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(err, MessageSignatureError::ContentDigestMismatch));
+    assert_eq!(verifier_calls.get(), 0);
+}
+
+#[test]
+fn verification_policy_checks_related_request_trailer_content_digest_before_signature() {
+    let request_headers = HeaderMap::new();
+    let mut request_trailers = HeaderMap::new();
+    request_trailers.insert(
+        "content-digest",
+        HeaderValue::from_static("sha-256=:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=:"),
+    );
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("@status" "content-digest";tr;req)"#),
+    );
+    response_headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+    let request = MessageSignatureRequestContext::new(
+        &Method::POST,
+        &target_uri,
+        &request_target,
+        &request_headers,
+    )
+    .with_trailers(&request_trailers)
+    .with_body(b"goodbye");
+    let response = MessageSignatureResponseContext::new(StatusCode::OK, &response_headers);
     let verifier_calls = Cell::new(0);
 
     let err = MessageSignatureVerificationPolicy::new()

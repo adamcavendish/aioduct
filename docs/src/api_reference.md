@@ -246,7 +246,8 @@ or a `ClientBuilder` that is never built, produces a compiler warning.
 `MessageSignatureConfig` builds RFC 9421 request signature bases and formats the
 `Signature-Input` / `Signature` headers from caller-provided signature bytes.
 `MessageSignature` parses existing signature fields by label and rebuilds the
-request or response signature base for caller-owned verification.
+request or response signature base for caller-owned verification. The context
+helpers support caller-supplied trailer field components with `;tr`.
 `MessageSignatureVerificationPolicy` applies request verification policy checks
 before invoking caller-owned cryptographic verification. When body bytes are
 attached to verification contexts, the policy also verifies covered SHA-256
@@ -304,6 +305,12 @@ let base = config.request_response_signature_base(
 # Ok(())
 # }
 ```
+
+Use `MessageSignatureRequestContext::with_trailers(...)` or
+`MessageSignatureResponseContext::with_trailers(...)` with
+`signature_base_for_request_context()`, `response_signature_base_for_context()`,
+or `request_response_signature_base_for_context()` when a signature covers
+caller-supplied trailer fields with `;tr`.
 
 Native clients can also sign each finalized request attempt automatically:
 
@@ -423,7 +430,10 @@ use `MessageSignatureRequestContext::new(...).with_body(body)` with
 `verify_request_context(...)`. For responses, attach bytes with
 `MessageSignatureResponseContext::new(...).with_body(body)`. Mismatched,
 malformed, or unsupported digest fields fail before the verifier callback runs;
-contexts without body bytes keep the previous signature-only behavior.
+contexts without body bytes keep the previous signature-only behavior. If the
+selected signature covers trailer fields with `;tr`, attach trailer maps with
+`with_trailers(...)`; missing trailer maps fail before the verifier callback
+runs.
 
 Response verification uses borrowed context values so signatures can cover both
 the response and selected related request components:
