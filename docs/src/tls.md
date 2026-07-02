@@ -93,6 +93,23 @@ client identity, CRLs, hostname-verification bypass for tests, and a fully custo
 rustls configuration. Browser and WASI clients intentionally do not duplicate
 host-managed TLS policy knobs.
 
+For operator-provided CA bundles, use the fallible PEM bundle path:
+
+```rust,no_run
+use aioduct::TokioClient;
+
+# fn build_client() -> Result<TokioClient, Box<dyn std::error::Error>> {
+let client = TokioClient::builder()
+    .add_root_certificates_pem_bundle(include_bytes!("ca.pem"))?
+    .build()?;
+# Ok(client)
+# }
+```
+
+This parser rejects empty bundles, private keys, unsupported PEM sections,
+malformed input, and certificates rustls will not accept as trust roots. It is
+the preferred path for host policy code that reads operator configuration.
+
 ## Custom TLS Configuration
 
 For advanced use cases, configure the `RustlsConnector` directly:

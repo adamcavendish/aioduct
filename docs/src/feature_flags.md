@@ -38,7 +38,7 @@ Use `rustls` for the HTTPS backend and choose exactly one rustls crypto provider
 If no runtime feature is selected, aioduct emits a compile error:
 
 ```text
-error: aioduct: enable at least one runtime feature: tokio, smol, compio, or wasm
+error: aioduct: enable at least one runtime feature: tokio, smol, compio, wasm, or wasi-p2
 ```
 
 ## Common Feature Combinations
@@ -92,6 +92,17 @@ aioduct = { version = "0.2.0", features = ["tokio", "http3", "rustls", "rustls-r
 # HTTP/3 with AWS-LC
 aioduct = { version = "0.2.0", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
 ```
+
+## Wasmtime Host Adapter
+
+Wasmtime host integration is provided by the separate `aioduct-wasmtime`
+crate. Its default feature set enables a Tokio host transport and the
+`rustls-ring` provider. Use `--no-default-features --features
+smol,rustls-ring` to build the adapter with a smol host transport instead.
+
+`aioduct-wasmtime` accepts native `RuntimePoll` transports such as
+`TokioClient` and `SmolClient`. It does not enable browser `wasm`, and it does
+not expose a compio host transport until a local-runtime worker bridge exists.
 
 ## Core Dependencies (Always Included)
 

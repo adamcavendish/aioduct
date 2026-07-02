@@ -431,3 +431,19 @@ full networking stack.
 | TLS, DNS, pooling, HTTP version | Configurable | Browser-managed | WASI runtime-managed |
 | Proxy | Full support | Not available | Not available |
 | Compression | Per-codec cfg features | Browser-managed | Not integrated |
+
+## Wasmtime Host Adapter
+
+`aioduct::WasiClient` is the guest-side WASI-P2 client. It cannot and should
+not carry host trust policy such as allowed origins, CA roots, insecure
+certificate mode, secret header injection, body limits, or redacted diagnostics.
+
+Hosts embedding Wasmtime components can use the separate `aioduct-wasmtime`
+crate to install a `wasi:http` hook. That hook validates a guest request with
+host-owned policy, injects host-owned headers after validation, and forwards
+the request through a native `aioduct` transport.
+
+The first host transport line covers `RuntimePoll` native clients
+(`TokioClient` and `SmolClient`). `CompioClient` remains a different bridge
+because it uses `RuntimeLocal` and non-`Send` body types. Browser `wasm` has no
+Wasmtime host hook; it remains browser Fetch managed.
