@@ -237,7 +237,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     *retry_req.headers_mut() = headers;
                     *retry_req.version_mut() = version;
                     request = retry_req;
-                    self.core.sign_final_request(original_uri, &mut request)?;
+                    if let Some(signature) = self
+                        .core
+                        .prepare_final_request_signature(original_uri, &mut request)?
+                    {
+                        let signature_headers = signature.sign_local().await?;
+                        signature_headers.insert_into(request.headers_mut())?;
+                    }
                 }
                 Err(e) => {
                     self.core.notify(
@@ -395,7 +401,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             *retry_req.headers_mut() = headers;
                             *retry_req.version_mut() = version;
                             request = retry_req;
-                            self.core.sign_final_request(original_uri, &mut request)?;
+                            if let Some(signature) = self
+                                .core
+                                .prepare_final_request_signature(original_uri, &mut request)?
+                            {
+                                let signature_headers = signature.sign_local().await?;
+                                signature_headers.insert_into(request.headers_mut())?;
+                            }
                             break;
                         }
                         Err(e) => {

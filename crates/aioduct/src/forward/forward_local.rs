@@ -293,27 +293,31 @@ where
             request.headers_mut(),
             &crate::digest_fields::ContentDigestBody::Unavailable,
         )?;
-        self.client
-            .core
-            .sign_final_request(&full_uri, &mut request)?;
-
-        let send_fut = self.client.execute_single_local(
-            request,
-            &full_uri,
-            None,
-            None,
-            None,
-            None,
-            self.protocol_hint,
-        );
-
-        let mut resp = if let Some(duration) = self.timeout {
-            crate::timeout::Timeout::WithTimeout {
-                future: send_fut,
-                sleep: R::sleep(duration),
+        let timeout = self.timeout.or(self.client.core.timeout);
+        let send_fut = async {
+            if let Some(signature) = self
+                .client
+                .core
+                .prepare_final_request_signature(&full_uri, &mut request)?
+            {
+                let signature_headers = signature.sign_local().await?;
+                signature_headers.insert_into(request.headers_mut())?;
             }
-            .await?
-        } else if let Some(duration) = self.client.core.timeout {
+
+            self.client
+                .execute_single_local(
+                    request,
+                    &full_uri,
+                    None,
+                    None,
+                    None,
+                    None,
+                    self.protocol_hint,
+                )
+                .await
+        };
+
+        let mut resp = if let Some(duration) = timeout {
             crate::timeout::Timeout::WithTimeout {
                 future: send_fut,
                 sleep: R::sleep(duration),

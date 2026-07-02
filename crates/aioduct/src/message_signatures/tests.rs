@@ -1057,7 +1057,7 @@ fn parsed_signature_accepts_empty_covered_set() {
     assert_eq!(signature.params().created(), Some(1_618_884_473));
     assert_eq!(signature.params().key_id(), Some("test-key-rsa-pss"));
     assert_eq!(signature.params().nonce(), Some("b3k2pp5k7z-50gnwp.yemd"));
-    assert_eq!(signature.signature(), &[]);
+    assert!(signature.signature().is_empty());
     assert_eq!(
         signature.signature_params_value(),
         r#"();created=1618884473;keyid="test-key-rsa-pss";nonce="b3k2pp5k7z-50gnwp.yemd""#

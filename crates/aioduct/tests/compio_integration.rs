@@ -34,7 +34,9 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 
 use aioduct::runtime::compio_rt::{CompioRuntime, TcpConnector};
-use aioduct::{HttpEngineLocal, MessageSignatureComponent, MessageSignatureConfig};
+use aioduct::{
+    HttpEngineLocal, MessageSignatureBase, MessageSignatureComponent, MessageSignatureConfig,
+};
 
 async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     Ok(Response::new(Full::new(Bytes::from("hello aioduct"))))
@@ -149,6 +151,54 @@ fn test_compio_automatic_message_signature() {
         let body = resp.text().await.unwrap();
         assert!(body.contains("sig1="), "{body}");
         assert!(body.contains("sig1=:Y29tcGlv:"), "{body}");
+    });
+}
+
+#[test]
+fn test_compio_async_local_message_signature() {
+    let addr = start_server_with_tokio(|req| async move {
+        let signature_input = req
+            .headers()
+            .get("signature-input")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let signature = req
+            .headers()
+            .get("signature")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "{signature_input}\n{signature}"
+        )))))
+    });
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::method())
+            .component(MessageSignatureComponent::request_target());
+        let signer = |base: MessageSignatureBase| async move {
+            let signature = std::rc::Rc::new((
+                base.as_str().contains(r#""@request-target": /signed"#),
+                b"local-async".to_vec(),
+            ));
+            std::future::ready(()).await;
+            assert!(signature.as_ref().0);
+            Ok::<_, aioduct::MessageSignatureError>(signature.as_ref().1.clone())
+        };
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .message_signature_async_local(config, signer)
+            .build_local()
+            .unwrap();
+
+        let resp = client
+            .get_local(&format!("http://{addr}/signed"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("sig1="), "{body}");
+        assert!(body.contains("sig1=:bG9jYWwtYXN5bmM=:"), "{body}");
     });
 }
 

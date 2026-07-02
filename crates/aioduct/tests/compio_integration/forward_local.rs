@@ -246,6 +246,53 @@ fn test_compio_forward_timeout() {
     });
 }
 
+#[test]
+fn test_compio_forward_async_signing_is_included_in_timeout() {
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server_attempts = attempts.clone();
+    let upstream_addr = start_server_with_tokio(move |_req| {
+        let server_attempts = server_attempts.clone();
+        async move {
+            server_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
+        }
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::method())
+            .component(MessageSignatureComponent::request_target());
+        let signer = |_base: MessageSignatureBase| async move {
+            std::future::pending::<()>().await;
+            Ok::<_, aioduct::MessageSignatureError>(b"late".to_vec())
+        };
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .message_signature_async_local(config, signer)
+            .build_local()
+            .unwrap();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/slow-sign")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let result = client
+            .forward_local(incoming)
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .timeout(Duration::from_millis(20))
+            .send()
+            .await;
+
+        assert!(result.unwrap_err().is_timeout());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 0);
+    });
+}
+
 // ── Forward: upstream with base path ──────────────────────────────────
 
 #[test]
