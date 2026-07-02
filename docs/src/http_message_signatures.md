@@ -10,8 +10,8 @@ values, turn accepted signature requests into concrete signing configs, apply
 verification policy checks, and expose the bytes callers pass to cryptographic
 code. Callers still choose the cryptographic signing and verification
 algorithms. Native clients can also insert SHA-256 `Content-Digest` for buffered
-request bodies and run a synchronous signer automatically for each finalized
-request attempt.
+request bodies and run synchronous or asynchronous signers automatically for each
+finalized request attempt.
 
 ## Core Flow
 
@@ -82,11 +82,13 @@ represented as ASCII header fields return `MessageSignatureError`.
 ## Native Automatic Signing
 
 Native tokio, smol, and compio clients can sign requests automatically with
-`HttpEngineBuilder::message_signature(config, signer)`. The signer runs after
-default headers, cookies, cache validators, middleware, digest-auth retry
-headers, forwarding request rewrites, and request framing cleanup have finalized
-each native dispatch attempt. Stale pooled-connection replays are re-signed
-before retrying.
+`HttpEngineBuilder::message_signature(config, signer)` for synchronous signers,
+`message_signature_async(config, signer)` for send-runtime async signers, or
+`message_signature_async_local(config, signer)` for local-runtime async signing
+futures. The signer runs after default headers, cookies, cache validators,
+middleware, digest-auth retry headers, forwarding request rewrites, and request
+framing cleanup have finalized each native dispatch attempt. Stale
+pooled-connection replays are re-signed before retrying.
 
 ```rust,no_run
 use aioduct::{HttpEngineSend, MessageSignatureComponent, MessageSignatureConfig};
@@ -109,6 +111,31 @@ let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
 # Ok(())
 # }
 # fn sign_with_your_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
+```
+
+Async automatic signers receive an owned `MessageSignatureBase`, so request and
+header borrows do not cross the signer await boundary:
+
+```rust,no_run
+use aioduct::{HttpEngineSend, MessageSignatureBase, MessageSignatureComponent, MessageSignatureConfig};
+use aioduct::runtime::TokioRuntime;
+use aioduct::runtime::tokio_rt::TcpConnector;
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let config = MessageSignatureConfig::new("sig1")?
+    .component(MessageSignatureComponent::method())
+    .component(MessageSignatureComponent::authority())
+    .key_id("test-key");
+
+let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+    .message_signature_async(config, |base: MessageSignatureBase| async move {
+        Ok(sign_with_remote_key(base.as_bytes()).await)
+    })
+    .build()?;
+# let _ = client;
+# Ok(())
+# }
+# async fn sign_with_remote_key(_: &[u8]) -> Vec<u8> { vec![1, 2, 3] }
 ```
 
 When automatic signing is configured, aioduct owns its configured signature
@@ -488,10 +515,10 @@ send signatures for an earlier request shape.
 The helpers are portable and can be used with native, blocking, wasm, and wasi-p2
 request builders by inserting the generated headers manually. Caller-supplied
 trailer maps for `;tr` components are portable context inputs, not automatic
-trailer generation. Native automatic request signing and buffered automatic
-`Content-Digest` generation are available for tokio, smol, and compio request
-dispatch. Blocking clients inherit them when they wrap a configured native
-client.
+trailer generation. Native automatic request signing supports synchronous and
+asynchronous signers for tokio, smol, and compio request dispatch. Buffered
+automatic `Content-Digest` generation is also available for those native
+runtimes. Blocking clients inherit configured native-client behavior.
 
 Browser Fetch and WASI hosts can still alter or reject some headers at the host
 boundary. That host behavior is outside aioduct's control.
@@ -526,11 +553,11 @@ work lands.
 | `Accept-Signature` fulfillment helpers | Supported | `accept_signature_fulfills_response_with_related_request`, `accept_signature_fulfills_next_request`, `accept_signature_fulfillment_reports_unfulfillable_requests`, `accept_signature_allows_ignoring_requests_and_adding_signatures` | Current | Converts accepted entries into concrete `MessageSignatureConfig` values, fills requested metadata, rejects missing or conflicting requested parameters, supports caller-selected ignored requests, and allows additional signatures. Cryptography and header attachment remain caller-owned. |
 | SHA-256 `Content-Digest` value helpers | Supported | `formats_sha256_content_digest`, `formats_precomputed_sha256_content_digest`, `inserts_sha256_content_digest` | Current | Builds explicit `Content-Digest` field values from complete body bytes or a precomputed 32-byte SHA-256 digest. |
 | Buffered automatic `Content-Digest` generation | Supported | `automatic_content_digest_is_inserted_before_signing`, `automatic_content_digest_preserves_manual_header`, `automatic_content_digest_rejects_streaming_body_without_manual_digest`, `automatic_content_digest_rejects_middleware_replaced_body_without_manual_digest` | Current | Native dispatch can insert SHA-256 `Content-Digest` for buffered bodies before automatic signing. Existing digest fields are preserved; streaming or middleware-replaced bodies need explicit digest fields. |
-| Async automatic signing | Planned | Matrix only | Async signing | Sync automatic signing remains supported; async signing will use explicit send/local APIs. |
+| Async automatic signing | Supported | `async_automatic_signing_adds_headers_after_middleware`, `async_signer_error_aborts_request_before_dispatch`, `test_compio_async_local_message_signature` | Current | Send-runtime signing uses `message_signature_async` with a `Send` future; local-runtime signing uses `message_signature_async_local` and can await a non-`Send` future. Sync automatic signing remains supported. |
 | Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs cross-runtime request-trailer semantics first. |
 | Cryptographic algorithm validation | Not in scope | Matrix only | Caller-owned | aioduct builds bases and header values; callers own keys, algorithms, signing, and verification cryptography. |
 
 ## Future Work
 
-- Async automatic signer callbacks.
+- Native automatic response signing.
 - Automatic trailer-based digest/signature generation after trailer semantics are proven across runtimes.

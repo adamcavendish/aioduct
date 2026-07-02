@@ -11,6 +11,28 @@ use super::builder::HttpEngineBuilder;
 use super::{HttpEngineCore, HttpEngineLocal};
 
 impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
+    /// Enable async automatic RFC 9421 request signing for native local requests.
+    ///
+    /// The signer runs after default headers, cookies, cache validators,
+    /// middleware, automatic `Content-Digest`, and digest-auth retry headers
+    /// have finalized each request attempt. It receives an owned signature base,
+    /// so request and header borrows do not cross the signer await boundary.
+    ///
+    /// The returned signing future does not need to be [`Send`].
+    pub fn message_signature_async_local(
+        mut self,
+        config: crate::message_signatures::MessageSignatureConfig,
+        signer: impl crate::message_signatures::MessageSignatureLocalAsyncSigner,
+    ) -> Self {
+        self.message_signature = Some(
+            crate::message_signatures::AutomaticMessageSignature::new_async_local(
+                config,
+                Arc::new(signer),
+            ),
+        );
+        self
+    }
+
     #[cfg(feature = "tower")]
     /// Wrap the TCP connector with a tower `Layer`.
     ///

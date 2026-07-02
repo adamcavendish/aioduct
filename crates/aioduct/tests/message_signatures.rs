@@ -3,12 +3,14 @@
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct::{
-    CONTENT_DIGEST, Error, HttpCache, HttpEngineSend, MessageSignatureComponent,
-    MessageSignatureConfig, MessageSignatureError, sha256_content_digest_value_from_digest,
+    CONTENT_DIGEST, Error, HttpCache, HttpEngineSend, MessageSignatureBase,
+    MessageSignatureComponent, MessageSignatureConfig, MessageSignatureError,
+    sha256_content_digest_value_from_digest,
 };
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, CACHE_CONTROL, HeaderName, HeaderValue, VARY};
@@ -88,6 +90,70 @@ async fn automatic_signing_adds_headers_after_middleware() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("signature-input=sig1="), "{body}");
     assert!(body.contains("signature=sig1=:c2lnbmVk:"), "{body}");
+
+    let bases = bases.lock().unwrap();
+    assert_eq!(bases.len(), 1);
+    assert!(bases[0].contains(r#""@request-target": /resource?x=1"#));
+    assert!(bases[0].contains(r#""x-final": middleware"#));
+}
+
+#[tokio::test]
+async fn async_automatic_signing_adds_headers_after_middleware() {
+    let bases = Arc::new(Mutex::new(Vec::new()));
+    let signer_bases = bases.clone();
+    let signer = move |base: MessageSignatureBase| {
+        let signer_bases = signer_bases.clone();
+        async move {
+            tokio::task::yield_now().await;
+            signer_bases.lock().unwrap().push(base.into_string());
+            Ok::<_, MessageSignatureError>(b"async".to_vec())
+        }
+    };
+    let config = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::method())
+        .component(MessageSignatureComponent::request_target())
+        .component(MessageSignatureComponent::header(HeaderName::from_static(
+            "x-final",
+        )));
+
+    let (addr, _counter) = h1_server_with(|req| async move {
+        let signature_input = req
+            .headers()
+            .get("signature-input")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let signature = req
+            .headers()
+            .get("signature")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "signature-input={signature_input}\nsignature={signature}"
+        )))))
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .middleware(
+            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
+                req.headers_mut()
+                    .insert("x-final", http::HeaderValue::from_static("middleware"));
+            },
+        )
+        .message_signature_async(config, signer)
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get(&format!("http://{addr}/resource?x=1"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("signature-input=sig1="), "{body}");
+    assert!(body.contains("signature=sig1=:YXN5bmM=:"), "{body}");
 
     let bases = bases.lock().unwrap();
     assert_eq!(bases.len(), 1);
@@ -190,6 +256,40 @@ async fn signer_error_aborts_request() {
         err.into_error(),
         Error::MessageSignature(MessageSignatureError::Signer(message)) if message == "failed"
     ));
+}
+
+#[tokio::test]
+async fn async_signer_error_aborts_request_before_dispatch() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = attempts.clone();
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let server_attempts = server_attempts.clone();
+        async move {
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
+        }
+    })
+    .await;
+    let signer = |_base: MessageSignatureBase| async move {
+        tokio::task::yield_now().await;
+        Err::<Vec<u8>, _>(MessageSignatureError::Signer("async failed".to_owned()))
+    };
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .message_signature_async(basic_config(), signer)
+        .build()
+        .unwrap();
+
+    let err = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err.into_error(),
+        Error::MessageSignature(MessageSignatureError::Signer(message)) if message == "async failed"
+    ));
+    assert_eq!(attempts.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -626,6 +726,44 @@ async fn forwarding_signature_covers_rewritten_upstream_request() {
         bases[0]
     );
     assert!(bases[0].contains(r#""x-forward-final": hooked"#));
+}
+
+#[tokio::test]
+async fn forwarding_async_signing_is_included_in_timeout() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = attempts.clone();
+    let (addr, _counter) = h1_server_with(move |_req| {
+        let server_attempts = server_attempts.clone();
+        async move {
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
+        }
+    })
+    .await;
+    let signer = |_base: MessageSignatureBase| async move {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        Ok::<_, MessageSignatureError>(b"late".to_vec())
+    };
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .message_signature_async(basic_config(), signer)
+        .build()
+        .unwrap();
+    let incoming = http::Request::builder()
+        .method("GET")
+        .uri("/slow-sign")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let err = client
+        .forward(incoming)
+        .upstream(format!("http://{addr}"))
+        .timeout(Duration::from_millis(20))
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, Error::Timeout));
+    assert_eq!(attempts.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

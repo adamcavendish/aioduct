@@ -89,6 +89,9 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `http2(Http2Config)`    | None   | Configure HTTP/2 parameters (window sizes, keepalive, frame size) |
 | `middleware(impl Middleware)` | None | Add a middleware layer that can inspect/modify requests and responses |
 | `automatic_content_digest(bool)` | false | Insert SHA-256 `Content-Digest` for buffered native request bodies before automatic signing |
+| `message_signature(config, signer)` | None | Sync automatic RFC 9421 request signing for finalized native requests |
+| `message_signature_async(config, signer)` | None | Send-runtime async automatic RFC 9421 request signing |
+| `message_signature_async_local(config, signer)` | None | Local-runtime async automatic RFC 9421 request signing |
 | `retry(RetryConfig)`    | None        | Default retry policy for all requests |
 | `cookie_jar(CookieJar)` | None       | Enable automatic cookie management   |
 | `rate_limiter(RateLimiter)` | None   | Token-bucket rate limiter for outgoing requests |
@@ -335,6 +338,12 @@ Automatic signing runs after default headers, cookies, cache validators,
 middleware, digest-auth retry headers, forwarding request rewrites, and framing
 cleanup. When configured, it replaces only its configured label in
 `Signature-Input` and `Signature` on every native dispatch attempt.
+
+Use `message_signature_async(...)` for send-runtime signers that return `Send`
+futures, or `message_signature_async_local(...)` for local-runtime signers whose
+future does not need to be `Send`. Async signers receive an owned
+`MessageSignatureBase`, so request/header borrows are not held across the signer
+await point.
 
 Use `automatic_content_digest(true)` on the client builder or a request builder
 to insert `Content-Digest: sha-256=:...:` for buffered native request bodies that

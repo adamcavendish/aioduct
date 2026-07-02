@@ -52,7 +52,8 @@ WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 | Covered `Content-Digest` verification with caller-supplied body bytes | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SHA-256 `Content-Digest` value helpers for explicit headers | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Automatic buffered `Content-Digest` generation | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
-| Automatic request signing | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
+| Sync automatic request signing | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
+| Async automatic request signing | ✓ `Send` future | ✓ `Send` future | ✓ local future | ✗ manual headers only | ✗ manual headers only |
 
 `message_signatures` is portable: callers can build request or response
 signature bases, sign them with their own key material, verify signed request or
@@ -63,10 +64,11 @@ caller-supplied trailer fields with `;tr`, verify covered SHA-256
 format SHA-256 `Content-Digest` values for explicit headers, and attach
 `Signature-Input` / `Signature` through the normal header APIs on every runtime.
 Native clients can also generate SHA-256 `Content-Digest` for buffered request
-bodies before signing. Native automatic signing runs after
-default headers, cookies, cache validators, middleware, digest-auth retry
-headers, forwarding request rewrites, framing cleanup, and digest insertion have
-finalized each tokio, smol, or compio request attempt. Browser Fetch and WASI
+bodies before signing. Native automatic signing supports sync signers plus async
+send-runtime signers for tokio/smol and async local-runtime signing futures for
+compio. It runs after default headers, cookies, cache validators, middleware,
+digest-auth retry headers, forwarding request rewrites, framing cleanup, and
+digest insertion have finalized each request attempt. Browser Fetch and WASI
 request dispatch do not expose automatic digest/signing hooks; use the portable
 helper flow and manual headers there.
 

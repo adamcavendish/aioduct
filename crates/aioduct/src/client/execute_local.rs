@@ -147,7 +147,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             };
             sync_cache_validators(request.headers(), &mut current_headers);
             let mut cache_request_headers = request.headers().clone();
-            self.core.sign_final_request(&current_uri, &mut request)?;
+            if let Some(signature) = self
+                .core
+                .prepare_final_request_signature(&current_uri, &mut request)?
+            {
+                let signature_headers = signature.sign_local().await?;
+                signature_headers.insert_into(request.headers_mut())?;
+            }
 
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
                 Some(RequestBody::Buffered(b)) => Some(b.clone()),
@@ -340,7 +346,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             retry_request.headers_mut(),
             &digest_body,
         )?;
-        self.core.sign_final_request(uri, &mut retry_request)?;
+        if let Some(signature) = self
+            .core
+            .prepare_final_request_signature(uri, &mut retry_request)?
+        {
+            let signature_headers = signature.sign_local().await?;
+            signature_headers.insert_into(retry_request.headers_mut())?;
+        }
         self.execute_single_local(
             retry_request,
             uri,

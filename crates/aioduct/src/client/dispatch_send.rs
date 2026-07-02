@@ -226,7 +226,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     };
                     let headers = stale_retry_headers.cloned().unwrap_or_default();
                     request = retry_request_from_parts(method, uri, version, headers, &replay_body);
-                    self.core.sign_final_request(original_uri, &mut request)?;
+                    if let Some(signature) = self
+                        .core
+                        .prepare_final_request_signature(original_uri, &mut request)?
+                    {
+                        let signature_headers = signature.sign_send().await?;
+                        signature_headers.insert_into(request.headers_mut())?;
+                    }
                 }
                 Err(e) => {
                     self.core.notify(
@@ -372,7 +378,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         let headers = stale_retry_headers.cloned().unwrap_or_default();
                         request =
                             retry_request_from_parts(method, uri, version, headers, &replay_body);
-                        self.core.sign_final_request(original_uri, &mut request)?;
+                        if let Some(signature) = self
+                            .core
+                            .prepare_final_request_signature(original_uri, &mut request)?
+                        {
+                            let signature_headers = signature.sign_send().await?;
+                            signature_headers.insert_into(request.headers_mut())?;
+                        }
                     }
                     Err(e) => {
                         self.core.notify(
@@ -673,7 +685,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 headers,
                                 &replay_body,
                             );
-                            self.core.sign_final_request(original_uri, &mut request)?;
+                            if let Some(signature) = self
+                                .core
+                                .prepare_final_request_signature(original_uri, &mut request)?
+                            {
+                                let signature_headers = signature.sign_send().await?;
+                                signature_headers.insert_into(request.headers_mut())?;
+                            }
                             break;
                         }
                         Err(e) => {

@@ -73,22 +73,22 @@ impl<B> HttpEngineCore<B> {
         }
     }
 
-    pub(crate) fn sign_final_request<ReqBody>(
+    pub(crate) fn prepare_final_request_signature<ReqBody>(
         &self,
         target_uri: &Uri,
         request: &mut http::Request<ReqBody>,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<crate::message_signatures::PreparedAutomaticMessageSignature>, Error> {
         if let Some(ref message_signature) = self.message_signature {
             let method = request.method().clone();
             let request_target = request.uri().clone();
-            message_signature.sign_headers(
+            return Ok(Some(message_signature.prepare_headers(
                 &method,
                 target_uri,
                 &request_target,
                 request.headers_mut(),
-            )?;
+            )?));
         }
-        Ok(())
+        Ok(None)
     }
 
     pub(super) fn maybe_upgrade_hsts(&self, uri: Uri) -> Uri {
