@@ -443,7 +443,8 @@ crate to install a `wasi:http` hook. That hook validates a guest request with
 host-owned policy, injects host-owned headers after validation, and forwards
 the request through a native `aioduct` transport.
 
-The first host transport line covers `RuntimePoll` native clients
-(`TokioClient` and `SmolClient`). `CompioClient` remains a different bridge
-because it uses `RuntimeLocal` and non-`Send` body types. Browser `wasm` has no
-Wasmtime host hook; it remains browser Fetch managed.
+The host transport line covers `RuntimePoll` native clients (`TokioClient` and
+`SmolClient`) directly. `CompioClient` is covered through
+`CompioHostTransport`, which owns the local-runtime worker and bounded body
+bridge needed for non-`Send` compio state. Browser `wasm` has no Wasmtime host
+hook; it remains browser Fetch managed.

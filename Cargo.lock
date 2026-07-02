@@ -161,7 +161,11 @@ version = "0.2.0"
 dependencies = [
  "aioduct",
  "aioduct-test-server",
+ "async-io",
  "bytes",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
  "http 1.4.0",
  "http-body",
  "http-body-util",

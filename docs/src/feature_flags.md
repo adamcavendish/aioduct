@@ -96,13 +96,24 @@ aioduct = { version = "0.2.0", features = ["tokio", "http3", "rustls", "rustls-a
 ## Wasmtime Host Adapter
 
 Wasmtime host integration is provided by the separate `aioduct-wasmtime`
-crate. Its default feature set enables a Tokio host transport and the
-`rustls-ring` provider. Use `--no-default-features --features
-smol,rustls-ring` to build the adapter with a smol host transport instead.
+crate. Its default feature set is also empty; enable the host runtime and TLS
+provider explicitly:
+
+```toml
+# Wasmtime host adapter with tokio + rustls/ring
+aioduct-wasmtime = { version = "0.2.0", default-features = false, features = ["tokio", "rustls-ring"] }
+
+# Wasmtime host adapter with smol + rustls/ring
+aioduct-wasmtime = { version = "0.2.0", default-features = false, features = ["smol", "rustls-ring"] }
+
+# Wasmtime host adapter with compio + rustls/ring
+aioduct-wasmtime = { version = "0.2.0", default-features = false, features = ["compio", "rustls-ring"] }
+```
 
 `aioduct-wasmtime` accepts native `RuntimePoll` transports such as
-`TokioClient` and `SmolClient`. It does not enable browser `wasm`, and it does
-not expose a compio host transport until a local-runtime worker bridge exists.
+`TokioClient` and `SmolClient`. It also provides `CompioHostTransport`, which
+owns a local-runtime worker bridge for `CompioClient` builders. It does not
+enable browser `wasm`, because browser Fetch has no Wasmtime host hook.
 
 ## Core Dependencies (Always Included)
 

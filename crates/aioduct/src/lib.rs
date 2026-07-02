@@ -14,6 +14,7 @@
     feature = "compio",
     feature = "wasm",
     feature = "wasi-p2",
+    feature = "__internal-no-runtime",
     doc
 )))]
 compile_error!(
