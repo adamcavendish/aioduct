@@ -2,15 +2,15 @@
 
 aioduct provides RFC 9421 HTTP Message Signatures request-signing helpers,
 response signature-base helpers, parsed verification helpers,
-`Accept-Signature` negotiation helpers, native automatic request signing, and
-native buffered `Content-Digest` generation. The
-portable helpers build signature bases, format and parse `Signature-Input` /
-`Signature` header values, turn accepted signature requests into concrete signing
-configs, apply verification policy checks, and expose the bytes callers pass to
-cryptographic code. Callers still choose the cryptographic signing and
-verification algorithms. Native clients can also insert SHA-256 `Content-Digest`
-for buffered request bodies and run a synchronous signer automatically for each
-finalized request attempt.
+`Accept-Signature` negotiation helpers, covered `Content-Digest` verification,
+native automatic request signing, and native buffered `Content-Digest`
+generation. The portable helpers build signature bases, format and parse
+`Signature-Input` / `Signature` header values, turn accepted signature requests
+into concrete signing configs, apply verification policy checks, and expose the
+bytes callers pass to cryptographic code. Callers still choose the cryptographic
+signing and verification algorithms. Native clients can also insert SHA-256
+`Content-Digest` for buffered request bodies and run a synchronous signer
+automatically for each finalized request attempt.
 
 ## Core Flow
 
@@ -297,6 +297,16 @@ requires covered components, filters accepted `alg` and `keyid` metadata, checks
 calls your verifier with the selected label, parsed params, rebuilt base bytes,
 and decoded signature bytes.
 
+When body bytes are available, attach them to the request or response context
+with `with_body(...)`. If the selected signature covers `content-digest`, the
+policy verifies a SHA-256 `Content-Digest` field before rebuilding the signature
+base and before invoking your verifier. For response signatures that cover a
+related request field with `;req`, attach the related request body to
+`MessageSignatureRequestContext`. If no body bytes are attached, verification
+preserves the previous signature-only behavior and does not check the digest
+field. Malformed digest fields, digest fields without `sha-256`, and mismatched
+body bytes fail closed with `MessageSignatureError` before your verifier runs.
+
 When the selected signature carries `created` or `expires`, configure
 `validation_time()` so the policy can validate those timestamps. Without a
 validation time, verification fails closed with `MissingValidationTime`.
@@ -346,10 +356,43 @@ policy.verify_request(
 # }
 ```
 
+For request body integrity, use the request context form:
+
+```rust,no_run
+use aioduct::{
+    MessageSignatureRequestContext, MessageSignatureVerificationInput,
+    MessageSignatureVerificationPolicy,
+};
+use http::{HeaderMap, Method, Uri};
+
+# fn example(headers: HeaderMap, body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+let target_uri: Uri = "https://example.com/foo".parse()?;
+let request_target: Uri = "/foo".parse()?;
+let request = MessageSignatureRequestContext::new(
+    &Method::POST,
+    &target_uri,
+    &request_target,
+    &headers,
+)
+.with_body(body);
+
+MessageSignatureVerificationPolicy::new().verify_request_context(
+    request,
+    "sig1",
+    &|input: MessageSignatureVerificationInput<'_>| {
+        Ok(verify_with_your_key(input.signature_base(), input.signature()))
+    },
+)?;
+# Ok(())
+# }
+# fn verify_with_your_key(_: &[u8], _: &[u8]) -> bool { true }
+```
+
 `MessageSignature::verify_request()` applies the same policy to an already parsed
-request signature. `verify_response()` verifies response-only signatures, and
-`verify_request_response()` verifies response signatures that bind selected
-components from the originating request with `;req`.
+request signature. `verify_request_context()` is the parsed-signature equivalent
+for body-aware request verification. `verify_response()` verifies response-only
+signatures, and `verify_request_response()` verifies response signatures that
+bind selected components from the originating request with `;req`.
 
 ```rust,no_run
 use aioduct::{
@@ -444,6 +487,7 @@ work lands.
 | Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
 | Parsed signature selection and request-base rebuild | Supported | `parsed_signature_selects_label_and_rebuilds_request_base`, `parsed_signature_handles_component_parameters`, `parsed_signature_reports_selection_and_header_errors` | Current | Parses selected `Signature-Input` / `Signature` labels, exposes known metadata and signature bytes, preserves extension metadata in the rebuilt base, and rejects malformed or mismatched fields. |
 | Message verification policy API | Supported | `verification_policy_calls_verifier_with_rebuilt_base`, `verification_policy_calls_verifier_with_response_base`, `verification_policy_calls_verifier_with_related_request_response_base`, `parsed_response_signature_can_verify_with_policy`, `verification_policy_reports_selection_and_header_errors`, `verification_policy_rejects_unacceptable_signature_metadata`, `verification_policy_rejects_failed_verifier_callback` | Current | Applies required-component, accepted-algorithm, accepted-key-id, timestamp, max-age, and verifier-callback checks for selected request, response, and request-response signatures. Cryptographic verification remains caller-owned. |
+| Covered `Content-Digest` verification | Supported | `verification_policy_checks_request_content_digest_before_signature`, `verification_policy_rejects_mismatched_request_content_digest_before_signature`, `verification_policy_rejects_malformed_and_unsupported_content_digest_before_signature`, `verification_policy_checks_response_content_digest_before_signature`, `verification_policy_checks_related_request_content_digest_before_signature`, `verification_policy_skips_content_digest_check_when_body_is_unavailable` | Current | Verifies SHA-256 `Content-Digest` before caller-owned signature verification when body bytes are attached and the selected signature covers the whole `content-digest` field or its `sha-256` dictionary member, including related request fields with `;req`. |
 | `Accept-Signature` parser and builder | Supported | `accept_signature_parses_rfc_style_request`, `accept_signature_formats_and_inserts_header`, `accept_signature_from_headers_combines_field_values`, `accept_signature_reports_header_errors`, `accept_signature_validates_target_message_components` | Current | Parses and formats requested signature dictionaries, exposes requested metadata, and validates request, response, or request-response target component applicability. |
 | `Accept-Signature` fulfillment helpers | Supported | `accept_signature_fulfills_response_with_related_request`, `accept_signature_fulfills_next_request`, `accept_signature_fulfillment_reports_unfulfillable_requests`, `accept_signature_allows_ignoring_requests_and_adding_signatures` | Current | Converts accepted entries into concrete `MessageSignatureConfig` values, fills requested metadata, rejects missing or conflicting requested parameters, supports caller-selected ignored requests, and allows additional signatures. Cryptography and header attachment remain caller-owned. |
 | Buffered automatic `Content-Digest` generation | Supported | `automatic_content_digest_is_inserted_before_signing`, `automatic_content_digest_preserves_manual_header`, `automatic_content_digest_rejects_streaming_body_without_manual_digest`, `automatic_content_digest_rejects_middleware_replaced_body_without_manual_digest` | Current | Native dispatch can insert SHA-256 `Content-Digest` for buffered bodies before automatic signing. Existing digest fields are preserved; streaming or middleware-replaced bodies need explicit digest fields. |
@@ -455,6 +499,5 @@ work lands.
 
 - Async automatic signer callbacks.
 - Component parameter `;tr`.
-- `Content-Digest` verification before signature verification when body bytes are available.
 - Precomputed digest helpers for streaming bodies.
 - Automatic trailer-based digest/signature generation after trailer semantics are proven across runtimes.

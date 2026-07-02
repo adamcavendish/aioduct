@@ -10,7 +10,7 @@ mod headers;
 mod params;
 mod parsed;
 mod signer;
-mod structured_fields;
+pub(crate) mod structured_fields;
 mod verification;
 
 pub use accept_signature::{AcceptSignature, AcceptSignatureEntry, AcceptSignatureFulfillment};

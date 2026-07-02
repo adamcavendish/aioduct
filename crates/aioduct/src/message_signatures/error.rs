@@ -65,6 +65,15 @@ pub enum MessageSignatureError {
     /// A verification policy required a metadata parameter that is missing.
     #[error("signature metadata parameter `{0}` is missing")]
     MissingSignatureParameter(&'static str),
+    /// A covered `Content-Digest` field is malformed.
+    #[error("covered `Content-Digest` header is malformed")]
+    MalformedContentDigest,
+    /// A covered `Content-Digest` field does not include a supported digest algorithm.
+    #[error("covered `Content-Digest` header does not include a supported digest algorithm")]
+    UnsupportedContentDigestAlgorithm,
+    /// The supplied body bytes do not match the covered `Content-Digest` field.
+    #[error("covered `Content-Digest` header does not match the supplied body")]
+    ContentDigestMismatch,
     /// An `Accept-Signature` requested metadata parameter cannot be fulfilled.
     #[error("Accept-Signature requested metadata parameter `{0}` cannot be fulfilled")]
     UnfulfillableAcceptSignatureParameter(&'static str),

@@ -248,8 +248,10 @@ or a `ClientBuilder` that is never built, produces a compiler warning.
 `MessageSignature` parses existing signature fields by label and rebuilds the
 request or response signature base for caller-owned verification.
 `MessageSignatureVerificationPolicy` applies request verification policy checks
-before invoking caller-owned cryptographic verification. The helpers are portable
-and do not choose a cryptographic algorithm.
+before invoking caller-owned cryptographic verification. When body bytes are
+attached to verification contexts, the policy also verifies covered SHA-256
+`Content-Digest` fields before calling the verifier. The helpers are portable and
+do not choose a cryptographic algorithm.
 
 ```rust,no_run
 # use aioduct::{MessageSignatureComponent, MessageSignatureConfig};
@@ -415,6 +417,13 @@ policy.verify_request(
 #     true
 # }
 ```
+
+If the selected signature covers `content-digest` and you have the body bytes,
+use `MessageSignatureRequestContext::new(...).with_body(body)` with
+`verify_request_context(...)`. For responses, attach bytes with
+`MessageSignatureResponseContext::new(...).with_body(body)`. Mismatched,
+malformed, or unsupported digest fields fail before the verifier callback runs;
+contexts without body bytes keep the previous signature-only behavior.
 
 Response verification uses borrowed context values so signatures can cover both
 the response and selected related request components:

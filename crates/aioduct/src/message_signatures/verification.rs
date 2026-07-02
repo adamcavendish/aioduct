@@ -1,8 +1,10 @@
-use http::header::HeaderMap;
+use http::header::{HeaderMap, HeaderName};
 use http::{Method, StatusCode, Uri};
 
+use super::component::MessageSignatureComponentKind;
 use super::{
-    MessageSignature, MessageSignatureComponent, MessageSignatureError, MessageSignatureParams,
+    MessageSignature, MessageSignatureComponent, MessageSignatureComponentParameter,
+    MessageSignatureError, MessageSignatureParams,
 };
 
 /// Inputs provided to a caller-owned RFC 9421 signature verifier.
@@ -23,6 +25,7 @@ pub struct MessageSignatureRequestContext<'a> {
     target_uri: &'a Uri,
     request_target: &'a Uri,
     headers: &'a HeaderMap,
+    body: Option<&'a [u8]>,
 }
 
 /// Borrowed response data used to verify RFC 9421 signatures.
@@ -31,6 +34,7 @@ pub struct MessageSignatureRequestContext<'a> {
 pub struct MessageSignatureResponseContext<'a> {
     status: StatusCode,
     headers: &'a HeaderMap,
+    body: Option<&'a [u8]>,
 }
 
 /// Verification policy for RFC 9421 message signatures.
@@ -63,7 +67,14 @@ impl<'a> MessageSignatureRequestContext<'a> {
             target_uri,
             request_target,
             headers,
+            body: None,
         }
+    }
+
+    /// Attach request body bytes for covered `Content-Digest` verification.
+    pub fn with_body(mut self, body: &'a [u8]) -> Self {
+        self.body = Some(body);
+        self
     }
 
     /// Return the request method.
@@ -85,12 +96,27 @@ impl<'a> MessageSignatureRequestContext<'a> {
     pub fn headers(&self) -> &'a HeaderMap {
         self.headers
     }
+
+    /// Return the request body bytes when they are available for verification.
+    pub fn body(&self) -> Option<&'a [u8]> {
+        self.body
+    }
 }
 
 impl<'a> MessageSignatureResponseContext<'a> {
     /// Create a response verification context.
     pub fn new(status: StatusCode, headers: &'a HeaderMap) -> Self {
-        Self { status, headers }
+        Self {
+            status,
+            headers,
+            body: None,
+        }
+    }
+
+    /// Attach response body bytes for covered `Content-Digest` verification.
+    pub fn with_body(mut self, body: &'a [u8]) -> Self {
+        self.body = Some(body);
+        self
     }
 
     /// Return the response status code.
@@ -101,6 +127,11 @@ impl<'a> MessageSignatureResponseContext<'a> {
     /// Return the response header fields.
     pub fn headers(&self) -> &'a HeaderMap {
         self.headers
+    }
+
+    /// Return the response body bytes when they are available for verification.
+    pub fn body(&self) -> Option<&'a [u8]> {
+        self.body
     }
 }
 
@@ -248,15 +279,21 @@ impl MessageSignatureVerificationPolicy {
         request_target: &Uri,
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
+        let request =
+            MessageSignatureRequestContext::new(method, target_uri, request_target, headers);
+        self.verify_request_context(request, label, verifier)
+    }
+
+    /// Parse and verify one request signature selected by label.
+    pub fn verify_request_context(
+        &self,
+        request: MessageSignatureRequestContext<'_>,
+        label: impl AsRef<str>,
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
+        let headers = request.headers();
         let signature = MessageSignature::from_headers(headers, label)?;
-        self.verify_parsed_request(
-            &signature,
-            method,
-            target_uri,
-            request_target,
-            headers,
-            verifier,
-        )
+        self.verify_parsed_request(&signature, request, verifier)
     }
 
     /// Parse and verify one response signature selected by label.
@@ -285,14 +322,17 @@ impl MessageSignatureVerificationPolicy {
     pub(crate) fn verify_parsed_request(
         &self,
         signature: &MessageSignature,
-        method: &Method,
-        target_uri: &Uri,
-        request_target: &Uri,
-        headers: &HeaderMap,
+        request: MessageSignatureRequestContext<'_>,
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
         self.validate_policy(signature)?;
-        let base = signature.signature_base(method, target_uri, request_target, headers)?;
+        verify_covered_content_digests(signature, Some(request), None)?;
+        let base = signature.signature_base(
+            request.method(),
+            request.target_uri(),
+            request.request_target(),
+            request.headers(),
+        )?;
         self.verify_base(signature, base.as_bytes(), verifier)
     }
 
@@ -303,6 +343,7 @@ impl MessageSignatureVerificationPolicy {
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
         self.validate_policy(signature)?;
+        verify_covered_content_digests(signature, None, Some(response))?;
         let base = signature.response_signature_base(response.status(), response.headers())?;
         self.verify_base(signature, base.as_bytes(), verifier)
     }
@@ -315,6 +356,7 @@ impl MessageSignatureVerificationPolicy {
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
         self.validate_policy(signature)?;
+        verify_covered_content_digests(signature, Some(request), Some(response))?;
         let base = signature.request_response_signature_base(
             request.method(),
             request.target_uri(),
@@ -465,6 +507,76 @@ impl MessageSignatureVerificationPolicy {
     }
 }
 
+fn verify_covered_content_digests(
+    signature: &MessageSignature,
+    request: Option<MessageSignatureRequestContext<'_>>,
+    response: Option<MessageSignatureResponseContext<'_>>,
+) -> Result<(), MessageSignatureError> {
+    let mut checked_request = false;
+    let mut checked_response = false;
+
+    for component in signature.components() {
+        if !covers_regular_content_digest(component) {
+            continue;
+        }
+
+        if component.has_related_request_parameter() {
+            if response.is_none() {
+                continue;
+            }
+            if checked_request {
+                continue;
+            }
+            if let Some(request) = request
+                && let Some(body) = request.body()
+            {
+                crate::digest_fields::verify_sha256_content_digest(request.headers(), body)?;
+                checked_request = true;
+            }
+        } else if response.is_some() {
+            if checked_response {
+                continue;
+            }
+            if let Some(response) = response
+                && let Some(body) = response.body()
+            {
+                crate::digest_fields::verify_sha256_content_digest(response.headers(), body)?;
+                checked_response = true;
+            }
+        } else {
+            if checked_request {
+                continue;
+            }
+            if let Some(request) = request
+                && let Some(body) = request.body()
+            {
+                crate::digest_fields::verify_sha256_content_digest(request.headers(), body)?;
+                checked_request = true;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn covers_regular_content_digest(component: &MessageSignatureComponent) -> bool {
+    let content_digest = HeaderName::from_static(crate::digest_fields::CONTENT_DIGEST);
+    if !matches!(component.kind(), MessageSignatureComponentKind::Header(name) if name == content_digest)
+        || component
+            .parameters()
+            .iter()
+            .any(|parameter| matches!(parameter, MessageSignatureComponentParameter::Trailer))
+    {
+        return false;
+    }
+
+    let has_key = component
+        .parameters()
+        .iter()
+        .any(|parameter| matches!(parameter, MessageSignatureComponentParameter::Key(_)));
+    !has_key || component.dictionary_key() == Some("sha-256")
+}
+
 impl MessageSignature {
     /// Verify this parsed signature against a request and policy.
     pub fn verify_request(
@@ -476,7 +588,19 @@ impl MessageSignature {
         headers: &HeaderMap,
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
-        policy.verify_parsed_request(self, method, target_uri, request_target, headers, verifier)
+        let request =
+            MessageSignatureRequestContext::new(method, target_uri, request_target, headers);
+        policy.verify_parsed_request(self, request, verifier)
+    }
+
+    /// Verify this parsed signature against a request context and policy.
+    pub fn verify_request_context(
+        &self,
+        policy: &MessageSignatureVerificationPolicy,
+        request: MessageSignatureRequestContext<'_>,
+        verifier: &(impl MessageSignatureVerifier + ?Sized),
+    ) -> Result<(), MessageSignatureError> {
+        policy.verify_parsed_request(self, request, verifier)
     }
 
     /// Verify this parsed signature against a response and policy.
