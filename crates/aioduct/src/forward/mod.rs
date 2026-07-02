@@ -3,10 +3,11 @@
 pub(crate) mod forward_local;
 mod hop_by_hop;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http::header::{HOST, HeaderMap, HeaderName, HeaderValue};
+use http::header::{HOST, HeaderMap, HeaderName, HeaderValue, UPGRADE};
 use http::uri::{Parts as UriParts, PathAndQuery, Scheme, Uri};
 use http_body::Body;
 use http_body_util::BodyExt;
@@ -14,12 +15,121 @@ use http_body_util::BodyExt;
 use crate::body::RequestBodySend;
 use crate::client::HttpEngineSend;
 use crate::error::{BuilderError, Error};
+use crate::message_signatures::{
+    AutomaticMessageSignature, MessageSignatureAsyncSigner, MessageSignatureConfig,
+    MessageSignatureSigner,
+};
 use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
 type RequestHook = Box<dyn FnOnce(&mut http::request::Parts) + Send>;
 type ResponseHook = Box<dyn FnOnce(&mut Response) + Send>;
+
+#[derive(Clone)]
+pub(crate) struct ForwardResponseRelatedRequest {
+    pub(crate) method: http::Method,
+    pub(crate) target_uri: Uri,
+    pub(crate) request_target: Uri,
+    pub(crate) headers: HeaderMap,
+}
+
+pub(crate) fn is_h1_upgrade_request(headers: &HeaderMap) -> bool {
+    headers.contains_key(UPGRADE)
+        && headers.get_all(http::header::CONNECTION).iter().any(|v| {
+            v.to_str().ok().is_some_and(|v| {
+                v.split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            })
+        })
+}
+
+pub(crate) fn reject_response_signing_for_tunnel_or_upgrade(
+    parts: &http::request::Parts,
+    force_h1_upgrade: bool,
+) -> Result<(), Error> {
+    if parts.method == http::Method::CONNECT {
+        return Err(Error::Unsupported(
+            "automatic response message signing does not support forwarded CONNECT requests"
+                .to_owned(),
+        ));
+    }
+    if force_h1_upgrade || is_h1_upgrade_request(&parts.headers) {
+        return Err(Error::Unsupported(
+            "automatic response message signing does not support forwarded HTTP/1.1 upgrade requests"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_forward_response_related_request(
+    signature: Option<&AutomaticMessageSignature>,
+    downstream_target_uri: Option<&Uri>,
+    force_h1_upgrade: bool,
+    parts: &http::request::Parts,
+) -> Result<Option<ForwardResponseRelatedRequest>, Error> {
+    let Some(signature) = signature else {
+        return Ok(None);
+    };
+
+    let requirements = signature.forward_response_requirements()?;
+    if requirements.has_trailer_components {
+        return Err(Error::Unsupported(
+            "automatic response message signing does not support trailer components".to_owned(),
+        ));
+    }
+    reject_response_signing_for_tunnel_or_upgrade(parts, force_h1_upgrade)?;
+
+    if !requirements.has_related_request_components {
+        return Ok(None);
+    }
+
+    let request_target = parts.uri.clone();
+    let target_uri = downstream_target_uri
+        .map(|target_uri| {
+            ensure_downstream_target_matches_request(target_uri, &request_target)?;
+            Ok::<_, Error>(target_uri.clone())
+        })
+        .transpose()?
+        .unwrap_or_else(|| request_target.clone());
+
+    if requirements.requires_full_downstream_target_uri && !is_full_uri(&target_uri) {
+        return Err(Error::Unsupported(
+            "automatic response message signing requires downstream_target_uri(...) or an absolute inbound URI for related-request @scheme, @authority, or @target-uri components"
+                .to_owned(),
+        ));
+    }
+
+    Ok(Some(ForwardResponseRelatedRequest {
+        method: parts.method.clone(),
+        target_uri,
+        request_target,
+        headers: parts.headers.clone(),
+    }))
+}
+
+fn ensure_downstream_target_matches_request(
+    downstream_target_uri: &Uri,
+    request_target: &Uri,
+) -> Result<(), Error> {
+    let downstream_path_and_query = path_and_query_or_root(downstream_target_uri);
+    let request_path_and_query = path_and_query_or_root(request_target);
+    if downstream_path_and_query != request_path_and_query {
+        return Err(Error::InvalidUrl(format!(
+            "forward: downstream target URI path/query `{downstream_path_and_query}` does not match incoming request target `{request_path_and_query}`"
+        )));
+    }
+    Ok(())
+}
+
+fn path_and_query_or_root(uri: &Uri) -> &str {
+    uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+}
+
+fn is_full_uri(uri: &Uri) -> bool {
+    uri.scheme().is_some() && uri.authority().is_some()
+}
 
 /// Builder for forwarding an incoming HTTP request to an upstream server.
 ///
@@ -40,6 +150,9 @@ pub struct ForwardBuilder<'a, R: RuntimePoll, C: ConnectorSend, B> {
     builder_error: Option<BuilderError>,
     on_request: Option<RequestHook>,
     on_response: Option<ResponseHook>,
+    force_h1_upgrade: bool,
+    downstream_target_uri: Option<Uri>,
+    response_message_signature: Option<AutomaticMessageSignature>,
 }
 
 impl<'a, R: RuntimePoll, C: ConnectorSend, B> ForwardBuilder<'a, R, C, B>
@@ -67,6 +180,9 @@ where
             builder_error: None,
             on_request: None,
             on_response: None,
+            force_h1_upgrade: false,
+            downstream_target_uri: None,
+            response_message_signature: None,
         }
     }
 
@@ -106,6 +222,35 @@ where
     /// Set a total timeout for the forwarded request.
     pub fn timeout(mut self, duration: Duration) -> Self {
         self.timeout = Some(duration);
+        self
+    }
+
+    /// Set the downstream request URI used for related-request response signatures.
+    ///
+    /// Forwarded origin-form requests do not carry a scheme or authority. Set this
+    /// to the original full downstream URI when a response signature covers
+    /// related-request `@scheme`, `@authority`, or `@target-uri` components.
+    /// The path and query must match the incoming request target.
+    pub fn downstream_target_uri<U>(mut self, uri: U) -> Self
+    where
+        U: TryInto<Uri>,
+        U::Error: std::fmt::Debug,
+    {
+        match uri.try_into() {
+            Ok(u) if u.scheme().is_some() && u.authority().is_some() => {
+                self.downstream_target_uri = Some(u);
+            }
+            Ok(_) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_url(
+                    "forward: downstream target URI must include scheme and authority",
+                ),
+            ),
+            Err(e) => BuilderError::set_once(
+                &mut self.builder_error,
+                BuilderError::invalid_url(format!("invalid downstream target URI: {e:?}")),
+            ),
+        }
         self
     }
 
@@ -166,6 +311,40 @@ where
         self
     }
 
+    /// Sign the downstream response returned by this forward operation.
+    ///
+    /// The signature is generated after upstream response hop-by-hop headers are
+    /// stripped and after [`on_response`](Self::on_response) runs, so user
+    /// response mutations are covered. Related-request components (`;req`) use
+    /// the incoming request as received by this builder, not the rewritten
+    /// upstream request.
+    pub fn response_message_signature(
+        mut self,
+        config: MessageSignatureConfig,
+        signer: impl MessageSignatureSigner,
+    ) -> Self {
+        self.response_message_signature =
+            Some(AutomaticMessageSignature::new(config, Arc::new(signer)));
+        self
+    }
+
+    /// Sign the downstream response with an async signer on send runtimes.
+    ///
+    /// The returned signing future must be [`Send`]. Use
+    /// [`ForwardBuilderLocal::response_message_signature_async_local`](crate::ForwardBuilderLocal::response_message_signature_async_local)
+    /// for local-runtime signing futures that are not `Send`.
+    pub fn response_message_signature_async(
+        mut self,
+        config: MessageSignatureConfig,
+        signer: impl MessageSignatureAsyncSigner,
+    ) -> Self {
+        self.response_message_signature = Some(AutomaticMessageSignature::new_async_send(
+            config,
+            Arc::new(signer),
+        ));
+        self
+    }
+
     /// Marks this as an HTTP/1.1 upgrade request, preserving Connection and
     /// Upgrade headers through hop-by-hop stripping.
     ///
@@ -173,6 +352,7 @@ where
     /// Use this if the framework stripped those headers before passing the
     /// request to you.
     pub fn upgrade(mut self) -> Self {
+        self.force_h1_upgrade = true;
         self.forward_headers.push(http::header::CONNECTION);
         self.forward_headers.push(http::header::UPGRADE);
         self
@@ -185,12 +365,15 @@ where
         }
         let (mut parts, body) = self.request.into_parts();
 
+        let response_related_request = prepare_forward_response_related_request(
+            self.response_message_signature.as_ref(),
+            self.downstream_target_uri.as_ref(),
+            self.force_h1_upgrade,
+            &parts,
+        )?;
+
         // Detect upgrade requests
-        let is_h1_upgrade = parts
-            .headers
-            .get(http::header::CONNECTION)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
+        let is_h1_upgrade = self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers);
 
         let is_h2_extended_connect = parts.method == http::Method::CONNECT
             && parts.extensions.get::<hyper::ext::Protocol>().is_some();
@@ -298,6 +481,10 @@ where
             hook(&mut parts);
         }
 
+        if self.response_message_signature.is_some() {
+            reject_response_signing_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
+        }
+
         // 8. Build the request URI for hyper.
         // H2 extended CONNECT uses absolute URI.
         // RFC 7540 §8.3: ordinary CONNECT over h2c uses authority form.
@@ -341,10 +528,19 @@ where
         // 10. Sign and send via execute_single_with_hint (bypasses redirects,
         // cookies, cache, decompression). Keep async signing inside the same
         // timeout budget as the forwarded dispatch.
-        let timeout = self.timeout.or(self.client.core.timeout);
-        let send_fut = async {
-            if let Some(signature) = self
-                .client
+        let client = self.client;
+        let protocol_hint = self.protocol_hint;
+        let response_message_signature = self.response_message_signature;
+        let response_signing_enabled = response_message_signature.is_some();
+        let mut on_response = self.on_response;
+        let on_response_before_signing = if response_signing_enabled {
+            on_response.take()
+        } else {
+            None
+        };
+        let timeout = self.timeout.or(client.core.timeout);
+        let send_fut = async move {
+            if let Some(signature) = client
                 .core
                 .prepare_final_request_signature(&full_uri, &mut request)?
             {
@@ -352,25 +548,63 @@ where
                 signature_headers.insert_into(request.headers_mut())?;
             }
             let post_signing_headers;
-            let stale_headers = if !self.client.core.no_connection_reuse {
+            let stale_headers = if !client.core.no_connection_reuse {
                 post_signing_headers = request.headers().clone();
                 Some(&post_signing_headers)
             } else {
                 None
             };
 
-            self.client
+            let mut resp = client
                 .execute_single_with_hint_send(
                     request,
                     &full_uri,
-                    self.protocol_hint,
+                    protocol_hint,
                     None,
                     stale_headers,
                     None,
                     None,
                     None,
                 )
-                .await
+                .await?;
+
+            if response_signing_enabled && resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+                return Err(Error::Unsupported(
+                    "automatic response message signing does not support HTTP/1.1 switching protocols responses"
+                        .to_owned(),
+                ));
+            }
+
+            // Strip hop-by-hop from response (skip for upgrade responses).
+            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS && !is_h2_extended_connect {
+                let resp_headers = resp.headers_mut();
+                hop_by_hop::strip_hop_by_hop(resp_headers);
+            }
+
+            if let Some(hook) = on_response_before_signing {
+                hook(&mut resp);
+            }
+
+            if let Some(signature) = response_message_signature {
+                hop_by_hop::strip_hop_by_hop(resp.headers_mut());
+                let status = resp.status();
+                let prepared = if let Some(related_request) = response_related_request.as_ref() {
+                    signature.prepare_request_response_headers(
+                        &related_request.method,
+                        &related_request.target_uri,
+                        &related_request.request_target,
+                        &related_request.headers,
+                        status,
+                        resp.headers_mut(),
+                    )?
+                } else {
+                    signature.prepare_response_headers(status, resp.headers_mut())?
+                };
+                let signature_headers = prepared.sign_send().await?;
+                signature_headers.insert_into(resp.headers_mut())?;
+            }
+
+            Ok(resp)
         };
 
         let mut resp = if let Some(duration) = timeout {
@@ -383,14 +617,7 @@ where
             send_fut.await?
         };
 
-        // 11. Strip hop-by-hop from response (skip for upgrade responses)
-        if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS && !is_h2_extended_connect {
-            let resp_headers = resp.headers_mut();
-            hop_by_hop::strip_hop_by_hop(resp_headers);
-        }
-
-        // 12. Run on_response hook
-        if let Some(hook) = self.on_response {
+        if let Some(hook) = on_response {
             hook(&mut resp);
         }
 
@@ -498,9 +725,29 @@ mod tests {
         let client = test_client();
         let req = dummy_request("/ws");
         let builder = ForwardBuilder::new(&client, req).upgrade();
+        assert!(builder.force_h1_upgrade);
         assert_eq!(builder.forward_headers.len(), 2);
         assert_eq!(builder.forward_headers[0], http::header::CONNECTION);
         assert_eq!(builder.forward_headers[1], http::header::UPGRADE);
+    }
+
+    #[test]
+    fn h1_upgrade_detection_requires_connection_upgrade_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::UPGRADE, HeaderValue::from_static("h2c"));
+        assert!(!is_h1_upgrade_request(&headers));
+
+        headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("keep-alive"),
+        );
+        assert!(!is_h1_upgrade_request(&headers));
+
+        headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("keep-alive, Upgrade"),
+        );
+        assert!(is_h1_upgrade_request(&headers));
     }
 
     #[test]

@@ -133,6 +133,117 @@ fn test_compio_forward_on_response_hook() {
     });
 }
 
+#[test]
+fn test_compio_forward_response_message_signature() {
+    let upstream_addr = start_server_with_tokio(|_req| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(200)
+                .header("connection", "x-upstream-hop")
+                .header("x-upstream-hop", "remove-me")
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap(),
+        )
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let bases = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let signer_bases = bases.clone();
+        let signer = move |base: &[u8]| -> Result<Vec<u8>, aioduct::MessageSignatureError> {
+            signer_bases
+                .lock()
+                .unwrap()
+                .push(std::str::from_utf8(base).unwrap().to_owned());
+            Ok(b"compio-response".to_vec())
+        };
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::status())
+            .component(MessageSignatureComponent::header(
+                http::header::HeaderName::from_static("x-local"),
+            ));
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let resp = client
+            .forward_local(incoming)
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .on_response(|resp| {
+                resp.headers_mut()
+                    .insert("x-local", http::header::HeaderValue::from_static("hooked"));
+            })
+            .response_message_signature(config, signer)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("signature").unwrap().to_str().unwrap(),
+            "sig1=:Y29tcGlvLXJlc3BvbnNl:"
+        );
+        assert!(!resp.headers().contains_key("connection"));
+        assert!(!resp.headers().contains_key("x-upstream-hop"));
+
+        let bases = bases.lock().unwrap();
+        assert_eq!(bases.len(), 1);
+        assert!(bases[0].contains(r#""@status": 200"#));
+        assert!(bases[0].contains(r#""x-local": hooked"#));
+    });
+}
+
+#[test]
+fn test_compio_forward_response_async_signing_is_included_in_timeout() {
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server_attempts = attempts.clone();
+    let upstream_addr = start_server_with_tokio(move |_req| {
+        let server_attempts = server_attempts.clone();
+        async move {
+            server_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("ok"))))
+        }
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::status());
+        let signer = |_base: MessageSignatureBase| async move {
+            std::future::pending::<()>().await;
+            Ok::<_, aioduct::MessageSignatureError>(b"late".to_vec())
+        };
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/slow-response-sign")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let result = client
+            .forward_local(incoming)
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .response_message_signature_async_local(config, signer)
+            .timeout(Duration::from_millis(20))
+            .send()
+            .await;
+
+        assert!(result.unwrap_err().is_timeout());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    });
+}
+
 // ── Forward: remove_header ────────────────────────────────────────────
 
 #[test]
@@ -207,6 +318,42 @@ fn test_compio_forward_forward_header() {
 
         assert_eq!(resp.status(), http::StatusCode::OK);
         assert_eq!(resp.text().await.unwrap(), "Bearer my-token");
+    });
+}
+
+#[test]
+fn test_compio_forward_upgrade_field_without_connection_upgrade_token_strips_connection() {
+    let upstream_addr = start_server_with_tokio(|req| async move {
+        let has_connection = req.headers().contains_key("connection");
+        let has_upgrade = req.headers().contains_key("upgrade");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "conn={},upgrade={}",
+            has_connection, has_upgrade
+        )))))
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/h2c-probe")
+            .header("connection", "keep-alive")
+            .header("upgrade", "h2c")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let resp = client
+            .forward_local(incoming)
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.text().await.unwrap(), "conn=false,upgrade=true");
     });
 }
 
