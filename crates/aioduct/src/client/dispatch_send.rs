@@ -30,7 +30,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         stale_retry_headers: Option<&HeaderMap>,
         connect_timeout: Option<Duration>,
         _write_timeout: Option<Duration>,
+        first_byte_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
+        sign_stale_retries: bool,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
 
@@ -154,7 +156,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     headers: extract_headers(request.headers()),
                 },
             );
-            match HttpEngineCore::send_on_connection(&mut conn, request, original_uri.clone()).await
+            match Self::send_on_connection_with_first_byte_timeout(
+                &mut conn,
+                request,
+                original_uri.clone(),
+                first_byte_timeout,
+            )
+            .await
             {
                 Ok(mut resp) => {
                     let transfer = transfer_start.elapsed();
@@ -226,9 +234,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     };
                     let headers = stale_retry_headers.cloned().unwrap_or_default();
                     request = retry_request_from_parts(method, uri, version, headers, &replay_body);
-                    if let Some(signature) = self
-                        .core
-                        .prepare_final_request_signature(original_uri, &mut request)?
+                    if sign_stale_retries
+                        && let Some(signature) = self
+                            .core
+                            .prepare_final_request_signature(original_uri, &mut request)?
                     {
                         let signature_headers = signature.sign_send().await?;
                         signature_headers.insert_into(request.headers_mut())?;
@@ -302,8 +311,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         headers: extract_headers(request.headers()),
                     },
                 );
-                match HttpEngineCore::send_on_connection(&mut conn, request, original_uri.clone())
-                    .await
+                match Self::send_on_connection_with_first_byte_timeout(
+                    &mut conn,
+                    request,
+                    original_uri.clone(),
+                    first_byte_timeout,
+                )
+                .await
                 {
                     Ok(mut resp) => {
                         let transfer = transfer_start.elapsed();
@@ -378,9 +392,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         let headers = stale_retry_headers.cloned().unwrap_or_default();
                         request =
                             retry_request_from_parts(method, uri, version, headers, &replay_body);
-                        if let Some(signature) = self
-                            .core
-                            .prepare_final_request_signature(original_uri, &mut request)?
+                        if sign_stale_retries
+                            && let Some(signature) = self
+                                .core
+                                .prepare_final_request_signature(original_uri, &mut request)?
                         {
                             let signature_headers = signature.sign_send().await?;
                             signature_headers.insert_into(request.headers_mut())?;
@@ -510,9 +525,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         headers: extract_headers(request.headers()),
                     },
                 );
-                let mut resp =
-                    HttpEngineCore::send_on_connection(&mut pooled, request, original_uri.clone())
-                        .await?;
+                let mut resp = Self::send_on_connection_with_first_byte_timeout(
+                    &mut pooled,
+                    request,
+                    original_uri.clone(),
+                    first_byte_timeout,
+                )
+                .await?;
                 let transfer = transfer_start.elapsed();
                 self.core.notify(
                     &req_method,
@@ -600,10 +619,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             headers: extract_headers(request.headers()),
                         },
                     );
-                    let result = HttpEngineCore::send_on_connection(
+                    let result = Self::send_on_connection_with_first_byte_timeout(
                         &mut conn,
                         request,
                         original_uri.clone(),
+                        first_byte_timeout,
                     )
                     .await;
                     match result {
@@ -685,9 +705,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 headers,
                                 &replay_body,
                             );
-                            if let Some(signature) = self
-                                .core
-                                .prepare_final_request_signature(original_uri, &mut request)?
+                            if sign_stale_retries
+                                && let Some(signature) = self
+                                    .core
+                                    .prepare_final_request_signature(original_uri, &mut request)?
                             {
                                 let signature_headers = signature.sign_send().await?;
                                 signature_headers.insert_into(request.headers_mut())?;
@@ -1133,8 +1154,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 headers: extract_headers(request.headers()),
             },
         );
-        let mut resp =
-            HttpEngineCore::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
+        let mut resp = Self::send_on_connection_with_first_byte_timeout(
+            &mut pooled,
+            request,
+            original_uri.clone(),
+            first_byte_timeout,
+        )
+        .await?;
         let transfer = transfer_start.elapsed();
         self.core.notify(
             &req_method,
@@ -1169,5 +1195,32 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         }
 
         Ok(resp)
+    }
+
+    async fn send_on_connection_with_first_byte_timeout(
+        conn: &mut PooledConnection<RequestBodySend>,
+        request: http::Request<RequestBodySend>,
+        original_uri: Uri,
+        first_byte_timeout: Option<Duration>,
+    ) -> Result<Response, Error> {
+        let (parts, body) = request.into_parts();
+        let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
+        let request = http::Request::from_parts(parts, http_body_util::BodyExt::boxed_unsync(body));
+        let fut = HttpEngineCore::send_on_connection(conn, request, original_uri);
+        match first_byte_timeout {
+            Some(duration) => {
+                match crate::timeout::FirstByteTimeout::<_, R>::new(
+                    fut,
+                    request_body_complete,
+                    duration,
+                )
+                .await
+                {
+                    Err(Error::Timeout) => Err(Error::ReadTimeout),
+                    other => other,
+                }
+            }
+            None => fut.await,
+        }
     }
 }

@@ -179,10 +179,15 @@ pub struct ForwardBuilder<'a, R: RuntimePoll, C: ConnectorSend, B> {
     strip_prefix: Option<String>,
     preserve_host: bool,
     timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    first_byte_timeout: Option<Duration>,
+    write_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
     extra_headers: HeaderMap,
     remove_headers: Vec<HeaderName>,
     forward_headers: Vec<HeaderName>,
     protocol_hint: ProtocolHint,
+    sign_final_request: bool,
     builder_error: Option<BuilderError>,
     on_request: Option<RequestHook>,
     on_response: Option<ResponseHook>,
@@ -210,10 +215,15 @@ where
             strip_prefix: None,
             preserve_host: false,
             timeout: None,
+            connect_timeout: None,
+            first_byte_timeout: None,
+            write_timeout: None,
+            read_timeout: None,
             extra_headers: HeaderMap::new(),
             remove_headers: Vec::new(),
             forward_headers: Vec::new(),
             protocol_hint,
+            sign_final_request: true,
             builder_error: None,
             on_request: None,
             on_response: None,
@@ -260,6 +270,40 @@ where
     /// Set a total timeout for the forwarded request.
     pub fn timeout(mut self, duration: Duration) -> Self {
         self.timeout = Some(duration);
+        self
+    }
+
+    /// Set a timeout for establishing a forwarded upstream connection.
+    pub fn connect_timeout(mut self, duration: Duration) -> Self {
+        self.connect_timeout = Some(duration);
+        self
+    }
+
+    /// Set a timeout for receiving response headers from the upstream.
+    pub fn first_byte_timeout(mut self, duration: Duration) -> Self {
+        self.first_byte_timeout = Some(duration);
+        self
+    }
+
+    /// Set a timeout for gaps while streaming the request body upstream.
+    pub fn write_timeout(mut self, duration: Duration) -> Self {
+        self.write_timeout = Some(duration);
+        self
+    }
+
+    /// Set a timeout for gaps while streaming the response body downstream.
+    pub fn read_timeout(mut self, duration: Duration) -> Self {
+        self.read_timeout = Some(duration);
+        self
+    }
+
+    /// Disable automatic HTTP Message Signatures for this forwarded request.
+    ///
+    /// Forwarding normally uses the client's message signature configuration.
+    /// Host adapters that are proxying untrusted guest requests can disable it
+    /// so guest-controlled requests cannot trigger host signing material.
+    pub fn without_message_signature(mut self) -> Self {
+        self.sign_final_request = false;
         self
     }
 
@@ -568,13 +612,23 @@ where
         }
 
         // 9. Convert body to RequestBodySend
-        let boxed_body: RequestBodySend = body
+        let connect_timeout = self.connect_timeout;
+        let first_byte_timeout = self.first_byte_timeout;
+        let write_timeout = self.write_timeout;
+        let read_timeout = self.read_timeout;
+        let sign_final_request = self.sign_final_request;
+
+        let mut boxed_body: RequestBodySend = body
             .map_frame(|frame| frame)
             .map_err(|e| {
                 let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();
                 Error::Other(boxed)
             })
             .boxed_unsync();
+        if let Some(duration) = write_timeout {
+            let timeout_body = crate::timeout::WriteTimeoutBody::<_, R>::new(boxed_body, duration);
+            boxed_body = timeout_body.map_err(|e| e).boxed_unsync();
+        }
 
         let mut request = http::Request::from_parts(parts, boxed_body);
         self.client.core.apply_automatic_content_digest(
@@ -601,9 +655,10 @@ where
         };
         let timeout = self.timeout.or(client.core.timeout);
         let send_fut = async move {
-            if let Some(signature) = client
-                .core
-                .prepare_final_request_signature(&full_uri, &mut request)?
+            if sign_final_request
+                && let Some(signature) = client
+                    .core
+                    .prepare_final_request_signature(&full_uri, &mut request)?
             {
                 let signature_headers = signature.sign_send().await?;
                 signature_headers.insert_into(request.headers_mut())?;
@@ -623,9 +678,11 @@ where
                     protocol_hint,
                     None,
                     stale_headers,
+                    connect_timeout,
+                    write_timeout,
+                    first_byte_timeout,
                     None,
-                    None,
-                    None,
+                    sign_final_request,
                 )
                 .await?;
 
@@ -693,6 +750,10 @@ where
             hook(&mut resp);
         }
 
+        if let Some(duration) = read_timeout {
+            resp = resp.apply_read_timeout::<R>(duration);
+        }
+
         Ok(resp)
     }
 }
@@ -736,6 +797,29 @@ mod tests {
         let req = dummy_request("/path");
         let builder = ForwardBuilder::new(&client, req).timeout(Duration::from_secs(5));
         assert_eq!(builder.timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn phase_timeouts_set_fields() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilder::new(&client, req)
+            .connect_timeout(Duration::from_secs(1))
+            .first_byte_timeout(Duration::from_secs(2))
+            .write_timeout(Duration::from_secs(3))
+            .read_timeout(Duration::from_secs(4));
+        assert_eq!(builder.connect_timeout, Some(Duration::from_secs(1)));
+        assert_eq!(builder.first_byte_timeout, Some(Duration::from_secs(2)));
+        assert_eq!(builder.write_timeout, Some(Duration::from_secs(3)));
+        assert_eq!(builder.read_timeout, Some(Duration::from_secs(4)));
+    }
+
+    #[test]
+    fn without_message_signature_clears_signing_flag() {
+        let client = test_client();
+        let req = dummy_request("/path");
+        let builder = ForwardBuilder::new(&client, req).without_message_signature();
+        assert!(!builder.sign_final_request);
     }
 
     #[test]
@@ -847,6 +931,11 @@ mod tests {
             .strip_prefix("/api")
             .preserve_host()
             .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(1))
+            .first_byte_timeout(Duration::from_secs(2))
+            .write_timeout(Duration::from_secs(3))
+            .read_timeout(Duration::from_secs(4))
+            .without_message_signature()
             .h2c()
             .header(
                 http::header::ACCEPT,
@@ -859,6 +948,11 @@ mod tests {
         assert_eq!(builder.strip_prefix.as_deref(), Some("/api"));
         assert!(builder.preserve_host);
         assert_eq!(builder.timeout, Some(Duration::from_secs(30)));
+        assert_eq!(builder.connect_timeout, Some(Duration::from_secs(1)));
+        assert_eq!(builder.first_byte_timeout, Some(Duration::from_secs(2)));
+        assert_eq!(builder.write_timeout, Some(Duration::from_secs(3)));
+        assert_eq!(builder.read_timeout, Some(Duration::from_secs(4)));
+        assert!(!builder.sign_final_request);
         assert_eq!(builder.protocol_hint, ProtocolHint::H2c);
         assert_eq!(builder.extra_headers.len(), 1);
         assert_eq!(builder.forward_headers.len(), 1);

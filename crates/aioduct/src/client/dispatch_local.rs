@@ -25,8 +25,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         replay_body: Option<Bytes>,
         connect_timeout: Option<Duration>,
         _write_timeout: Option<Duration>,
+        first_byte_timeout: Option<Duration>,
         force_addr: Option<SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
+        sign_stale_retries: bool,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
 
@@ -150,7 +152,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     headers: extract_headers(request.headers()),
                 },
             );
-            match HttpEngineCore::send_on_connection(&mut conn, request, original_uri.clone()).await
+            match Self::send_on_connection_with_first_byte_timeout(
+                &mut conn,
+                request,
+                original_uri.clone(),
+                first_byte_timeout,
+            )
+            .await
             {
                 Ok(mut resp) => {
                     let transfer = transfer_start.elapsed();
@@ -237,9 +245,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     *retry_req.headers_mut() = headers;
                     *retry_req.version_mut() = version;
                     request = retry_req;
-                    if let Some(signature) = self
-                        .core
-                        .prepare_final_request_signature(original_uri, &mut request)?
+                    if sign_stale_retries
+                        && let Some(signature) = self
+                            .core
+                            .prepare_final_request_signature(original_uri, &mut request)?
                     {
                         let signature_headers = signature.sign_local().await?;
                         signature_headers.insert_into(request.headers_mut())?;
@@ -311,10 +320,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             headers: extract_headers(request.headers()),
                         },
                     );
-                    match HttpEngineCore::send_on_connection(
+                    match Self::send_on_connection_with_first_byte_timeout(
                         &mut conn,
                         request,
                         original_uri.clone(),
+                        first_byte_timeout,
                     )
                     .await
                     {
@@ -401,9 +411,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             *retry_req.headers_mut() = headers;
                             *retry_req.version_mut() = version;
                             request = retry_req;
-                            if let Some(signature) = self
-                                .core
-                                .prepare_final_request_signature(original_uri, &mut request)?
+                            if sign_stale_retries
+                                && let Some(signature) = self
+                                    .core
+                                    .prepare_final_request_signature(original_uri, &mut request)?
                             {
                                 let signature_headers = signature.sign_local().await?;
                                 signature_headers.insert_into(request.headers_mut())?;
@@ -758,8 +769,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 headers: extract_headers(request.headers()),
             },
         );
-        let mut resp =
-            HttpEngineCore::send_on_connection(&mut pooled, request, original_uri.clone()).await?;
+        let mut resp = Self::send_on_connection_with_first_byte_timeout(
+            &mut pooled,
+            request,
+            original_uri.clone(),
+            first_byte_timeout,
+        )
+        .await?;
         let transfer = transfer_start.elapsed();
         self.core.notify(
             &req_method,
@@ -797,5 +813,32 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         }
 
         Ok(resp)
+    }
+
+    async fn send_on_connection_with_first_byte_timeout(
+        conn: &mut PooledConnection<RequestBodyLocal>,
+        request: http::Request<RequestBodyLocal>,
+        original_uri: Uri,
+        first_byte_timeout: Option<Duration>,
+    ) -> Result<Response, Error> {
+        let (parts, body) = request.into_parts();
+        let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
+        let request = http::Request::from_parts(parts, Box::pin(body) as RequestBodyLocal);
+        let fut = HttpEngineCore::send_on_connection(conn, request, original_uri);
+        match first_byte_timeout {
+            Some(duration) => {
+                match crate::timeout::FirstByteTimeout::<_, R>::new(
+                    fut,
+                    request_body_complete,
+                    duration,
+                )
+                .await
+                {
+                    Err(Error::Timeout) => Err(Error::ReadTimeout),
+                    other => other,
+                }
+            }
+            None => fut.await,
+        }
     }
 }

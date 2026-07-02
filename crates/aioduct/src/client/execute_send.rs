@@ -191,7 +191,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     stale_headers,
                     connect_timeout,
                     write_timeout,
+                    None,
                     force_addr,
+                    true,
                 )
                 .await
             {
@@ -399,7 +401,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             Some(&retry_headers_for_stale),
             connect_timeout,
             write_timeout,
+            None,
             force_addr,
+            true,
         )
         .await
     }
