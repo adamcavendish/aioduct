@@ -338,36 +338,42 @@ where
             request.headers_mut(),
             &crate::digest_fields::ContentDigestBody::Unavailable,
         )?;
-        self.client
-            .core
-            .sign_final_request(&full_uri, &mut request)?;
-        let post_signing_headers;
-        let stale_headers = if !self.client.core.no_connection_reuse {
-            post_signing_headers = request.headers().clone();
-            Some(&post_signing_headers)
-        } else {
-            None
+        // 10. Sign and send via execute_single_with_hint (bypasses redirects,
+        // cookies, cache, decompression). Keep async signing inside the same
+        // timeout budget as the forwarded dispatch.
+        let timeout = self.timeout.or(self.client.core.timeout);
+        let send_fut = async {
+            if let Some(signature) = self
+                .client
+                .core
+                .prepare_final_request_signature(&full_uri, &mut request)?
+            {
+                let signature_headers = signature.sign_send().await?;
+                signature_headers.insert_into(request.headers_mut())?;
+            }
+            let post_signing_headers;
+            let stale_headers = if !self.client.core.no_connection_reuse {
+                post_signing_headers = request.headers().clone();
+                Some(&post_signing_headers)
+            } else {
+                None
+            };
+
+            self.client
+                .execute_single_with_hint_send(
+                    request,
+                    &full_uri,
+                    self.protocol_hint,
+                    None,
+                    stale_headers,
+                    None,
+                    None,
+                    None,
+                )
+                .await
         };
 
-        // 10. Send via execute_single_with_hint (bypasses redirects, cookies, cache, decompression)
-        let send_fut = self.client.execute_single_with_hint_send(
-            request,
-            &full_uri,
-            self.protocol_hint,
-            None,
-            stale_headers,
-            None,
-            None,
-            None,
-        );
-
-        let mut resp = if let Some(duration) = self.timeout {
-            crate::timeout::Timeout::WithTimeout {
-                future: send_fut,
-                sleep: R::sleep(duration),
-            }
-            .await?
-        } else if let Some(duration) = self.client.core.timeout {
+        let mut resp = if let Some(duration) = timeout {
             crate::timeout::Timeout::WithTimeout {
                 future: send_fut,
                 sleep: R::sleep(duration),

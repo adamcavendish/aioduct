@@ -15,7 +15,7 @@ mod verification;
 
 pub use accept_signature::{AcceptSignature, AcceptSignatureEntry, AcceptSignatureFulfillment};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use automatic::AutomaticMessageSignature;
+pub(crate) use automatic::{AutomaticMessageSignature, PreparedAutomaticMessageSignature};
 pub use base::MessageSignatureBase;
 pub use component::{MessageSignatureComponent, MessageSignatureComponentParameter};
 pub use config::MessageSignatureConfig;
@@ -24,7 +24,11 @@ pub use error::MessageSignatureError;
 pub use headers::MessageSignatureHeaders;
 pub use params::{AcceptSignatureParams, MessageSignatureParams};
 pub use parsed::MessageSignature;
-pub use signer::MessageSignatureSigner;
+pub use signer::{
+    MessageSignatureAsyncSigner, MessageSignatureAsyncSigningFuture,
+    MessageSignatureLocalAsyncSigner, MessageSignatureLocalAsyncSigningFuture,
+    MessageSignatureSigner,
+};
 pub use verification::{
     MessageSignatureRequestContext, MessageSignatureResponseContext,
     MessageSignatureVerificationInput, MessageSignatureVerificationPolicy,
