@@ -5,14 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-07-03
+
+### Changed
+- Moved the Wasmtime host adapter into the main crate as
+  `aioduct::wasmtime`, gated by the `wasmtime` feature, so users do not need
+  a separate `aioduct-wasmtime` workspace package.
+- Updated Wasmtime host examples, feature-flag documentation, mdBook pages,
+  CI, and local release recipes for the first-party module path.
+
 ## [0.2.1] - 2026-07-03
 
 ### Added
 - RFC 9421 HTTP Message Signatures support for request and response signing,
   verification, `Accept-Signature`, `Content-Digest`, trailer components,
   asynchronous signers, and forwarded message signing.
-- `aioduct-wasmtime`, a Wasmtime host adapter with Tokio, smol, and compio
-  host transports, runtime/TLS feature flags, strict PEM CA bundle parsing,
+- The `aioduct-wasmtime` workspace package, a Wasmtime host adapter with
+  Tokio, smol, and compio host transports, runtime/TLS feature flags,
+  strict PEM CA bundle parsing,
   forwarded timeout controls, header deny-list policy, and runnable host
   examples.
 - Per-request controls for read timeout, write timeout, disabling client

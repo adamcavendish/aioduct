@@ -1,6 +1,6 @@
 # Wasmtime Host Adapter
 
-`aioduct-wasmtime` provides a host-side adapter for Wasmtime components that
+`aioduct::wasmtime` provides a host-side adapter for Wasmtime components that
 use WASI Preview 2 `wasi:http`. The guest keeps using `aioduct::WasiClient`.
 The host installs `WasiHttpHost` as the Wasmtime HTTP hook and forwards
 validated requests through a native `aioduct` transport.
@@ -10,9 +10,13 @@ for a directory connector. The embedding host owns origin allow-lists, TLS
 roots, insecure test mode, secret header injection, request and response size
 limits, deadline budgets, and diagnostic redaction.
 
-`aioduct-wasmtime` has an empty default feature set. Enable the host runtime
-you want, such as `tokio`, `smol`, or `compio`, and enable one rustls provider
-when the host transport needs TLS.
+`aioduct::wasmtime` is behind the `wasmtime` feature. Enable it with the host
+runtime you want, such as `tokio`, `smol`, or `compio`, and enable one rustls
+provider when the host transport needs TLS:
+
+```toml
+aioduct = { version = "0.2.2", features = ["wasmtime", "tokio", "rustls", "rustls-ring"] }
+```
 
 ## Quick Start
 
@@ -48,7 +52,7 @@ demo.
 ```rust,no_run
 use std::time::{Duration, Instant};
 
-use aioduct_wasmtime::{ExactOriginPolicy, WasiHttpHost};
+use aioduct::wasmtime::{ExactOriginPolicy, WasiHttpHost};
 use http::header::{AUTHORIZATION, FORWARDED};
 use http::HeaderValue;
 
@@ -81,7 +85,7 @@ The hooks become active when the Wasmtime host state exposes them through
 `WasiHttpView` and the component linker installs the WASI HTTP interfaces:
 
 ```rust,no_run
-use aioduct_wasmtime::WasiHttpHost;
+use aioduct::wasmtime::WasiHttpHost;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::bindings::Command as WasiCommand;
@@ -149,7 +153,7 @@ it to `.transport(...)`. The adapter can also use compio through
 factory so local-runtime connector slots are created on the worker thread:
 
 ```rust,no_run
-use aioduct_wasmtime::{CompioHostTransport, ExactOriginPolicy, WasiHttpHost};
+use aioduct::wasmtime::{CompioHostTransport, ExactOriginPolicy, WasiHttpHost};
 
 # fn build() -> Result<WasiHttpHost, Box<dyn std::error::Error>> {
 let hooks = WasiHttpHost::builder()
@@ -174,7 +178,7 @@ The adapter forwards through native `HttpEngineSend<R, C>` transports where
 native runtimes. Compio is supported through a separate local-runtime worker
 bridge because its `HttpEngineLocal` body and connection state are not `Send`:
 
-| Host transport | Supported by `aioduct-wasmtime` | Notes |
+| Host transport | Supported by `aioduct::wasmtime` | Notes |
 |----------------|----------------------------------|-------|
 | `TokioClient`  | Yes                              | Explicit `tokio` feature; can be default-built after feature selection |
 | `SmolClient`   | Yes                              | Explicit `smol` feature and transport |

@@ -1,8 +1,8 @@
 //! Host-side Wasmtime WASI HTTP adapter backed by native `aioduct`.
 //!
-//! This crate is for hosts embedding WASI Preview 2 components with
+//! This module is for hosts embedding WASI Preview 2 components with
 //! `wasi:http`. Guests keep using `aioduct::WasiClient`; the host installs
-//! [`WasiHttpHost`] as the Wasmtime HTTP hook and owns transport trust policy.
+//! `WasiHttpHost` as the Wasmtime HTTP hook and owns transport trust policy.
 //!
 //! The default feature set is empty. Enable exactly the native host transport
 //! runtime you want to use, such as `tokio`, `smol`, or `compio`, plus a rustls
@@ -38,20 +38,19 @@ pub(crate) use body::{
 #[cfg(test)]
 pub(crate) use policy::RejectionObserver;
 
-#[doc(hidden)]
-pub mod sealed {
-    /// Marker trait sealing [`WasiHostTransport`](crate::WasiHostTransport).
+mod sealed {
+    /// Marker trait sealing [`WasiHostTransport`](crate::wasmtime::WasiHostTransport).
     pub trait Sealed {}
 
-    impl<R, C> Sealed for aioduct::HttpEngineSend<R, C>
+    impl<R, C> Sealed for crate::HttpEngineSend<R, C>
     where
-        R: aioduct::RuntimePoll,
-        C: aioduct::ConnectorSend,
+        R: crate::RuntimePoll,
+        C: crate::ConnectorSend,
     {
     }
 
     #[cfg(feature = "compio")]
-    impl Sealed for crate::CompioHostTransport {}
+    impl Sealed for super::CompioHostTransport {}
 }
 
 #[cfg(test)]

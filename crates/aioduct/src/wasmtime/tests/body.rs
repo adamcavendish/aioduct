@@ -120,6 +120,43 @@ fn wasi_body_error_mapping_preserves_error_code() {
     ));
 }
 
+#[test]
+fn aioduct_error_mapping_uses_wasi_error_codes() {
+    assert!(matches!(
+        map_aioduct_error(crate::Error::InvalidUrl("bad url".into())),
+        ErrorCode::HttpRequestUriInvalid
+    ));
+    assert!(matches!(
+        map_aioduct_error(crate::Error::HttpsOnly("http".into())),
+        ErrorCode::HttpRequestDenied
+    ));
+    assert!(matches!(
+        map_aioduct_error(crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing destination",
+        ))),
+        ErrorCode::DestinationNotFound
+    ));
+    assert!(matches!(
+        map_aioduct_error(crate::Error::RemoteAddr {
+            remote_addr: "127.0.0.1:80".parse().expect("address should parse"),
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "reset",
+            )),
+        }),
+        ErrorCode::ConnectionTerminated
+    ));
+    assert!(matches!(
+        map_aioduct_error(crate::Error::ConnectTimeout),
+        ErrorCode::ConnectionTimeout
+    ));
+    assert!(matches!(
+        map_aioduct_error(crate::Error::WriteTimeout),
+        ErrorCode::ConnectionWriteTimeout
+    ));
+}
+
 #[tokio::test]
 async fn wasi_body_error_mapping_preserves_hyper_wrapped_error() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

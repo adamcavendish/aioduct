@@ -163,7 +163,7 @@ async fn streaming_request_body_limit_notifies_rejection() {
         .on_rejection(move |reason| {
             observed.lock().expect("observer lock").push(reason);
         });
-    let body: aioduct::body::RequestBodySend = full_body(b"abcd")
+    let body: crate::body::RequestBodySend = full_body(b"abcd")
         .map_err(map_wasi_body_error)
         .boxed_unsync();
     let err = RequestLimitBody::new_policy(body, policy.body_limit, &policy)

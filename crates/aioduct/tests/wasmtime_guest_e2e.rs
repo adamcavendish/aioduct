@@ -1,17 +1,22 @@
+#![cfg(all(
+    feature = "wasmtime",
+    any(feature = "tokio", feature = "smol", feature = "compio")
+))]
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use aioduct_wasmtime::{ExactOriginPolicy, WasiHttpHost};
+use ::wasmtime::component::{Component, Linker, ResourceTable};
+use ::wasmtime::{Config, Engine, Store};
+use ::wasmtime_wasi::p2::bindings::Command as WasiCommand;
+use ::wasmtime_wasi::p2::pipe::MemoryOutputPipe;
+use ::wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+use ::wasmtime_wasi_http::WasiHttpCtx;
+use ::wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+use aioduct::wasmtime::{ExactOriginPolicy, WasiHttpHost};
 use http::HeaderValue;
 use http::header::AUTHORIZATION;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store};
-use wasmtime_wasi::p2::bindings::Command as WasiCommand;
-use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
-use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
-use wasmtime_wasi_http::WasiHttpCtx;
-use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
 
 struct HostState {
     table: ResourceTable,
@@ -61,7 +66,7 @@ async fn guest_wasi_client_is_serviced_by_host_adapter() -> Result<(), Box<dyn s
 
     let mut config = Config::new();
     config.wasm_component_model(true);
-    config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+    config.wasm_backtrace_details(::wasmtime::WasmBacktraceDetails::Enable);
     let engine = Engine::new(&config)?;
     let component = Component::from_file(&engine, component)?;
     let mut store = Store::new(
@@ -75,8 +80,8 @@ async fn guest_wasi_client_is_serviced_by_host_adapter() -> Result<(), Box<dyn s
     );
 
     let mut linker = Linker::new(&engine);
-    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
-    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
+    ::wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    ::wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
     let command = WasiCommand::instantiate_async(&mut store, &component, &linker).await?;
     command
         .wasi_cli_run()
@@ -126,7 +131,7 @@ fn test_host(policy: ExactOriginPolicy) -> Result<WasiHttpHost, Box<dyn std::err
     #[cfg(all(not(feature = "tokio"), not(feature = "smol"), feature = "compio"))]
     {
         Ok(builder
-            .transport(aioduct_wasmtime::CompioHostTransport::new()?)
+            .transport(aioduct::wasmtime::CompioHostTransport::new()?)
             .build()?)
     }
 }
@@ -134,16 +139,46 @@ fn test_host(policy: ExactOriginPolicy) -> Result<WasiHttpHost, Box<dyn std::err
 fn build_wasi_demo_component() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let root = workspace_root();
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = std::process::Command::new(cargo)
-        .current_dir(&root)
-        .args([
-            "build",
-            "-p",
-            "example-wasi-p2-demo",
-            "--target",
-            "wasm32-wasip2",
-        ])
-        .output()?;
+    let mut command = std::process::Command::new(cargo);
+    command.env_clear();
+    for key in [
+        "ALL_PROXY",
+        "CARGO_HOME",
+        "CARGO_HTTP_MULTIPLEXING",
+        "CARGO_NET_GIT_FETCH_WITH_CLI",
+        "CARGO_TARGET_DIR",
+        "CARGO_TERM_COLOR",
+        "HOME",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "PATH",
+        "RUSTC",
+        "RUSTUP_HOME",
+        "RUSTUP_TOOLCHAIN",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USER",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command.current_dir(&root).args([
+        "build",
+        "-p",
+        "example-wasi-p2-demo",
+        "--target",
+        "wasm32-wasip2",
+    ]);
+    // Keep host rustflags out of the WASI guest build. In coverage runs this
+    // prevents `-C instrument-coverage` from leaking into wasm32-wasip2, which
+    // does not ship Rust's profiler runtime.
+    command.env("RUSTFLAGS", "-Dwarnings");
+    let output = command.output()?;
     if !output.status.success() {
         return Err(std::io::Error::other(format!(
             "failed to build WASI demo component\nstatus: {}\nstdout:\n{}\nstderr:\n{}",

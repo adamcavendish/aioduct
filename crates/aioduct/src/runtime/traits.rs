@@ -19,7 +19,7 @@ pub trait RuntimeCompletion: 'static {
     /// Run a future to completion on a new runtime instance.
     ///
     /// Creates a single-threaded runtime and blocks the current thread until
-    /// the future completes. Used by [`BlockingClient`](crate::blocking::BlockingClient).
+    /// the future completes. Used by the blocking client wrapper.
     fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error>;
 }
 

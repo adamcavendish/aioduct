@@ -1,7 +1,7 @@
 #[path = "../../../wasmtime-host-common.rs"]
 mod common;
 
-use aioduct_wasmtime::WasiHttpHost;
+use aioduct::wasmtime::WasiHttpHost;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

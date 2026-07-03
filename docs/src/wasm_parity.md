@@ -438,10 +438,11 @@ full networking stack.
 not carry host trust policy such as allowed origins, CA roots, insecure
 certificate mode, secret header injection, body limits, or redacted diagnostics.
 
-Hosts embedding Wasmtime components can use the separate `aioduct-wasmtime`
-crate to install a `wasi:http` hook. That hook validates a guest request with
-host-owned policy, injects host-owned headers after validation, and forwards
-the request through a native `aioduct` transport.
+Hosts embedding Wasmtime components can enable the first-party `wasmtime`
+feature and use `aioduct::wasmtime` to install a `wasi:http` hook. That hook
+validates a guest request with host-owned policy, injects host-owned headers
+after validation, and forwards the request through a native `aioduct`
+transport.
 
 The host transport line covers `RuntimePoll` native clients (`TokioClient` and
 `SmolClient`) directly. `CompioClient` is covered through

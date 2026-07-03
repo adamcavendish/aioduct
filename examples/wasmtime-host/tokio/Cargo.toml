@@ -5,8 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["tokio", "rustls", "rustls-ring"] }
-aioduct-wasmtime = { workspace = true, features = ["tokio", "rustls-ring"] }
+aioduct = { workspace = true, features = ["tokio", "rustls", "rustls-ring", "wasmtime"] }
 http.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wasmtime = { workspace = true, features = ["cranelift"] }

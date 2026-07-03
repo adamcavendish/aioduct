@@ -12,12 +12,13 @@ const CONSTRAINTS = {
     },
     // feature → features it's incompatible with (disabled with tooltip)
     incompatible: {
-        'wasm': ['http3', 'blocking', 'hickory-dns', 'doh', 'dot', 'compio', 'wasi-p2'],
+        'wasm': ['http3', 'blocking', 'hickory-dns', 'doh', 'dot', 'compio', 'wasi-p2', 'wasmtime'],
         'wasi-p2': ['wasm', 'http3', 'blocking', 'hickory-dns', 'doh', 'dot', 'compio'],
+        'wasmtime': ['wasm'],
     },
 };
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 
 // --- Feature Configurator ---
 
@@ -103,6 +104,9 @@ function updateCargoOutput() {
     }
     if (!features.some(f => ['tokio', 'smol', 'compio', 'wasm', 'wasi-p2'].includes(f))) {
         warningHtml += '<div class="warning">No runtime selected — aioduct requires at least one runtime feature</div>';
+    }
+    if (features.includes('wasmtime') && !features.some(f => ['tokio', 'smol', 'compio'].includes(f))) {
+        warningHtml += '<div class="warning">wasmtime requires a native host runtime: add tokio, smol, or compio</div>';
     }
     if (features.includes('rustls-ring') && features.includes('rustls-aws-lc-rs')) {
         warningHtml += '<div class="info">Both crypto backends selected — only one is needed (ring is simpler to compile)</div>';

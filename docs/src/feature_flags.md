@@ -10,6 +10,8 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 | `smol`   | smol, async-io, futures-io        | Stable       | Smol async runtime                   |
 | `compio` | compio-runtime, async-io          | Experimental | Compio runtime (io_uring / IOCP)     |
 | `wasm`   | wasm-bindgen, web-sys, js-sys     | Experimental | Browser/WASM runtime                 |
+| `wasi-p2` | wasi                             | Experimental | WASI Preview 2 guest HTTP client     |
+| `wasmtime` | wasmtime, wasmtime-wasi, wasmtime-wasi-http | Experimental | Wasmtime host-side WASI HTTP adapter |
 | `rustls` | rustls, webpki-roots, rustls-pemfile | Stable | TLS backend via rustls; requires exactly one rustls provider |
 | `rustls-ring` | rustls ring provider        | Stable       | Ring crypto provider for rustls      |
 | `rustls-aws-lc-rs` | rustls AWS-LC provider | Stable       | AWS-LC crypto provider for rustls    |
@@ -45,72 +47,71 @@ error: aioduct: enable at least one runtime feature: tokio, smol, compio, wasm, 
 
 ```toml
 # HTTP only, tokio runtime
-aioduct = { version = "0.2.1", features = ["tokio"] }
+aioduct = { version = "0.2.2", features = ["tokio"] }
 
 # HTTPS + JSON, tokio runtime
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "json"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "json"] }
 
 # HTTPS with AWS-LC, tokio runtime
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 
 # HTTPS with AWS-LC and OS native roots
-aioduct = { version = "0.2.1", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 
 # HTTP only, smol runtime
-aioduct = { version = "0.2.1", features = ["smol"] }
+aioduct = { version = "0.2.2", features = ["smol"] }
 
 # HTTPS, smol runtime
-aioduct = { version = "0.2.1", features = ["smol", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.2", features = ["smol", "rustls", "rustls-ring"] }
 
 # HTTP only, compio runtime (experimental)
-aioduct = { version = "0.2.1", features = ["compio"] }
+aioduct = { version = "0.2.2", features = ["compio"] }
 
 # HTTPS + JSON + compression, tokio runtime
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "json", "gzip", "brotli", "zstd", "deflate"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "json", "gzip", "brotli", "zstd", "deflate"] }
 
 # Blocking client (synchronous)
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "blocking"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "blocking"] }
 
 # With tracing and OpenTelemetry
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "tracing", "otel"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "tracing", "otel"] }
 
 # With tower integration
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "tower"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "tower"] }
 
 # Hickory DNS resolver
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "hickory-dns"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "hickory-dns"] }
 
 # DNS-over-HTTPS
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "doh"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "doh"] }
 
 # DNS-over-TLS
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "dot"] }
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "dot"] }
 
 # HTTP/3 with ring
-aioduct = { version = "0.2.1", features = ["tokio", "http3", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.2", features = ["tokio", "http3", "rustls", "rustls-ring"] }
 
 # HTTP/3 with AWS-LC
-aioduct = { version = "0.2.1", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.2", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 ## Wasmtime Host Adapter
 
-Wasmtime host integration is provided by the separate `aioduct-wasmtime`
-crate. Its default feature set is also empty; enable the host runtime and TLS
-provider explicitly:
+Wasmtime host integration is first-party under `aioduct::wasmtime`. Enable the
+`wasmtime` feature together with the host runtime and TLS provider:
 
 ```toml
 # Wasmtime host adapter with tokio + rustls/ring
-aioduct-wasmtime = { version = "0.2.1", default-features = false, features = ["tokio", "rustls-ring"] }
+aioduct = { version = "0.2.2", features = ["wasmtime", "tokio", "rustls", "rustls-ring"] }
 
 # Wasmtime host adapter with smol + rustls/ring
-aioduct-wasmtime = { version = "0.2.1", default-features = false, features = ["smol", "rustls-ring"] }
+aioduct = { version = "0.2.2", features = ["wasmtime", "smol", "rustls", "rustls-ring"] }
 
 # Wasmtime host adapter with compio + rustls/ring
-aioduct-wasmtime = { version = "0.2.1", default-features = false, features = ["compio", "rustls-ring"] }
+aioduct = { version = "0.2.2", features = ["wasmtime", "compio", "rustls", "rustls-ring"] }
 ```
 
-`aioduct-wasmtime` accepts native `RuntimePoll` transports such as
+`aioduct::wasmtime` accepts native `RuntimePoll` transports such as
 `TokioClient` and `SmolClient`. It also provides `CompioHostTransport`, which
 owns a local-runtime worker bridge for `CompioClient` builders. It does not
 enable browser `wasm`, because browser Fetch has no Wasmtime host hook. See

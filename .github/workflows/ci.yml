@@ -96,17 +96,17 @@ jobs:
       matrix:
         include:
           - crypto: ring
-            features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
-            adapter_args: "--no-default-features --features tokio,rustls-ring"
+            features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2,wasmtime"
+            filter: ""
           - crypto: aws-lc-rs
-            features: "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
-            adapter_args: "--no-default-features --features tokio,rustls-aws-lc-rs"
-          - crypto: smol-ring
-            features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
-            adapter_args: "--no-default-features --features smol,rustls-ring"
-          - crypto: compio-ring
-            features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
-            adapter_args: "--no-default-features --features compio,rustls-ring"
+            features: "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2,wasmtime"
+            filter: ""
+          - crypto: wasmtime-smol-ring
+            features: "wasmtime,smol,rustls,rustls-ring"
+            filter: "wasmtime guest_wasi_client"
+          - crypto: wasmtime-compio-ring
+            features: "wasmtime,compio,rustls,rustls-ring"
+            filter: "wasmtime guest_wasi_client"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -116,8 +116,7 @@ jobs:
         with:
           shared-key: all-features
       - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run -p aioduct --features ${{ matrix.features }}
-      - run: cargo nextest run -p aioduct-wasmtime ${{ matrix.adapter_args }}
+      - run: cargo nextest run -p aioduct --features "${{ matrix.features }}" ${{ matrix.filter }}
 
   coverage:
     name: Coverage
@@ -128,12 +127,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: coverage
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
-      - run: cargo llvm-cov nextest -p aioduct --features "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2" --lcov --output-path lcov.info
+      - run: cargo llvm-cov nextest -p aioduct --features "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2,wasmtime" --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v6
         with:
           files: lcov.info

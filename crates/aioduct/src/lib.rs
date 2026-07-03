@@ -14,6 +14,7 @@
     feature = "compio",
     feature = "wasm",
     feature = "wasi-p2",
+    feature = "wasmtime",
     feature = "__internal-no-runtime",
     doc
 )))]
@@ -23,6 +24,18 @@ compile_error!(
 
 #[cfg(all(feature = "http3", not(feature = "rustls")))]
 compile_error!("aioduct: the `http3` feature currently requires the `rustls` TLS backend feature");
+
+#[cfg(all(feature = "wasmtime", target_arch = "wasm32"))]
+compile_error!("aioduct: the `wasmtime` host adapter feature is only supported on native targets");
+
+#[cfg(all(
+    feature = "wasmtime",
+    not(target_arch = "wasm32"),
+    not(any(feature = "tokio", feature = "smol", feature = "compio"))
+))]
+compile_error!(
+    "aioduct: the `wasmtime` host adapter feature requires one native host runtime feature: tokio, smol, or compio"
+);
 
 // ── Portable modules (available on all targets including wasm32) ─────────────
 
@@ -138,6 +151,10 @@ pub mod wasm;
 /// WASI Preview 2 HTTP client using wasi:http/outgoing-handler.
 #[cfg(feature = "wasi-p2")]
 pub mod wasi_p2;
+
+/// Host-side Wasmtime WASI HTTP adapter backed by native aioduct transports.
+#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
+pub mod wasmtime;
 
 #[cfg(feature = "tracing")]
 mod tracing_middleware;

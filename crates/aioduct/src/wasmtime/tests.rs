@@ -1,4 +1,10 @@
 use super::*;
+use ::wasmtime_wasi::p2::{InputStream, Pollable, StreamError};
+use ::wasmtime_wasi_http::p2::WasiHttpHooks;
+use ::wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
+use ::wasmtime_wasi_http::p2::body::HostIncomingBody;
+use ::wasmtime_wasi_http::p2::body::{HyperIncomingBody, HyperOutgoingBody};
+use ::wasmtime_wasi_http::p2::types::{IncomingResponse, OutgoingRequestConfig};
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, FORWARDED, HeaderName};
 use http::{HeaderMap, HeaderValue};
@@ -11,12 +17,6 @@ use std::sync::Mutex;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use wasmtime_wasi::p2::{InputStream, Pollable, StreamError};
-use wasmtime_wasi_http::p2::WasiHttpHooks;
-use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
-use wasmtime_wasi_http::p2::body::HostIncomingBody;
-use wasmtime_wasi_http::p2::body::{HyperIncomingBody, HyperOutgoingBody};
-use wasmtime_wasi_http::p2::types::{IncomingResponse, OutgoingRequestConfig};
 
 fn config(use_tls: bool) -> OutgoingRequestConfig {
     OutgoingRequestConfig {
@@ -46,9 +46,9 @@ fn request_trailers_body(headers: HeaderMap) -> HyperOutgoingBody {
     .boxed_unsync()
 }
 
-fn native_trailers_body(headers: HeaderMap) -> aioduct::body::RequestBodySend {
+fn native_trailers_body(headers: HeaderMap) -> crate::body::RequestBodySend {
     StreamBody::new(futures_util::stream::once(async move {
-        Ok::<Frame<Bytes>, aioduct::Error>(Frame::trailers(headers))
+        Ok::<Frame<Bytes>, crate::Error>(Frame::trailers(headers))
     }))
     .boxed_unsync()
 }
@@ -68,8 +68,8 @@ fn pending_incoming_body() -> HyperIncomingBody {
     PendingBody::<ErrorCode>(PhantomData).boxed_unsync()
 }
 
-fn pending_native_body() -> aioduct::body::RequestBodySend {
-    PendingBody::<aioduct::Error>(PhantomData).boxed_unsync()
+fn pending_native_body() -> crate::body::RequestBodySend {
+    PendingBody::<crate::Error>(PhantomData).boxed_unsync()
 }
 
 struct PendingBody<E>(PhantomData<fn() -> E>);
@@ -98,9 +98,9 @@ impl sealed::Sealed for PendingResponseTransport {}
 impl WasiHostTransport for PendingResponseTransport {
     fn forward_wasi_http(
         &self,
-        _request: http::Request<aioduct::body::RequestBodySend>,
+        _request: http::Request<crate::body::RequestBodySend>,
         _options: HostForwardOptions,
-    ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+    ) -> BoxFuture<Result<HostResponse, crate::Error>> {
         Box::pin(async {
             Ok(HostResponse::new(
                 http::Response::builder()
@@ -120,9 +120,9 @@ impl sealed::Sealed for CollectingTransport {}
 impl WasiHostTransport for CollectingTransport {
     fn forward_wasi_http(
         &self,
-        request: http::Request<aioduct::body::RequestBodySend>,
+        request: http::Request<crate::body::RequestBodySend>,
         _options: HostForwardOptions,
-    ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+    ) -> BoxFuture<Result<HostResponse, crate::Error>> {
         Box::pin(async move {
             request.into_body().collect().await?;
             Ok(HostResponse::new(
@@ -147,9 +147,9 @@ impl sealed::Sealed for PanickingTransport {}
 impl WasiHostTransport for PanickingTransport {
     fn forward_wasi_http(
         &self,
-        _request: http::Request<aioduct::body::RequestBodySend>,
+        _request: http::Request<crate::body::RequestBodySend>,
         _options: HostForwardOptions,
-    ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+    ) -> BoxFuture<Result<HostResponse, crate::Error>> {
         panic!("denied request must not reach transport")
     }
 }
@@ -164,9 +164,9 @@ impl sealed::Sealed for TrailerResponseTransport {}
 impl WasiHostTransport for TrailerResponseTransport {
     fn forward_wasi_http(
         &self,
-        _request: http::Request<aioduct::body::RequestBodySend>,
+        _request: http::Request<crate::body::RequestBodySend>,
         _options: HostForwardOptions,
-    ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+    ) -> BoxFuture<Result<HostResponse, crate::Error>> {
         let trailers = self.trailers.clone();
         Box::pin(async move {
             Ok(HostResponse::new(
@@ -218,7 +218,7 @@ fn test_host(policy: ExactOriginPolicy) -> WasiHttpHost {
     }
     #[cfg(all(not(feature = "tokio"), feature = "smol"))]
     {
-        let transport = aioduct::SmolClient::builder()
+        let transport = crate::SmolClient::builder()
             .build()
             .expect("smol transport should build");
         builder
@@ -236,6 +236,7 @@ fn test_host(policy: ExactOriginPolicy) -> WasiHttpHost {
     }
     #[cfg(all(not(feature = "tokio"), not(feature = "smol"), not(feature = "compio")))]
     {
+        let _ = builder;
         panic!("tests require a tokio, smol, or compio transport feature")
     }
 }

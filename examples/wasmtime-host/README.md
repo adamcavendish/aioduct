@@ -2,7 +2,7 @@
 
 These examples run the `example-wasi-p2-demo` guest component under Wasmtime and
 service the guest's `aioduct::WasiClient` calls with host-owned
-`aioduct-wasmtime` policy.
+`aioduct::wasmtime` policy.
 
 The host examples use a local HTTP server, so they do not depend on external
 network access. The server records only low-value request facts in the example
@@ -54,7 +54,7 @@ secret header injection. The shared example policy denies guest-supplied
 The exact local port will differ, but successful output includes:
 
 ```text
-aioduct-wasmtime tokio host demo
+aioduct wasmtime tokio host demo
 origin: http://127.0.0.1:...
 guest stdout:
 === GET http://127.0.0.1:.../get ===

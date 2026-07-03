@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use aioduct_wasmtime::{ExactOriginPolicy, WasiHttpHost};
+use aioduct::wasmtime::{ExactOriginPolicy, WasiHttpHost};
 use http::HeaderValue;
 use http::header::{AUTHORIZATION, FORWARDED};
 use wasmtime::component::{Component, Linker, ResourceTable};
@@ -330,7 +330,7 @@ fn has_injected_secret(request: &str) -> bool {
 }
 
 fn print_report(runtime_name: &str, origin: &str, requests: &[String], stdout: &str) {
-    println!("aioduct-wasmtime {runtime_name} host demo");
+    println!("aioduct wasmtime {runtime_name} host demo");
     println!("origin: {origin}");
     println!("guest stdout:");
     println!("{stdout}");
