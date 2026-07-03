@@ -11,6 +11,19 @@ Internally, request bodies are represented as `RequestBody`, which has two varia
 
 Buffered bodies can be retried and redirected automatically. Streaming bodies are consumed on first use — retries and 307/308 redirects that preserve the body will send an empty body on subsequent attempts.
 
+Use `write_timeout()` to bound stalls while streaming request chunks. The
+timeout applies to gaps between upload chunks, not to DNS, TCP, TLS, response
+headers, or response body reads:
+
+```rust,no_run
+use std::time::Duration;
+use aioduct::TokioClient;
+
+let client = TokioClient::builder()
+    .write_timeout(Duration::from_secs(10))
+    .build()?;
+```
+
 ## Basic Streaming Upload
 
 ```rust,no_run

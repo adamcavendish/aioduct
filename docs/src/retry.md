@@ -44,7 +44,8 @@ delay = min(initial_backoff * multiplier^n, max_backoff)
 
 By default, aioduct retries on:
 - **Connection errors** — I/O errors, hyper transport errors
-- **Timeouts** — overall request, connect, and response read-gap timeouts
+- **Timeouts** — overall request, connect, response read-gap, and request
+  upload write-gap timeouts
 - **5xx server errors** — 500, 502, 503, etc. (when `retry_on_status` is true)
 - **429 Too Many Requests** — rate limiting responses (when `retry_on_status` is true)
 - **408 Request Timeout** and **425 Too Early** — retried for idempotent requests (when `retry_on_status` is true)

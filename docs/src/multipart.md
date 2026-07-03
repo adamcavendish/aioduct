@@ -50,6 +50,26 @@ let form = Multipart::new()
 
 The `data` parameter accepts anything that implements `Into<Bytes>` — `&[u8]`, `Vec<u8>`, `String`, `Bytes`, etc.
 
+## Boundary and Subtype
+
+By default, each `Multipart` value generates a safe `multipart/form-data`
+boundary. When interoperating with protocols that require a fixed boundary or a
+different multipart subtype, configure both explicitly:
+
+```rust
+# use aioduct::Multipart;
+# fn build() -> Result<Multipart, aioduct::Error> {
+let form = Multipart::new()
+    .with_boundary("WebKitFormBoundaryABC123")?
+    .subtype("mixed")?
+    .text("metadata", "example");
+# Ok(form)
+# }
+```
+
+Custom boundaries are validated against the RFC 2046 character and length
+limits before a request is sent.
+
 ## Mixed Forms
 
 Combine text fields and file parts freely:
