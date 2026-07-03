@@ -77,6 +77,56 @@ When building a response signature base with a related request,
 `MessageSignatureComponent::related_request()` adds the `;req` parameter and
 derives that component from the triggering request.
 
+## Structured Field Components
+
+RFC 9421 `;sf` components need the field's RFC 9651 top-level type. When
+signing, use `structured_dictionary()`, `structured_list()`, or
+`structured_item()` on the covered header/trailer component:
+
+```rust,no_run
+use aioduct::{MessageSignatureComponent, MessageSignatureConfig};
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let priority = http::header::HeaderName::from_static("priority");
+let accept_ch = http::header::HeaderName::from_static("accept-ch");
+
+let config = MessageSignatureConfig::new("sig1")?
+    .component(MessageSignatureComponent::header(priority).structured_dictionary())
+    .component(MessageSignatureComponent::header(accept_ch).structured_list());
+# let _ = config;
+# Ok(())
+# }
+```
+
+Parsed `Signature-Input` values only contain the `;sf` flag, not the
+Dictionary/List/Item type. Configure that local type before rebuilding or
+verifying a parsed base:
+
+```rust,no_run
+use aioduct::{
+    MessageSignature, MessageSignatureStructuredFieldType,
+    MessageSignatureVerificationPolicy,
+};
+
+# fn example(signature: MessageSignature) {
+let priority = http::header::HeaderName::from_static("priority");
+
+let signature = signature.with_structured_field_type(
+    priority.clone(),
+    MessageSignatureStructuredFieldType::Dictionary,
+);
+
+let policy = MessageSignatureVerificationPolicy::new()
+    .structured_field_type(priority, MessageSignatureStructuredFieldType::Dictionary);
+# let _ = (signature, policy);
+# }
+```
+
+If a parsed `;sf` component has no configured type, rebuilding the signature
+base fails with `MessageSignatureError::UnknownStructuredFieldType`. `;key`
+components already identify Dictionary Structured Field members and do not need
+a separate type argument.
+
 Missing covered headers, duplicate component identifiers, invalid labels,
 non-ASCII generated signature bases, and covered header values that cannot be
 represented as ASCII header fields return `MessageSignatureError`.
@@ -574,13 +624,13 @@ work lands.
 | Appendix B.2.2 `@query-param` | Supported | `appendix_b22_query_param_request_base` | Current | Covers named query parameter parsing, form-style decoding, percent-encoded component identifiers, and missing/duplicate parameter errors. |
 | Component parameter `;bs` | Supported | `byte_sequence_header_values_are_signed_as_structured_field_list` | Current | Covers Byte Sequence wrapping for caller-supplied header field values. |
 | Component parameter `;key` | Supported | `dictionary_key_header_values_are_signed_as_structured_field_members`, `dictionary_key_missing_malformed_and_duplicate_values` | Current | Covers Dictionary Structured Field member selection, strict member serialization, missing key errors, malformed dictionary errors, and duplicate source keys using the RFC 9651 last-value rule. |
-| Component parameter `;sf` | Supported | `structured_field_header_values_are_signed_with_strict_serialization` | Current | Covers strict serialization for valid RFC 9651 Dictionary, List, and Item field values. |
+| Component parameter `;sf` | Supported | `structured_field_header_values_are_signed_with_strict_serialization`, `parsed_signature_requires_structured_field_type_for_sf_components`, `verification_policy_applies_required_structured_field_type` | Current | Covers strict serialization for valid RFC 9651 Dictionary, List, and Item field values. Parsed `;sf` components require caller-supplied type metadata because the wire parameter does not identify the top-level Structured Field type. |
 | Component parameter `;tr` | Supported | `response_context_uses_caller_supplied_trailer_fields`, `trailer_fields_are_distinct_from_headers_and_support_field_parameters`, `trailer_components_require_attached_trailer_fields`, `verification_policy_calls_verifier_with_trailer_components` | Current | Covers caller-supplied request and response trailer fields, keeps same-name header and trailer fields separate, composes with `;sf`, `;key`, `;bs`, and related request `;req`. Automatic trailer generation remains future work. |
 | Response `@status` and response signature bases | Supported | `builds_response_signature_base_for_status_and_headers`, `section_24_response_with_related_request_base`, `sign_response_uses_signer_callback`, `forward_response_signature_covers_response_hook_and_strips_hop_by_hop`, `test_compio_forward_response_message_signature` | Current | Builds response signature bases, formats response signature headers from caller-supplied signature bytes, and can automatically sign forwarded downstream responses on native send/local runtimes. |
 | Related request components `;req` | Supported | `request_response_signature_base_uses_related_request_components`, `parsed_signature_rebuilds_response_and_related_request_base`, `response_signature_rejects_components_from_wrong_context` | Current | Routes `;req` components to the related request when building response bases and rejects `;req` on request targets or without related request context. |
 | Multiple signature dictionaries | Supported | `insert_into_merges_signature_headers_by_label`, `automatic_signing_merges_existing_signature_headers_by_label` | Current | Generated signatures parse existing `Signature-Input` and `Signature` dictionaries, reject duplicate or mismatched labels, preserve unrelated labels, and replace only the configured label. |
-| Parsed signature selection and request-base rebuild | Supported | `parsed_signature_selects_label_and_rebuilds_request_base`, `parsed_signature_handles_component_parameters`, `parsed_signature_reports_selection_and_header_errors` | Current | Parses selected `Signature-Input` / `Signature` labels, exposes known metadata and signature bytes, preserves extension metadata in the rebuilt base, and rejects malformed or mismatched fields. |
-| Message verification policy API | Supported | `verification_policy_calls_verifier_with_rebuilt_base`, `verification_policy_calls_verifier_with_response_base`, `verification_policy_calls_verifier_with_related_request_response_base`, `parsed_response_signature_can_verify_with_policy`, `verification_policy_reports_selection_and_header_errors`, `verification_policy_rejects_unacceptable_signature_metadata`, `verification_policy_rejects_failed_verifier_callback` | Current | Applies required-component, accepted-algorithm, accepted-key-id, timestamp, max-age, and verifier-callback checks for selected request, response, and request-response signatures. Cryptographic verification remains caller-owned. |
+| Parsed signature selection and request-base rebuild | Supported | `parsed_signature_selects_label_and_rebuilds_request_base`, `parsed_signature_handles_component_parameters`, `parsed_signature_requires_structured_field_type_for_sf_components`, `parsed_signature_reports_selection_and_header_errors` | Current | Parses selected `Signature-Input` / `Signature` labels, exposes known metadata and signature bytes, preserves extension metadata in the rebuilt base, applies caller-provided `;sf` type metadata, and rejects malformed or mismatched fields. |
+| Message verification policy API | Supported | `verification_policy_calls_verifier_with_rebuilt_base`, `verification_policy_calls_verifier_with_response_base`, `verification_policy_calls_verifier_with_related_request_response_base`, `parsed_response_signature_can_verify_with_policy`, `verification_policy_applies_required_structured_field_type`, `verification_policy_reports_selection_and_header_errors`, `verification_policy_rejects_unacceptable_signature_metadata`, `verification_policy_rejects_failed_verifier_callback` | Current | Applies required-component, accepted-algorithm, accepted-key-id, timestamp, max-age, parsed `;sf` type metadata, and verifier-callback checks for selected request, response, and request-response signatures. Cryptographic verification remains caller-owned. |
 | Covered `Content-Digest` verification | Supported | `verification_policy_checks_request_content_digest_before_signature`, `verification_policy_rejects_mismatched_request_content_digest_before_signature`, `verification_policy_rejects_malformed_and_unsupported_content_digest_before_signature`, `verification_policy_checks_response_content_digest_before_signature`, `verification_policy_checks_related_request_content_digest_before_signature`, `verification_policy_skips_content_digest_check_when_body_is_unavailable` | Current | Verifies SHA-256 `Content-Digest` before caller-owned signature verification when body bytes are attached and the selected signature covers the whole `content-digest` field or its `sha-256` dictionary member, including related request fields with `;req`. |
 | `Accept-Signature` parser and builder | Supported | `accept_signature_parses_rfc_style_request`, `accept_signature_formats_and_inserts_header`, `accept_signature_from_headers_combines_field_values`, `accept_signature_reports_header_errors`, `accept_signature_validates_target_message_components` | Current | Parses and formats requested signature dictionaries, exposes requested metadata, and validates request, response, or request-response target component applicability. |
 | `Accept-Signature` fulfillment helpers | Supported | `accept_signature_fulfills_response_with_related_request`, `accept_signature_fulfills_next_request`, `accept_signature_fulfillment_reports_unfulfillable_requests`, `accept_signature_allows_ignoring_requests_and_adding_signatures` | Current | Converts accepted entries into concrete `MessageSignatureConfig` values, fills requested metadata, rejects missing or conflicting requested parameters, supports caller-selected ignored requests, and allows additional signatures. Cryptography and header attachment remain caller-owned. |
