@@ -20,14 +20,14 @@ build-all:
     cargo build -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
     cargo build -p aioduct-wasmtime --no-default-features --features compio,rustls-ring
 
-# Check MSRV (1.94)
+# Check MSRV (1.95)
 msrv:
-    cargo +1.94.0 check -p aioduct --features {{ all_features_ring }}
-    cargo +1.94.0 check -p aioduct --features {{ all_features_aws_lc_rs }}
-    cargo +1.94.0 check -p aioduct-wasmtime --no-default-features --features tokio,rustls-ring
-    cargo +1.94.0 check -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs
-    cargo +1.94.0 check -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
-    cargo +1.94.0 check -p aioduct-wasmtime --no-default-features --features compio,rustls-ring
+    cargo +1.95.0 check -p aioduct --features {{ all_features_ring }}
+    cargo +1.95.0 check -p aioduct --features {{ all_features_aws_lc_rs }}
+    cargo +1.95.0 check -p aioduct-wasmtime --no-default-features --features tokio,rustls-ring
+    cargo +1.95.0 check -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs
+    cargo +1.95.0 check -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
+    cargo +1.95.0 check -p aioduct-wasmtime --no-default-features --features compio,rustls-ring
 
 # ---------- Lint ----------
 

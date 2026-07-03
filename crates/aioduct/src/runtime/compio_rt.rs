@@ -186,15 +186,8 @@ pin_project! {
     /// free. The `socket_handle` is used by `set_tcp_keepalive` etc. to access the
     /// raw socket via `AsFd`.
     ///
-    /// # Safety
-    ///
-    /// This type has `unsafe impl Send` so it can be stored in
-    /// `Arc`-based shared state. It must only be used within compio's
-    /// thread-per-core model where values never actually cross thread
-    /// boundaries.
     pub struct CompioTcpStream {
-        #[pin]
-        io: CompioIo<compio_io::compat::AsyncStream<compio_net::TcpStream>>,
+        io: Pin<Box<CompioIo<compio_io::compat::AsyncStream<compio_net::TcpStream>>>>,
         pub(crate) socket_handle: compio_net::TcpStream,
     }
 }
@@ -203,7 +196,7 @@ impl CompioTcpStream {
     pub(crate) fn new(stream: compio_net::TcpStream) -> Self {
         let socket_handle = stream.clone();
         Self {
-            io: CompioIo::new(compio_io::compat::AsyncStream::new(stream)),
+            io: Box::pin(CompioIo::new(compio_io::compat::AsyncStream::new(stream))),
             socket_handle,
         }
     }
@@ -215,7 +208,7 @@ impl Read for CompioTcpStream {
         cx: &mut Context<'_>,
         buf: rt::ReadBufCursor<'_>,
     ) -> Poll<io::Result<()>> {
-        Read::poll_read(self.project().io, cx, buf)
+        Read::poll_read(self.project().io.as_mut(), cx, buf)
     }
 }
 
@@ -225,15 +218,15 @@ impl Write for CompioTcpStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Write::poll_write(self.project().io, cx, buf)
+        Write::poll_write(self.project().io.as_mut(), cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Write::poll_flush(self.project().io, cx)
+        Write::poll_flush(self.project().io.as_mut(), cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Write::poll_shutdown(self.project().io, cx)
+        Write::poll_shutdown(self.project().io.as_mut(), cx)
     }
 
     fn poll_write_vectored(
@@ -241,7 +234,7 @@ impl Write for CompioTcpStream {
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        Write::poll_write_vectored(self.project().io, cx, bufs)
+        Write::poll_write_vectored(self.project().io.as_mut(), cx, bufs)
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -295,10 +288,6 @@ impl<T> CompioIo<T> {
         &self.inner
     }
 }
-
-// CompioIo<T> is auto-Send when T: Send (e.g. async_io::Async<UnixStream>).
-// For !Send inner types (compio_net streams), the containing CompioTcpStream
-// has its own targeted unsafe impl Send.
 
 impl<T> Read for CompioIo<T>
 where
