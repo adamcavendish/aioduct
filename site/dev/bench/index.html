@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>aioduct benchmark dashboard</title>
+    <meta name="description" content="Continuous benchmark history for aioduct.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="topbar">
+        <a href="../../" class="brand">aioduct</a>
+        <nav>
+            <a href="../../docs/">Docs</a>
+            <a href="https://github.com/adamcavendish/aioduct/actions/workflows/benchmark.yml">Workflow</a>
+            <a href="https://github.com/adamcavendish/aioduct">GitHub</a>
+        </nav>
+    </header>
+
+    <main class="shell">
+        <section class="hero">
+            <div>
+                <p class="eyebrow">Continuous Benchmarks</p>
+                <h1>Runtime and HTTP client overhead over time</h1>
+                <p class="intro">
+                    Results are collected from the scheduled Criterion workflow on GitHub Actions.
+                    Lower values are better.
+                </p>
+            </div>
+            <div class="summary-grid" id="summary-grid" aria-live="polite">
+                <div class="metric">
+                    <span class="label">Runs</span>
+                    <strong id="run-count">-</strong>
+                </div>
+                <div class="metric">
+                    <span class="label">Benchmarks</span>
+                    <strong id="bench-count">-</strong>
+                </div>
+                <div class="metric">
+                    <span class="label">Latest</span>
+                    <strong id="latest-date">-</strong>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel" id="empty-state" hidden>
+            <h2>No benchmark data yet</h2>
+            <p>
+                The dashboard is deployed, but the Pages workflow has not restored a benchmark
+                cache yet. Run the Benchmark workflow on the main branch, then deploy Pages again.
+            </p>
+        </section>
+
+        <section class="panel" id="dashboard" hidden>
+            <div class="panel-head">
+                <div>
+                    <h2>Trend</h2>
+                    <p id="selected-meta">Select a benchmark to inspect its history.</p>
+                </div>
+                <label class="select-label">
+                    Benchmark
+                    <select id="benchmark-select"></select>
+                </label>
+            </div>
+            <div class="chart-wrap">
+                <svg id="trend-chart" role="img" aria-label="Benchmark trend chart"></svg>
+            </div>
+        </section>
+
+        <section class="panel" id="latest-panel" hidden>
+            <div class="panel-head">
+                <div>
+                    <h2>Latest Run</h2>
+                    <p id="latest-commit">Most recent benchmark values.</p>
+                </div>
+                <input id="filter" type="search" placeholder="Filter benchmarks">
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Benchmark</th>
+                            <th>Value</th>
+                            <th>Delta</th>
+                        </tr>
+                    </thead>
+                    <tbody id="latest-table"></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script src="benchmark.js"></script>
+</body>
+</html>
