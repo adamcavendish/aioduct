@@ -376,6 +376,7 @@ let client = TokioClient::builder()
 - **No request body buffering** — the incoming request body streams through as-is
 - **No middleware** — redirects, cookies, cache, and decompression are all bypassed
 - **No streaming response digesting** — response `Content-Digest` generation uses bounded full-body buffering, not trailers
+- **No automatic trailer finalization** — response signing does not synthesize digest or signature trailers while streaming downstream bodies
 - **No WebSocket framing** — aioduct is transport-level; use a WS library for frame parsing
 - **No bidirectional splice** — the caller is responsible for splicing `Upgraded` streams
 - **No plaintext h2 by default** — HTTPS forwards negotiate HTTP/2 via TLS ALPN as usual; use `.h2c()` or `.adaptive_h2c()` when the upstream requires cleartext HTTP/2 (h2c)
