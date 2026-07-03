@@ -20,29 +20,30 @@ use http_body_util::BodyExt;
 use pin_project_lite::pin_project;
 
 #[cfg(feature = "compio")]
-use crate::BuildError;
-use crate::sealed;
+use super::BuildError;
+use super::sealed;
 
-/// Tokio transport builder accepted by [`crate::WasiHttpHostBuilder::transport_builder`].
+/// Tokio transport builder accepted by
+/// [`crate::wasmtime::WasiHttpHostBuilder::transport_builder`].
 #[cfg(feature = "tokio")]
-pub type TokioTransportBuilder = aioduct::client::HttpEngineBuilder<
-    aioduct::runtime::tokio_rt::TokioRuntime,
-    aioduct::runtime::tokio_rt::TcpConnector,
+pub type TokioTransportBuilder = crate::client::HttpEngineBuilder<
+    crate::runtime::tokio_rt::TokioRuntime,
+    crate::runtime::tokio_rt::TcpConnector,
 >;
 
 /// Smol transport builder for constructing a transport accepted by
-/// [`crate::WasiHttpHostBuilder::transport`].
+/// [`crate::wasmtime::WasiHttpHostBuilder::transport`].
 #[cfg(feature = "smol")]
-pub type SmolTransportBuilder = aioduct::client::HttpEngineBuilder<
-    aioduct::runtime::smol_rt::SmolRuntime,
-    aioduct::runtime::smol_rt::TcpConnector,
+pub type SmolTransportBuilder = crate::client::HttpEngineBuilder<
+    crate::runtime::smol_rt::SmolRuntime,
+    crate::runtime::smol_rt::TcpConnector,
 >;
 
-/// Compio transport builder accepted by [`crate::CompioHostTransport`].
+/// Compio transport builder accepted by [`crate::wasmtime::CompioHostTransport`].
 #[cfg(feature = "compio")]
-pub type CompioTransportBuilder = aioduct::client::HttpEngineBuilder<
-    aioduct::runtime::compio_rt::CompioRuntime,
-    aioduct::runtime::compio_rt::TcpConnector,
+pub type CompioTransportBuilder = crate::client::HttpEngineBuilder<
+    crate::runtime::compio_rt::CompioRuntime,
+    crate::runtime::compio_rt::TcpConnector,
 >;
 
 /// Boxed future returned by host transports.
@@ -52,12 +53,12 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 /// Native response returned by host transports.
 #[doc(hidden)]
 pub struct HostResponse {
-    pub(crate) response: http::Response<aioduct::body::RequestBodySend>,
-    pub(crate) worker: Option<wasmtime_wasi::runtime::AbortOnDropJoinHandle<()>>,
+    pub(crate) response: http::Response<crate::body::RequestBodySend>,
+    pub(crate) worker: Option<::wasmtime_wasi::runtime::AbortOnDropJoinHandle<()>>,
 }
 
 impl HostResponse {
-    pub(crate) fn new(response: http::Response<aioduct::body::RequestBodySend>) -> Self {
+    pub(crate) fn new(response: http::Response<crate::body::RequestBodySend>) -> Self {
         Self {
             response,
             worker: None,
@@ -67,7 +68,7 @@ impl HostResponse {
     #[cfg(feature = "compio")]
     pub(crate) fn with_worker(
         mut self,
-        worker: wasmtime_wasi::runtime::AbortOnDropJoinHandle<()>,
+        worker: ::wasmtime_wasi::runtime::AbortOnDropJoinHandle<()>,
     ) -> Self {
         self.worker = Some(worker);
         self
@@ -86,7 +87,7 @@ pub struct HostForwardOptions {
     pub(crate) read_timeout: Duration,
 }
 
-/// Sealed native transport used by [`crate::WasiHttpHost`] to service WASI HTTP calls.
+/// Sealed native transport used by [`crate::wasmtime::WasiHttpHost`] to service WASI HTTP calls.
 ///
 /// This trait is public so the host type can name its transport boundary, but
 /// it is sealed because aioduct still owns the compatibility contract for the
@@ -98,21 +99,21 @@ pub trait WasiHostTransport: sealed::Sealed + Send + Sync + 'static {
     #[doc(hidden)]
     fn forward_wasi_http(
         &self,
-        request: http::Request<aioduct::body::RequestBodySend>,
+        request: http::Request<crate::body::RequestBodySend>,
         options: HostForwardOptions,
-    ) -> BoxFuture<Result<HostResponse, aioduct::Error>>;
+    ) -> BoxFuture<Result<HostResponse, crate::Error>>;
 }
 
-impl<R, C> WasiHostTransport for aioduct::HttpEngineSend<R, C>
+impl<R, C> WasiHostTransport for crate::HttpEngineSend<R, C>
 where
-    R: aioduct::RuntimePoll,
-    C: aioduct::ConnectorSend,
+    R: crate::RuntimePoll,
+    C: crate::ConnectorSend,
 {
     fn forward_wasi_http(
         &self,
-        request: http::Request<aioduct::body::RequestBodySend>,
+        request: http::Request<crate::body::RequestBodySend>,
         options: HostForwardOptions,
-    ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+    ) -> BoxFuture<Result<HostResponse, crate::Error>> {
         let transport = self.clone();
         Box::pin(async move {
             let mut forward = transport
@@ -146,7 +147,7 @@ const LOCAL_WORKER_QUEUE: usize = 64;
 const BODY_CHANNEL_CAPACITY: usize = 16;
 
 #[cfg(feature = "compio")]
-type BodyFrame = Result<Frame<Bytes>, aioduct::Error>;
+type BodyFrame = Result<Frame<Bytes>, crate::Error>;
 #[cfg(feature = "compio")]
 type BodyFrameSender = mpsc::Sender<BodyFrame>;
 #[cfg(feature = "compio")]
@@ -155,7 +156,7 @@ type BodyFrameReceiver = mpsc::Receiver<BodyFrame>;
 /// Host transport wrapper for compio's thread-local native runtime.
 ///
 /// `CompioClient` uses `HttpEngineLocal`, so it cannot implement
-/// [`crate::WasiHostTransport`] directly. This wrapper owns a dedicated compio worker
+/// [`crate::wasmtime::WasiHostTransport`] directly. This wrapper owns a dedicated compio worker
 /// thread and moves request and response body frames across bounded channels.
 #[cfg(feature = "compio")]
 pub struct CompioHostTransport {
@@ -178,7 +179,7 @@ impl CompioHostTransport {
 
     /// Start a host transport worker with the default compio transport.
     pub fn new() -> Result<Self, BuildError> {
-        Self::from_builder_factory(aioduct::CompioClient::builder)
+        Self::from_builder_factory(crate::CompioClient::builder)
     }
 }
 
@@ -186,9 +187,9 @@ impl CompioHostTransport {
 impl WasiHostTransport for CompioHostTransport {
     fn forward_wasi_http(
         &self,
-        request: http::Request<aioduct::body::RequestBodySend>,
+        request: http::Request<crate::body::RequestBodySend>,
         options: HostForwardOptions,
-    ) -> BoxFuture<Result<HostResponse, aioduct::Error>> {
+    ) -> BoxFuture<Result<HostResponse, crate::Error>> {
         let request_sender = match self.requests.lock() {
             Ok(sender) => sender.clone(),
             Err(_) => {
@@ -238,7 +239,7 @@ impl WasiHostTransport for CompioHostTransport {
 struct LocalForwardRequest {
     request: http::Request<ChannelBody>,
     options: HostForwardOptions,
-    response_sender: oneshot::Sender<Result<HostResponse, aioduct::Error>>,
+    response_sender: oneshot::Sender<Result<HostResponse, crate::Error>>,
 }
 
 #[cfg(feature = "compio")]
@@ -248,11 +249,11 @@ fn spawn_compio_worker(
 ) -> Result<(), BuildError> {
     let (ready_sender, ready_receiver) = std_mpsc::sync_channel(1);
     std::thread::Builder::new()
-        .name("aioduct-wasmtime-compio".into())
+        .name("aioduct-wasi-host-compio".into())
         .spawn(move || {
             let transport = transport();
             let ready_sender_for_task = ready_sender.clone();
-            let result = <aioduct::runtime::compio_rt::CompioRuntime as aioduct::RuntimeCompletion>::block_on(async move {
+            let result = <crate::runtime::compio_rt::CompioRuntime as crate::RuntimeCompletion>::block_on(async move {
                 let transport = match transport.build_local() {
                     Ok(transport) => transport,
                     Err(error) => {
@@ -263,7 +264,7 @@ fn spawn_compio_worker(
                 let _ = ready_sender_for_task.send(Ok(()));
                 while let Some(request) = receiver.next().await {
                     let transport = transport.clone();
-                    <aioduct::runtime::compio_rt::CompioRuntime as aioduct::RuntimeLocal>::spawn_local(
+                    <crate::runtime::compio_rt::CompioRuntime as crate::RuntimeLocal>::spawn_local(
                         async move {
                             let response =
                                 forward_compio_request(transport, request.request, request.options)
@@ -286,10 +287,10 @@ fn spawn_compio_worker(
 
 #[cfg(feature = "compio")]
 async fn forward_compio_request(
-    transport: aioduct::CompioClient,
+    transport: crate::CompioClient,
     request: http::Request<ChannelBody>,
     options: HostForwardOptions,
-) -> Result<HostResponse, aioduct::Error> {
+) -> Result<HostResponse, crate::Error> {
     let mut forward = transport
         .forward_local(request)
         .upstream(options.upstream)
@@ -308,7 +309,7 @@ async fn forward_compio_request(
     let response = forward.send().await?;
     let (parts, body) = response.into_http_response().into_parts();
     let (body_sender, body_receiver) = mpsc::channel(BODY_CHANNEL_CAPACITY);
-    <aioduct::runtime::compio_rt::CompioRuntime as aioduct::RuntimeLocal>::spawn_local(
+    <crate::runtime::compio_rt::CompioRuntime as crate::RuntimeLocal>::spawn_local(
         pump_local_response_body(body, body_sender),
     );
     Ok(HostResponse::new(http::Response::from_parts(
@@ -319,16 +320,16 @@ async fn forward_compio_request(
 
 #[cfg(feature = "compio")]
 fn spawn_send_body_pump(
-    body: aioduct::body::RequestBodySend,
+    body: crate::body::RequestBodySend,
     sender: BodyFrameSender,
-) -> wasmtime_wasi::runtime::AbortOnDropJoinHandle<()> {
-    wasmtime_wasi::runtime::spawn(async move {
+) -> ::wasmtime_wasi::runtime::AbortOnDropJoinHandle<()> {
+    ::wasmtime_wasi::runtime::spawn(async move {
         pump_send_body(body, sender).await;
     })
 }
 
 #[cfg(feature = "compio")]
-async fn pump_send_body(mut body: aioduct::body::RequestBodySend, mut sender: BodyFrameSender) {
+async fn pump_send_body(mut body: crate::body::RequestBodySend, mut sender: BodyFrameSender) {
     while let Some(frame) = body.frame().await {
         let should_stop = frame.is_err();
         if sender.send(frame).await.is_err() || should_stop {
@@ -339,7 +340,7 @@ async fn pump_send_body(mut body: aioduct::body::RequestBodySend, mut sender: Bo
 
 #[cfg(feature = "compio")]
 async fn pump_local_response_body(
-    mut body: aioduct::body::ResponseBodyLocal,
+    mut body: crate::body::ResponseBodyLocal,
     mut sender: BodyFrameSender,
 ) {
     while let Some(frame) = std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
@@ -372,7 +373,7 @@ impl ChannelBody {
 #[cfg(feature = "compio")]
 impl Body for ChannelBody {
     type Data = Bytes;
-    type Error = aioduct::Error;
+    type Error = crate::Error;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -394,6 +395,6 @@ impl Body for ChannelBody {
 }
 
 #[cfg(feature = "compio")]
-fn local_worker_closed_error() -> aioduct::Error {
-    aioduct::Error::Other("WASI HTTP local transport worker closed".into())
+fn local_worker_closed_error() -> crate::Error {
+    crate::Error::Other("WASI HTTP local transport worker closed".into())
 }

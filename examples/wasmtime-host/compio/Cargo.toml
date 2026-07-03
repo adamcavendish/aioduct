@@ -5,8 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["compio", "rustls", "rustls-ring"] }
-aioduct-wasmtime = { workspace = true, features = ["compio", "rustls-ring"] }
+aioduct = { workspace = true, features = ["compio", "rustls", "rustls-ring", "wasmtime"] }
 compio-runtime.workspace = true
 http.workspace = true
 wasmtime = { workspace = true, features = ["cranelift"] }

@@ -2,8 +2,10 @@
 default:
     @just --list
 
-all_features_ring := "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
-all_features_aws_lc_rs := "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2"
+all_features_ring := "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2,wasmtime"
+all_features_aws_lc_rs := "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2,wasmtime"
+wasmtime_features_smol_ring := "wasmtime,smol,rustls,rustls-ring"
+wasmtime_features_compio_ring := "wasmtime,compio,rustls,rustls-ring"
 
 # ---------- Build ----------
 
@@ -15,19 +17,15 @@ build:
 build-all:
     cargo build -p aioduct --features {{ all_features_ring }}
     cargo build -p aioduct --features {{ all_features_aws_lc_rs }}
-    cargo build -p aioduct-wasmtime --no-default-features --features tokio,rustls-ring
-    cargo build -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs
-    cargo build -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
-    cargo build -p aioduct-wasmtime --no-default-features --features compio,rustls-ring
+    cargo build -p aioduct --features {{ wasmtime_features_smol_ring }}
+    cargo build -p aioduct --features {{ wasmtime_features_compio_ring }}
 
 # Check MSRV (1.95)
 msrv:
     cargo +1.95.0 check -p aioduct --features {{ all_features_ring }}
     cargo +1.95.0 check -p aioduct --features {{ all_features_aws_lc_rs }}
-    cargo +1.95.0 check -p aioduct-wasmtime --no-default-features --features tokio,rustls-ring
-    cargo +1.95.0 check -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs
-    cargo +1.95.0 check -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
-    cargo +1.95.0 check -p aioduct-wasmtime --no-default-features --features compio,rustls-ring
+    cargo +1.95.0 check -p aioduct --features {{ wasmtime_features_smol_ring }}
+    cargo +1.95.0 check -p aioduct --features {{ wasmtime_features_compio_ring }}
 
 # ---------- Lint ----------
 
@@ -45,10 +43,8 @@ clippy:
 clippy-all:
     cargo clippy -p aioduct --features {{ all_features_ring }} --all-targets -- -D warnings
     cargo clippy -p aioduct --features {{ all_features_aws_lc_rs }} --all-targets -- -D warnings
-    cargo clippy -p aioduct-wasmtime --no-default-features --features tokio,rustls-ring --all-targets -- -D warnings
-    cargo clippy -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs --all-targets -- -D warnings
-    cargo clippy -p aioduct-wasmtime --no-default-features --features smol,rustls-ring --all-targets -- -D warnings
-    cargo clippy -p aioduct-wasmtime --no-default-features --features compio,rustls-ring --all-targets -- -D warnings
+    cargo clippy -p aioduct --features {{ wasmtime_features_smol_ring }} --all-targets -- -D warnings
+    cargo clippy -p aioduct --features {{ wasmtime_features_compio_ring }} --all-targets -- -D warnings
     cargo check --workspace --all-targets
 
 # Run clippy with a specific feature set
@@ -73,10 +69,8 @@ test:
 test-all:
     cargo nextest run -p aioduct --features {{ all_features_ring }}
     cargo nextest run -p aioduct --features {{ all_features_aws_lc_rs }}
-    cargo nextest run -p aioduct-wasmtime --no-default-features --features tokio,rustls-ring
-    cargo nextest run -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs
-    cargo nextest run -p aioduct-wasmtime --no-default-features --features smol,rustls-ring
-    cargo nextest run -p aioduct-wasmtime --no-default-features --features compio,rustls-ring
+    cargo nextest run -p aioduct --features {{ wasmtime_features_smol_ring }} wasmtime guest_wasi_client
+    cargo nextest run -p aioduct --features {{ wasmtime_features_compio_ring }} wasmtime guest_wasi_client
 
 # Run tests with a specific feature set
 test-features features:
@@ -145,10 +139,6 @@ doc:
 doc-check:
     RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct --features {{ all_features_ring }} --no-deps
     RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct --features {{ all_features_aws_lc_rs }} --no-deps
-    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct-wasmtime --no-default-features --features tokio,rustls-ring --no-deps
-    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct-wasmtime --no-default-features --features tokio,rustls-aws-lc-rs --no-deps
-    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct-wasmtime --no-default-features --features smol,rustls-ring --no-deps
-    RUSTDOCFLAGS="-Dwarnings" cargo doc -p aioduct-wasmtime --no-default-features --features compio,rustls-ring --no-deps
 
 # Build the mdbook
 book:

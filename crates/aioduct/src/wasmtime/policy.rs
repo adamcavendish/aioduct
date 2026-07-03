@@ -2,17 +2,17 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ::wasmtime_wasi_http::DEFAULT_FORBIDDEN_HEADERS;
+use ::wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
+use ::wasmtime_wasi_http::p2::body::HyperOutgoingBody;
 use http::header::{
     AUTHORIZATION, CONTENT_LENGTH, COOKIE, HeaderName, HeaderValue, PROXY_AUTHORIZATION,
 };
 use http::{HeaderMap, Uri};
 use http_body::Body;
-use wasmtime_wasi_http::DEFAULT_FORBIDDEN_HEADERS;
-use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
-use wasmtime_wasi_http::p2::body::HyperOutgoingBody;
 
-use crate::body::timeout_code_from_aioduct_error;
-use crate::map_aioduct_error;
+use super::body::timeout_code_from_aioduct_error;
+use super::map_aioduct_error;
 
 pub(crate) type RejectionObserver = Arc<dyn Fn(RejectionReason) + Send + Sync>;
 
@@ -292,7 +292,7 @@ impl ExactOriginPolicy {
         }
     }
 
-    pub(crate) fn map_forward_error(&self, error: aioduct::Error) -> ErrorCode {
+    pub(crate) fn map_forward_error(&self, error: crate::Error) -> ErrorCode {
         if self.deadline_expired() && timeout_code_from_aioduct_error(&error).is_some() {
             self.notify_rejection(RejectionReason::Deadline);
         }
@@ -307,7 +307,7 @@ impl ExactOriginPolicy {
     }
 }
 
-/// Build errors for [`crate::WasiHttpHost`].
+/// Build errors for [`crate::wasmtime::WasiHttpHost`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum BuildError {
@@ -325,7 +325,7 @@ pub enum BuildError {
 
     /// The native transport could not be built.
     #[error(transparent)]
-    Transport(#[from] aioduct::Error),
+    Transport(#[from] crate::Error),
 
     /// The local-runtime host transport worker could not be started.
     #[cfg(feature = "compio")]
@@ -527,7 +527,7 @@ impl RequestTrailerPolicy {
         trailers: &HeaderMap,
         observer: &Option<RejectionObserver>,
         rejected: &mut bool,
-    ) -> Result<(), aioduct::Error> {
+    ) -> Result<(), crate::Error> {
         for (name, value) in trailers {
             if DEFAULT_FORBIDDEN_HEADERS.contains(name)
                 || self.injected_headers.contains_key(name)
@@ -535,13 +535,13 @@ impl RequestTrailerPolicy {
                     && (is_sensitive_header_name(name) || value.is_sensitive()))
             {
                 notify_rejection_once(observer, rejected, RejectionReason::ProtectedHeader);
-                return Err(aioduct::Error::Other(Box::new(
+                return Err(crate::Error::Other(Box::new(
                     RequestTrailerPolicyError::ProtectedHeader,
                 )));
             }
             if self.is_denied_request_header(name) {
                 notify_rejection_once(observer, rejected, RejectionReason::DeniedHeader);
-                return Err(aioduct::Error::Other(Box::new(
+                return Err(crate::Error::Other(Box::new(
                     RequestTrailerPolicyError::DeniedHeader,
                 )));
             }
@@ -551,7 +551,7 @@ impl RequestTrailerPolicy {
             && header_section_size(trailers) > limit
         {
             notify_rejection_once(observer, rejected, RejectionReason::HeaderLimit);
-            return Err(aioduct::Error::Other(Box::new(
+            return Err(crate::Error::Other(Box::new(
                 RequestTrailerPolicyError::HeaderLimit { limit },
             )));
         }

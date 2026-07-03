@@ -138,6 +138,11 @@ let data: serde_json::Value = resp.json()?;</code></pre>
                             <span class="feature-name">wasi-p2</span>
                             <span class="feature-desc">WASI Preview 2 sockets</span>
                         </label>
+                        <label class="feature-checkbox">
+                            <input type="checkbox" name="feature" value="wasmtime">
+                            <span class="feature-name">wasmtime</span>
+                            <span class="feature-desc">Host-side WASI HTTP adapter</span>
+                        </label>
                     </div>
 
                     <h3>TLS &amp; Transport</h3>
@@ -248,7 +253,7 @@ let data: serde_json::Value = resp.json()?;</code></pre>
                         <button id="copy-btn" class="btn btn-small">Copy</button>
                     </div>
                     <pre><code id="cargo-output">[dependencies]
-aioduct = { version = "0.2.1", features = ["tokio", "rustls", "json"] }</code></pre>
+aioduct = { version = "0.2.2", features = ["tokio", "rustls", "json"] }</code></pre>
                     <div id="config-warnings"></div>
                 </div>
             </div>

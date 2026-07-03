@@ -4,21 +4,21 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
+use ::wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
 use bytes::Bytes;
 use http_body::{Body, Frame};
 use pin_project_lite::pin_project;
-use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
 
-use crate::policy::{
+use super::policy::{
     ExactOriginPolicy, RejectionObserver, RejectionReason, RequestTrailerPolicy,
     RequestTrailerPolicyError, header_section_size, limit_to_u32, notify_rejection_once,
 };
 
-pub(crate) fn map_wasi_body_error(code: ErrorCode) -> aioduct::Error {
-    aioduct::Error::Other(Box::new(WasiOutgoingBodyError { code }))
+pub(crate) fn map_wasi_body_error(code: ErrorCode) -> crate::Error {
+    crate::Error::Other(Box::new(WasiOutgoingBodyError { code }))
 }
 
-pub(crate) fn map_aioduct_error(error: aioduct::Error) -> ErrorCode {
+pub(crate) fn map_aioduct_error(error: crate::Error) -> ErrorCode {
     if let Some(code) = timeout_code_from_aioduct_error(&error) {
         return code;
     }
@@ -27,10 +27,10 @@ pub(crate) fn map_aioduct_error(error: aioduct::Error) -> ErrorCode {
     }
 
     match error {
-        aioduct::Error::InvalidUrl(_) => ErrorCode::HttpRequestUriInvalid,
-        aioduct::Error::HttpsOnly(_) => ErrorCode::HttpRequestDenied,
-        aioduct::Error::Tls(_) => ErrorCode::TlsProtocolError,
-        aioduct::Error::Hyper(error) => {
+        crate::Error::InvalidUrl(_) => ErrorCode::HttpRequestUriInvalid,
+        crate::Error::HttpsOnly(_) => ErrorCode::HttpRequestDenied,
+        crate::Error::Tls(_) => ErrorCode::TlsProtocolError,
+        crate::Error::Hyper(error) => {
             if let Some(code) = request_trailer_policy_error_code_from_error(&error) {
                 code
             } else if let Some(limit) = request_body_limit_from_error(&error) {
@@ -41,9 +41,9 @@ pub(crate) fn map_aioduct_error(error: aioduct::Error) -> ErrorCode {
                 ErrorCode::HttpProtocolError
             }
         }
-        aioduct::Error::Pool(_) => ErrorCode::ConnectionLimitReached,
-        aioduct::Error::Io(error) => io_error_code(&error),
-        aioduct::Error::Other(source) => {
+        crate::Error::Pool(_) => ErrorCode::ConnectionLimitReached,
+        crate::Error::Io(error) => io_error_code(&error),
+        crate::Error::Other(source) => {
             if let Some(code) = request_trailer_policy_error_code_from_error(source.as_ref()) {
                 code
             } else if let Some(limit) = request_body_limit_from_error(source.as_ref()) {
@@ -54,7 +54,7 @@ pub(crate) fn map_aioduct_error(error: aioduct::Error) -> ErrorCode {
                 ErrorCode::InternalError(Some("transport".into()))
             }
         }
-        aioduct::Error::RemoteAddr { source, .. } => {
+        crate::Error::RemoteAddr { source, .. } => {
             if let Some(error) = source.downcast_ref::<std::io::Error>() {
                 io_error_code(error)
             } else {
@@ -65,15 +65,15 @@ pub(crate) fn map_aioduct_error(error: aioduct::Error) -> ErrorCode {
     }
 }
 
-pub(crate) fn timeout_code_from_aioduct_error(error: &aioduct::Error) -> Option<ErrorCode> {
+pub(crate) fn timeout_code_from_aioduct_error(error: &crate::Error) -> Option<ErrorCode> {
     match error {
-        aioduct::Error::Timeout => Some(ErrorCode::HttpResponseTimeout),
-        aioduct::Error::ConnectTimeout => Some(ErrorCode::ConnectionTimeout),
-        aioduct::Error::ReadTimeout => Some(ErrorCode::ConnectionReadTimeout),
-        aioduct::Error::WriteTimeout => Some(ErrorCode::ConnectionWriteTimeout),
-        aioduct::Error::Hyper(error) => timeout_code_from_error(error),
-        aioduct::Error::Other(source) => timeout_code_from_error(source.as_ref()),
-        aioduct::Error::RemoteAddr { source, .. } => timeout_code_from_error(source.as_ref()),
+        crate::Error::Timeout => Some(ErrorCode::HttpResponseTimeout),
+        crate::Error::ConnectTimeout => Some(ErrorCode::ConnectionTimeout),
+        crate::Error::ReadTimeout => Some(ErrorCode::ConnectionReadTimeout),
+        crate::Error::WriteTimeout => Some(ErrorCode::ConnectionWriteTimeout),
+        crate::Error::Hyper(error) => timeout_code_from_error(error),
+        crate::Error::Other(source) => timeout_code_from_error(source.as_ref()),
+        crate::Error::RemoteAddr { source, .. } => timeout_code_from_error(source.as_ref()),
         _ => None,
     }
 }
@@ -81,7 +81,7 @@ pub(crate) fn timeout_code_from_aioduct_error(error: &aioduct::Error) -> Option<
 fn timeout_code_from_error(error: &(dyn StdError + 'static)) -> Option<ErrorCode> {
     let mut current = Some(error);
     while let Some(error) = current {
-        if let Some(error) = error.downcast_ref::<aioduct::Error>()
+        if let Some(error) = error.downcast_ref::<crate::Error>()
             && let Some(code) = timeout_code_from_aioduct_error(error)
         {
             return Some(code);
@@ -114,7 +114,7 @@ pub(crate) fn request_body_limit_from_error(error: &(dyn StdError + 'static)) ->
         if let Some(limit) = error.downcast_ref::<RequestBodyLimitExceeded>() {
             return Some(limit.limit);
         }
-        if let Some(aioduct::Error::Other(source)) = error.downcast_ref::<aioduct::Error>()
+        if let Some(crate::Error::Other(source)) = error.downcast_ref::<crate::Error>()
             && let Some(limit) = source.downcast_ref::<RequestBodyLimitExceeded>()
         {
             return Some(limit.limit);
@@ -132,7 +132,7 @@ fn request_trailer_policy_error_code_from_error(
         if let Some(error) = error.downcast_ref::<RequestTrailerPolicyError>() {
             return Some(error.to_error_code());
         }
-        if let Some(aioduct::Error::Other(source)) = error.downcast_ref::<aioduct::Error>()
+        if let Some(crate::Error::Other(source)) = error.downcast_ref::<crate::Error>()
             && let Some(error) = source.downcast_ref::<RequestTrailerPolicyError>()
         {
             return Some(error.to_error_code());
@@ -148,7 +148,7 @@ fn wasi_body_error_from_error(error: &(dyn StdError + 'static)) -> Option<ErrorC
         if let Some(error) = error.downcast_ref::<WasiOutgoingBodyError>() {
             return Some(error.code.clone());
         }
-        if let Some(aioduct::Error::Other(source)) = error.downcast_ref::<aioduct::Error>()
+        if let Some(crate::Error::Other(source)) = error.downcast_ref::<crate::Error>()
             && let Some(error) = source.downcast_ref::<WasiOutgoingBodyError>()
         {
             return Some(error.code.clone());
@@ -215,10 +215,10 @@ impl<B> RequestLimitBody<B> {
 
 impl<B> Body for RequestLimitBody<B>
 where
-    B: Body<Data = Bytes, Error = aioduct::Error>,
+    B: Body<Data = Bytes, Error = crate::Error>,
 {
     type Data = Bytes;
-    type Error = aioduct::Error;
+    type Error = crate::Error;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -237,7 +237,7 @@ where
                             this.rejected,
                             RejectionReason::BodyLimit,
                         );
-                        return Poll::Ready(Some(Err(aioduct::Error::Other(Box::new(
+                        return Poll::Ready(Some(Err(crate::Error::Other(Box::new(
                             RequestBodyLimitExceeded { limit: *limit },
                         )))));
                     }

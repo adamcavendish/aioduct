@@ -5,8 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-aioduct = { workspace = true, features = ["smol", "rustls", "rustls-ring"] }
-aioduct-wasmtime = { workspace = true, features = ["smol", "rustls-ring"] }
+aioduct = { workspace = true, features = ["smol", "rustls", "rustls-ring", "wasmtime"] }
 http.workspace = true
 smol.workspace = true
 wasmtime = { workspace = true, features = ["cranelift"] }

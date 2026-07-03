@@ -120,7 +120,7 @@ async fn smol_transport_services_wasi_http_request() {
             AUTHORIZATION,
             HeaderValue::from_static("Bearer smol-secret"),
         );
-    let transport = aioduct::SmolClient::builder()
+    let transport = crate::SmolClient::builder()
         .build()
         .expect("smol transport should build");
     let host = WasiHttpHost::builder()
@@ -169,12 +169,12 @@ async fn compio_transport_services_wasi_http_request() {
     );
 }
 
-#[cfg(feature = "tokio")]
+#[cfg(all(feature = "tokio", feature = "rustls"))]
 #[tokio::test]
 async fn custom_ca_allows_self_signed_tls() {
     let (addr, cert_der, _counter) = aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
-    let cert = aioduct::Certificate::from_der(cert_der.to_vec());
-    let transport = aioduct::TokioClient::builder()
+    let cert = crate::Certificate::from_der(cert_der.to_vec());
+    let transport = crate::TokioClient::builder()
         .add_root_certificates(&[cert])
         .build()
         .expect("transport should build");
@@ -195,11 +195,11 @@ async fn custom_ca_allows_self_signed_tls() {
     assert_eq!(incoming.resp.status(), http::StatusCode::OK);
 }
 
-#[cfg(feature = "tokio")]
+#[cfg(all(feature = "tokio", feature = "rustls"))]
 #[tokio::test]
 async fn insecure_transport_allows_self_signed_tls() {
     let (addr, _cert_der, _counter) = aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
-    let transport = aioduct::TokioClient::builder().danger_accept_invalid_certs();
+    let transport = crate::TokioClient::builder().danger_accept_invalid_certs();
     let policy =
         ExactOriginPolicy::new(&format!("https://localhost:{}", addr.port())).expect("policy");
     let host = WasiHttpHost::builder()
