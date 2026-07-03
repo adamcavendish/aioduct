@@ -10,7 +10,7 @@ The `aioduct` binary is a unified HTTP toolkit providing two subcommands: a curl
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adamcavendish/aioduct/releases/download/0.2.0/aioduct-cli-installer.sh | sh
 ```
 
-**Nightly build (latest master):**
+**Nightly build (latest main):**
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adamcavendish/aioduct/releases/download/nightly/aioduct-cli-installer.sh | sh
