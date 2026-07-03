@@ -3,7 +3,7 @@ use bytes::Bytes;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::message_signatures::MessageSignatureError;
-use crate::message_signatures::structured_fields;
+use crate::structured_fields;
 
 /// Header field name for RFC 9530 `Content-Digest`.
 pub const CONTENT_DIGEST: &str = "content-digest";
