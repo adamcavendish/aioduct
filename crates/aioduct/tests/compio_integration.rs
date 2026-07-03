@@ -51,6 +51,26 @@ fn start_server_tokio() -> SocketAddr {
     start_server_with_tokio(|req| async { hello(req).await })
 }
 
+fn read_raw_request_headers(stream: &mut std::net::TcpStream) {
+    use std::io::Read;
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut request = Vec::with_capacity(1024);
+    let mut buf = [0u8; 512];
+    while request.len() < 16 * 1024 {
+        let n = stream.read(&mut buf).unwrap();
+        assert_ne!(n, 0, "client closed before sending request headers");
+        request.extend_from_slice(&buf[..n]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            stream.set_read_timeout(None).unwrap();
+            return;
+        }
+    }
+    panic!("request headers exceeded 16 KiB");
+}
+
 fn start_server_with_tokio<F, Fut>(handler: F) -> SocketAddr
 where
     F: Fn(Request<hyper::body::Incoming>) -> Fut + Send + Clone + 'static,
@@ -1017,6 +1037,7 @@ fn test_compio_read_timeout_with_slow_body() {
 
             let (mut stream, _) = listener.accept().unwrap();
             use std::io::Write;
+            read_raw_request_headers(&mut stream);
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
             let _ = stream.write_all(b"5\r\nhello\r\n");
             let _ = stream.flush();
@@ -1063,6 +1084,7 @@ fn test_compio_per_request_read_timeout_overrides_default() {
 
             let (mut stream, _) = listener.accept().unwrap();
             use std::io::Write;
+            read_raw_request_headers(&mut stream);
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello");
             let _ = stream.flush();
             // Never send the remaining 5 bytes.
