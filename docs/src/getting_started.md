@@ -6,28 +6,28 @@ Add aioduct to your `Cargo.toml` with at least one runtime feature:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.0", features = ["tokio"] }
+aioduct = { version = "0.2.1", features = ["tokio"] }
 ```
 
 For HTTPS support, add the `rustls` backend and exactly one rustls crypto provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.0", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 To use rustls with AWS-LC instead, select the AWS-LC provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.0", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 For JSON serialization/deserialization:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.0", features = ["tokio", "rustls", "rustls-ring", "json"] }
+aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring", "json"] }
 ```
 
 ## Quick Example

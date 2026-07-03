@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-03
+
+### Added
+- RFC 9421 HTTP Message Signatures support for request and response signing,
+  verification, `Accept-Signature`, `Content-Digest`, trailer components,
+  asynchronous signers, and forwarded message signing.
+- `aioduct-wasmtime`, a Wasmtime host adapter with Tokio, smol, and compio
+  host transports, runtime/TLS feature flags, strict PEM CA bundle parsing,
+  forwarded timeout controls, header deny-list policy, and runnable host
+  examples.
+- Per-request controls for read timeout, write timeout, disabling client
+  default timeout, and disabling response decompression, with blocking and
+  generic request-builder parity where applicable.
+- Client ergonomics for base URLs, address-family selection, request-builder
+  introspection, custom retry classification, multipart boundary/subtype
+  selection, custom proxy CONNECT headers, and response byte-stream trailers.
+
+### Fixed
+- `pool_max_active_per_host` is enforced before fresh dials by reserving active
+  pool slots while connections are in flight.
+- Redirect and proxy behavior is hardened by rejecting non-http(s) redirect
+  targets, stripping sensitive header values across unsafe redirects, keeping
+  coalesced connections segregated by proxy route, and preventing HTTP/3 from
+  bypassing configured proxies.
+- Response streaming skips empty data frames and preserves trailer access after
+  streams are drained.
+- HSTS, cache, error, IP-literal, timeout, TLS, and proxy conformance coverage
+  has been tightened with focused security and interoperability tests.
+
+### Changed
+- Upgraded compio support to the 0.12 runtime/driver/net line and compio-io
+  0.10, including the local stream bridge changes required by compio's new
+  `!Unpin` `AsyncStream`.
+- Raised the minimum supported Rust version to 1.95.0.
+- Expanded the proxy compatibility matrix, security controls documentation,
+  HTTP Message Signatures documentation, Wasmtime host documentation, and
+  multi-runtime CI/test coverage.
+
 ## [0.2.0] - 2026-06-12
 
 First stable release of the 0.2.0 line. Highlights of the full cycle: a unified

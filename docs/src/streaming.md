@@ -31,6 +31,27 @@ async fn main() -> Result<(), aioduct::Error> {
 }
 ```
 
+After the stream is exhausted, call `trailers()` to inspect any HTTP trailers
+captured from the response:
+
+```rust,no_run
+# use aioduct::TokioClient;
+# #[tokio::main]
+# async fn main() -> Result<(), aioduct::Error> {
+# let client = TokioClient::new();
+# let resp = client.get("http://example.com/with-trailers")?.send().await?;
+let mut stream = resp.into_bytes_stream();
+while let Some(chunk) = stream.next().await {
+    let _ = chunk?;
+}
+
+if let Some(trailers) = stream.trailers() {
+    println!("trailers: {trailers:?}");
+}
+# Ok(())
+# }
+```
+
 ## Streaming to a File
 
 Combine `BodyStream` with `tokio::fs::File` to download directly to disk:

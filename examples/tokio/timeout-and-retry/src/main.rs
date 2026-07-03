@@ -11,6 +11,8 @@ async fn main() -> Result<(), aioduct::Error> {
         .timeout(Duration::from_secs(10))
         // Read timeout: max time between body chunks
         .read_timeout(Duration::from_secs(5))
+        // Write timeout: max time between upload chunks
+        .write_timeout(Duration::from_secs(5))
         // Retry on 5xx errors and network failures
         .retry(
             RetryConfig::default()

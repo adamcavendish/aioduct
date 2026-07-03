@@ -26,8 +26,8 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Connection pooling** — keyed by (scheme, authority) with idle timeout and per-host limits, plus `pool_stats()` diagnostics (hit/miss/eviction counters and per-host idle/active inventory)
 - **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping and content header removal
 - **Cookie jar** — automatic cookie storage, domain/path/subdomain matching, Max-Age and Expires expiration, Secure flag enforcement, SameSite (Strict/Lax/None), cookie prefixes (__Host-, __Secure-)
-- **Timeouts** — per-request, client-level, connect, and read timeouts
-- **Retry** — configurable exponential backoff with retry budgets, Retry-After header support, 429 Too Many Requests retry
+- **Timeouts** — client-level and per-request total, connect, read, and write timeouts, plus per-request timeout bypass
+- **Retry** — configurable exponential backoff with retry budgets, Retry-After header support, 429 Too Many Requests retry, and custom retry classification
 - **Decompression** — automatic gzip, brotli, zstd, deflate response decompression
 - **Proxy** — HTTP CONNECT tunneling, HTTPS proxy, SOCKS4/SOCKS4a, SOCKS5 (local DNS), SOCKS5h (remote DNS), proxy chaining up to 2 hops, URI-embedded credentials, credential resolver, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
 - **Middleware** — pluggable request/response interceptors via trait or closure
@@ -40,6 +40,8 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Chunk download** — parallel HTTP Range requests for large files
 - **HTTP upgrade** — WebSocket and other protocol upgrades via HTTP/1.1 101 and HTTP/2 extended CONNECT (RFC 8441)
 - **Request forwarding** — proxy/gateway builder via `client.forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, supports H2 extended CONNECT tunneling, per-forward h2c for gRPC upstreams, and adaptive h2c/h1 fallback with per-authority capability caching
+- **HTTP Message Signatures** — RFC 9421 request/response signing and verification, `Accept-Signature`, `Content-Digest`, trailer components, async signers, and forwarded message signing
+- **Wasmtime host adapter** — host-owned WASI HTTP forwarding via `aioduct-wasmtime`, with Tokio, smol, and compio transports plus explicit header policy controls
 - **Blocking client** — synchronous wrapper for non-async contexts (`BlockingTokioClient`, `BlockingSmolClient`, `BlockingCompioClient`)
 - **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration; DNS-over-HTTPS (`doh` feature) and DNS-over-TLS (`dot` feature)
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
@@ -69,7 +71,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.0", features = ["tokio"] }
+aioduct = { version = "0.2.1", features = ["tokio"] }
 ```
 
 ```rust
@@ -94,19 +96,19 @@ async fn main() -> Result<(), aioduct::Error> {
 Enable the `rustls` TLS backend plus exactly one rustls crypto provider:
 
 ```toml
-aioduct = { version = "0.2.0", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 To use rustls with AWS-LC instead of ring, select the AWS-LC provider:
 
 ```toml
-aioduct = { version = "0.2.0", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.1", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 To use the OS certificate store, add `rustls-native-roots` alongside either TLS provider:
 
 ```toml
-aioduct = { version = "0.2.0", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.1", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ```rust
