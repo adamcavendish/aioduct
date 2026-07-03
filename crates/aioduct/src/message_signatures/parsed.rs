@@ -12,6 +12,7 @@ use super::{
     MessageSignatureBase, MessageSignatureComponent, MessageSignatureComponentParameter,
     MessageSignatureContext, MessageSignatureError, MessageSignatureParams,
     MessageSignatureRequestContext, MessageSignatureResponseContext,
+    MessageSignatureStructuredFieldType,
 };
 
 /// Parsed RFC 9421 signature material selected by label.
@@ -78,6 +79,16 @@ impl MessageSignature {
     /// Return the canonical `@signature-params` value for this signature.
     pub fn signature_params_value(&self) -> &str {
         &self.signature_params_value
+    }
+
+    /// Configure the expected RFC 9651 top-level type for a parsed `;sf` header component.
+    pub fn with_structured_field_type(
+        mut self,
+        name: HeaderName,
+        field_type: MessageSignatureStructuredFieldType,
+    ) -> Self {
+        self.apply_structured_field_type(&name, field_type);
+        self
     }
 
     /// Rebuild the RFC 9421 signature base for a request.
@@ -194,6 +205,16 @@ impl MessageSignature {
             return Err(MessageSignatureError::NonAsciiSignatureBase);
         }
         Ok(MessageSignatureBase::new(value))
+    }
+
+    pub(crate) fn apply_structured_field_type(
+        &mut self,
+        name: &HeaderName,
+        field_type: MessageSignatureStructuredFieldType,
+    ) {
+        for component in &mut self.components {
+            component.set_structured_field_type_for_header(name, field_type);
+        }
     }
 }
 

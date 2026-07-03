@@ -39,6 +39,9 @@ pub enum MessageSignatureError {
     /// A covered Structured Field value is malformed.
     #[error("covered structured field `{0}` is malformed")]
     MalformedStructuredField(HeaderName),
+    /// A covered Structured Field uses `;sf` without a configured top-level type.
+    #[error("covered structured field `{0}` has no configured Structured Fields type")]
+    UnknownStructuredFieldType(HeaderName),
     /// An existing signature header is not a valid Structured Fields dictionary.
     #[error("existing `{0}` header is malformed")]
     MalformedSignatureHeader(&'static str),

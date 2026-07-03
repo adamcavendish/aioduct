@@ -70,6 +70,13 @@ impl StructuredFieldValue {
 }
 
 impl Dictionary {
+    pub(crate) fn member(&self, key: &str) -> Option<&ItemOrInnerList> {
+        self.entries
+            .iter()
+            .find(|(member_key, _)| member_key == key)
+            .map(|(_, member)| member)
+    }
+
     pub(crate) fn serialize(&self) -> String {
         let mut out = String::new();
         for (index, (key, member)) in self.entries.iter().enumerate() {

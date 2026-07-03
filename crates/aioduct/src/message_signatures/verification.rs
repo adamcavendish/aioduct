@@ -4,7 +4,7 @@ use http::{Method, StatusCode, Uri};
 use super::component::MessageSignatureComponentKind;
 use super::{
     MessageSignature, MessageSignatureComponent, MessageSignatureComponentParameter,
-    MessageSignatureError, MessageSignatureParams,
+    MessageSignatureError, MessageSignatureParams, MessageSignatureStructuredFieldType,
 };
 
 /// Inputs provided to a caller-owned RFC 9421 signature verifier.
@@ -44,6 +44,7 @@ pub struct MessageSignatureResponseContext<'a> {
 #[non_exhaustive]
 pub struct MessageSignatureVerificationPolicy {
     required_components: Vec<MessageSignatureComponent>,
+    structured_field_types: Vec<(HeaderName, MessageSignatureStructuredFieldType)>,
     accepted_algorithms: Vec<String>,
     accepted_key_ids: Vec<String>,
     validation_time: Option<u64>,
@@ -226,6 +227,7 @@ impl MessageSignatureVerificationPolicy {
 
     /// Require one covered component to be present in the parsed signature input.
     pub fn required_component(mut self, component: MessageSignatureComponent) -> Self {
+        self.register_component_structured_field_type(&component);
         self.required_components.push(component);
         self
     }
@@ -235,7 +237,30 @@ impl MessageSignatureVerificationPolicy {
         mut self,
         components: impl IntoIterator<Item = MessageSignatureComponent>,
     ) -> Self {
-        self.required_components.extend(components);
+        for component in components {
+            self = self.required_component(component);
+        }
+        self
+    }
+
+    /// Configure the RFC 9651 top-level type for parsed `;sf` components covering this field.
+    pub fn structured_field_type(
+        mut self,
+        name: HeaderName,
+        field_type: MessageSignatureStructuredFieldType,
+    ) -> Self {
+        self.set_structured_field_type(name, field_type);
+        self
+    }
+
+    /// Configure RFC 9651 top-level types for parsed `;sf` components.
+    pub fn structured_field_types_iter(
+        mut self,
+        fields: impl IntoIterator<Item = (HeaderName, MessageSignatureStructuredFieldType)>,
+    ) -> Self {
+        for (name, field_type) in fields {
+            self.set_structured_field_type(name, field_type);
+        }
         self
     }
 
@@ -351,10 +376,11 @@ impl MessageSignatureVerificationPolicy {
         request: MessageSignatureRequestContext<'_>,
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
-        self.validate_policy(signature)?;
-        verify_covered_content_digests(signature, Some(request), None)?;
+        let signature = self.signature_with_structured_field_types(signature);
+        self.validate_policy(&signature)?;
+        verify_covered_content_digests(&signature, Some(request), None)?;
         let base = signature.signature_base_for_request_context(request)?;
-        self.verify_base(signature, base.as_bytes(), verifier)
+        self.verify_base(&signature, base.as_bytes(), verifier)
     }
 
     pub(crate) fn verify_parsed_response(
@@ -363,10 +389,11 @@ impl MessageSignatureVerificationPolicy {
         response: MessageSignatureResponseContext<'_>,
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
-        self.validate_policy(signature)?;
-        verify_covered_content_digests(signature, None, Some(response))?;
+        let signature = self.signature_with_structured_field_types(signature);
+        self.validate_policy(&signature)?;
+        verify_covered_content_digests(&signature, None, Some(response))?;
         let base = signature.response_signature_base_for_context(response)?;
-        self.verify_base(signature, base.as_bytes(), verifier)
+        self.verify_base(&signature, base.as_bytes(), verifier)
     }
 
     pub(crate) fn verify_parsed_request_response(
@@ -376,10 +403,11 @@ impl MessageSignatureVerificationPolicy {
         response: MessageSignatureResponseContext<'_>,
         verifier: &(impl MessageSignatureVerifier + ?Sized),
     ) -> Result<(), MessageSignatureError> {
-        self.validate_policy(signature)?;
-        verify_covered_content_digests(signature, Some(request), Some(response))?;
+        let signature = self.signature_with_structured_field_types(signature);
+        self.validate_policy(&signature)?;
+        verify_covered_content_digests(&signature, Some(request), Some(response))?;
         let base = signature.request_response_signature_base_for_context(request, response)?;
-        self.verify_base(signature, base.as_bytes(), verifier)
+        self.verify_base(&signature, base.as_bytes(), verifier)
     }
 
     fn verify_base(
@@ -406,6 +434,39 @@ impl MessageSignatureVerificationPolicy {
         self.validate_key_id(signature.params())?;
         self.validate_timestamps(signature.params())?;
         Ok(())
+    }
+
+    fn signature_with_structured_field_types(
+        &self,
+        signature: &MessageSignature,
+    ) -> MessageSignature {
+        let mut signature = signature.clone();
+        for (name, field_type) in &self.structured_field_types {
+            signature.apply_structured_field_type(name, *field_type);
+        }
+        signature
+    }
+
+    fn register_component_structured_field_type(&mut self, component: &MessageSignatureComponent) {
+        if let Some((name, field_type)) = component.structured_field_type_identity() {
+            self.set_structured_field_type(name, field_type);
+        }
+    }
+
+    fn set_structured_field_type(
+        &mut self,
+        name: HeaderName,
+        field_type: MessageSignatureStructuredFieldType,
+    ) {
+        if let Some((_, existing_type)) = self
+            .structured_field_types
+            .iter_mut()
+            .find(|(existing_name, _)| existing_name == name)
+        {
+            *existing_type = field_type;
+        } else {
+            self.structured_field_types.push((name, field_type));
+        }
     }
 
     fn validate_required_components(

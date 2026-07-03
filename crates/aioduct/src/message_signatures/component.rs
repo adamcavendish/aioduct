@@ -2,6 +2,7 @@ use http::header::HeaderName;
 
 use super::MessageSignatureError;
 use super::params::serialize_sf_string;
+use crate::structured_fields;
 
 /// A component covered by an RFC 9421 HTTP Message Signature.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -9,6 +10,7 @@ use super::params::serialize_sf_string;
 pub struct MessageSignatureComponent {
     kind: MessageSignatureComponentKind,
     parameters: Vec<MessageSignatureComponentParameter>,
+    structured_field_type: Option<MessageSignatureStructuredFieldType>,
 }
 
 /// A parameter attached to an RFC 9421 covered component identifier.
@@ -27,6 +29,18 @@ pub enum MessageSignatureComponentParameter {
     RelatedRequest,
     /// The percent-encoded named query parameter for `@query-param` (`;name`).
     Name(String),
+}
+
+/// The RFC 9651 top-level type expected for a `;sf` covered field component.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[non_exhaustive]
+pub enum MessageSignatureStructuredFieldType {
+    /// A Dictionary Structured Field.
+    Dictionary,
+    /// A List Structured Field.
+    List,
+    /// An Item Structured Field.
+    Item,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -111,11 +125,27 @@ impl MessageSignatureComponent {
         &self.parameters
     }
 
-    /// Attach the `;sf` component parameter.
-    pub fn structured_field(mut self) -> Self {
+    /// Attach the `;sf` component parameter with the field's known Structured Field type.
+    pub fn structured_field(mut self, field_type: MessageSignatureStructuredFieldType) -> Self {
         self.parameters
             .push(MessageSignatureComponentParameter::StructuredField);
+        self.structured_field_type = Some(field_type);
         self
+    }
+
+    /// Attach `;sf` for a Dictionary Structured Field.
+    pub fn structured_dictionary(self) -> Self {
+        self.structured_field(MessageSignatureStructuredFieldType::Dictionary)
+    }
+
+    /// Attach `;sf` for a List Structured Field.
+    pub fn structured_list(self) -> Self {
+        self.structured_field(MessageSignatureStructuredFieldType::List)
+    }
+
+    /// Attach `;sf` for an Item Structured Field.
+    pub fn structured_item(self) -> Self {
+        self.structured_field(MessageSignatureStructuredFieldType::Item)
     }
 
     /// Attach the `;key` component parameter.
@@ -124,6 +154,9 @@ impl MessageSignatureComponent {
         validate_component_string(&key)?;
         self.parameters
             .push(MessageSignatureComponentParameter::Key(key));
+        if self.has_structured_field_parameter() {
+            self.structured_field_type = Some(MessageSignatureStructuredFieldType::Dictionary);
+        }
         Ok(self)
     }
 
@@ -248,6 +281,45 @@ impl MessageSignatureComponent {
         key
     }
 
+    pub(crate) fn structured_field_type(&self) -> Option<MessageSignatureStructuredFieldType> {
+        self.structured_field_type
+    }
+
+    pub(crate) fn has_structured_field_parameter(&self) -> bool {
+        self.parameters.iter().any(|parameter| {
+            matches!(
+                parameter,
+                MessageSignatureComponentParameter::StructuredField
+            )
+        })
+    }
+
+    pub(crate) fn structured_field_type_identity(
+        &self,
+    ) -> Option<(HeaderName, MessageSignatureStructuredFieldType)> {
+        let MessageSignatureComponentKind::Header(name) = &self.kind else {
+            return None;
+        };
+        if self.has_structured_field_parameter() {
+            self.structured_field_type
+                .map(|field_type| (name.clone(), field_type))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn set_structured_field_type_for_header(
+        &mut self,
+        name: &HeaderName,
+        field_type: MessageSignatureStructuredFieldType,
+    ) {
+        if matches!(&self.kind, MessageSignatureComponentKind::Header(header) if header == name)
+            && self.has_structured_field_parameter()
+        {
+            self.structured_field_type = Some(field_type);
+        }
+    }
+
     pub(crate) fn dictionary_key_identity(&self) -> Option<(HeaderName, String, bool, bool)> {
         let MessageSignatureComponentKind::Header(name) = &self.kind else {
             return None;
@@ -347,6 +419,7 @@ impl MessageSignatureComponent {
         Self {
             kind,
             parameters: Vec::new(),
+            structured_field_type: None,
         }
     }
 
@@ -356,6 +429,16 @@ impl MessageSignatureComponent {
         self.parameters
             .push(MessageSignatureComponentParameter::Name(name));
         Ok(self)
+    }
+}
+
+impl MessageSignatureStructuredFieldType {
+    pub(crate) fn into_structured_field_type(self) -> structured_fields::StructuredFieldType {
+        match self {
+            Self::Dictionary => structured_fields::StructuredFieldType::Dictionary,
+            Self::List => structured_fields::StructuredFieldType::List,
+            Self::Item => structured_fields::StructuredFieldType::Item,
+        }
     }
 }
 

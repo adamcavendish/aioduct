@@ -48,6 +48,7 @@ pub(crate) fn parse_item_field(input: &str) -> Result<Item, StructuredFieldError
     Parser::new(input).parse_complete(|parser| parser.parse_item())
 }
 
+#[cfg(test)]
 pub(crate) fn dictionary_member(
     input: &str,
     key: &str,
@@ -66,6 +67,7 @@ pub(crate) fn dictionary_member(
     Ok(member)
 }
 
+#[cfg(test)]
 pub(crate) fn field_value(input: &str) -> Result<String, StructuredFieldError> {
     parse_field_value(input, StructuredFieldType::Dictionary)
         .or_else(|_| parse_field_value(input, StructuredFieldType::List))
@@ -112,6 +114,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[cfg(test)]
     fn parse_dictionary(
         &mut self,
         target_key: &str,
