@@ -5,9 +5,9 @@ use http::{Method, StatusCode, Uri};
 use super::component::{
     MessageSignatureComponentKind, MessageSignatureComponentTarget, encode_query_param_component,
 };
-use super::structured_fields;
 use super::verification::{MessageSignatureRequestContext, MessageSignatureResponseContext};
 use super::{MessageSignatureComponent, MessageSignatureError};
+use crate::structured_fields;
 
 #[allow(dead_code)]
 pub(crate) enum MessageSignatureContext<'a> {

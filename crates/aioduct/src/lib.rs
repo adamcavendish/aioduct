@@ -72,6 +72,7 @@ pub mod retry;
 mod sha256;
 /// Server-Sent Events (SSE) stream parser.
 pub mod sse;
+mod structured_fields;
 /// Token-bucket rate limiter for throttling requests.
 pub mod throttle;
 /// Consumer-facing client trait and extension traits.

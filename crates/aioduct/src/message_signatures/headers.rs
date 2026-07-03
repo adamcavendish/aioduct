@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 
 use super::MessageSignatureError;
-use super::structured_fields;
+use crate::structured_fields;
 
 pub(crate) const SIGNATURE_INPUT: &str = "signature-input";
 pub(crate) const SIGNATURE: &str = "signature";

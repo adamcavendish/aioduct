@@ -5,8 +5,8 @@ use super::config::{validate_component_set, validate_label};
 use super::headers::{ACCEPT_SIGNATURE, existing_dictionary, reject_duplicate_labels};
 use super::params::AcceptSignatureParams;
 use super::parsed::parse_accept_signature_member;
-use super::structured_fields;
 use super::{MessageSignatureComponent, MessageSignatureConfig, MessageSignatureError};
+use crate::structured_fields;
 
 /// Parsed or generated RFC 9421 `Accept-Signature` requests.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
