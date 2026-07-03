@@ -710,4 +710,94 @@ mod tests {
             Some("@1".to_owned())
         );
     }
+
+    #[test]
+    fn canonicalizes_lists_items_inner_lists_and_parameters() {
+        assert_eq!(
+            field_value("  01;foo;bar=?0, 02.300, (  a;z=01 b   c;x;x=?0  );q=01.200  ").unwrap(),
+            "1;foo;bar=?0, 2.3, (a;z=1 b c;x=?0);q=1.2"
+        );
+        assert_eq!(
+            field_value(r#" "hello\"";a=1;a=2 "#).unwrap(),
+            r#""hello\"";a=2"#
+        );
+    }
+
+    #[test]
+    fn canonicalizes_dictionary_boolean_members_and_duplicates() {
+        assert_eq!(
+            field_value("a, b=?0, c=?1, a=?0, d;x;y=?0").unwrap(),
+            "a=?0, b=?0, c, d;x;y=?0"
+        );
+        assert_eq!(
+            dictionary("a, b=?0, a=?1").unwrap(),
+            vec![
+                ("a".to_owned(), "?1".to_owned()),
+                ("b".to_owned(), "?0".to_owned()),
+                ("a".to_owned(), "?1".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn canonicalizes_number_boundaries() {
+        assert_eq!(
+            field_value("a=999999999999999, b=-999999999999999, c=999999999999.999").unwrap(),
+            "a=999999999999999, b=-999999999999999, c=999999999999.999"
+        );
+        assert_eq!(
+            field_value("a=000000000000000, b=-000000000000000, c=000000000000.010").unwrap(),
+            "a=0, b=0, c=0.01"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_numbers() {
+        for input in [
+            "a=1000000000000000",
+            "a=1000000000000.0",
+            "a=1.",
+            "a=1.0000",
+            "a=-",
+            "a=--1",
+        ] {
+            assert!(field_value(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn canonicalizes_byte_sequences_dates_and_display_strings() {
+        assert_eq!(
+            field_value(r#"a=:AQI:, b=:AQI=:"#).unwrap(),
+            "a=:AQI=:, b=:AQI=:"
+        );
+        assert_eq!(field_value("a=@000001").unwrap(), "a=@1");
+        assert_eq!(
+            field_value(r#"a=%"hello%20%22%25", b=%"caf%c3%a9""#).unwrap(),
+            r#"a=%"hello %22%25", b=%"caf%c3%a9""#
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_byte_sequences_dates_and_display_strings() {
+        for input in [
+            "a=:AQI",
+            "a=:AQI!:",
+            "a=@1.0",
+            "a=@",
+            r#"a=%"bad%C3%A9""#,
+            r#"a=%"bad%ff""#,
+            r#"a=%"bad%g0""#,
+            "a=%\"bad\u{7f}\"",
+        ] {
+            assert!(field_value(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn documents_current_top_level_inference_order() {
+        assert_eq!(field_value("a=1").unwrap(), "a=1");
+        assert_eq!(field_value("a;b=1").unwrap(), "a;b=1");
+        assert_eq!(field_value("token/with:path").unwrap(), "token/with:path");
+    }
 }
