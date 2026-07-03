@@ -20,7 +20,7 @@ smol.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 [target.'cfg(not(target_env = "musl"))'.dependencies]
-isahc = "1"
+isahc = "2"
 
 [[bench]]
 name = "bench_main"
