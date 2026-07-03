@@ -35,7 +35,7 @@ futures-util = "0.3"
 h3 = { version = "0.0.8", features = ["i-implement-a-third-party-backend-and-opt-into-breaking-changes"] }
 h3-quinn = "0.0.10"
 hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "system-config"] }
-x509-parser = { version = "0.17", default-features = false }
+x509-parser = { version = "0.18", default-features = false }
 hex = "0.4"
 http = "1"
 http-body = "1"
@@ -52,7 +52,7 @@ opentelemetry_sdk = "0.32"
 paste = "1"
 percent-encoding = "2"
 pin-project-lite = "0.2"
-quick-xml = "0.40.1"
+quick-xml = "0.41"
 quinn = { version = "0.11", default-features = false }
 ratatui = "0.30"
 rcgen = "0.14"
@@ -61,7 +61,7 @@ rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 serde = "1"
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 serde_urlencoded = "0.7"
 smol = "2"
 socket2 = { version = "0.6", features = ["all"] }
