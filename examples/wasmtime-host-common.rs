@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use aioduct_wasmtime::{ExactOriginPolicy, WasiHttpHost};
 use http::HeaderValue;
-use http::header::AUTHORIZATION;
+use http::header::{AUTHORIZATION, FORWARDED};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::bindings::Command as WasiCommand;
@@ -48,6 +48,8 @@ impl WasiHttpView for HostState {
 pub fn policy_for_origin(origin: &str) -> Result<ExactOriginPolicy, Box<dyn std::error::Error>> {
     Ok(ExactOriginPolicy::new(origin)?
         .forbid_sensitive_headers()
+        .deny_headers([FORWARDED])
+        .deny_header_prefixes(["x-forwarded-", "proxy-"])
         .inject_header(AUTHORIZATION, HeaderValue::from_static(SECRET_HEADER))
         .header_limit(16 * 1024)
         .body_limit(1024 * 1024)

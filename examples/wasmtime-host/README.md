@@ -45,7 +45,9 @@ cargo run -p example-wasmtime-host-tokio -- target/wasm32-wasip2/debug/example-w
 
 The Wasmtime embedder and the native forwarding transport are separate choices.
 The guest remains a WASI Preview 2 component using `aioduct::WasiClient`; the
-host owns origin validation, limits, deadlines, and secret header injection.
+host owns origin validation, host-specific header denial, limits, deadlines, and
+secret header injection. The shared example policy denies guest-supplied
+`forwarded`, `x-forwarded-*`, and `proxy-*` headers before forwarding.
 
 ## Expected output
 
