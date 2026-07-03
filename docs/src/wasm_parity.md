@@ -56,6 +56,7 @@ WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
 | Sync automatic request signing | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ manual headers only | ✗ manual headers only |
 | Async automatic request signing | ✓ `Send` future | ✓ `Send` future | ✓ local future | ✗ manual headers only | ✗ manual headers only |
 | Forward automatic response signing | ✓ sync/`Send` async | ✓ sync/`Send` async | ✓ sync/local async | ✗ no native forwarding | ✗ no native forwarding |
+| Automatic trailer-based digest/signature generation | ✗ manual contexts only | ✗ manual contexts only | ✗ manual contexts only | ✗ manual contexts only | ✗ manual contexts only |
 
 `message_signatures` is portable: callers can build request or response
 signature bases, sign them with their own key material, verify signed request or
@@ -76,7 +77,12 @@ builders can also buffer downstream responses up to a caller cap to generate
 `on_response`; this is not available on browser Fetch or WASI because those
 targets do not expose the native forwarding builder. Browser Fetch and WASI
 request dispatch do not expose automatic digest/signing hooks; use the portable
-helper flow and manual headers there.
+helper flow and manual headers there. Automatic trailer-based digest or
+signature generation is not exposed on any runtime: native HTTP/1 and HTTP/2 can
+carry request trailer frames, but HTTP/3 currently buffers request bodies before
+handoff, browser Fetch and WASI do not expose matching request-trailer hooks, and
+forward response signing runs before the downstream response body is streamed.
+Use caller-supplied trailer maps with the portable context APIs instead.
 
 ### Authentication
 

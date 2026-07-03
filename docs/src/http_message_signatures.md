@@ -544,6 +544,15 @@ signers for tokio/smol, and local async signers for compio. Buffered automatic
 forward response `Content-Digest` generation is available on native forward
 builders. Blocking clients inherit configured native-client behavior.
 
+Automatic trailer-based digest or signature generation is intentionally not
+exposed yet. HTTP/1 and HTTP/2 native dispatch can carry body trailer frames, but
+the current HTTP/3 dispatch buffers request bodies before handoff, browser Fetch
+and WASI do not expose matching request-trailer hooks, and forward response
+signing builds the signature headers before the downstream response body is
+streamed. Until those transport seams have common semantics, use explicit
+`Content-Digest` fields and caller-supplied trailer maps with the manual context
+APIs.
+
 Browser Fetch and WASI hosts can still alter or reject some headers at the host
 boundary. That host behavior is outside aioduct's control.
 
@@ -579,9 +588,11 @@ work lands.
 | Buffered automatic `Content-Digest` generation | Supported | `automatic_content_digest_is_inserted_before_signing`, `automatic_content_digest_preserves_manual_header`, `automatic_content_digest_rejects_streaming_body_without_manual_digest`, `automatic_content_digest_rejects_middleware_replaced_body_without_manual_digest` | Current | Native dispatch can insert SHA-256 `Content-Digest` for buffered bodies before automatic signing. Existing digest fields are preserved; streaming or middleware-replaced bodies need explicit digest fields. |
 | Bounded forward response `Content-Digest` generation | Supported | `forward_response_content_digest_is_signed_and_preserves_body`, `forward_response_content_digest_rejects_body_over_limit`, `forward_response_content_digest_rejects_connect_before_upstream`, `forward_response_content_digest_preserves_existing_field`, `forward_response_content_digest_skips_head_response`, `forward_response_content_digest_skips_not_modified_response`, `test_compio_forward_response_content_digest_is_signed`, `test_compio_forward_response_content_digest_skips_not_modified_response` | Current | Native forward builders can buffer downstream response bodies up to a caller cap, insert SHA-256 `Content-Digest` before response signing, preserve existing digest fields, skip synthesized digests for bodyless responses, and fail closed over the cap. |
 | Async automatic signing | Supported | `async_automatic_signing_adds_headers_after_middleware`, `async_signer_error_aborts_request_before_dispatch`, `test_compio_async_local_message_signature` | Current | Send-runtime signing uses `message_signature_async` with a `Send` future; local-runtime signing uses `message_signature_async_local` and can await a non-`Send` future. Sync automatic signing remains supported. |
-| Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs cross-runtime request-trailer semantics first. |
+| Automatic trailer-based digest/signature generation | Future follow-up | Matrix only | Post first pass | Trailer fields are standards-valid, but automatic trailer generation needs common request and response trailer semantics across native HTTP/1, HTTP/2, HTTP/3, browser Fetch, WASI, and forwarding paths first. |
 | Cryptographic algorithm validation | Not in scope | Matrix only | Caller-owned | aioduct builds bases and header values; callers own keys, algorithms, signing, and verification cryptography. |
 
 ## Future Work
 
-- Automatic trailer-based digest/signature generation after trailer semantics are proven across runtimes.
+- Automatic trailer-based digest/signature generation after request and response
+  trailer semantics are proven across HTTP/1, HTTP/2, HTTP/3, browser Fetch,
+  WASI, and forwarding paths.

@@ -33,7 +33,9 @@ unsupported trailer components, response digest bodies over the configured cap,
 `CONNECT`, known upgrade requests, and HTTP/1.1 `101 Switching Protocols`
 responses. Synthesized response digest fields are skipped for bodyless responses
 such as `HEAD`, `204`, `205`, and `304`. Automatic trailer generation remains
-Future Work.
+Future Work because request and response trailer transport semantics are not yet
+consistent across native HTTP/1, HTTP/2, HTTP/3, browser Fetch, WASI, and
+forwarding paths.
 
 ## Platform-Managed Runtimes
 
