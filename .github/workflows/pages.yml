@@ -6,6 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
+  contents: read
   pages: write
   id-token: write
 
@@ -21,6 +23,14 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Restore benchmark data
+        uses: actions/cache/restore@v4
+        with:
+          path: .benchmark-cache
+          key: ${{ runner.os }}-benchmark-main-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-benchmark-main-
 
       # --- Build mdBook docs ---
       - uses: taiki-e/install-action@just
@@ -74,6 +84,12 @@ jobs:
           # Landing page at root
           cp site/index.html site/style.css site/app.js _site/
           cp -r site/wasm _site/wasm
+          cp -r site/dev _site/dev
+          if [ -f .benchmark-cache/benchmark-data.json ]; then
+            cp .benchmark-cache/benchmark-data.json _site/dev/bench/benchmark-data.json
+          else
+            printf '[]\n' > _site/dev/bench/benchmark-data.json
+          fi
           # mdBook docs at /docs/
           cp -r docs/book _site/docs
 

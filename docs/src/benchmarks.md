@@ -45,7 +45,10 @@ bencher-compatible output for
 [`benchmark-action/github-action-benchmark`](https://github.com/benchmark-action/github-action-benchmark),
 stores benchmark history in the workflow cache, writes a job summary, and fails
 when a benchmark regresses by more than 200% compared with the previous result
-for the same branch.
+for the same branch. After saving the cache, the benchmark workflow triggers the
+Pages workflow, which restores the latest benchmark cache and publishes the chart
+dashboard at
+<https://adamcavendish.github.io/aioduct/dev/bench/>.
 
 ## Results
 
