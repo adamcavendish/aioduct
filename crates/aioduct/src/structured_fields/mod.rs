@@ -5,6 +5,107 @@ pub(crate) enum StructuredFieldError {
     Parse,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StructuredFieldType {
+    Dictionary,
+    List,
+    Item,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum StructuredFieldValue {
+    Dictionary(Dictionary),
+    List(List),
+    Item(Item),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Dictionary {
+    entries: Vec<(String, ItemOrInnerList)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct List {
+    members: Vec<ItemOrInnerList>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ItemOrInnerList {
+    Item(Item),
+    InnerList(InnerList),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InnerList {
+    items: Vec<Item>,
+    parameters: Parameters,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Item {
+    bare_item: BareItem,
+    parameters: Parameters,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Parameters {
+    entries: Vec<(String, BareItem)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum BareItem {
+    Integer(String),
+    Decimal(String),
+    String(String),
+    Token(String),
+    ByteSequence(Vec<u8>),
+    Boolean(bool),
+    Date(String),
+    DisplayString(String),
+}
+
+struct Number {
+    bare_item: BareItem,
+    is_decimal: bool,
+}
+
+pub(crate) fn parse_field_value(
+    input: &str,
+    field_type: StructuredFieldType,
+) -> Result<StructuredFieldValue, StructuredFieldError> {
+    match field_type {
+        StructuredFieldType::Dictionary => {
+            parse_dictionary_field(input).map(StructuredFieldValue::Dictionary)
+        }
+        StructuredFieldType::List => parse_list_field(input).map(StructuredFieldValue::List),
+        StructuredFieldType::Item => parse_item_field(input).map(StructuredFieldValue::Item),
+    }
+}
+
+pub(crate) fn parse_dictionary_field(input: &str) -> Result<Dictionary, StructuredFieldError> {
+    if !input.is_ascii() {
+        return Err(StructuredFieldError::Parse);
+    }
+
+    Parser::new(input).parse_complete(|parser| parser.parse_dictionary_field())
+}
+
+pub(crate) fn parse_list_field(input: &str) -> Result<List, StructuredFieldError> {
+    if !input.is_ascii() {
+        return Err(StructuredFieldError::Parse);
+    }
+
+    Parser::new(input).parse_complete(|parser| parser.parse_list_field())
+}
+
+pub(crate) fn parse_item_field(input: &str) -> Result<Item, StructuredFieldError> {
+    if !input.is_ascii() {
+        return Err(StructuredFieldError::Parse);
+    }
+
+    Parser::new(input).parse_complete(|parser| parser.parse_item())
+}
+
 pub(crate) fn dictionary_member(
     input: &str,
     key: &str,
@@ -24,14 +125,10 @@ pub(crate) fn dictionary_member(
 }
 
 pub(crate) fn field_value(input: &str) -> Result<String, StructuredFieldError> {
-    if !input.is_ascii() {
-        return Err(StructuredFieldError::Parse);
-    }
-
-    Parser::new(input)
-        .parse_complete(|parser| parser.parse_dictionary_value())
-        .or_else(|_| Parser::new(input).parse_complete(|parser| parser.parse_list()))
-        .or_else(|_| Parser::new(input).parse_complete(|parser| parser.parse_item()))
+    parse_field_value(input, StructuredFieldType::Dictionary)
+        .or_else(|_| parse_field_value(input, StructuredFieldType::List))
+        .or_else(|_| parse_field_value(input, StructuredFieldType::Item))
+        .map(|value| value.serialize())
 }
 
 pub(crate) fn dictionary(input: &str) -> Result<Vec<(String, String)>, StructuredFieldError> {
@@ -39,7 +136,14 @@ pub(crate) fn dictionary(input: &str) -> Result<Vec<(String, String)>, Structure
         return Err(StructuredFieldError::Parse);
     }
 
-    Parser::new(input).parse_complete(|parser| parser.parse_dictionary_entries())
+    Parser::new(input)
+        .parse_complete(|parser| parser.parse_dictionary_entries())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|(key, member)| (key, member.serialize()))
+                .collect()
+        })
 }
 
 pub(crate) fn serialize_dictionary(entries: &[(String, String)]) -> String {
@@ -58,14 +162,108 @@ struct Parser<'a> {
     pos: usize,
 }
 
-struct BareItem {
-    serialized: String,
-    is_boolean_true: bool,
+impl StructuredFieldValue {
+    pub(crate) fn serialize(&self) -> String {
+        match self {
+            Self::Dictionary(value) => value.serialize(),
+            Self::List(value) => value.serialize(),
+            Self::Item(value) => value.serialize(),
+        }
+    }
 }
 
-struct Number {
-    serialized: String,
-    is_decimal: bool,
+impl Dictionary {
+    fn serialize(&self) -> String {
+        let mut out = String::new();
+        for (index, (key, member)) in self.entries.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&serialize_dictionary_member(key, &member.serialize()));
+        }
+        out
+    }
+}
+
+impl List {
+    fn serialize(&self) -> String {
+        self.members
+            .iter()
+            .map(ItemOrInnerList::serialize)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl ItemOrInnerList {
+    fn serialize(&self) -> String {
+        match self {
+            Self::Item(item) => item.serialize(),
+            Self::InnerList(inner_list) => inner_list.serialize(),
+        }
+    }
+}
+
+impl InnerList {
+    fn serialize(&self) -> String {
+        let items = self
+            .items
+            .iter()
+            .map(Item::serialize)
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("({}){}", items, self.parameters.serialize())
+    }
+}
+
+impl Item {
+    fn serialize(&self) -> String {
+        format!(
+            "{}{}",
+            self.bare_item.serialize(),
+            self.parameters.serialize()
+        )
+    }
+}
+
+impl Parameters {
+    fn serialize(&self) -> String {
+        let mut out = String::new();
+        for (key, value) in &self.entries {
+            out.push(';');
+            out.push_str(key);
+            if !value.is_boolean_true() {
+                out.push('=');
+                out.push_str(&value.serialize());
+            }
+        }
+        out
+    }
+}
+
+impl BareItem {
+    fn serialize(&self) -> String {
+        match self {
+            Self::Integer(value)
+            | Self::Decimal(value)
+            | Self::Token(value)
+            | Self::Date(value) => value.clone(),
+            Self::String(value) => serialize_string(value),
+            Self::ByteSequence(value) => {
+                format!(
+                    ":{}:",
+                    base64::engine::general_purpose::STANDARD.encode(value)
+                )
+            }
+            Self::Boolean(true) => "?1".to_owned(),
+            Self::Boolean(false) => "?0".to_owned(),
+            Self::DisplayString(value) => serialize_display_string(value),
+        }
+    }
+
+    fn is_boolean_true(&self) -> bool {
+        matches!(self, Self::Boolean(true))
+    }
 }
 
 impl<'a> Parser<'a> {
@@ -83,29 +281,34 @@ impl<'a> Parser<'a> {
         let mut selected = None;
         for (key, member) in self.parse_dictionary_entries()? {
             if key == target_key {
-                selected = Some(member);
+                selected = Some(member.serialize());
             }
         }
         Ok(selected)
     }
 
-    fn parse_dictionary_value(&mut self) -> Result<String, StructuredFieldError> {
-        let mut members = Vec::<(String, String)>::new();
+    fn parse_dictionary_field(&mut self) -> Result<Dictionary, StructuredFieldError> {
+        let mut entries = Vec::<(String, ItemOrInnerList)>::new();
         for (key, member) in self.parse_dictionary_entries()? {
-            replace_or_append(&mut members, key, member);
+            replace_or_append(&mut entries, key, member);
         }
-        Ok(serialize_dictionary(&members))
+        Ok(Dictionary { entries })
     }
 
-    fn parse_dictionary_entries(&mut self) -> Result<Vec<(String, String)>, StructuredFieldError> {
-        let mut members = Vec::<(String, String)>::new();
+    fn parse_dictionary_entries(
+        &mut self,
+    ) -> Result<Vec<(String, ItemOrInnerList)>, StructuredFieldError> {
+        let mut members = Vec::<(String, ItemOrInnerList)>::new();
         while !self.is_empty() {
             let key = self.parse_key()?;
             let member = if self.consume_if(b'=') {
                 self.parse_item_or_inner_list()?
             } else {
                 let parameters = self.parse_parameters()?;
-                format!("?1{parameters}")
+                ItemOrInnerList::Item(Item {
+                    bare_item: BareItem::Boolean(true),
+                    parameters,
+                })
             };
 
             members.push((key, member));
@@ -125,13 +328,13 @@ impl<'a> Parser<'a> {
         Ok(members)
     }
 
-    fn parse_list(&mut self) -> Result<String, StructuredFieldError> {
+    fn parse_list_field(&mut self) -> Result<List, StructuredFieldError> {
         let mut members = Vec::new();
         while !self.is_empty() {
             members.push(self.parse_item_or_inner_list()?);
             self.discard_ows();
             if self.is_empty() {
-                return Ok(members.join(", "));
+                return Ok(List { members });
             }
             if !self.consume_if(b',') {
                 return Err(StructuredFieldError::Parse);
@@ -141,39 +344,33 @@ impl<'a> Parser<'a> {
                 return Err(StructuredFieldError::Parse);
             }
         }
-        Ok(members.join(", "))
+        Ok(List { members })
     }
 
-    fn parse_item_or_inner_list(&mut self) -> Result<String, StructuredFieldError> {
+    fn parse_item_or_inner_list(&mut self) -> Result<ItemOrInnerList, StructuredFieldError> {
         if self.peek() == Some(b'(') {
-            self.parse_inner_list()
+            self.parse_inner_list().map(ItemOrInnerList::InnerList)
         } else {
-            self.parse_item()
+            self.parse_item().map(ItemOrInnerList::Item)
         }
     }
 
-    fn parse_inner_list(&mut self) -> Result<String, StructuredFieldError> {
+    fn parse_inner_list(&mut self) -> Result<InnerList, StructuredFieldError> {
         if !self.consume_if(b'(') {
             return Err(StructuredFieldError::Parse);
         }
 
-        let mut out = String::from("(");
-        let mut first = true;
+        let mut items = Vec::new();
         loop {
             self.discard_sp();
             match self.peek() {
                 Some(b')') => {
                     self.consume();
-                    out.push(')');
-                    out.push_str(&self.parse_parameters()?);
-                    return Ok(out);
+                    let parameters = self.parse_parameters()?;
+                    return Ok(InnerList { items, parameters });
                 }
                 Some(_) => {
-                    if !first {
-                        out.push(' ');
-                    }
-                    out.push_str(&self.parse_item()?);
-                    first = false;
+                    items.push(self.parse_item()?);
                     if !matches!(self.peek(), Some(b' ' | b')')) {
                         return Err(StructuredFieldError::Parse);
                     }
@@ -183,48 +380,35 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_item(&mut self) -> Result<String, StructuredFieldError> {
+    fn parse_item(&mut self) -> Result<Item, StructuredFieldError> {
         let bare_item = self.parse_bare_item()?;
         let parameters = self.parse_parameters()?;
-        Ok(format!("{}{parameters}", bare_item.serialized))
+        Ok(Item {
+            bare_item,
+            parameters,
+        })
     }
 
-    fn parse_parameters(&mut self) -> Result<String, StructuredFieldError> {
-        let mut parameters = Vec::<(String, BareItem)>::new();
+    fn parse_parameters(&mut self) -> Result<Parameters, StructuredFieldError> {
+        let mut entries = Vec::<(String, BareItem)>::new();
         while self.consume_if(b';') {
             self.discard_sp();
             let key = self.parse_key()?;
             let value = if self.consume_if(b'=') {
                 self.parse_bare_item()?
             } else {
-                BareItem::boolean(true)
+                BareItem::Boolean(true)
             };
 
-            if let Some(index) = parameters
-                .iter()
-                .position(|(existing_key, _)| existing_key == &key)
-            {
-                parameters[index].1 = value;
-            } else {
-                parameters.push((key, value));
-            }
+            replace_or_append(&mut entries, key, value);
         }
 
-        let mut out = String::new();
-        for (key, value) in parameters {
-            out.push(';');
-            out.push_str(&key);
-            if !value.is_boolean_true {
-                out.push('=');
-                out.push_str(&value.serialized);
-            }
-        }
-        Ok(out)
+        Ok(Parameters { entries })
     }
 
     fn parse_bare_item(&mut self) -> Result<BareItem, StructuredFieldError> {
         match self.peek() {
-            Some(b'-' | b'0'..=b'9') => self.parse_number().map(BareItem::from_number),
+            Some(b'-' | b'0'..=b'9') => self.parse_number().map(|number| number.bare_item),
             Some(b'"') => self.parse_string(),
             Some(b'A'..=b'Z' | b'a'..=b'z' | b'*') => self.parse_token(),
             Some(b':') => self.parse_byte_sequence(),
@@ -261,7 +445,11 @@ impl<'a> Parser<'a> {
             }
 
             Ok(Number {
-                serialized: serialize_decimal(negative, integer_digits, fraction_digits),
+                bare_item: BareItem::Decimal(serialize_decimal(
+                    negative,
+                    integer_digits,
+                    fraction_digits,
+                )),
                 is_decimal: true,
             })
         } else {
@@ -270,7 +458,7 @@ impl<'a> Parser<'a> {
             }
 
             Ok(Number {
-                serialized: serialize_integer(negative, integer_digits),
+                bare_item: BareItem::Integer(serialize_integer(negative, integer_digits)),
                 is_decimal: false,
             })
         }
@@ -281,7 +469,7 @@ impl<'a> Parser<'a> {
             return Err(StructuredFieldError::Parse);
         }
 
-        let mut out = String::from("\"");
+        let mut out = String::new();
         loop {
             let Some(byte) = self.consume() else {
                 return Err(StructuredFieldError::Parse);
@@ -294,13 +482,9 @@ impl<'a> Parser<'a> {
                     if !matches!(next, b'"' | b'\\') {
                         return Err(StructuredFieldError::Parse);
                     }
-                    out.push('\\');
                     out.push(next as char);
                 }
-                b'"' => {
-                    out.push('"');
-                    return Ok(BareItem::new(out));
-                }
+                b'"' => return Ok(BareItem::String(out)),
                 0x00..=0x1f | 0x7f => return Err(StructuredFieldError::Parse),
                 _ => out.push(byte as char),
             }
@@ -323,7 +507,9 @@ impl<'a> Parser<'a> {
         {
             self.consume();
         }
-        Ok(BareItem::new(as_ascii_string(&self.input[start..self.pos])))
+        Ok(BareItem::Token(as_ascii_string(
+            &self.input[start..self.pos],
+        )))
     }
 
     fn parse_byte_sequence(&mut self) -> Result<BareItem, StructuredFieldError> {
@@ -350,10 +536,7 @@ impl<'a> Parser<'a> {
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(padded.as_bytes())
             .map_err(|_| StructuredFieldError::Parse)?;
-        Ok(BareItem::new(format!(
-            ":{}:",
-            base64::engine::general_purpose::STANDARD.encode(decoded)
-        )))
+        Ok(BareItem::ByteSequence(decoded))
     }
 
     fn parse_boolean(&mut self) -> Result<BareItem, StructuredFieldError> {
@@ -361,8 +544,8 @@ impl<'a> Parser<'a> {
             return Err(StructuredFieldError::Parse);
         }
         match self.consume() {
-            Some(b'1') => Ok(BareItem::boolean(true)),
-            Some(b'0') => Ok(BareItem::boolean(false)),
+            Some(b'1') => Ok(BareItem::Boolean(true)),
+            Some(b'0') => Ok(BareItem::Boolean(false)),
             _ => Err(StructuredFieldError::Parse),
         }
     }
@@ -375,7 +558,10 @@ impl<'a> Parser<'a> {
         if number.is_decimal {
             return Err(StructuredFieldError::Parse);
         }
-        Ok(BareItem::new(format!("@{}", number.serialized)))
+        match number.bare_item {
+            BareItem::Integer(value) => Ok(BareItem::Date(format!("@{value}"))),
+            _ => Err(StructuredFieldError::Parse),
+        }
     }
 
     fn parse_display_string(&mut self) -> Result<BareItem, StructuredFieldError> {
@@ -402,7 +588,7 @@ impl<'a> Parser<'a> {
                 b'"' => {
                     let value =
                         std::str::from_utf8(&bytes).map_err(|_| StructuredFieldError::Parse)?;
-                    return Ok(BareItem::new(serialize_display_string(value)));
+                    return Ok(BareItem::DisplayString(value.to_owned()));
                 }
                 _ => bytes.push(byte),
             }
@@ -472,26 +658,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-impl BareItem {
-    fn new(serialized: String) -> Self {
-        Self {
-            serialized,
-            is_boolean_true: false,
-        }
-    }
-
-    fn boolean(value: bool) -> Self {
-        Self {
-            serialized: if value { "?1" } else { "?0" }.to_owned(),
-            is_boolean_true: value,
-        }
-    }
-
-    fn from_number(number: Number) -> Self {
-        Self::new(number.serialized)
-    }
-}
-
 fn serialize_integer(negative: bool, digits: &[u8]) -> String {
     let digits = strip_leading_zeroes(digits);
     let mut out = String::new();
@@ -514,6 +680,21 @@ fn serialize_decimal(negative: bool, integer_digits: &[u8], fraction_digits: &[u
     out.push_str(&as_ascii_string(integer_digits));
     out.push('.');
     out.push_str(&as_ascii_string(fraction_digits));
+    out
+}
+
+fn serialize_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for byte in value.bytes() {
+        match byte {
+            b'"' | b'\\' => {
+                out.push('\\');
+                out.push(byte as char);
+            }
+            _ => out.push(byte as char),
+        }
+    }
+    out.push('"');
     out
 }
 
@@ -548,7 +729,7 @@ fn serialize_dictionary_member(key: &str, member: &str) -> String {
     out
 }
 
-fn replace_or_append(entries: &mut Vec<(String, String)>, key: String, member: String) {
+fn replace_or_append<T>(entries: &mut Vec<(String, T)>, key: String, member: T) {
     if let Some(index) = entries
         .iter()
         .position(|(existing_key, _)| existing_key == &key)
