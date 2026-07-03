@@ -453,8 +453,8 @@ fn structured_field_header_values_are_signed_with_strict_serialization() {
     let list = http::header::HeaderName::from_static("example-list");
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::header(dict.clone()).structured_field())
-        .component(MessageSignatureComponent::header(list.clone()).structured_field());
+        .component(MessageSignatureComponent::header(dict.clone()).structured_dictionary())
+        .component(MessageSignatureComponent::header(list.clone()).structured_list());
     let target_uri: Uri = "https://example.com/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
     let mut headers = HeaderMap::new();
@@ -483,7 +483,7 @@ fn structured_field_rejects_malformed_values_and_non_header_targets() {
     let name = http::header::HeaderName::from_static("example-dict");
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::header(name.clone()).structured_field());
+        .component(MessageSignatureComponent::header(name.clone()).structured_dictionary());
     let target_uri: Uri = "https://example.com/path".parse().unwrap();
     let request_target: Uri = "/path".parse().unwrap();
     let mut headers = HeaderMap::new();
@@ -499,7 +499,7 @@ fn structured_field_rejects_malformed_values_and_non_header_targets() {
 
     let cfg = MessageSignatureConfig::new("sig1")
         .unwrap()
-        .component(MessageSignatureComponent::method().structured_field());
+        .component(MessageSignatureComponent::method().structured_dictionary());
     let err = cfg
         .signature_base(
             &Method::GET,
@@ -568,7 +568,7 @@ fn dictionary_key_allows_redundant_structured_field_parameter() {
     let name = http::header::HeaderName::from_static("example-dict");
     let cfg = MessageSignatureConfig::new("sig1").unwrap().component(
         MessageSignatureComponent::header(name.clone())
-            .structured_field()
+            .structured_dictionary()
             .key("a")
             .unwrap(),
     );
@@ -640,7 +640,7 @@ fn dictionary_key_rejects_duplicate_member_identities() {
         )
         .component(
             MessageSignatureComponent::header(name.clone())
-                .structured_field()
+                .structured_dictionary()
                 .key("a")
                 .unwrap(),
         );
@@ -668,7 +668,7 @@ fn dictionary_key_rejects_duplicate_member_identities() {
         )
         .component(
             MessageSignatureComponent::header(name)
-                .structured_field()
+                .structured_dictionary()
                 .key("a")
                 .unwrap()
                 .related_request(),
@@ -696,8 +696,8 @@ fn dictionary_key_rejects_duplicate_structured_field_parameters() {
     let name = http::header::HeaderName::from_static("example-dict");
     let cfg = MessageSignatureConfig::new("sig1").unwrap().component(
         MessageSignatureComponent::header(name)
-            .structured_field()
-            .structured_field()
+            .structured_dictionary()
+            .structured_dictionary()
             .key("a")
             .unwrap(),
     );
@@ -1036,6 +1036,41 @@ fn parsed_signature_handles_component_parameters() {
 }
 
 #[test]
+fn parsed_signature_requires_structured_field_type_for_sf_components() {
+    let list = HeaderName::from_static("example-list");
+    let mut headers = HeaderMap::new();
+    headers.append(list.clone(), HeaderValue::from_static(" 1;foo=bar "));
+    headers.append(list.clone(), HeaderValue::from_static(" (a   b);q=01.200 "));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("example-list";sf);created=1"#),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:AA:"));
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+
+    let signature = MessageSignature::from_headers(&headers, "sig1").unwrap();
+    let err = signature
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnknownStructuredFieldType(field) if field == list
+    ));
+
+    let base = signature
+        .with_structured_field_type(list.clone(), MessageSignatureStructuredFieldType::List)
+        .signature_base(&Method::GET, &target_uri, &request_target, &headers)
+        .unwrap();
+    assert_eq!(
+        base.as_str(),
+        "\
+\"example-list\";sf: 1;foo=bar, (a b);q=1.2\n\
+\"@signature-params\": (\"example-list\";sf);created=1"
+    );
+}
+
+#[test]
 fn parsed_signature_accepts_empty_covered_set() {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -1268,7 +1303,7 @@ fn trailer_fields_are_distinct_from_headers_and_support_field_parameters() {
         .component(
             MessageSignatureComponent::header(list)
                 .trailer()
-                .structured_field(),
+                .structured_list(),
         )
         .component(
             MessageSignatureComponent::header(raw)
@@ -2037,6 +2072,60 @@ fn verification_policy_calls_verifier_with_rebuilt_base() {
 \"@path\": /foo\n\
 \"content-type\": application/json\n\
 \"@signature-params\": (\"@method\" \"@path\" \"content-type\");created=100;expires=150;keyid=\"test-key\";alg=\"test-alg\""
+                );
+                Ok(true)
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn verification_policy_applies_required_structured_field_type() {
+    let list = HeaderName::from_static("example-list");
+    let mut headers = HeaderMap::new();
+    headers.append(list.clone(), HeaderValue::from_static(" 1;foo=bar "));
+    headers.append(list.clone(), HeaderValue::from_static(" (a   b);q=01.200 "));
+    headers.insert(
+        "signature-input",
+        HeaderValue::from_static(r#"sig1=("example-list";sf);created=100"#),
+    );
+    headers.insert("signature", HeaderValue::from_static("sig1=:CQgH:"));
+    let target_uri: Uri = "https://example.com/foo".parse().unwrap();
+    let request_target: Uri = "/foo".parse().unwrap();
+
+    let err = MessageSignatureVerificationPolicy::new()
+        .validation_time(100)
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &|_: MessageSignatureVerificationInput<'_>| Ok(true),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        MessageSignatureError::UnknownStructuredFieldType(field) if field == list
+    ));
+
+    let policy = MessageSignatureVerificationPolicy::new()
+        .validation_time(100)
+        .required_component(MessageSignatureComponent::header(list.clone()).structured_list());
+
+    policy
+        .verify_request(
+            &headers,
+            "sig1",
+            &Method::GET,
+            &target_uri,
+            &request_target,
+            &|input: MessageSignatureVerificationInput<'_>| {
+                assert_eq!(
+                    std::str::from_utf8(input.signature_base()).unwrap(),
+                    "\
+\"example-list\";sf: 1;foo=bar, (a b);q=1.2\n\
+\"@signature-params\": (\"example-list\";sf);created=100"
                 );
                 Ok(true)
             },

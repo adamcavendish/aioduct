@@ -16,7 +16,10 @@ pub use accept_signature::{AcceptSignature, AcceptSignatureEntry, AcceptSignatur
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use automatic::{AutomaticMessageSignature, PreparedAutomaticMessageSignature};
 pub use base::MessageSignatureBase;
-pub use component::{MessageSignatureComponent, MessageSignatureComponentParameter};
+pub use component::{
+    MessageSignatureComponent, MessageSignatureComponentParameter,
+    MessageSignatureStructuredFieldType,
+};
 pub use config::MessageSignatureConfig;
 pub(crate) use context::MessageSignatureContext;
 pub use error::MessageSignatureError;

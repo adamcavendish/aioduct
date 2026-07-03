@@ -335,7 +335,12 @@ fn header_component_value(
     if let Some(key) = component.dictionary_key() {
         canonical_header_dictionary_member_value(fields, name, key)
     } else if component.has_only_structured_field_parameter() {
-        canonical_header_structured_field_value(fields, name)
+        let Some(field_type) = component.structured_field_type() else {
+            return Err(MessageSignatureError::UnknownStructuredFieldType(
+                name.clone(),
+            ));
+        };
+        canonical_header_structured_field_value(fields, name, field_type)
     } else if component.has_only_byte_sequence_parameter() {
         canonical_header_byte_sequence_value(fields, name)
     } else if component.has_parameters() {
@@ -351,8 +356,12 @@ fn canonical_header_dictionary_member_value(
     key: &str,
 ) -> Result<String, MessageSignatureError> {
     let value = canonical_header_value(headers, name)?;
-    structured_fields::dictionary_member(&value, key)
-        .map_err(|_| MessageSignatureError::MalformedStructuredField(name.clone()))?
+    let dictionary: structured_fields::Dictionary =
+        structured_fields::parse_dictionary_field(&value)
+            .map_err(|_| MessageSignatureError::MalformedStructuredField(name.clone()))?;
+    dictionary
+        .member(key)
+        .map(|member| member.serialize())
         .ok_or_else(|| MessageSignatureError::MissingDictionaryKey {
             field: name.clone(),
             key: key.to_owned(),
@@ -362,10 +371,13 @@ fn canonical_header_dictionary_member_value(
 fn canonical_header_structured_field_value(
     headers: &HeaderMap,
     name: &HeaderName,
+    field_type: super::MessageSignatureStructuredFieldType,
 ) -> Result<String, MessageSignatureError> {
     let value = canonical_header_value(headers, name)?;
-    structured_fields::field_value(&value)
-        .map_err(|_| MessageSignatureError::MalformedStructuredField(name.clone()))
+    let value: structured_fields::StructuredFieldValue =
+        structured_fields::parse_field_value(&value, field_type.into_structured_field_type())
+            .map_err(|_| MessageSignatureError::MalformedStructuredField(name.clone()))?;
+    Ok(value.serialize())
 }
 
 fn query_param_value(

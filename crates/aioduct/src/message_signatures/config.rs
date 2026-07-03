@@ -1,13 +1,14 @@
 use std::collections::HashSet;
 
 use base64::Engine as _;
-use http::header::{HeaderMap, HeaderValue};
+use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http::{Method, StatusCode, Uri};
 
 use super::{
     MessageSignatureBase, MessageSignatureComponent, MessageSignatureContext,
     MessageSignatureError, MessageSignatureHeaders, MessageSignatureParams,
     MessageSignatureRequestContext, MessageSignatureResponseContext, MessageSignatureSigner,
+    MessageSignatureStructuredFieldType,
 };
 
 /// Configuration for generating an RFC 9421 request signature base and headers.
@@ -61,6 +62,18 @@ impl MessageSignatureConfig {
         components: impl IntoIterator<Item = MessageSignatureComponent>,
     ) -> Self {
         self.components.extend(components);
+        self
+    }
+
+    /// Configure the RFC 9651 top-level type for parsed `;sf` components covering this field.
+    pub fn structured_field_type(
+        mut self,
+        name: HeaderName,
+        field_type: MessageSignatureStructuredFieldType,
+    ) -> Self {
+        for component in &mut self.components {
+            component.set_structured_field_type_for_header(&name, field_type);
+        }
         self
     }
 
