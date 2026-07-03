@@ -49,7 +49,7 @@ demo.
 use std::time::{Duration, Instant};
 
 use aioduct_wasmtime::{ExactOriginPolicy, WasiHttpHost};
-use http::header::AUTHORIZATION;
+use http::header::{AUTHORIZATION, FORWARDED};
 use http::HeaderValue;
 
 # fn build() -> Result<WasiHttpHost, Box<dyn std::error::Error>> {
@@ -63,8 +63,10 @@ let hooks = WasiHttpHost::builder()
             .build()?,
     )
     .policy(
-        ExactOriginPolicy::new("https://kanidm.local:8443")?
+        ExactOriginPolicy::new("https://directory.local:8443")?
             .forbid_sensitive_headers()
+            .deny_headers([FORWARDED])
+            .deny_header_prefixes(["x-forwarded-", "proxy-"])
             .inject_header(AUTHORIZATION, secret)
             .header_limit(16 * 1024)
             .body_limit(1024 * 1024)
@@ -189,6 +191,8 @@ transport sees it:
 
 - the request origin must exactly match the configured scheme, host, and port
 - guest-supplied forbidden or sensitive headers can be rejected
+- host-specific guest header names and families, such as `forwarded`,
+  `x-forwarded-*`, or `proxy-*`, can be denied before forwarding
 - host-owned headers are injected only after validation
 - injected header names are protected from guest override
 - request and response header section sizes can be capped
@@ -200,6 +204,10 @@ transport sees it:
 Failures are mapped to WASI `wasi:http` `ErrorCode` values. Rejection observers
 receive low-cardinality `RejectionReason` values suitable for metrics and logs
 without including target URLs, header values, or secret material.
+
+Denied header names and prefixes are also reported to Wasmtime as forbidden
+field names. Reserve them for host-owned metadata that guests should not set or
+depend on.
 
 ## TLS Operator Config
 
