@@ -185,5 +185,5 @@ jobs:
             --target "$RELEASE_COMMIT" \
             --prerelease \
             --title "Nightly build" \
-            --notes "Nightly build from commit ${RELEASE_COMMIT}. See [CHANGELOG.md](https://github.com/adamcavendish/aioduct/blob/master/CHANGELOG.md) for stable releases." \
+            --notes "Nightly build from commit ${RELEASE_COMMIT}. See [CHANGELOG.md](https://github.com/adamcavendish/aioduct/blob/main/CHANGELOG.md) for stable releases." \
             artifacts/*

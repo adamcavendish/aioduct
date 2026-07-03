@@ -16,23 +16,36 @@ All benchmarks hit a **local hyper server** on loopback (`127.0.0.1`), eliminati
 ## Running
 
 ```bash
-# All H1 benchmarks
-cargo bench --manifest-path crates/aioduct-bench/Cargo.toml --bench h1
+# All benchmarks
+cargo bench -p aioduct-bench
 
-# All H2 benchmarks
-cargo bench --manifest-path crates/aioduct-bench/Cargo.toml --bench h2
+# All benchmarks through just
+just bench
 
-# JSON benchmarks
-cargo bench --manifest-path crates/aioduct-bench/Cargo.toml --bench json
+# Run a benchmark group by Criterion name filter
+cargo bench -p aioduct-bench --bench bench_main -- e2e_h1
+just bench-group e2e_h1/get_small
 
-# Feature benchmarks (SSE, multipart, streaming, chunk download)
-cargo bench --manifest-path crates/aioduct-bench/Cargo.toml --bench features
+# Save and compare local Criterion baselines
+just bench-save main
+just bench-compare main
 
-# Connection pool benchmarks
-cargo bench --manifest-path crates/aioduct-bench/Cargo.toml --bench pooling
+# Emit bencher-compatible output for continuous benchmarking
+cargo bench -p aioduct-bench --bench bench_main \
+  -- --output-format bencher --noplot --color never
 ```
 
 HTML reports are generated in `target/criterion/`.
+
+## Continuous Benchmarking
+
+The GitHub benchmark workflow runs the full Criterion suite on pushes to
+`main`, once per day, and on manual dispatch. It emits
+bencher-compatible output for
+[`benchmark-action/github-action-benchmark`](https://github.com/benchmark-action/github-action-benchmark),
+stores benchmark history in the workflow cache, writes a job summary, and fails
+when a benchmark regresses by more than 200% compared with the previous result
+for the same branch.
 
 ## Results
 
@@ -244,8 +257,12 @@ Read a 64 KB response frame-by-frame vs collected as bytes (aioduct only).
 
 | Suite | Bench File | Scenarios |
 |-------|-----------|-----------|
-| `h1` | `benches/h1.rs` | GET bytes/text, POST 4K, download 64K/1M, concurrent 10/50 |
-| `h2` | `benches/h2.rs` | GET, download 64K/1M, concurrent 10, POST 4K |
-| `json` | `benches/json.rs` | JSON deserialization (GET + serde) |
-| `features` | `benches/features.rs` | SSE, multipart, upload 1M, chunk download, body stream |
-| `pooling` | `benches/pooling.rs` | H1/H2 with-pool vs no-pool |
+| `e2e_h1` | `benches/bench_main/e2e_h1.rs` | HTTP/1.1 GET bytes/text, POST 4K, download 64K/1M |
+| `e2e_h2` | `benches/bench_main/e2e_h2.rs` | HTTP/2 GET, POST 4K, download 64K/1M |
+| `e2e_concurrent` | `benches/bench_main/e2e_concurrent.rs` | HTTP/1.1 and HTTP/2 concurrent requests |
+| `e2e_features` | `benches/bench_main/e2e_features.rs` | SSE, multipart, upload 1M, chunk download, body stream, JSON |
+| `e2e_pooling` | `benches/bench_main/e2e_pooling.rs` | HTTP/1.1 and HTTP/2 with-pool vs no-pool |
+| `runtime` | `benches/bench_main/e2e_runtime.rs` | Tokio, smol, and compio runtime comparisons |
+| `micro_pool` | `benches/bench_main/micro_pool.rs` | Pool checkout/check-in and coalescing scans |
+| `micro_cookie` | `benches/bench_main/micro_cookie.rs` | Cookie request application and response storage |
+| `micro_body` | `benches/bench_main/micro_body.rs` | Body frame polling through middleware layers |
