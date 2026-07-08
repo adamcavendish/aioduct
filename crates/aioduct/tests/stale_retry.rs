@@ -316,11 +316,12 @@ async fn retry_put_buffered() {
     assert_eq!(resp.status(), 200);
 }
 
-/// POST with streaming (non-replayable) body must NOT be retried.
-/// The body is consumed on the first attempt and cannot be replayed.
+/// POST with streaming (non-replayable) body must not be retried.
+/// Instead, it should avoid the already-pooled connection and start on a
+/// fresh connection so the body is not consumed by a stale write.
 #[tokio::test]
 async fn no_retry_streaming_body() {
-    let (addr, _counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
+    let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
     let client = make_client();
     let url = format!("http://{addr}/");
 
@@ -335,16 +336,19 @@ async fn no_retry_streaming_body() {
             .map_err(|never| match never {})
             .boxed_unsync();
 
-    let result = client
+    let resp = client
         .post(&url)
         .unwrap()
         .body_stream(stream_body)
         .send()
-        .await;
+        .await
+        .expect("streaming body should use a fresh connection instead of a stale pooled one");
 
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "ok");
     assert!(
-        result.is_err(),
-        "streaming body on stale connection must fail, not be silently retried"
+        counter.connections() >= 2,
+        "streaming body should skip the pooled stale connection"
     );
 }
 

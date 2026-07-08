@@ -812,10 +812,10 @@ async fn rate_limiter_wait_loop_exercises_sleep() {
     );
 }
 
-// ── 72. Pool hit non-retryable streaming body error (lines 215-227) ─────────
+// ── 72. Pool hit non-retryable streaming body uses fresh connection ──────────
 
 #[tokio::test]
-async fn pool_hit_non_retryable_streaming_body_error() {
+async fn pool_hit_non_retryable_streaming_body_uses_fresh_connection() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -837,15 +837,14 @@ async fn pool_hit_non_retryable_streaming_body_error() {
         let _ = sock.set_linger(Some(Duration::from_secs(0)));
         drop(raw);
 
-        // Accept second connection (for retry that shouldn't happen)
+        // Accept second connection. Non-replayable bodies should avoid the
+        // stale pooled connection and start here instead of retrying later.
         if let Ok((mut s2, _)) = listener.accept().await {
             let mut buf2 = [0u8; 4096];
             let _ = s2.read(&mut buf2).await;
-            s2.write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nretried",
-            )
-            .await
-            .unwrap();
+            s2.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfresh")
+                .await
+                .unwrap();
         }
     });
 
@@ -867,7 +866,8 @@ async fn pool_hit_non_retryable_streaming_body_error() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // POST with streaming body — cannot be retried on stale connection
+    // POST with streaming body — cannot be retried after a stale write, so it
+    // should skip the pooled connection and use a fresh one.
     let body_stream = futures_util::stream::once(async {
         Ok::<_, std::convert::Infallible>(hyper::body::Frame::data(Bytes::from("streaming")))
     });
@@ -875,19 +875,18 @@ async fn pool_hit_non_retryable_streaming_body_error() {
 
     let incoming = http::Request::builder()
         .method(http::Method::POST)
-        .uri(format!("http://{addr}/post"))
+        .uri("/post")
         .body(stream_body)
         .unwrap();
 
-    // Forward with streaming body exercises non-retryable error path
-    let result = client
+    let resp = client
         .forward(incoming)
+        .upstream(format!("http://{addr}"))
         .timeout(Duration::from_secs(2))
         .send()
-        .await;
+        .await
+        .expect("streaming forward should use a fresh connection");
 
-    assert!(
-        result.is_err(),
-        "streaming POST on stale connection should error (non-retryable)"
-    );
+    assert_eq!(resp.status(), http::StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "fresh");
 }

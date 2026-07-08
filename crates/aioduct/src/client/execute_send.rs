@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use super::HttpEngineSend;
+use super::{BodyReplayability, HttpEngineSend};
 use crate::body::{RequestBody, RequestBodySend};
 use crate::digest_fields::ContentDigestBody;
 use crate::error::Error;
@@ -61,26 +61,36 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 &mut current_headers,
             );
 
-            let (req_body, body_for_replay, mut digest_body) = match current_body.take() {
-                Some(RequestBody::Buffered(b)) => {
-                    let body_clone = RequestBody::Buffered(b.clone());
-                    let digest_body = ContentDigestBody::Buffered(b.clone());
-                    (
-                        RequestBody::Buffered(b).into_hyper_body(),
-                        Some(body_clone),
-                        digest_body,
-                    )
-                }
-                Some(rb @ RequestBody::Streaming(_)) => {
-                    (rb.into_hyper_body(), None, ContentDigestBody::Unavailable)
-                }
-                None => {
-                    let empty: RequestBodySend = http_body_util::Full::new(Bytes::new())
-                        .map_err(|never| match never {})
-                        .boxed_unsync();
-                    (empty, None, ContentDigestBody::None)
-                }
-            };
+            let (req_body, body_for_replay, mut digest_body, body_replayability) =
+                match current_body.take() {
+                    Some(RequestBody::Buffered(b)) => {
+                        let body_clone = RequestBody::Buffered(b.clone());
+                        let digest_body = ContentDigestBody::Buffered(b.clone());
+                        (
+                            RequestBody::Buffered(b).into_hyper_body(),
+                            Some(body_clone),
+                            digest_body,
+                            BodyReplayability::Replayable,
+                        )
+                    }
+                    Some(rb @ RequestBody::Streaming(_)) => (
+                        rb.into_hyper_body(),
+                        None,
+                        ContentDigestBody::Unavailable,
+                        BodyReplayability::OneShot,
+                    ),
+                    None => {
+                        let empty: RequestBodySend = http_body_util::Full::new(Bytes::new())
+                            .map_err(|never| match never {})
+                            .boxed_unsync();
+                        (
+                            empty,
+                            None,
+                            ContentDigestBody::None,
+                            BodyReplayability::Empty,
+                        )
+                    }
+                };
 
             // Apply write timeout to the request body if configured.
             let req_body = match write_timeout {
@@ -194,6 +204,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     None,
                     force_addr,
                     true,
+                    body_replayability,
                 )
                 .await
             {
@@ -335,6 +346,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         headers.insert(AUTHORIZATION, auth_value);
 
         let replay_for_stale = body_for_replay.clone();
+        let body_replayability = if replay_for_stale.is_some() {
+            BodyReplayability::Replayable
+        } else {
+            BodyReplayability::Empty
+        };
 
         let retry_body: RequestBodySend = match body_for_replay {
             Some(b) => http_body_util::Full::new(b)
@@ -404,6 +420,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             None,
             force_addr,
             true,
+            body_replayability,
         )
         .await
     }

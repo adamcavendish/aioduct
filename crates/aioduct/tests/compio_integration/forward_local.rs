@@ -1,5 +1,79 @@
 use super::*;
 
+fn start_stale_multipart_server_with_tokio()
+-> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connections2 = connections.clone();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tx.send(addr).unwrap();
+
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let connection_index =
+                    connections2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    if connection_index == 0 {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                        let mut buf = [0u8; 1024];
+                        let _ = stream.read(&mut buf).await;
+                        stream
+                            .write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\nwarm",
+                            )
+                            .await
+                            .unwrap();
+                        stream.flush().await.unwrap();
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        let raw = stream.into_std().unwrap();
+                        let sock = socket2::SockRef::from(&raw);
+                        let _ = sock.set_linger(Some(Duration::from_secs(0)));
+                        drop(raw);
+                        return;
+                    }
+
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+                    let _ = server_http1::Builder::new()
+                        .serve_connection(
+                            io,
+                            service_fn(|req: Request<hyper::body::Incoming>| async move {
+                                let content_type = req
+                                    .headers()
+                                    .get(http::header::CONTENT_TYPE)
+                                    .and_then(|value| value.to_str().ok())
+                                    .unwrap_or_default()
+                                    .to_owned();
+                                let body = req.into_body().collect().await.unwrap().to_bytes();
+                                let ok = content_type.starts_with("multipart/form-data; boundary=")
+                                    && body.windows(b"compio-file-bytes".len()).any(|window| {
+                                        window == b"compio-file-bytes"
+                                    });
+                                let response = if ok {
+                                    Response::new(Full::new(Bytes::from_static(b"fresh")))
+                                } else {
+                                    Response::builder()
+                                        .status(http::StatusCode::BAD_REQUEST)
+                                        .body(Full::new(Bytes::from_static(b"bad multipart")))
+                                        .unwrap()
+                                };
+                                Ok::<_, Infallible>(response)
+                            }),
+                        )
+                        .await;
+                });
+            }
+        });
+    });
+
+    (rx.recv().unwrap(), connections)
+}
+
 // ── Forward: on_request hook ──────────────────────────────────────────
 
 #[test]
@@ -89,6 +163,59 @@ fn test_compio_forward_automatic_message_signature() {
         let body = resp.text().await.unwrap();
         assert!(body.contains("sig1="), "{body}");
         assert!(body.contains("sig1=:Y29tcGlv:"), "{body}");
+    });
+}
+
+#[test]
+fn test_compio_forward_local_non_replayable_multipart_skips_stale_pool() {
+    let (upstream_addr, counter) = start_stale_multipart_server_with_tokio();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .pool_idle_timeout(Duration::from_secs(60))
+            .build_local()
+            .unwrap();
+        let upstream = format!("http://127.0.0.1:{}", upstream_addr.port());
+
+        let warm = client
+            .get_local(&format!("{upstream}/warm"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(warm.text().await.unwrap(), "warm");
+        std::thread::sleep(Duration::from_millis(75));
+
+        let body = Bytes::from_static(
+            b"--compioBoundary\r\n\
+Content-Disposition: form-data; name=\"file\"; filename=\"upload.bin\"\r\n\
+Content-Type: application/octet-stream\r\n\r\n\
+compio-file-bytes\r\n\
+--compioBoundary--\r\n",
+        );
+        let incoming = http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                http::header::CONTENT_TYPE,
+                "multipart/form-data; boundary=compioBoundary",
+            )
+            .body(Full::new(body))
+            .unwrap();
+
+        let resp = client
+            .forward_local(incoming)
+            .upstream(upstream.parse::<http::Uri>().unwrap())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(resp.text().await.unwrap(), "fresh");
+        assert!(
+            counter.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "non-replayable forward_local bodies should skip the stale pooled connection"
+        );
     });
 }
 
