@@ -278,10 +278,9 @@ async fn stale_retry_does_not_loop_on_persistent_failure() {
     );
 }
 
-/// Body safety: requests with streaming (non-cloneable) bodies must NOT be
-/// transparently retried because the body was consumed on the first attempt.
-/// Uses the same RST-on-reuse technique to deterministically trigger the
-/// stale connection path.
+/// Body safety: requests with streaming (non-cloneable) bodies must not be
+/// transparently retried. They should avoid already-pooled connections so the
+/// body is not consumed by a stale write in the first place.
 #[tokio::test]
 async fn stale_retry_skipped_for_streaming_body() {
     use http_body_util::BodyExt;
@@ -340,25 +339,26 @@ async fn stale_retry_skipped_for_streaming_body() {
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
-    // POST with streaming body on the stale connection.
-    // The server will RST when it sees the request bytes.
-    // Streaming body → not retryable → error expected.
+    // POST with streaming body. It should skip the stale pooled connection and
+    // succeed on a fresh one, without attempting to replay the body.
     let stream_body: aioduct::body::RequestBodySend =
         http_body_util::Full::new(Bytes::from("payload"))
             .map_err(|never| match never {})
             .boxed_unsync();
 
-    let result = client
+    let resp = client
         .post(&url)
         .unwrap()
         .body_stream(stream_body)
         .send()
-        .await;
+        .await
+        .expect("streaming body should use a fresh connection instead of a stale pooled one");
 
-    // Must fail: streaming body consumed, no transparent retry possible.
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "ok");
     assert!(
-        result.is_err(),
-        "streaming body request must not be transparently retried"
+        conn_count.load(Ordering::SeqCst) >= 2,
+        "streaming body should skip the pooled stale connection"
     );
 }
 

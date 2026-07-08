@@ -13,7 +13,7 @@ use http_body::Body;
 use http_body_util::BodyExt;
 
 use crate::body::RequestBodySend;
-use crate::client::HttpEngineSend;
+use crate::client::{BodyReplayability, HttpEngineSend};
 use crate::error::{BuilderError, Error};
 use crate::message_signatures::{
     AutomaticMessageSignature, MessageSignatureAsyncSigner, MessageSignatureConfig,
@@ -618,6 +618,8 @@ where
         let read_timeout = self.read_timeout;
         let sign_final_request = self.sign_final_request;
 
+        let body_replayability = BodyReplayability::for_forwarded_body(&body);
+
         let mut boxed_body: RequestBodySend = body
             .map_frame(|frame| frame)
             .map_err(|e| {
@@ -683,6 +685,7 @@ where
                     first_byte_timeout,
                     None,
                     sign_final_request,
+                    body_replayability,
                 )
                 .await?;
 

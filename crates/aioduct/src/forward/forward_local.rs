@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::body::RequestBodyLocal;
-use crate::client::HttpEngineLocal;
+use crate::client::{BodyReplayability, HttpEngineLocal};
 use crate::error::{BuilderError, Error};
 use crate::message_signatures::{
     AutomaticMessageSignature, MessageSignatureConfig, MessageSignatureLocalAsyncSigner,
@@ -426,6 +426,8 @@ where
             parts.uri = request_uri;
         }
 
+        let body_replayability = BodyReplayability::for_forwarded_body(&body);
+
         let mut boxed_body: RequestBodyLocal = Box::pin(body.map_err(|e| {
             let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();
             Error::Other(boxed)
@@ -482,6 +484,7 @@ where
                     None,
                     protocol_hint,
                     sign_final_request,
+                    body_replayability,
                 )
                 .await?;
 

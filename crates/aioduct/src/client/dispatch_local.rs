@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use super::connection_lifecycle::H2ConnectGuard;
-use super::{HttpEngineCore, HttpEngineLocal, extract_headers};
+use super::{BodyReplayability, HttpEngineCore, HttpEngineLocal, extract_headers};
 use crate::body::RequestBodyLocal;
 use crate::clock::Instant;
 use crate::error::Error;
@@ -29,6 +29,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         force_addr: Option<SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
         sign_stale_retries: bool,
+        body_replayability: BodyReplayability,
     ) -> Result<Response, Error> {
         let request_start = Instant::now();
 
@@ -116,11 +117,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         };
         let may_h2 = is_https || force_h2c;
 
-        let can_stale_retry = !self.core.no_connection_reuse
-            && (http_body::Body::is_end_stream(request.body()) || replay_body.is_some());
-        if !self.core.no_connection_reuse
-            && let Some(mut conn) = self.core.pool.checkout(&pool_key)
-        {
+        let can_stale_retry =
+            !self.core.no_connection_reuse && body_replayability.can_retry_after_stale_failure();
+        let can_use_pooled_connection =
+            !self.core.no_connection_reuse && body_replayability.can_start_on_pooled_connection();
+        if can_use_pooled_connection && let Some(mut conn) = self.core.pool.checkout(&pool_key) {
             self.core.pool.record_checkout_hit();
             self.core.notify(
                 request.method(),
@@ -279,7 +280,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         );
 
         let mut owns_h2_mark = false;
-        if may_h2 && !self.core.no_connection_reuse && {
+        if may_h2 && can_use_pooled_connection && {
             let already_marked = self.core.pool.mark_connecting_h2(&pool_key);
             owns_h2_mark = !already_marked;
             already_marked
@@ -728,7 +729,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         if matches!(protocol_hint, crate::pool::ProtocolHint::AdaptiveH2c)
             && matches!(pooled.conn, crate::pool::HttpConnection::H1(_))
         {
-            self.core.pool.unmark_connecting_h2(&pool_key);
+            if owns_h2_mark {
+                self.core.pool.unmark_connecting_h2(&pool_key);
+                owns_h2_mark = false;
+            }
             // Move the active reservation from the H2c key to the Auto key
             // so check-in/drop decrements the correct counter and subsequent
             // Auto-key requests respect the cap.
@@ -743,19 +747,22 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
         let is_multiplex = pooled.is_h2_or_h3() && !self.core.no_connection_reuse;
         if is_multiplex {
-            if let Some(existing) = self.core.pool.checkout(&pool_key) {
+            if can_use_pooled_connection && let Some(existing) = self.core.pool.checkout(&pool_key)
+            {
                 drop(pooled);
                 pooled = existing;
-            } else if let Some(cloned) = pooled
-                .clone_for_multiplex_with_limit(self.core.pool.max_active_streams_per_connection())
+            } else if can_use_pooled_connection
+                && let Some(cloned) = pooled.clone_for_multiplex_with_limit(
+                    self.core.pool.max_active_streams_per_connection(),
+                )
             {
                 pooled.pool = std::sync::Weak::new();
                 pooled.key = None;
                 self.core.checkin_connection(pool_key.clone(), pooled);
                 pooled = cloned;
             }
-            self.core.pool.unmark_connecting_h2(&pool_key);
-        } else if may_h2 {
+        }
+        if owns_h2_mark {
             self.core.pool.unmark_connecting_h2(&pool_key);
         }
 
