@@ -2,33 +2,34 @@ use std::task::Poll;
 
 use crate::error::Error;
 
-/// A bidirectional IO stream from an HTTP upgrade (e.g., WebSocket).
+/// A bidirectional IO stream from an HTTP upgrade on a `Send` runtime.
 ///
 /// Obtained by calling [`Response::upgrade()`](crate::Response::upgrade) after
 /// receiving a `101 Switching Protocols` response. Implements hyper's `Read` and
 /// `Write` traits for use with WebSocket libraries.
-pub struct Upgraded {
+pub struct UpgradedSend {
     inner: hyper::upgrade::Upgraded,
 }
 
-impl Upgraded {
+impl UpgradedSend {
     pub(crate) fn new(inner: hyper::upgrade::Upgraded) -> Self {
         Self { inner }
     }
 
-    /// Consume the upgraded connection, returning the underlying hyper `Upgraded`.
+    /// Consume the upgraded connection, returning the underlying
+    /// `hyper::upgrade::Upgraded`.
     pub fn into_inner(self) -> hyper::upgrade::Upgraded {
         self.inner
     }
 }
 
-impl From<hyper::upgrade::Upgraded> for Upgraded {
+impl From<hyper::upgrade::Upgraded> for UpgradedSend {
     fn from(inner: hyper::upgrade::Upgraded) -> Self {
         Self::new(inner)
     }
 }
 
-impl hyper::rt::Read for Upgraded {
+impl hyper::rt::Read for UpgradedSend {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -38,7 +39,7 @@ impl hyper::rt::Read for Upgraded {
     }
 }
 
-impl hyper::rt::Write for Upgraded {
+impl hyper::rt::Write for UpgradedSend {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -62,14 +63,14 @@ impl hyper::rt::Write for Upgraded {
     }
 }
 
-impl std::fmt::Debug for Upgraded {
+impl std::fmt::Debug for UpgradedSend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Upgraded").finish()
+        f.debug_struct("UpgradedSend").finish()
     }
 }
 
 #[cfg(feature = "tokio")]
-impl tokio::io::AsyncRead for Upgraded {
+impl tokio::io::AsyncRead for UpgradedSend {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -93,7 +94,7 @@ impl tokio::io::AsyncRead for Upgraded {
 }
 
 #[cfg(feature = "tokio")]
-impl tokio::io::AsyncWrite for Upgraded {
+impl tokio::io::AsyncWrite for UpgradedSend {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -119,10 +120,10 @@ impl tokio::io::AsyncWrite for Upgraded {
 
 pub(crate) async fn on_upgrade(
     response: &mut http::Response<crate::response::ResponseBodySend>,
-) -> Result<Upgraded, Error> {
+) -> Result<UpgradedSend, Error> {
     let on_upgrade = hyper::upgrade::on(response);
     let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;
-    Ok(Upgraded::new(upgraded))
+    Ok(UpgradedSend::new(upgraded))
 }
 
 #[cfg(all(test, feature = "tokio"))]
@@ -131,7 +132,7 @@ mod tests {
     use crate::runtime::tokio_rt::TokioIo;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    async fn upgraded_from_handshake() -> (Upgraded, tokio::io::DuplexStream) {
+    async fn upgraded_from_handshake() -> (UpgradedSend, tokio::io::DuplexStream) {
         let (client_io, server_io) = tokio::io::duplex(1024);
         let io = TokioIo::new(client_io);
 
@@ -166,14 +167,14 @@ mod tests {
 
         let hyper_upgraded = hyper::upgrade::on(resp).await.unwrap();
         let server = server_handle.await.unwrap();
-        (Upgraded::new(hyper_upgraded), server)
+        (UpgradedSend::new(hyper_upgraded), server)
     }
 
     #[tokio::test]
     async fn debug_format() {
         let (upgraded, _server) = upgraded_from_handshake().await;
         let dbg = format!("{upgraded:?}");
-        assert!(dbg.contains("Upgraded"));
+        assert!(dbg.contains("UpgradedSend"));
     }
 
     #[tokio::test]

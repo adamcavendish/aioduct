@@ -2,7 +2,7 @@ mod chunk_download_local;
 mod chunk_download_send;
 
 pub use chunk_download_local::ChunkDownloadLocal;
-pub use chunk_download_send::ChunkDownload;
+pub use chunk_download_send::ChunkDownloadSend;
 
 /// Result of a parallel chunk download.
 #[derive(Debug)]

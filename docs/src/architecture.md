@@ -24,8 +24,8 @@ src/
   happy_eyeballs.rs   # RFC 6555 IPv6/IPv4 connection racing
   sse.rs              # SseStream, SseEvent — Server-Sent Events
   multipart.rs        # Multipart, Part — multipart/form-data
-  chunk_download.rs   # ChunkDownload — parallel range requests
-  upgrade.rs          # Upgraded — HTTP/1.1 protocol upgrade
+  chunk_download.rs   # ChunkDownloadSend/Local — parallel range requests
+  upgrade.rs          # UpgradedSend/Local — HTTP/1.1 protocol upgrade
   decompress.rs       # DecompressBody — gzip/brotli/zstd/deflate
   proxy.rs            # ProxyConfig, ProxySettings, NoProxy
   socks4.rs           # SOCKS4/4a handshake

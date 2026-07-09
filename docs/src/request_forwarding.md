@@ -56,7 +56,7 @@ println!("status: {}", resp.status());
 
 ## Hop-by-Hop Header Stripping
 
-`ForwardBuilder` automatically strips these headers from both the incoming request and the upstream response:
+`ForwardBuilderSend` automatically strips these headers from both the incoming request and the upstream response:
 
 - `Connection`
 - `Keep-Alive`
@@ -75,7 +75,7 @@ Upgrade requests are auto-detected and handled correctly:
 
 ### HTTP/1.1 Upgrade
 
-When `Connection: Upgrade` is present, `ForwardBuilder`:
+When `Connection: Upgrade` is present, `ForwardBuilderSend`:
 - Preserves `Connection` and `Upgrade` headers through hop-by-hop stripping
 - Forces HTTP/1.1 on the upstream connection
 - Skips response hop-by-hop stripping (101 is terminal)
@@ -117,7 +117,7 @@ let mut upstream_io = resp.upgrade().await?;
 
 ### HTTP/2 Extended CONNECT (RFC 8441)
 
-When the request method is `CONNECT` and a `Protocol` extension is present, `ForwardBuilder`:
+When the request method is `CONNECT` and a `Protocol` extension is present, `ForwardBuilderSend`:
 - Forces HTTP/2 on the upstream connection
 - Uses the full URI (not path-only) so hyper generates correct pseudo-headers
 - Skips response hop-by-hop stripping
@@ -371,12 +371,12 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
-## What ForwardBuilder Does NOT Do
+## What ForwardBuilderSend Does NOT Do
 
 - **No request body buffering** — the incoming request body streams through as-is
 - **No middleware** — redirects, cookies, cache, and decompression are all bypassed
 - **No streaming response digesting** — response `Content-Digest` generation uses bounded full-body buffering, not trailers
 - **No automatic trailer finalization** — response signing does not synthesize digest or signature trailers while streaming downstream bodies
 - **No WebSocket framing** — aioduct is transport-level; use a WS library for frame parsing
-- **No bidirectional splice** — the caller is responsible for splicing `Upgraded` streams
+- **No bidirectional splice** — the caller is responsible for splicing upgrade streams
 - **No plaintext h2 by default** — HTTPS forwards negotiate HTTP/2 via TLS ALPN as usual; use `.h2c()` or `.adaptive_h2c()` when the upstream requires cleartext HTTP/2 (h2c)

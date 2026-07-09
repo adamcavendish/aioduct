@@ -167,12 +167,12 @@ fn response_has_no_content(request_method: &http::Method, status: http::StatusCo
         || status == http::StatusCode::NOT_MODIFIED
 }
 
-/// Builder for forwarding an incoming HTTP request to an upstream server.
+/// Builder for forwarding an incoming HTTP request on a `Send` runtime.
 ///
 /// Created via [`HttpEngineSend::forward`]. Strips hop-by-hop headers, rewrites the URI
 /// to target the upstream, and streams the body through without buffering.
 /// Skips all client middleware (redirects, cookies, cache, decompression).
-pub struct ForwardBuilder<'a, R: RuntimePoll, C: ConnectorSend, B> {
+pub struct ForwardBuilderSend<'a, R: RuntimePoll, C: ConnectorSend, B> {
     client: &'a HttpEngineSend<R, C>,
     request: http::Request<B>,
     upstream: Option<Uri>,
@@ -197,7 +197,7 @@ pub struct ForwardBuilder<'a, R: RuntimePoll, C: ConnectorSend, B> {
     response_message_signature: Option<AutomaticMessageSignature>,
 }
 
-impl<'a, R: RuntimePoll, C: ConnectorSend, B> ForwardBuilder<'a, R, C, B>
+impl<'a, R: RuntimePoll, C: ConnectorSend, B> ForwardBuilderSend<'a, R, C, B>
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -782,7 +782,7 @@ mod tests {
     fn strip_prefix_sets_field() {
         let client = test_client();
         let req = dummy_request("/api/users");
-        let builder = ForwardBuilder::new(&client, req).strip_prefix("/api");
+        let builder = ForwardBuilderSend::new(&client, req).strip_prefix("/api");
         assert_eq!(builder.strip_prefix.as_deref(), Some("/api"));
     }
 
@@ -790,7 +790,7 @@ mod tests {
     fn preserve_host_sets_flag() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).preserve_host();
+        let builder = ForwardBuilderSend::new(&client, req).preserve_host();
         assert!(builder.preserve_host);
     }
 
@@ -798,7 +798,7 @@ mod tests {
     fn timeout_sets_duration() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).timeout(Duration::from_secs(5));
+        let builder = ForwardBuilderSend::new(&client, req).timeout(Duration::from_secs(5));
         assert_eq!(builder.timeout, Some(Duration::from_secs(5)));
     }
 
@@ -806,7 +806,7 @@ mod tests {
     fn phase_timeouts_set_fields() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req)
+        let builder = ForwardBuilderSend::new(&client, req)
             .connect_timeout(Duration::from_secs(1))
             .first_byte_timeout(Duration::from_secs(2))
             .write_timeout(Duration::from_secs(3))
@@ -821,7 +821,7 @@ mod tests {
     fn without_message_signature_clears_signing_flag() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).without_message_signature();
+        let builder = ForwardBuilderSend::new(&client, req).without_message_signature();
         assert!(!builder.sign_final_request);
     }
 
@@ -829,7 +829,7 @@ mod tests {
     fn header_adds_to_extra_headers() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req)
+        let builder = ForwardBuilderSend::new(&client, req)
             .header(http::header::ACCEPT, HeaderValue::from_static("text/html"));
         assert_eq!(builder.extra_headers.get("accept").unwrap(), "text/html");
     }
@@ -838,7 +838,8 @@ mod tests {
     fn forward_header_adds_to_list() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).forward_header(http::header::AUTHORIZATION);
+        let builder =
+            ForwardBuilderSend::new(&client, req).forward_header(http::header::AUTHORIZATION);
         assert_eq!(builder.forward_headers.len(), 1);
         assert_eq!(builder.forward_headers[0], http::header::AUTHORIZATION);
     }
@@ -847,7 +848,7 @@ mod tests {
     fn remove_header_adds_to_list() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).remove_header(http::header::COOKIE);
+        let builder = ForwardBuilderSend::new(&client, req).remove_header(http::header::COOKIE);
         assert_eq!(builder.remove_headers.len(), 1);
         assert_eq!(builder.remove_headers[0], http::header::COOKIE);
     }
@@ -856,7 +857,7 @@ mod tests {
     fn upstream_sets_uri() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).upstream("http://backend:8080");
+        let builder = ForwardBuilderSend::new(&client, req).upstream("http://backend:8080");
         assert_eq!(
             builder.upstream.unwrap().to_string(),
             "http://backend:8080/"
@@ -867,7 +868,7 @@ mod tests {
     fn h2c_sets_protocol_hint() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).h2c();
+        let builder = ForwardBuilderSend::new(&client, req).h2c();
         assert_eq!(builder.protocol_hint, ProtocolHint::H2c);
     }
 
@@ -875,7 +876,7 @@ mod tests {
     fn adaptive_h2c_sets_protocol_hint() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).adaptive_h2c();
+        let builder = ForwardBuilderSend::new(&client, req).adaptive_h2c();
         assert_eq!(builder.protocol_hint, ProtocolHint::AdaptiveH2c);
     }
 
@@ -883,7 +884,7 @@ mod tests {
     fn upgrade_pushes_connection_and_upgrade_headers() {
         let client = test_client();
         let req = dummy_request("/ws");
-        let builder = ForwardBuilder::new(&client, req).upgrade();
+        let builder = ForwardBuilderSend::new(&client, req).upgrade();
         assert!(builder.force_h1_upgrade);
         assert_eq!(builder.forward_headers.len(), 2);
         assert_eq!(builder.forward_headers[0], http::header::CONNECTION);
@@ -913,7 +914,7 @@ mod tests {
     fn on_request_hook_is_set() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).on_request(|_parts| {});
+        let builder = ForwardBuilderSend::new(&client, req).on_request(|_parts| {});
         assert!(builder.on_request.is_some());
     }
 
@@ -921,7 +922,7 @@ mod tests {
     fn on_response_hook_is_set() {
         let client = test_client();
         let req = dummy_request("/path");
-        let builder = ForwardBuilder::new(&client, req).on_response(|_resp| {});
+        let builder = ForwardBuilderSend::new(&client, req).on_response(|_resp| {});
         assert!(builder.on_response.is_some());
     }
 
@@ -929,7 +930,7 @@ mod tests {
     fn chained_builder() {
         let client = test_client();
         let req = dummy_request("/api/users?page=1");
-        let builder = ForwardBuilder::new(&client, req)
+        let builder = ForwardBuilderSend::new(&client, req)
             .upstream("http://backend:8080")
             .strip_prefix("/api")
             .preserve_host()
@@ -966,7 +967,7 @@ mod tests {
     async fn send_without_upstream_returns_error() {
         let client = test_client();
         let req = dummy_request("/path");
-        let result = ForwardBuilder::new(&client, req).send().await;
+        let result = ForwardBuilderSend::new(&client, req).send().await;
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::InvalidUrl(msg) => assert!(msg.contains("no upstream")),
@@ -978,7 +979,7 @@ mod tests {
     async fn send_with_upstream_no_authority_returns_error() {
         let client = test_client();
         let req = dummy_request("/path");
-        let result = ForwardBuilder::new(&client, req)
+        let result = ForwardBuilderSend::new(&client, req)
             .upstream("/just-a-path")
             .send()
             .await;
@@ -992,7 +993,7 @@ mod tests {
     async fn send_with_invalid_upstream_returns_recorded_error() {
         let client = test_client();
         let req = dummy_request("/path");
-        let result = ForwardBuilder::new(&client, req)
+        let result = ForwardBuilderSend::new(&client, req)
             .upstream("http://bad host")
             .send()
             .await;

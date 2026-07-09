@@ -905,7 +905,7 @@ async fn chunk_download_debug_includes_url() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let dl = client.chunk_download("http://example.com/large.bin");
     let debug = format!("{dl:?}");
-    assert!(debug.contains("ChunkDownload"));
+    assert!(debug.contains("ChunkDownloadSend"));
     assert!(debug.contains("large.bin"));
 }
 

@@ -34,7 +34,7 @@ async fn test_upgrade_websocket() {
                         {
                             tokio::spawn(async move {
                                 if let Ok(upgraded) = hyper::upgrade::on(&mut req).await {
-                                    let mut upgraded = aioduct::Upgraded::from(upgraded);
+                                    let mut upgraded = aioduct::UpgradedSend::from(upgraded);
                                     let mut buf = vec![0u8; 64];
                                     let n =
                                         AsyncReadExt::read(&mut upgraded, &mut buf).await.unwrap();
@@ -101,7 +101,7 @@ async fn test_upgrade_flush_and_shutdown() {
                     if req.headers().get("upgrade").map(|v| v.as_bytes()) == Some(b"websocket") {
                         tokio::spawn(async move {
                             if let Ok(upgraded) = hyper::upgrade::on(&mut req).await {
-                                let mut upgraded = aioduct::Upgraded::from(upgraded);
+                                let mut upgraded = aioduct::UpgradedSend::from(upgraded);
                                 let mut buf = vec![0u8; 1024];
                                 if let Ok(n) = AsyncReadExt::read(&mut upgraded, &mut buf).await {
                                     let _ =
@@ -140,7 +140,7 @@ async fn test_upgrade_flush_and_shutdown() {
     assert_eq!(resp.status(), http::StatusCode::SWITCHING_PROTOCOLS);
     let mut upgraded = resp.upgrade().await.unwrap();
     let dbg = format!("{upgraded:?}");
-    assert!(dbg.contains("Upgraded"));
+    assert!(dbg.contains("UpgradedSend"));
     AsyncWriteExt::write_all(&mut upgraded, b"ping")
         .await
         .unwrap();
