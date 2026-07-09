@@ -226,9 +226,9 @@ pub use problem::ProblemDetails;
 // ── Re-exports: native-only ──────────────────────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use chunk_download::ChunkDownload;
-#[cfg(not(target_arch = "wasm32"))]
 pub use chunk_download::ChunkDownloadLocal;
+#[cfg(not(target_arch = "wasm32"))]
+pub use chunk_download::ChunkDownloadSend;
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::HttpEngineBuilder;
 #[cfg(not(target_arch = "wasm32"))]
@@ -239,7 +239,7 @@ pub use client::HttpEngineLocal;
 pub use client::HttpEngineSend;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use forward::ForwardBuilder;
+pub use forward::ForwardBuilderSend;
 #[cfg(not(target_arch = "wasm32"))]
 pub use forward::forward_local::ForwardBuilderLocal;
 #[cfg(feature = "hickory-dns")]
@@ -266,9 +266,9 @@ pub use traits::OwnedWasmRequestBuilder;
 pub use traits::{OwnedRequestBuilderLocal, OwnedRequestBuilderSend};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use upgrade::Upgraded;
-#[cfg(not(target_arch = "wasm32"))]
 pub use upgrade::UpgradedLocal;
+#[cfg(not(target_arch = "wasm32"))]
+pub use upgrade::UpgradedSend;
 
 /// Convenience alias for [`HttpEngineSend`] using the Tokio runtime.
 #[cfg(feature = "tokio")]

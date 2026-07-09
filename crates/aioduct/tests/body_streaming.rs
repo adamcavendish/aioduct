@@ -576,7 +576,7 @@ async fn test_chunk_download_debug() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     let dl = client.chunk_download("http://example.com/file.bin");
     let dbg = format!("{dl:?}");
-    assert!(dbg.contains("ChunkDownload"));
+    assert!(dbg.contains("ChunkDownloadSend"));
     assert!(dbg.contains("example.com"));
 }
 #[tokio::test]

@@ -13,22 +13,22 @@ use crate::runtime::{ConnectorSend, RuntimePoll};
 use super::ChunkDownloadResult;
 
 /// Parallel range-request downloader for large files.
-pub struct ChunkDownload<R: RuntimePoll, C: ConnectorSend> {
+pub struct ChunkDownloadSend<R: RuntimePoll, C: ConnectorSend> {
     client: HttpEngineSend<R, C>,
     url: String,
     chunks: usize,
     _runtime: PhantomData<(R, C)>,
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for ChunkDownload<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for ChunkDownloadSend<R, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChunkDownload")
+        f.debug_struct("ChunkDownloadSend")
             .field("url", &self.url)
             .finish()
     }
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> ChunkDownload<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend> ChunkDownloadSend<R, C> {
     pub(crate) fn new(client: HttpEngineSend<R, C>, url: String) -> Self {
         Self {
             client,
@@ -188,7 +188,7 @@ mod tests {
         let client = crate::HttpEngineSend::<TokioRuntime, TcpConnector>::new();
         let dl = client.chunk_download("http://example.com/large.bin");
         let dbg = format!("{dl:?}");
-        assert!(dbg.contains("ChunkDownload"));
+        assert!(dbg.contains("ChunkDownloadSend"));
         assert!(dbg.contains("large.bin"));
     }
 

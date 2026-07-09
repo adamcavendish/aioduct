@@ -28,7 +28,7 @@ async fn forward_h1_upgrade_websocket() {
                     if req.headers().get("upgrade").map(|v| v.as_bytes()) == Some(b"websocket") {
                         tokio::spawn(async move {
                             if let Ok(upgraded) = hyper::upgrade::on(&mut req).await {
-                                let mut upgraded = aioduct::Upgraded::from(upgraded);
+                                let mut upgraded = aioduct::UpgradedSend::from(upgraded);
                                 let mut buf = vec![0u8; 64];
                                 let n = AsyncReadExt::read(&mut upgraded, &mut buf).await.unwrap();
                                 AsyncWriteExt::write_all(&mut upgraded, &buf[..n])
@@ -255,7 +255,7 @@ async fn forward_h2_extended_connect() {
                             if req.method() == http::Method::CONNECT {
                                 tokio::spawn(async move {
                                     if let Ok(upgraded) = hyper::upgrade::on(&mut req).await {
-                                        let mut io = aioduct::Upgraded::from(upgraded);
+                                        let mut io = aioduct::UpgradedSend::from(upgraded);
                                         let mut buf = vec![0u8; 1024];
                                         loop {
                                             let n =

@@ -59,21 +59,23 @@ For proxy/gateway use cases, see [Request Forwarding](request_forwarding.md) whi
 1. **HTTP/1.1**: Call `.upgrade()` on the `RequestBuilder` to set the required headers (`Connection: Upgrade`, `Upgrade: websocket`) and force HTTP/1.1.
 2. **HTTP/2**: Insert a `Protocol` extension into the request and use `CONNECT` method. The server must have `SETTINGS_ENABLE_CONNECT_PROTOCOL` enabled.
 3. Send the request and check for `101` (H1) or `200` (H2 CONNECT).
-4. Call `.upgrade()` on the `Response` to consume it and obtain an `Upgraded` stream.
+4. Call `.upgrade()` on the `Response` to consume it and obtain an `UpgradedSend` stream.
 5. The connection is **not** returned to the pool — it's exclusively yours.
 
-## The Upgraded Type
+## The UpgradedSend Type
 
-`Upgraded` is a bidirectional IO stream:
+`UpgradedSend` is a bidirectional IO stream:
 
 - Implements `hyper::rt::Read` and `hyper::rt::Write` (always available)
 - Implements `tokio::io::AsyncRead` and `tokio::io::AsyncWrite` (when the `tokio` feature is enabled)
 - Can be converted to the underlying `hyper::upgrade::Upgraded` via `.into_inner()`
-- Can be constructed from `hyper::upgrade::Upgraded` via `Upgraded::from()`
+- Can be constructed from `hyper::upgrade::Upgraded` via `UpgradedSend::from()`
+
+The local runtime path returns `UpgradedLocal`.
 
 ## Using with WebSocket Libraries
 
-Pass the `Upgraded` stream to your WebSocket library of choice. For example, with `tokio-tungstenite`:
+Pass the `UpgradedSend` stream to your WebSocket library of choice. For example, with `tokio-tungstenite`:
 
 ```rust,ignore
 let upgraded = resp.upgrade().await?;
@@ -90,4 +92,3 @@ let ws_stream = tokio_tungstenite::WebSocketStream::from_raw_socket(
 - HTTP/2 extended CONNECT uses `CONNECT` method + `:protocol` pseudo-header → 200
 - After upgrade, the connection/stream is consumed — it won't be returned to the pool
 - You can set additional WebSocket-specific headers (like `Sec-WebSocket-Key`) manually via `.header_str()`
-

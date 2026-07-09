@@ -10,7 +10,7 @@ impl<T: hyper::rt::Read + hyper::rt::Write + Unpin + 'static> LocalIo for T {}
 
 /// A bidirectional IO stream from an HTTP upgrade on the Local (!Send) path.
 ///
-/// Equivalent to [`super::Upgraded`] but for the Local/compio runtime. Obtained by
+/// Equivalent to [`super::UpgradedSend`] but for the Local/compio runtime. Obtained by
 /// calling `upgrade()` on a `Response<ResponseBodyLocal>`.
 pub struct UpgradedLocal {
     io: Box<dyn LocalIo>,

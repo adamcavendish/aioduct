@@ -27,7 +27,7 @@ async fn start_ws_upstream() -> SocketAddr {
                             {
                                 tokio::spawn(async move {
                                     if let Ok(upgraded) = hyper::upgrade::on(&mut req).await {
-                                        let mut io = aioduct::Upgraded::from(upgraded);
+                                        let mut io = aioduct::UpgradedSend::from(upgraded);
                                         let mut buf = vec![0u8; 1024];
                                         loop {
                                             let n =
@@ -108,7 +108,7 @@ async fn main() -> Result<(), aioduct::Error> {
 
         let mut upstream_io = resp.upgrade().await?;
 
-        // In a real proxy, you'd splice this with the downstream Upgraded:
+        // In a real proxy, you'd splice this with the downstream upgrade:
         //   tokio::io::copy_bidirectional(&mut downstream_io, &mut upstream_io).await?;
         //
         // Here we simulate the downstream side directly:

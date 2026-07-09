@@ -27,7 +27,7 @@ type ResponseHook = Box<dyn FnOnce(&mut Response)>;
 
 /// Builder for forwarding an incoming HTTP request on a `!Send` runtime.
 ///
-/// Created via [`HttpEngineLocal::forward_local`]. Mirrors [`super::ForwardBuilder`]
+/// Created via [`HttpEngineLocal::forward_local`]. Mirrors [`super::ForwardBuilderSend`]
 /// for completion-based runtimes.
 pub struct ForwardBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B> {
     client: &'a HttpEngineLocal<R, C>,

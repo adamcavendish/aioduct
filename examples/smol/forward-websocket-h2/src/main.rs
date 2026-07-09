@@ -41,7 +41,7 @@ async fn start_h2_ws_upstream() -> SocketAddr {
                             if req.method() == http::Method::CONNECT {
                                 tokio::spawn(async move {
                                     if let Ok(upgraded) = hyper::upgrade::on(&mut req).await {
-                                        let mut io = aioduct::Upgraded::from(upgraded);
+                                        let mut io = aioduct::UpgradedSend::from(upgraded);
                                         let mut buf = vec![0u8; 1024];
                                         loop {
                                             let n =

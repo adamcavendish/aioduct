@@ -153,8 +153,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     }
 
     /// Start a parallel chunk download for the given URL.
-    pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownload<R, C> {
-        crate::chunk_download::ChunkDownload::new(self.clone(), url.to_owned())
+    pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownloadSend<R, C> {
+        crate::chunk_download::ChunkDownloadSend::new(self.clone(), url.to_owned())
     }
 
     /// Resolve a hostname to all socket addresses using the configured DNS resolver.
@@ -179,12 +179,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub fn forward<B>(
         &self,
         request: http::Request<B>,
-    ) -> crate::forward::ForwardBuilder<'_, R, C, B>
+    ) -> crate::forward::ForwardBuilderSend<'_, R, C, B>
     where
         B: http_body::Body<Data = bytes::Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
-        crate::forward::ForwardBuilder::new(self, request)
+        crate::forward::ForwardBuilderSend::new(self, request)
     }
 
     pub(crate) fn default_timeout(&self) -> Option<std::time::Duration> {
