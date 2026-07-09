@@ -47,52 +47,52 @@ error: aioduct: enable at least one runtime feature: tokio, smol, compio, wasm, 
 
 ```toml
 # HTTP only, tokio runtime
-aioduct = { version = "0.2.2", features = ["tokio"] }
+aioduct = { version = "0.2.3", features = ["tokio"] }
 
 # HTTPS + JSON, tokio runtime
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "json"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-ring", "json"] }
 
 # HTTPS with AWS-LC, tokio runtime
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 
 # HTTPS with AWS-LC and OS native roots
-aioduct = { version = "0.2.2", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 
 # HTTP only, smol runtime
-aioduct = { version = "0.2.2", features = ["smol"] }
+aioduct = { version = "0.2.3", features = ["smol"] }
 
 # HTTPS, smol runtime
-aioduct = { version = "0.2.2", features = ["smol", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.3", features = ["smol", "rustls", "rustls-ring"] }
 
 # HTTP only, compio runtime (experimental)
-aioduct = { version = "0.2.2", features = ["compio"] }
+aioduct = { version = "0.2.3", features = ["compio"] }
 
 # HTTPS + JSON + compression, tokio runtime
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "json", "gzip", "brotli", "zstd", "deflate"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-ring", "json", "gzip", "brotli", "zstd", "deflate"] }
 
 # Blocking client (synchronous)
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "blocking"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-ring", "blocking"] }
 
 # With tracing and OpenTelemetry
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "tracing", "otel"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-ring", "tracing", "otel"] }
 
 # With tower integration
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "tower"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-ring", "tower"] }
 
 # Hickory DNS resolver
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "hickory-dns"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-ring", "hickory-dns"] }
 
 # DNS-over-HTTPS
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "doh"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-ring", "doh"] }
 
 # DNS-over-TLS
-aioduct = { version = "0.2.2", features = ["tokio", "rustls", "rustls-ring", "dot"] }
+aioduct = { version = "0.2.3", features = ["tokio", "rustls", "rustls-ring", "dot"] }
 
 # HTTP/3 with ring
-aioduct = { version = "0.2.2", features = ["tokio", "http3", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.3", features = ["tokio", "http3", "rustls", "rustls-ring"] }
 
 # HTTP/3 with AWS-LC
-aioduct = { version = "0.2.2", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.3", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 ## Wasmtime Host Adapter
@@ -102,13 +102,13 @@ Wasmtime host integration is first-party under `aioduct::wasmtime`. Enable the
 
 ```toml
 # Wasmtime host adapter with tokio + rustls/ring
-aioduct = { version = "0.2.2", features = ["wasmtime", "tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.3", features = ["wasmtime", "tokio", "rustls", "rustls-ring"] }
 
 # Wasmtime host adapter with smol + rustls/ring
-aioduct = { version = "0.2.2", features = ["wasmtime", "smol", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.3", features = ["wasmtime", "smol", "rustls", "rustls-ring"] }
 
 # Wasmtime host adapter with compio + rustls/ring
-aioduct = { version = "0.2.2", features = ["wasmtime", "compio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.3", features = ["wasmtime", "compio", "rustls", "rustls-ring"] }
 ```
 
 `aioduct::wasmtime` accepts native `RuntimePoll` transports such as

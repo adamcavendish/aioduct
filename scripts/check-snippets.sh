@@ -143,8 +143,11 @@ check_snippet() {
 }
 
 main() {
-    local snippets
-    mapfile -t snippets < <(find "$SNIPPETS_DIR" -name '*_aioduct.rs' -type f | sort)
+    local snippets=()
+    local snippet
+    while IFS= read -r snippet; do
+        snippets+=("$snippet")
+    done < <(find "$SNIPPETS_DIR" -name '*_aioduct.rs' -type f | sort)
     if [[ ${#snippets[@]} -eq 0 ]]; then
         echo "No snippets found in $SNIPPETS_DIR"
         exit 1

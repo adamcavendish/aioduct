@@ -5,7 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.3] - 2026-07-09
+
+### Fixed
+- Forwarded one-shot upload bodies now skip stale pooled upstream connections
+  across send, local, and forwarding dispatch paths, preserving streaming proxy
+  semantics while avoiding write failures on closed HTTP/1.x, HTTP/2, and
+  HTTP/3 connections.
+- Added real `hyper::body::Incoming` multipart forwarding regressions for
+  HTTP/1.0, HTTP/1.1, h2c, HTTPS/H1, HTTPS/H2, H3, and stale pooled upstream
+  paths.
 
 ### Changed
 - Renamed the send-runtime forwarding builder from `ForwardBuilder` to
