@@ -750,10 +750,8 @@ impl<B: 'static> ConnectionPool<B> {
         let max_lifetime = inner.max_lifetime;
         let max_active = inner.max_active_streams_per_connection;
 
-        let candidate_keys: Vec<PoolKey> = match inner.san_index.get(target_host) {
-            Some(keys) => keys.iter().cloned().collect(),
-            None => return None,
-        };
+        let candidate_keys: Vec<PoolKey> =
+            inner.san_index.get(target_host)?.iter().cloned().collect();
 
         let mut found_key = None;
         let mut found_conn = None;

@@ -1,6 +1,8 @@
 #![cfg(feature = "tokio")]
 #![cfg(feature = "rustls")]
 
+#[path = "tls/backpressure.rs"]
+mod backpressure;
 #[path = "tls/local_servers.rs"]
 mod local_servers;
 use std::convert::Infallible;

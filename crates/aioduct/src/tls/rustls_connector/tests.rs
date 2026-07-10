@@ -6,11 +6,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use hyper::rt::{self, Read, Write};
-use rustls::pki_types::ServerName;
-
 use crate::runtime::tokio_rt::TokioIo;
 use crate::tls::{TlsConnect, crypto_provider};
+use hyper::rt::{self, Read, Write};
 
 fn install_crypto_provider() {
     crate::tls::install_default_crypto_provider();
@@ -171,45 +169,11 @@ async fn server_write(
     Ok(())
 }
 
-async fn client_connect(
-    connector: &RustlsConnector,
-    stream: TokioIo<tokio::io::DuplexStream>,
-) -> io::Result<TlsStream<TokioIo<tokio::io::DuplexStream>>> {
-    let config = Arc::clone(connector.config());
-    let dns_name = ServerName::try_from("localhost".to_string())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let tls_conn = rustls::ClientConnection::new(config, dns_name).map_err(io::Error::other)?;
-    let mut tls_stream = TlsStream::new(stream, tls_conn);
-
-    while tls_stream.tls.is_handshaking() {
-        while tls_stream.tls.wants_write() {
-            std::future::poll_fn(|cx| write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx))
-                .await?;
-        }
-        std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
-        if tls_stream.tls.wants_read() {
-            let n =
-                std::future::poll_fn(|cx| read_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx))
-                    .await?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "TLS handshake: peer closed connection",
-                ));
-            }
-            tls_stream
-                .tls
-                .process_new_packets()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        }
-    }
-    // Flush any remaining handshake data (e.g. TLS 1.3 client Finished)
-    while tls_stream.tls.wants_write() {
-        std::future::poll_fn(|cx| write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx))
-            .await?;
-    }
-    std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
-    Ok(tls_stream)
+async fn client_connect<S>(connector: &RustlsConnector, stream: S) -> io::Result<TlsStream<S>>
+where
+    S: Read + Write + Send + Unpin + 'static,
+{
+    connector.connect("localhost", stream).await
 }
 
 // ---- Handshake tests ----
@@ -285,6 +249,8 @@ async fn handshake_eof_returns_error() {
 // ---- Data transfer tests ----
 #[path = "tests/data_transfer.rs"]
 mod data_transfer;
+#[path = "tests/write_backpressure.rs"]
+mod write_backpressure;
 
 #[path = "tests/alpn_negotiation.rs"]
 mod alpn_negotiation;
@@ -941,37 +907,6 @@ async fn read_after_server_write_then_close() {
     assert_eq!(read_buf2.filled().len(), 0, "second read should be EOF");
 }
 
-// ---- poll_write error when TLS session is closed ----
-
-#[tokio::test]
-async fn poll_write_errors_after_close_notify_sent() {
-    install_crypto_provider();
-    let (certs, key) = self_signed_cert();
-    let srv_cfg = server_config(certs, key);
-
-    let (client_io, server_io) = tokio::io::duplex(16384);
-    let mut server_stream = TokioIo::new(server_io);
-    let connector = RustlsConnector::danger_accept_invalid_certs();
-
-    let (client_result, _srv_conn) = tokio::join!(
-        client_connect(&connector, TokioIo::new(client_io)),
-        do_server_handshake(srv_cfg, &mut server_stream),
-    );
-    let mut client_tls = client_result.unwrap();
-
-    // Shut down the TLS session (sends close_notify)
-    std::future::poll_fn(|cx| Pin::new(&mut client_tls).poll_shutdown(cx))
-        .await
-        .expect("shutdown should succeed");
-
-    // Now trying to write plaintext into a closed TLS session should error.
-    // rustls rejects writes after close_notify has been sent.
-    let result =
-        std::future::poll_fn(|cx| Pin::new(&mut client_tls).poll_write(cx, b"after close")).await;
-    // After close_notify, the writer should return an error
-    assert!(result.is_err(), "writing after close_notify should fail");
-}
-
 // ---- poll_shutdown error propagation from write_tls ----
 
 #[tokio::test]
@@ -1006,7 +941,7 @@ async fn poll_shutdown_propagates_write_error() {
 // ---- poll_read returns error when underlying stream errors ----
 
 #[tokio::test]
-async fn poll_read_propagates_read_error() {
+async fn poll_read_reports_tls_truncation_without_close_notify() {
     install_crypto_provider();
     let (certs, key) = self_signed_cert();
     let srv_cfg = server_config(certs, key);
@@ -1025,8 +960,8 @@ async fn poll_read_propagates_read_error() {
     drop(server_stream);
     drop(_srv_conn);
 
-    // Reading should eventually return an error or EOF (0 bytes)
-    // since the server didn't send a proper close_notify
+    // Reading must report TLS truncation because the server did not send a
+    // close_notify alert.
     let mut buf = [0u8; 64];
     let mut read_buf = hyper::rt::ReadBuf::new(&mut buf);
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -1036,27 +971,51 @@ async fn poll_read_propagates_read_error() {
     .await
     .expect("read should not hang forever");
 
-    // Either an error or EOF (0 bytes read) is acceptable when peer drops abruptly
     match result {
-        Ok(()) => {
-            assert_eq!(
-                read_buf.filled().len(),
-                0,
-                "abrupt close should yield EOF (0 bytes)"
-            );
-        }
-        Err(e) => {
-            // Any I/O error is acceptable (connection reset, unexpected EOF, etc.)
-            assert!(
-                e.kind() == io::ErrorKind::UnexpectedEof
-                    || e.kind() == io::ErrorKind::ConnectionReset
-                    || e.kind() == io::ErrorKind::BrokenPipe
-                    || e.kind() == io::ErrorKind::InvalidData,
-                "unexpected error kind: {:?}",
-                e.kind()
-            );
-        }
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {}
+        other => panic!("an abrupt TLS close must report UnexpectedEof, got {other:?}"),
     }
+    assert!(read_buf.filled().is_empty());
+}
+
+#[tokio::test]
+async fn poll_read_reports_tls_truncation_after_buffered_plaintext() {
+    install_crypto_provider();
+    let (certs, key) = self_signed_cert();
+    let srv_cfg = server_config(certs, key);
+
+    let (client_io, server_io) = tokio::io::duplex(16384);
+    let mut server_stream = TokioIo::new(server_io);
+    let connector = RustlsConnector::danger_accept_invalid_certs();
+
+    let (client_result, mut srv_conn) = tokio::join!(
+        client_connect(&connector, TokioIo::new(client_io)),
+        do_server_handshake(srv_cfg, &mut server_stream),
+    );
+    let mut client_tls = client_result.unwrap();
+
+    server_write(&mut srv_conn, &mut server_stream, b"final-message")
+        .await
+        .unwrap();
+    drop(server_stream);
+    drop(srv_conn);
+
+    let mut data = [0u8; 64];
+    let mut data_buf = hyper::rt::ReadBuf::new(&mut data);
+    std::future::poll_fn(|cx| Pin::new(&mut client_tls).poll_read(cx, data_buf.unfilled()))
+        .await
+        .expect("buffered plaintext should be returned before the truncation error");
+    assert_eq!(data_buf.filled(), b"final-message");
+
+    let mut eof = [0u8; 1];
+    let mut eof_buf = hyper::rt::ReadBuf::new(&mut eof);
+    match std::future::poll_fn(|cx| Pin::new(&mut client_tls).poll_read(cx, eof_buf.unfilled()))
+        .await
+    {
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {}
+        other => panic!("truncation after plaintext must report UnexpectedEof, got {other:?}"),
+    }
+    assert!(eof_buf.filled().is_empty());
 }
 
 // ---- NoHostnameVerifier Ok path (cert IS valid for hostname) ----
