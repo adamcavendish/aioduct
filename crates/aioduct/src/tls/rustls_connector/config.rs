@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use rustls::pki_types::ServerName;
 
-use super::stream::{TlsStream, read_tls, write_tls};
+use super::stream::{TlsStream, poll_flush_retry, read_tls, write_tls};
 use super::verifier::{NoHostnameVerifier, NoVerifier};
 #[cfg(feature = "compio")]
 use crate::tls::TlsConnectLocal;
@@ -265,6 +265,65 @@ pub enum AlpnProtocol {
     H2,
 }
 
+pub(super) fn ensure_handshake_wants_read(wants_read: bool) -> io::Result<()> {
+    if wants_read {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TLS handshake stalled: neither wants_read nor wants_write",
+        ))
+    }
+}
+
+async fn connect_stream<S>(
+    config: Arc<rustls::ClientConfig>,
+    server_name: String,
+    stream: S,
+) -> io::Result<TlsStream<S>>
+where
+    S: hyper::rt::Read + hyper::rt::Write + Unpin,
+{
+    let dns_name = ServerName::try_from(server_name)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let tls_conn = rustls::ClientConnection::new(config, dns_name).map_err(io::Error::other)?;
+    let mut tls_stream = TlsStream::new(stream, tls_conn);
+
+    // rustls queues the ClientHello on construction. Alternate writes and
+    // reads until the handshake completes, rejecting transports that report
+    // no progress while ciphertext is pending.
+    while tls_stream.tls.is_handshaking() {
+        while tls_stream.tls.wants_write() {
+            std::future::poll_fn(|cx| write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx))
+                .await?;
+        }
+        std::future::poll_fn(|cx| poll_flush_retry(&mut tls_stream.inner, cx)).await?;
+        let wants_read = tls_stream.tls.wants_read();
+        ensure_handshake_wants_read(wants_read)?;
+        let n = std::future::poll_fn(|cx| read_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx))
+            .await?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "TLS handshake: peer closed connection",
+            ));
+        }
+        tls_stream
+            .tls
+            .process_new_packets()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    }
+
+    // Flush TLS 1.3 client Finished and any other trailing handshake data.
+    while tls_stream.tls.wants_write() {
+        std::future::poll_fn(|cx| write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx))
+            .await?;
+    }
+    std::future::poll_fn(|cx| poll_flush_retry(&mut tls_stream.inner, cx)).await?;
+
+    Ok(tls_stream)
+}
+
 impl<S> TlsConnect<S> for RustlsConnector
 where
     S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
@@ -278,59 +337,7 @@ where
     ) -> Pin<Box<dyn std::future::Future<Output = io::Result<Self::Stream>> + Send + '_>> {
         let server_name = server_name.to_owned();
         let config = Arc::clone(&self.config);
-        Box::pin(async move {
-            let dns_name = ServerName::try_from(server_name)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            let tls_conn =
-                rustls::ClientConnection::new(config, dns_name).map_err(io::Error::other)?;
-            let mut tls_stream = TlsStream::new(stream, tls_conn);
-
-            // Drive the TLS handshake to completion before returning.
-            // rustls queues the ClientHello on construction; we must
-            // alternate write_tls / read_tls until the handshake is done.
-            while tls_stream.tls.is_handshaking() {
-                while tls_stream.tls.wants_write() {
-                    std::future::poll_fn(|cx| {
-                        write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
-                    })
-                    .await?;
-                }
-                std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
-                if tls_stream.tls.wants_read() {
-                    let n = std::future::poll_fn(|cx| {
-                        read_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
-                    })
-                    .await?;
-                    if n == 0 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "TLS handshake: peer closed connection",
-                        ));
-                    }
-                    tls_stream
-                        .tls
-                        .process_new_packets()
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                } else if !tls_stream.tls.wants_write() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "TLS handshake stalled: neither wants_read nor wants_write",
-                    ));
-                }
-            }
-
-            // Flush any remaining handshake data (e.g. TLS 1.3 client Finished)
-            // so the server can complete the handshake before we send app data.
-            while tls_stream.tls.wants_write() {
-                std::future::poll_fn(|cx| {
-                    write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
-                })
-                .await?;
-            }
-            std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
-
-            Ok(tls_stream)
-        })
+        Box::pin(connect_stream(config, server_name, stream))
     }
 }
 
@@ -348,53 +355,6 @@ where
     ) -> Pin<Box<dyn std::future::Future<Output = io::Result<Self::Stream>> + '_>> {
         let server_name = server_name.to_owned();
         let config = Arc::clone(&self.config);
-        Box::pin(async move {
-            let dns_name = ServerName::try_from(server_name)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            let tls_conn =
-                rustls::ClientConnection::new(config, dns_name).map_err(io::Error::other)?;
-            let mut tls_stream = TlsStream::new(stream, tls_conn);
-
-            while tls_stream.tls.is_handshaking() {
-                while tls_stream.tls.wants_write() {
-                    std::future::poll_fn(|cx| {
-                        write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
-                    })
-                    .await?;
-                }
-                std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
-                if tls_stream.tls.wants_read() {
-                    let n = std::future::poll_fn(|cx| {
-                        read_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
-                    })
-                    .await?;
-                    if n == 0 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "TLS handshake: peer closed connection",
-                        ));
-                    }
-                    tls_stream
-                        .tls
-                        .process_new_packets()
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                } else if !tls_stream.tls.wants_write() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "TLS handshake stalled: neither wants_read nor wants_write",
-                    ));
-                }
-            }
-
-            while tls_stream.tls.wants_write() {
-                std::future::poll_fn(|cx| {
-                    write_tls(&mut tls_stream.tls, &mut tls_stream.inner, cx)
-                })
-                .await?;
-            }
-            std::future::poll_fn(|cx| Pin::new(&mut tls_stream.inner).poll_flush(cx)).await?;
-
-            Ok(tls_stream)
-        })
+        Box::pin(connect_stream(config, server_name, stream))
     }
 }
