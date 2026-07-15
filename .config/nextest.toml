@@ -12,3 +12,8 @@ slow-timeout = { period = "10s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = "test(guest_wasi_client_is_serviced_by_host_adapter)"
 slow-timeout = { period = "30s", terminate-after = 2 }
+# These tests relay a sustained upload through an intentionally throttled TLS
+# tunnel. Full-suite contention can exceed the global six-second kill limit.
+[[profile.default.overrides]]
+filter = "test(forward_real_incoming_multipart_through_https_proxy_reuses_fresh_tunnel_send) | test(forward_real_incoming_multipart_through_https_proxy_reuses_fresh_https_h2_tunnel_send) | test(compio_forward_local_real_incoming_multipart_through_https_proxy_reuses_fresh_tunnel) | test(compio_forward_local_real_incoming_multipart_through_https_proxy_reuses_fresh_https_h2_tunnel)"
+slow-timeout = { period = "30s", terminate-after = 2 }

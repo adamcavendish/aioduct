@@ -1,75 +1,33 @@
 #[cfg(test)]
 mod tests {
-    use crate::client::connect_handshake::parse_connect_status;
+    use crate::client::connect_handshake::parse_connect_response;
 
     #[test]
-    fn parse_200_ok() {
-        assert_eq!(parse_connect_status("HTTP/1.1 200 OK").unwrap(), 200);
+    fn parses_http10_and_http11_responses() {
+        for version in ["HTTP/1.0", "HTTP/1.1"] {
+            let response = format!("{version} 200 Connection Established\r\nX-Proxy: yes\r\n\r\n");
+            assert_eq!(parse_connect_response(response.as_bytes()).unwrap(), 200);
+        }
     }
 
     #[test]
-    fn parse_200_connection_established() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 200 Connection Established").unwrap(),
-            200
-        );
-    }
-
-    #[test]
-    fn parse_407_proxy_auth_required() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 407 Proxy Authentication Required").unwrap(),
-            407
-        );
-    }
-
-    #[test]
-    fn parse_403_forbidden() {
-        assert_eq!(parse_connect_status("HTTP/1.1 403 Forbidden").unwrap(), 403);
-    }
-
-    #[test]
-    fn malformed_status_line_returns_error() {
-        assert!(parse_connect_status("garbage").is_err());
-    }
-
-    #[test]
-    fn empty_status_line_returns_error() {
-        assert!(parse_connect_status("").is_err());
-    }
-
-    #[test]
-    fn status_with_200_in_reason_is_not_200() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 403 Contains 200 in text").unwrap(),
-            403
-        );
-    }
-
-    #[test]
-    fn parse_non_numeric_status_code_returns_error() {
-        assert!(parse_connect_status("HTTP/1.1 abc Forbidden").is_err());
-    }
-
-    #[test]
-    fn parse_no_second_token_returns_error() {
-        assert!(parse_connect_status("HTTP/1.1").is_err());
-    }
-
-    #[test]
-    fn parse_301_redirect() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 301 Moved Permanently").unwrap(),
-            301
-        );
-    }
-
-    #[test]
-    fn parse_503_service_unavailable() {
-        assert_eq!(
-            parse_connect_status("HTTP/1.1 503 Service Unavailable").unwrap(),
-            503
-        );
+    fn rejects_malformed_status_and_header_framing() {
+        for response in [
+            &b""[..],
+            &b"garbage\r\n\r\n"[..],
+            &b"HTTP/1.1 abc Forbidden\r\n\r\n"[..],
+            &b"HTTP/1.1 200 OK\n\n"[..],
+            &b"HTTP/1.1 200 OK\r\ninvalid header\r\n\r\n"[..],
+            &b"HTTP/1.1 200 OK\r\nBad Header: value\r\n\r\n"[..],
+            &b"HTTP/1.1 200 OK\r\nX-Test: value\r\n"[..],
+            &b"HTTP/1.1 200 OK\r\n\r\nextra"[..],
+        ] {
+            assert!(
+                parse_connect_response(response).is_err(),
+                "accepted malformed response: {:?}",
+                String::from_utf8_lossy(response)
+            );
+        }
     }
 }
 
@@ -80,6 +38,23 @@ mod tokio_tests {
     use std::task::{Context, Poll};
 
     use crate::client::connect_handshake::do_connect_handshake;
+
+    async fn handshake_with_response(response: Vec<u8>) -> Result<(), crate::Error> {
+        let (client_io, mut server_io) = tokio::io::duplex(16 * 1024);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let mut request = [0u8; 4096];
+            let _ = server_io.read(&mut request).await.unwrap();
+            server_io.write_all(&response).await.unwrap();
+        });
+
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
+        let stream = crate::runtime::tokio_rt::TokioIo::new(client_io);
+        do_connect_handshake(stream, &proxy, "target.example.com:443")
+            .await
+            .map(|_| ())
+    }
 
     // ── do_connect_handshake integration tests ──────────────────────────────
 
@@ -108,6 +83,163 @@ mod tokio_tests {
         let stream = crate::runtime::tokio_rt::TokioIo::new(client_io);
         let result = do_connect_handshake(stream, &proxy, &target).await;
         assert!(result.is_ok(), "handshake should succeed");
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_accepts_every_2xx_boundary() {
+        for status in [200, 201, 204, 299] {
+            let response = format!("HTTP/1.1 {status} Established\r\n\r\n").into_bytes();
+            let result = handshake_with_response(response).await;
+            assert!(result.is_ok(), "status {status} should establish a tunnel");
+        }
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_consumes_informational_responses_before_success() {
+        let response = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </style.css>\r\n\r\nHTTP/1.1 199 Informational Boundary\r\n\r\nHTTP/1.1 201 Established\r\n\r\n".to_vec();
+
+        handshake_with_response(response).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_bounds_informational_responses() {
+        let mut response = b"HTTP/1.1 100 Continue\r\n\r\n".repeat(17);
+        response.extend_from_slice(b"HTTP/1.1 200 Established\r\n\r\n");
+
+        let error = handshake_with_response(response).await.unwrap_err();
+        assert!(
+            error.to_string().contains("too many informational"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_rejects_101_without_waiting_for_another_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+        tokio::spawn(async move {
+            let mut request = [0u8; 4096];
+            let _ = server_io.read(&mut request).await.unwrap();
+            server_io
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: proxy-tunnel\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
+        let stream = crate::runtime::tokio_rt::TokioIo::new(client_io);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            do_connect_handshake(stream, &proxy, "target.example.com:443"),
+        )
+        .await
+        .expect("101 must be rejected without waiting for another response");
+        let error = match result {
+            Ok(_) => panic!("101 unexpectedly established a CONNECT tunnel"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("101"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn informational_connect_responses_leave_tunnel_bytes_unread() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+        tokio::spawn(async move {
+            let mut request = [0u8; 4096];
+            let _ = server_io.read(&mut request).await.unwrap();
+            server_io
+                .write_all(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 Established\r\n\r\nX")
+                .await
+                .unwrap();
+        });
+
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
+        let stream = crate::runtime::tokio_rt::TokioIo::new(client_io);
+        let stream = do_connect_handshake(stream, &proxy, "target.example.com:443")
+            .await
+            .unwrap();
+        let mut inner = stream.into_inner();
+        let mut tunnel_byte = [0u8; 1];
+        inner.read_exact(&mut tunnel_byte).await.unwrap();
+
+        assert_eq!(tunnel_byte, *b"X");
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_accepts_http10_success() {
+        let result =
+            handshake_with_response(b"HTTP/1.0 200 Connection Established\r\n\r\n".to_vec()).await;
+
+        assert!(
+            result.is_ok(),
+            "HTTP/1.0 proxies may establish CONNECT tunnels"
+        );
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_rejects_non_2xx_boundaries() {
+        for status in [300, 407, 500] {
+            let response = format!("HTTP/1.1 {status} Rejected\r\n\r\n").into_bytes();
+            let error = handshake_with_response(response).await.unwrap_err();
+            assert!(
+                error.to_string().contains(&status.to_string()),
+                "status {status} was not preserved in {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_leaves_first_tunnel_byte_unread() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (client_io, mut server_io) = tokio::io::duplex(8192);
+        tokio::spawn(async move {
+            let mut request = [0u8; 4096];
+            let _ = server_io.read(&mut request).await.unwrap();
+            server_io
+                .write_all(b"HTTP/1.1 200 Established\r\n\r\nX")
+                .await
+                .unwrap();
+        });
+
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy:8080").unwrap();
+        let stream = crate::runtime::tokio_rt::TokioIo::new(client_io);
+        let stream = do_connect_handshake(stream, &proxy, "target.example.com:443")
+            .await
+            .unwrap();
+        let mut inner = stream.into_inner();
+        let mut tunnel_byte = [0u8; 1];
+        inner.read_exact(&mut tunnel_byte).await.unwrap();
+
+        assert_eq!(tunnel_byte, *b"X");
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_rejects_excessive_response_head() {
+        let response =
+            format!("HTTP/1.1 200 OK\r\nX-Padding: {}\r\n\r\n", "a".repeat(8192)).into_bytes();
+        let error = handshake_with_response(response).await.unwrap_err();
+
+        assert!(error.to_string().contains("too large"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn do_connect_handshake_rejects_excessive_header_count() {
+        let mut response = b"HTTP/1.1 200 OK\r\n".to_vec();
+        for index in 0..65 {
+            response.extend_from_slice(format!("X-{index}: value\r\n").as_bytes());
+        }
+        response.extend_from_slice(b"\r\n");
+
+        let error = handshake_with_response(response).await.unwrap_err();
+        assert!(error.to_string().contains("too many headers"), "{error}");
     }
 
     #[tokio::test]

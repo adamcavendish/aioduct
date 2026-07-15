@@ -126,19 +126,17 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         } else if proxy.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(feature = "rustls")]
             {
-                use crate::tls::TlsConnect;
                 let tls_connector = self
                     .core
                     .tls
                     .as_ref()
                     .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
+                let tls_stream = super::proxy_tls::connect_send(
                     tls_connector,
                     proxy_authority.host(),
                     tcp_stream,
                 )
-                .await
-                .map_err(|e| Error::Tls(Box::new(e)))?;
+                .await?;
                 if is_https {
                     self.connect_tunnel_send(tls_stream, proxy, target_authority, connect_timeout)
                         .await
@@ -390,19 +388,17 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         } else if first.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(feature = "rustls")]
             {
-                use crate::tls::TlsConnect;
                 let tls_connector = self
                     .core
                     .tls
                     .as_ref()
                     .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
+                let tls_stream = super::proxy_tls::connect_send(
                     tls_connector,
                     first_authority.host(),
                     tcp_stream,
                 )
-                .await
-                .map_err(|e| Error::Tls(Box::new(e)))?;
+                .await?;
                 let second_target = format!(
                     "{}:{}",
                     second_authority.host(),
@@ -417,13 +413,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 if second.scheme == crate::proxy::ProxyScheme::Https {
                     // TLS-wrap to the second proxy through the first proxy's
                     // tunnel, then dispatch based on target scheme and h2c flag.
-                    let tls_stream = <crate::tls::RustlsConnector as TlsConnect<_>>::connect(
+                    let tls_stream = super::proxy_tls::connect_send(
                         tls_connector,
                         second_authority.host(),
                         stream,
                     )
-                    .await
-                    .map_err(|e| Error::Tls(Box::new(e)))?;
+                    .await?;
                     if is_https {
                         self.connect_tunnel_send(
                             tls_stream,
@@ -574,20 +569,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         } else if second.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(feature = "rustls")]
             {
-                use crate::tls::TlsConnect;
                 let tls_connector = self
                     .core
                     .tls
                     .as_ref()
                     .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
                 let second_authority = second.authority()?;
-                let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
-                    tls_connector,
-                    second_authority.host(),
-                    stream,
-                )
-                .await
-                .map_err(|e| Error::Tls(Box::new(e)))?;
+                let tls_stream =
+                    super::proxy_tls::connect_send(tls_connector, second_authority.host(), stream)
+                        .await?;
                 if is_https {
                     self.connect_tunnel_send(tls_stream, second, target_authority, connect_timeout)
                         .await

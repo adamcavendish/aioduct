@@ -14,6 +14,8 @@ mod execute_local;
 mod execute_send;
 mod proxy_connect_local;
 mod proxy_connect_send;
+#[cfg(feature = "rustls")]
+mod proxy_tls;
 mod replay;
 mod request_flow;
 mod request_replay;

@@ -28,6 +28,14 @@ pub(crate) fn crypto_provider() -> std::sync::Arc<rustls::crypto::CryptoProvider
 }
 
 #[cfg(feature = "rustls")]
+pub(crate) fn server_name_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .filter(|host| host.parse::<std::net::Ipv6Addr>().is_ok())
+        .unwrap_or(host)
+}
+
+#[cfg(feature = "rustls")]
 fn crypto_provider_value() -> rustls::crypto::CryptoProvider {
     #[cfg(feature = "rustls-aws-lc-rs")]
     {

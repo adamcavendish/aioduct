@@ -220,6 +220,75 @@ fn make_tls13_only_server_config(
 // ── Tests ────────────────────────────────────────────────────────
 
 #[test]
+fn test_compio_unknown_selected_alpn_is_rejected_before_http_bytes() {
+    install_crypto();
+    let (cert_der, key_der) = self_signed_cert();
+    let mut server_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
+    server_config.alpn_protocols = vec![b"custom-proto".to_vec()];
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    let (read_tx, read_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            use tokio::io::AsyncReadExt as _;
+
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            addr_tx.send(listener.local_addr().unwrap()).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = acceptor.accept(stream).await.unwrap();
+            let mut byte = [0_u8; 1];
+            let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(0);
+            read_tx.send(read).unwrap();
+        });
+    });
+    let addr = addr_rx.recv().unwrap();
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert_der).unwrap();
+    let mut client_config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"custom-proto".to_vec()];
+    let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_config));
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .tls(connector)
+            .timeout(Duration::from_secs(5))
+            .build_local()
+            .unwrap();
+        let error = client
+            .get_local(&url(addr))
+            .unwrap()
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("custom-proto"),
+            "unexpected unknown-ALPN error: {error}"
+        );
+    });
+
+    assert_eq!(
+        read_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        0,
+        "local dispatch sent HTTP bytes after negotiating an unknown ALPN"
+    );
+}
+
+#[test]
 fn test_compio_tls_prebuilt_connector() {
     install_crypto();
     let (cert_der, key_der) = self_signed_cert();
