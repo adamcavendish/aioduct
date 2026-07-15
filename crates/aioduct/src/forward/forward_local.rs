@@ -12,11 +12,12 @@ use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 use bytes::Bytes;
-use http::header::{HOST, HeaderMap, HeaderName, HeaderValue};
-use http::uri::{Parts as UriParts, PathAndQuery, Scheme, Uri};
+use http::Uri;
+use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http_body::Body;
 use http_body_util::BodyExt;
 
+use super::dispatch_plan::{ForwardDispatchPlan, ForwardRewrite, rewrite_for_upstream};
 use super::{
     apply_forward_response_content_digest, hop_by_hop, is_h1_upgrade_request,
     prepare_forward_response_related_request, reject_response_finalization_for_tunnel_or_upgrade,
@@ -300,99 +301,41 @@ where
         }
 
         let is_h1_upgrade = self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers);
+        let is_h2_extended_connect_before_hook = parts.method == http::Method::CONNECT
+            && parts.extensions.get::<crate::Protocol>().is_some();
 
         if is_h1_upgrade {
             self.forward_headers.push(http::header::CONNECTION);
             self.forward_headers.push(http::header::UPGRADE);
-            parts.version = http::Version::HTTP_11;
         }
-
-        let is_h2_extended_connect = parts.method == http::Method::CONNECT
-            && parts.extensions.get::<crate::Protocol>().is_some();
-        if is_h2_extended_connect {
-            parts.version = http::Version::HTTP_2;
-        }
-        if self.protocol_hint == ProtocolHint::H2c {
-            parts.version = http::Version::HTTP_2;
-        }
-        if !is_h1_upgrade && !is_h2_extended_connect && self.protocol_hint != ProtocolHint::H2c {
-            parts.version = http::Version::HTTP_11;
-        }
-
-        let forwarded_values: Vec<(HeaderName, HeaderValue)> = self
-            .forward_headers
-            .iter()
-            .filter_map(|name| parts.headers.get(name).map(|v| (name.clone(), v.clone())))
-            .collect();
-
-        hop_by_hop::strip_hop_by_hop(&mut parts.headers);
 
         let upstream = self
             .upstream
             .ok_or_else(|| Error::InvalidUrl("forward: no upstream configured".into()))?;
-
-        let upstream_scheme = upstream.scheme().cloned().unwrap_or(Scheme::HTTP);
-        let upstream_authority = upstream
-            .authority()
-            .cloned()
-            .ok_or_else(|| Error::InvalidUrl("forward: upstream has no authority".into()))?;
-
-        let original_path = parts.uri.path();
-        let path_after_strip = match &self.strip_prefix {
-            Some(prefix) => {
-                let stripped = original_path
-                    .strip_prefix(prefix.as_str())
-                    .unwrap_or(original_path);
-                if stripped.is_empty() || !stripped.starts_with('/') {
-                    format!("/{stripped}")
-                } else {
-                    stripped.to_owned()
-                }
-            }
-            None => original_path.to_owned(),
-        };
-
-        let upstream_base = upstream.path().trim_end_matches('/');
-        let combined_path = if upstream_base.is_empty() {
-            path_after_strip
-        } else {
-            format!("{upstream_base}{path_after_strip}")
-        };
-
-        let path_and_query = if let Some(query) = parts.uri.query() {
-            format!("{combined_path}?{query}")
-        } else {
-            combined_path
-        };
-
-        let pq: PathAndQuery = path_and_query
-            .parse()
-            .map_err(|e| Error::InvalidUrl(format!("forward: invalid path: {e}")))?;
-
-        let mut uri_parts = UriParts::default();
-        uri_parts.scheme = Some(upstream_scheme);
-        uri_parts.authority = Some(upstream_authority.clone());
-        uri_parts.path_and_query = Some(pq);
-        let full_uri =
-            Uri::from_parts(uri_parts).map_err(|e| Error::InvalidUrl(format!("forward: {e}")))?;
-
-        if !self.preserve_host {
-            parts.headers.remove(HOST);
-            if let Ok(hv) = upstream_authority.as_str().parse::<HeaderValue>() {
-                parts.headers.insert(HOST, hv);
-            }
-        }
-
-        for (name, value) in forwarded_values {
-            parts.headers.insert(name, value);
-        }
-
-        for (name, value) in &self.extra_headers {
-            parts.headers.insert(name, value.clone());
-        }
-
-        for name in &self.remove_headers {
-            parts.headers.remove(name);
+        let full_uri = rewrite_for_upstream(
+            &mut parts,
+            ForwardRewrite {
+                upstream: &upstream,
+                strip_prefix: self.strip_prefix.as_deref(),
+                preserve_host: self.preserve_host,
+                forward_headers: &self.forward_headers,
+                extra_headers: &self.extra_headers,
+                remove_headers: &self.remove_headers,
+            },
+        )?;
+        let pre_hook_plan = ForwardDispatchPlan::from_legacy_classification(
+            full_uri.clone(),
+            &parts.method,
+            self.protocol_hint,
+            is_h1_upgrade,
+            is_h2_extended_connect_before_hook,
+        )?;
+        pre_hook_plan.prepare_legacy_version(&mut parts);
+        if !is_h1_upgrade
+            && !is_h2_extended_connect_before_hook
+            && self.protocol_hint != ProtocolHint::H2c
+        {
+            parts.version = http::Version::HTTP_11;
         }
 
         if let Some(hook) = self.on_request {
@@ -403,31 +346,17 @@ where
             reject_response_finalization_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
         }
 
-        // H2 extended CONNECT uses absolute URI.
-        // RFC 7540 §8.3: ordinary CONNECT over h2c uses authority form.
-        // Other h2c requests use absolute URI.
-        // AdaptiveH2c uses path-only form because the dispatch layer may fall back
-        // to H1, and absolute-form URIs confuse many origin servers.
         let is_h2_extended_connect = parts.method == http::Method::CONNECT
             && parts.extensions.get::<crate::Protocol>().is_some();
-        if is_h2_extended_connect {
-            parts.uri = full_uri.clone();
-        } else if self.protocol_hint == ProtocolHint::H2c && parts.method == http::Method::CONNECT {
-            parts.uri = upstream_authority
-                .as_str()
-                .parse()
-                .map_err(|e| Error::Other(Box::new(e)))?;
-        } else if self.protocol_hint == ProtocolHint::H2c {
-            parts.uri = full_uri.clone();
-        } else {
-            let request_uri: Uri = full_uri
-                .path_and_query()
-                .map(|pq| pq.as_str())
-                .unwrap_or("/")
-                .parse()
-                .map_err(|e| Error::Other(Box::new(e)))?;
-            parts.uri = request_uri;
-        }
+        let plan = ForwardDispatchPlan::from_legacy_classification(
+            full_uri,
+            &parts.method,
+            self.protocol_hint,
+            is_h1_upgrade,
+            is_h2_extended_connect,
+        )?;
+        plan.apply_request_target(&mut parts);
+        let full_uri = plan.full_uri().clone();
 
         let body_replayability = BodyReplayability::for_forwarded_body(&body);
 
@@ -450,7 +379,7 @@ where
             &crate::digest_fields::ContentDigestBody::Unavailable,
         )?;
         let client = self.client;
-        let protocol_hint = self.protocol_hint;
+        let protocol_hint = plan.protocol_hint();
         let connect_timeout = self.connect_timeout;
         let first_byte_timeout = self.first_byte_timeout;
         let write_timeout = self.write_timeout;

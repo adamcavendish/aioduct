@@ -1,5 +1,6 @@
 //! Request forwarding for proxy/gateway use cases.
 
+mod dispatch_plan;
 pub(crate) mod forward_local;
 mod hop_by_hop;
 
@@ -7,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http::header::{HOST, HeaderMap, HeaderName, HeaderValue, UPGRADE};
-use http::uri::{Parts as UriParts, PathAndQuery, Scheme, Uri};
+use http::Uri;
+use http::header::{HeaderMap, HeaderName, HeaderValue, UPGRADE};
 use http_body::Body;
 use http_body_util::BodyExt;
 
@@ -22,6 +23,8 @@ use crate::message_signatures::{
 use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
+
+use dispatch_plan::{ForwardDispatchPlan, ForwardMode, ForwardRewrite, rewrite_for_upstream};
 
 type RequestHook = Box<dyn FnOnce(&mut http::request::Parts) + Send>;
 type ResponseHook = Box<dyn FnOnce(&mut Response) + Send>;
@@ -483,108 +486,38 @@ where
         let is_h2_extended_connect = parts.method == http::Method::CONNECT
             && parts.extensions.get::<hyper::ext::Protocol>().is_some();
 
-        // Auto-preserve upgrade headers and force correct HTTP version
+        // Auto-preserve upgrade headers.
         if is_h1_upgrade {
             self.forward_headers.push(http::header::CONNECTION);
             self.forward_headers.push(http::header::UPGRADE);
-            parts.version = http::Version::HTTP_11;
-        }
-        if is_h2_extended_connect {
-            parts.version = http::Version::HTTP_2;
-        }
-        if self.protocol_hint == ProtocolHint::H2c {
-            parts.version = http::Version::HTTP_2;
         }
         if !is_h1_upgrade && !is_h2_extended_connect && self.protocol_hint != ProtocolHint::H2c {
             parts.version = http::Version::HTTP_11;
         }
 
-        // Save headers that were explicitly requested to be forwarded, before
-        // hop-by-hop stripping might remove them.
-        let forwarded_values: Vec<(HeaderName, HeaderValue)> = self
-            .forward_headers
-            .iter()
-            .filter_map(|name| parts.headers.get(name).map(|v| (name.clone(), v.clone())))
-            .collect();
-
-        // 1. Strip hop-by-hop from incoming request headers
-        hop_by_hop::strip_hop_by_hop(&mut parts.headers);
-
-        // 2. Build the upstream URI
         let upstream = self
             .upstream
             .ok_or_else(|| Error::InvalidUrl("forward: no upstream configured".into()))?;
+        let full_uri = rewrite_for_upstream(
+            &mut parts,
+            ForwardRewrite {
+                upstream: &upstream,
+                strip_prefix: self.strip_prefix.as_deref(),
+                preserve_host: self.preserve_host,
+                forward_headers: &self.forward_headers,
+                extra_headers: &self.extra_headers,
+                remove_headers: &self.remove_headers,
+            },
+        )?;
+        let pre_hook_plan = ForwardDispatchPlan::from_legacy_classification(
+            full_uri.clone(),
+            &parts.method,
+            self.protocol_hint,
+            is_h1_upgrade,
+            is_h2_extended_connect,
+        )?;
+        pre_hook_plan.prepare_legacy_version(&mut parts);
 
-        let upstream_scheme = upstream.scheme().cloned().unwrap_or(Scheme::HTTP);
-        let upstream_authority = upstream
-            .authority()
-            .cloned()
-            .ok_or_else(|| Error::InvalidUrl("forward: upstream has no authority".into()))?;
-
-        let original_path = parts.uri.path();
-        let path_after_strip = match &self.strip_prefix {
-            Some(prefix) => {
-                let stripped = original_path
-                    .strip_prefix(prefix.as_str())
-                    .unwrap_or(original_path);
-                if stripped.is_empty() || !stripped.starts_with('/') {
-                    format!("/{stripped}")
-                } else {
-                    stripped.to_owned()
-                }
-            }
-            None => original_path.to_owned(),
-        };
-
-        // Append upstream base path if present
-        let upstream_base = upstream.path().trim_end_matches('/');
-        let combined_path = if upstream_base.is_empty() {
-            path_after_strip
-        } else {
-            format!("{upstream_base}{path_after_strip}")
-        };
-
-        let path_and_query = if let Some(query) = parts.uri.query() {
-            format!("{combined_path}?{query}")
-        } else {
-            combined_path
-        };
-
-        let pq: PathAndQuery = path_and_query
-            .parse()
-            .map_err(|e| Error::InvalidUrl(format!("forward: invalid path: {e}")))?;
-
-        let mut uri_parts = UriParts::default();
-        uri_parts.scheme = Some(upstream_scheme);
-        uri_parts.authority = Some(upstream_authority.clone());
-        uri_parts.path_and_query = Some(pq);
-        let full_uri =
-            Uri::from_parts(uri_parts).map_err(|e| Error::InvalidUrl(format!("forward: {e}")))?;
-
-        // 3. Set Host header
-        if !self.preserve_host {
-            parts.headers.remove(HOST);
-            if let Ok(hv) = upstream_authority.as_str().parse::<HeaderValue>() {
-                parts.headers.insert(HOST, hv);
-            }
-        }
-
-        // 4. Re-insert explicitly forwarded headers (may have been stripped as hop-by-hop)
-        for (name, value) in forwarded_values {
-            parts.headers.insert(name, value);
-        }
-
-        // 5. Apply extra headers
-        for (name, value) in &self.extra_headers {
-            parts.headers.insert(name, value.clone());
-        }
-
-        // 6. Remove explicit headers
-        for name in &self.remove_headers {
-            parts.headers.remove(name);
-        }
-
-        // 7. Run on_request hook
         if let Some(hook) = self.on_request {
             hook(&mut parts);
         }
@@ -593,32 +526,18 @@ where
             reject_response_finalization_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
         }
 
-        // 8. Build the request URI for hyper.
-        // H2 extended CONNECT uses absolute URI.
-        // RFC 7540 §8.3: ordinary CONNECT over h2c uses authority form.
-        // Other h2c requests use absolute URI.
-        // AdaptiveH2c uses path-only form because the dispatch layer may fall back
-        // to H1, and absolute-form URIs confuse many origin servers.
-        if is_h2_extended_connect {
-            parts.uri = full_uri.clone();
-        } else if self.protocol_hint == ProtocolHint::H2c && parts.method == http::Method::CONNECT {
-            parts.uri = upstream_authority
-                .as_str()
-                .parse()
-                .map_err(|e| Error::Other(Box::new(e)))?;
-        } else if self.protocol_hint == ProtocolHint::H2c {
-            parts.uri = full_uri.clone();
-        } else {
-            let request_uri: Uri = full_uri
-                .path_and_query()
-                .map(|pq| pq.as_str())
-                .unwrap_or("/")
-                .parse()
-                .map_err(|e| Error::Other(Box::new(e)))?;
-            parts.uri = request_uri;
-        }
+        let plan = ForwardDispatchPlan::from_legacy_classification(
+            full_uri,
+            &parts.method,
+            self.protocol_hint,
+            is_h1_upgrade,
+            is_h2_extended_connect,
+        )?;
+        plan.apply_request_target(&mut parts);
+        let full_uri = plan.full_uri().clone();
+        let forward_mode = plan.mode();
 
-        // 9. Convert body to RequestBodySend
+        // Convert body to RequestBodySend.
         let connect_timeout = self.connect_timeout;
         let first_byte_timeout = self.first_byte_timeout;
         let write_timeout = self.write_timeout;
@@ -648,11 +567,11 @@ where
             request.headers_mut(),
             &crate::digest_fields::ContentDigestBody::Unavailable,
         )?;
-        // 10. Sign and send via execute_single_with_hint (bypasses redirects,
+        // Sign and send via execute_single_with_hint (bypasses redirects,
         // cookies, cache, decompression). Keep async signing inside the same
         // timeout budget as the forwarded dispatch.
         let client = self.client;
-        let protocol_hint = self.protocol_hint;
+        let protocol_hint = plan.protocol_hint();
         let response_message_signature = self.response_message_signature;
         let response_signing_enabled = response_message_signature.is_some();
         let response_content_digest_max_bytes = self.response_content_digest_max_bytes;
@@ -699,7 +618,9 @@ where
             }
 
             // Strip hop-by-hop from response (skip for upgrade responses).
-            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS && !is_h2_extended_connect {
+            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
+                && forward_mode != ForwardMode::ExtendedConnect
+            {
                 let resp_headers = resp.headers_mut();
                 hop_by_hop::strip_hop_by_hop(resp_headers);
             }
