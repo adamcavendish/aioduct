@@ -25,6 +25,10 @@ impl Default for Http2Config {
 }
 
 impl Http2Config {
+    pub(crate) const MIN_MAX_FRAME_SIZE: u32 = 16_384;
+    pub(crate) const MAX_MAX_FRAME_SIZE: u32 = 16_777_215;
+    pub(crate) const DEFAULT_MAX_FRAME_SIZE: usize = Self::MIN_MAX_FRAME_SIZE as usize;
+
     /// Create a new HTTP/2 config with all fields set to `None` (use hyper defaults).
     pub fn new() -> Self {
         Self {
@@ -67,7 +71,7 @@ impl Http2Config {
     /// Panics if `size` is outside the range 16,384..=16,777,215 (RFC 9113 Section 4.2).
     pub fn max_frame_size(mut self, size: u32) -> Self {
         assert!(
-            (16_384..=16_777_215).contains(&size),
+            (Self::MIN_MAX_FRAME_SIZE..=Self::MAX_MAX_FRAME_SIZE).contains(&size),
             "max_frame_size must be between 16,384 and 16,777,215, got {size}"
         );
         self.max_frame_size = Some(size);

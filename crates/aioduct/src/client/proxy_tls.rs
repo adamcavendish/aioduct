@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::error::Error;
+use crate::proxy::{ProxyEstablishmentPlan, ProxyScheme};
 use crate::tls::{RustlsConnector, TlsStream};
 
 #[derive(Debug)]
@@ -49,6 +50,20 @@ fn validate_http1_alpn<S>(stream: &TlsStream<S>) -> Result<(), Error> {
         // HTTP/1.1, no negotiated protocol falls back to HTTP/1.1 semantics.
         None => Ok(()),
     }
+}
+
+pub(super) fn preflight_https_proxy_hops(
+    connector: &RustlsConnector,
+    plan: &ProxyEstablishmentPlan,
+) -> Result<(), Error> {
+    for hop in [Some(plan.first()), plan.second()].into_iter().flatten() {
+        if hop.scheme() == &ProxyScheme::Https {
+            connector
+                .preflight_https_proxy(hop.endpoint().host())
+                .map_err(|error| Error::Tls(Box::new(error)))?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn connect_send<S>(

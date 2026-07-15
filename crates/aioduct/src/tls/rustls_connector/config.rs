@@ -365,6 +365,13 @@ where
 }
 
 impl RustlsConnector {
+    pub(crate) fn preflight_https_proxy(&self, server_name: &str) -> io::Result<()> {
+        let mut config = self.config.as_ref().clone();
+        // A validation-only connection must not consume a cached origin session ticket.
+        config.resumption = rustls::client::Resumption::disabled();
+        new_client_connection(Arc::new(config), server_name.to_owned(), true).map(drop)
+    }
+
     pub(crate) fn connect_https_proxy_send<S>(
         &self,
         server_name: &str,

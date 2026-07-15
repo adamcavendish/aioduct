@@ -73,23 +73,73 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         Ok(PooledConnection::new_h2(sender))
     }
 
-    #[cfg(all(feature = "rustls", feature = "compio"))]
-    pub(crate) async fn connect_tls_local(
+    pub(crate) async fn connect_h2_prior_knowledge_local_confirmed<S>(
         &self,
-        tcp_stream: C::Stream,
+        stream: S,
+    ) -> Result<
+        (
+            PooledConnection<RequestBodyLocal>,
+            super::h2_peer_settings::H2PeerSettingsConfirmation,
+        ),
+        Error,
+    >
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+    {
+        let receive_max_frame_size = self
+            .core
+            .http2
+            .as_ref()
+            .and_then(|config| config.max_frame_size)
+            .map_or(crate::http2::Http2Config::DEFAULT_MAX_FRAME_SIZE, |size| {
+                size as usize
+            });
+        let (stream, confirmation) =
+            super::h2_peer_settings::observe_h2_peer_settings(stream, receive_max_frame_size);
+        let connection = self.connect_h2_prior_knowledge_local(stream).await?;
+        Ok((connection, confirmation))
+    }
+
+    #[cfg(all(feature = "rustls", feature = "compio"))]
+    #[cfg(test)]
+    pub(crate) async fn connect_tls_local<S>(
+        &self,
+        tcp_stream: S,
         host: &str,
-    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+    {
         self.connect_tls_local_with_hint(tcp_stream, host, ProtocolHint::Auto)
             .await
     }
 
     #[cfg(all(feature = "rustls", feature = "compio"))]
-    pub(crate) async fn connect_tls_local_with_hint(
+    pub(crate) async fn connect_tls_local_with_hint<S>(
         &self,
-        tcp_stream: C::Stream,
+        tcp_stream: S,
         host: &str,
         protocol_hint: ProtocolHint,
-    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+    {
+        self.connect_tls_local_with_hint_observed(tcp_stream, host, protocol_hint, |_, _| {})
+            .await
+    }
+
+    #[cfg(all(feature = "rustls", feature = "compio"))]
+    pub(crate) async fn connect_tls_local_with_hint_observed<S, F>(
+        &self,
+        tcp_stream: S,
+        host: &str,
+        protocol_hint: ProtocolHint,
+        on_tls_complete: F,
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+        F: FnOnce(&crate::tls::TlsStream<S>, std::time::Duration),
+    {
         use crate::tls::TlsConnectLocal;
         use std::time::Instant;
 
@@ -111,18 +161,25 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             ProtocolHint::Auto | ProtocolHint::Http3 | ProtocolHint::AdaptiveH2c => {}
         }
 
-        let tls_stream =
-            <crate::tls::RustlsConnector as TlsConnectLocal<C::Stream>>::connect_local(
-                &tls_connector,
-                host,
-                tcp_stream,
-            )
-            .await
-            .map_err(|e| Error::Tls(Box::new(e)))?;
+        let tls_stream = <crate::tls::RustlsConnector as TlsConnectLocal<S>>::connect_local(
+            &tls_connector,
+            host,
+            tcp_stream,
+        )
+        .await
+        .map_err(|e| Error::Tls(Box::new(e)))?;
 
         let tls_duration = tls_start.elapsed();
+        on_tls_complete(&tls_stream, tls_duration);
 
-        let alpn = crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
+        let alpn =
+            crate::tls::RustlsConnector::negotiated_http_protocol(tls_stream.tls_connection())
+                .map_err(|protocol| {
+                    Error::Unsupported(format!(
+                        "upstream negotiated unsupported ALPN protocol `{}`",
+                        String::from_utf8_lossy(protocol)
+                    ))
+                })?;
         let tls_info = tls_stream.tls_info();
 
         if matches!(protocol_hint, ProtocolHint::Http2 | ProtocolHint::H2c)
@@ -179,46 +236,30 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     }
 
     #[cfg(all(feature = "rustls", not(feature = "compio")))]
-    pub(crate) async fn connect_tls_local(
+    pub(crate) async fn connect_tls_local_with_hint<S>(
         &self,
-        _tcp_stream: C::Stream,
-        _host: &str,
-    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
-        Err(Error::Tls(
-            "TLS with !Send streams requires the compio feature".into(),
-        ))
-    }
-
-    #[cfg(all(feature = "rustls", not(feature = "compio")))]
-    pub(crate) async fn connect_tls_local_with_hint(
-        &self,
-        _tcp_stream: C::Stream,
+        _tcp_stream: S,
         _host: &str,
         _protocol_hint: ProtocolHint,
-    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+    {
         Err(Error::Tls(
             "TLS with !Send streams requires the compio feature".into(),
         ))
     }
 
     #[cfg(not(feature = "rustls"))]
-    pub(crate) async fn connect_tls_local(
+    pub(crate) async fn connect_tls_local_with_hint<S>(
         &self,
-        _tcp_stream: C::Stream,
-        _host: &str,
-    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
-        Err(Error::Tls(
-            "HTTPS requires the `rustls` TLS backend feature".into(),
-        ))
-    }
-
-    #[cfg(not(feature = "rustls"))]
-    pub(crate) async fn connect_tls_local_with_hint(
-        &self,
-        _tcp_stream: C::Stream,
+        _tcp_stream: S,
         _host: &str,
         _protocol_hint: ProtocolHint,
-    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+    {
         Err(Error::Tls(
             "HTTPS requires the `rustls` TLS backend feature".into(),
         ))

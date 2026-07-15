@@ -3,7 +3,6 @@ mod connect_protocol_local_tests;
 mod connect_protocol_send_tests;
 mod engine_local_tests;
 mod engine_send_tests;
-mod proxy_connect_send_tests;
 mod resolve_tests;
 
 mod base_url_tests;

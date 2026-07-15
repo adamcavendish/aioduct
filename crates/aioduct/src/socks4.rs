@@ -1,5 +1,9 @@
-use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, TcpStream};
+use std::io;
+#[cfg(test)]
+use std::io::{Read, Write};
+use std::net::Ipv4Addr;
+#[cfg(test)]
+use std::net::TcpStream;
 
 use crate::proxy::ProxyAuth;
 
@@ -7,7 +11,36 @@ const SOCKS4_VERSION: u8 = 0x04;
 const CMD_CONNECT: u8 = 0x01;
 const REPLY_GRANTED: u8 = 0x5A;
 
+#[derive(Debug)]
+pub(crate) enum Socks4HandshakeError {
+    Io(io::Error),
+    Protocol(io::Error),
+    ConnectRejected { code: u8, message: &'static str },
+}
+
+impl Socks4HandshakeError {
+    pub(crate) fn is_target_connect_failure(&self) -> bool {
+        matches!(self, Self::ConnectRejected { code: 0x5B, .. })
+    }
+
+    pub(crate) fn into_io(self) -> io::Error {
+        match self {
+            Self::Io(error) | Self::Protocol(error) => error,
+            Self::ConnectRejected { code, message } => {
+                io::Error::other(format!("SOCKS4: {message} (code 0x{code:02X})"))
+            }
+        }
+    }
+}
+
+impl From<io::Error> for Socks4HandshakeError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 /// SOCKS4a handshake: connects through a SOCKS4 proxy using domain name resolution on the proxy.
+#[cfg(test)]
 pub(crate) fn socks4a_handshake(
     stream: &mut TcpStream,
     host: &str,
@@ -50,6 +83,139 @@ pub(crate) fn socks4a_handshake(
     Ok(())
 }
 
+async fn write_all_async<S: hyper::rt::Write + Unpin>(
+    stream: &mut S,
+    buf: &[u8],
+) -> io::Result<()> {
+    use std::future::poll_fn;
+    use std::pin::Pin;
+
+    let mut written = 0;
+    while written < buf.len() {
+        let count = poll_fn(|cx| Pin::new(&mut *stream).poll_write(cx, &buf[written..])).await?;
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "SOCKS4: proxy closed connection",
+            ));
+        }
+        written += count;
+    }
+    poll_fn(|cx| Pin::new(&mut *stream).poll_flush(cx)).await
+}
+
+async fn read_exact_async<S: hyper::rt::Read + Unpin>(
+    stream: &mut S,
+    buf: &mut [u8],
+) -> io::Result<()> {
+    use std::future::poll_fn;
+    use std::pin::Pin;
+
+    let mut read = 0;
+    while read < buf.len() {
+        let mut remaining = hyper::rt::ReadBuf::new(&mut buf[read..]);
+        poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, remaining.unfilled())).await?;
+        let count = remaining.filled().len();
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "SOCKS4: proxy closed connection",
+            ));
+        }
+        read += count;
+    }
+    Ok(())
+}
+
+async fn finish_handshake_async<S>(
+    stream: &mut S,
+    request: &[u8],
+) -> Result<(), Socks4HandshakeError>
+where
+    S: hyper::rt::Read + hyper::rt::Write + Unpin,
+{
+    write_all_async(stream, request).await?;
+
+    let mut reply = [0u8; 8];
+    read_exact_async(stream, &mut reply).await?;
+    if reply[0] != 0 {
+        return Err(Socks4HandshakeError::Protocol(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("SOCKS4: unexpected reply version {}", reply[0]),
+        )));
+    }
+    if reply[1] != REPLY_GRANTED {
+        let message = match reply[1] {
+            0x5B => "request rejected or failed",
+            0x5C => "cannot connect to identd on the client",
+            0x5D => "client's identd reported different user-id",
+            _ => "unknown error",
+        };
+        return Err(Socks4HandshakeError::ConnectRejected {
+            code: reply[1],
+            message,
+        });
+    }
+
+    Ok(())
+}
+
+/// Async SOCKS4 handshake using a locally resolved IPv4 destination.
+pub(crate) async fn socks4_handshake_async<S>(
+    stream: &mut S,
+    addr: Ipv4Addr,
+    port: u16,
+    auth: Option<&ProxyAuth>,
+) -> Result<(), Socks4HandshakeError>
+where
+    S: hyper::rt::Read + hyper::rt::Write + Unpin,
+{
+    let userid = auth.map(|auth| auth.username.as_bytes()).unwrap_or(b"");
+    if userid.contains(&0) {
+        return Err(Socks4HandshakeError::Protocol(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SOCKS4: user ID cannot contain NUL bytes",
+        )));
+    }
+
+    let mut request = Vec::with_capacity(9 + userid.len());
+    request.extend_from_slice(&[SOCKS4_VERSION, CMD_CONNECT]);
+    request.extend_from_slice(&port.to_be_bytes());
+    request.extend_from_slice(&addr.octets());
+    request.extend_from_slice(userid);
+    request.push(0);
+    finish_handshake_async(stream, &request).await
+}
+
+/// Async SOCKS4a handshake using proxy-side hostname resolution.
+pub(crate) async fn socks4a_handshake_async<S>(
+    stream: &mut S,
+    host: &str,
+    port: u16,
+    auth: Option<&ProxyAuth>,
+) -> Result<(), Socks4HandshakeError>
+where
+    S: hyper::rt::Read + hyper::rt::Write + Unpin,
+{
+    let userid = auth.map(|auth| auth.username.as_bytes()).unwrap_or(b"");
+    if userid.contains(&0) || host.as_bytes().contains(&0) {
+        return Err(Socks4HandshakeError::Protocol(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SOCKS4: user ID and hostname cannot contain NUL bytes",
+        )));
+    }
+
+    let mut request = Vec::with_capacity(10 + userid.len() + host.len());
+    request.extend_from_slice(&[SOCKS4_VERSION, CMD_CONNECT]);
+    request.extend_from_slice(&port.to_be_bytes());
+    request.extend_from_slice(&[0, 0, 0, 1]);
+    request.extend_from_slice(userid);
+    request.push(0);
+    request.extend_from_slice(host.as_bytes());
+    request.push(0);
+    finish_handshake_async(stream, &request).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +224,40 @@ mod tests {
 
     fn make_reply(code: u8) -> [u8; 8] {
         [0x00, code, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    }
+
+    #[test]
+    fn identd_and_protocol_failures_are_not_retryable_targets() {
+        assert!(
+            Socks4HandshakeError::ConnectRejected {
+                code: 0x5B,
+                message: "request rejected or failed",
+            }
+            .is_target_connect_failure()
+        );
+        for code in [0x5C, 0x5D, 0xFF] {
+            assert!(
+                !Socks4HandshakeError::ConnectRejected {
+                    code,
+                    message: "fatal rejection",
+                }
+                .is_target_connect_failure()
+            );
+        }
+        assert!(
+            !Socks4HandshakeError::Protocol(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "malformed reply",
+            ))
+            .is_target_connect_failure()
+        );
+        assert!(
+            !Socks4HandshakeError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "transport closed",
+            ))
+            .is_target_connect_failure()
+        );
     }
 
     fn run_test<F>(server_fn: F, client_fn: impl FnOnce(&mut TcpStream) + Send + 'static)

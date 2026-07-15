@@ -12,8 +12,11 @@ mod engine_local;
 mod engine_send;
 mod execute_local;
 mod execute_send;
+mod h2_peer_settings;
+mod proxy_connect;
 mod proxy_connect_local;
 mod proxy_connect_send;
+mod proxy_stream;
 #[cfg(feature = "rustls")]
 mod proxy_tls;
 mod replay;

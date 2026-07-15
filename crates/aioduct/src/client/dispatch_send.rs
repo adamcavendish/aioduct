@@ -9,6 +9,7 @@ use super::replay::{ReplayReason, RequestReplayPolicy, StaleReplayBudget};
 use super::{BodyReplayability, FreshConnectionRequired, HttpEngineCore, HttpEngineSend};
 use crate::body::RequestBodySend;
 use crate::error::Error;
+use crate::h2c_probe::H2cProbeAction;
 use crate::observer::{self, RequestPhase, RetryKind};
 use crate::pool::{HttpConnection, PooledConnection, ProtocolHint};
 use crate::response::Response;
@@ -62,32 +63,48 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .notify(request.method(), original_uri, RequestPhase::Started);
         let pool_checkout_start = Instant::now();
 
-        let mut proxy_dispatch_route = crate::proxy::ProxyDispatchRoute::resolve(
+        let proxy_dispatch_route = crate::proxy::ProxyDispatchRoute::resolve(
             original_uri,
             self.core.proxy_chain.as_ref(),
             self.core.proxy.as_ref(),
             protocol,
             None,
         )?;
-        let h2c_probe_key = if protocol == ProtocolHint::AdaptiveH2c {
-            let destination = proxy_dispatch_route.destination();
-            let key = crate::h2c_probe::H2cProbeKey::new(
-                destination.scheme().clone(),
-                destination.authority(),
-                proxy_dispatch_route.pool_identity(),
-                force_addr,
-            );
-            proxy_dispatch_route.apply_adaptive_h2c_cache(self.core.h2c_probe_cache.lookup(&key));
-            Some(key)
-        } else {
-            None
-        };
         let destination = proxy_dispatch_route.destination();
         let scheme = destination.scheme();
         let authority = destination.authority();
         let is_https = scheme == &http::uri::Scheme::HTTPS;
-        let effective_protocol = proxy_dispatch_route.protocol_hint();
         let through_proxy = proxy_dispatch_route.is_proxied();
+        let use_adaptive_h2c =
+            protocol == ProtocolHint::AdaptiveH2c && !(through_proxy && is_https);
+        let effective_protocol = if use_adaptive_h2c {
+            ProtocolHint::AdaptiveH2c
+        } else {
+            proxy_dispatch_route.protocol_hint()
+        };
+        let h2c_probe_key = if effective_protocol == ProtocolHint::AdaptiveH2c && !is_https {
+            Some(crate::h2c_probe::H2cProbeKey::new(
+                scheme.clone(),
+                authority.clone(),
+                proxy_dispatch_route.pool_identity(),
+                force_addr,
+            ))
+        } else {
+            None
+        };
+        let proxy_establishment_plan = proxy_dispatch_route.establishment_plan_with_protocol(
+            if through_proxy && effective_protocol == ProtocolHint::AdaptiveH2c {
+                ProtocolHint::H2c
+            } else {
+                effective_protocol
+            },
+        )?;
+        let proxy_h1_fallback_plan =
+            if through_proxy && effective_protocol == ProtocolHint::AdaptiveH2c {
+                proxy_dispatch_route.establishment_plan_with_protocol(ProtocolHint::Auto)?
+            } else {
+                None
+            };
         let proxy_route = proxy_dispatch_route.pool_identity();
         if effective_protocol == ProtocolHint::Http3 {
             if through_proxy {
@@ -125,6 +142,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             proxy_route.clone(),
         );
         pool_key.forced_addr = force_addr;
+        let adaptive_h1_pool_key = (effective_protocol == ProtocolHint::AdaptiveH2c).then(|| {
+            let mut key = pool_key.clone();
+            key.protocol = ProtocolHint::Auto;
+            key
+        });
 
         let fresh_connection_required = request
             .extensions()
@@ -168,18 +190,38 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ));
         }
 
+        let mut checked_out_pool_key = pool_key.clone();
         let pooled_connection = if can_use_pooled_connection {
             #[cfg(all(feature = "http3", feature = "rustls"))]
             if h3_dispatch_selected {
                 self.core.pool.checkout_h3(&pool_key)
             } else {
-                self.core.pool.checkout(&pool_key)
+                self.core.pool.checkout(&pool_key).or_else(|| {
+                    adaptive_h1_pool_key.as_ref().and_then(|key| {
+                        let connection = self.core.pool.checkout(key);
+                        if connection.is_some() {
+                            checked_out_pool_key = key.clone();
+                        }
+                        connection
+                    })
+                })
             }
             #[cfg(not(all(feature = "http3", feature = "rustls")))]
-            self.core.pool.checkout(&pool_key)
+            self.core.pool.checkout(&pool_key).or_else(|| {
+                adaptive_h1_pool_key.as_ref().and_then(|key| {
+                    let connection = self.core.pool.checkout(key);
+                    if connection.is_some() {
+                        checked_out_pool_key = key.clone();
+                    }
+                    connection
+                })
+            })
         } else {
             None
         };
+        if pooled_connection.is_some() {
+            pool_key = checked_out_pool_key;
+        }
 
         if let Some(mut conn) = pooled_connection
             && body_replayability
@@ -1106,11 +1148,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             self.core.pool.record_checkout_miss();
         }
 
-        // Through proxies, AdaptiveH2c was already resolved to Auto above
-        // (before pool-key construction). proxy_force_h2c is just force_h2c.
-        let proxy_force_h2c = force_h2c;
-
-        let mut pooled = if let Some(unix_path) = unix_socket {
+        let request_method = request.method().clone();
+        let (mut pooled, pending_h1_probe) = if let Some(unix_path) = unix_socket {
             // unix_path is unused on non-unix or when neither tokio nor smol is active
             #[cfg(not(all(unix, any(feature = "tokio", feature = "smol"))))]
             let _ = unix_path;
@@ -1140,7 +1179,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         "unix socket support requires tokio or smol feature".into(),
                     ))
                 };
-                match connect_timeout {
+                let connection = match connect_timeout {
                     Some(duration) => {
                         crate::timeout::Timeout::WithTimeout {
                             future: connect_fut,
@@ -1149,28 +1188,51 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .await?
                     }
                     None => connect_fut.await?,
-                }
+                };
+                (connection, None)
             }
             #[cfg(not(unix))]
             unreachable!()
-        } else if let Some(chain) = proxy_dispatch_route.chain() {
-            self.connect_via_proxy_chain_send(
-                chain,
-                authority,
-                is_https,
-                connect_timeout,
-                proxy_force_h2c,
-            )
-            .await?
-        } else if let Some(proxy) = proxy_dispatch_route.single_proxy() {
-            self.connect_via_proxy_send(
-                proxy,
-                authority,
-                is_https,
-                connect_timeout,
-                proxy_force_h2c,
-            )
-            .await?
+        } else if let Some(plan) = proxy_establishment_plan.as_ref() {
+            let connect_fut = async {
+                if effective_protocol == ProtocolHint::AdaptiveH2c {
+                    let fallback_plan = proxy_h1_fallback_plan.as_ref().ok_or_else(|| {
+                        Error::Other("adaptive proxy probe is missing its H1 fallback plan".into())
+                    })?;
+                    let probe_key = h2c_probe_key.as_ref().ok_or_else(|| {
+                        Error::Other("adaptive proxy probe is missing its route identity".into())
+                    })?;
+                    self.connect_via_proxy_plan_adaptive_h2c_send(
+                        plan,
+                        fallback_plan,
+                        &request_method,
+                        original_uri,
+                        force_addr,
+                        probe_key,
+                    )
+                    .await
+                } else {
+                    self.connect_via_proxy_plan_send(
+                        plan,
+                        &request_method,
+                        original_uri,
+                        force_addr,
+                        super::h2_peer_settings::H2PeerSettingsRequirement::NotRequired,
+                    )
+                    .await
+                    .map(|connection| (connection, None))
+                }
+            };
+            match connect_timeout {
+                Some(duration) => {
+                    crate::timeout::Timeout::WithTimeout {
+                        future: connect_fut,
+                        sleep: R::sleep(duration),
+                    }
+                    .await?
+                }
+                None => connect_fut.await?,
+            }
         } else {
             let host = authority.host();
             let port = destination.effective_port();
@@ -1268,107 +1330,95 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 #[cfg(feature = "tracing")]
                 tracing::trace!(addr = %addr, "tcp.connect.done");
 
+                let mut pending_h1_probe = None;
                 let mut conn = if is_https {
                     self.connect_tls_with_hint(tcp_stream, authority.host(), effective_protocol)
                         .await
                         .map_err(|e| e.with_remote_addr(addr))?
                 } else if matches!(effective_protocol, ProtocolHint::AdaptiveH2c) {
-                    // Probe: try h2c, fall back to h1 on failure.
-                    // The h2 handshake can "succeed" even against an h1 server
-                    // because hyper returns the sender before the server processes
-                    // the preface. Poll readiness over 200ms to tolerate slow
-                    // SETTINGS exchanges and scheduler delays.
-                    let h2c_ok = match self.connect_h2_prior_knowledge(tcp_stream).await {
-                        Ok(c) => {
-                            let mut ready = false;
-                            for _ in 0..8 {
-                                R::sleep(std::time::Duration::from_millis(25)).await;
-                                if c.is_ready() {
-                                    ready = true;
-                                    break;
-                                }
-                            }
-                            if ready { Some(c) } else { None }
-                        }
-                        Err(_) => None,
-                    };
-                    match h2c_ok {
-                        Some(c) => {
-                            if let Some(key) = h2c_probe_key.clone() {
-                                self.core.h2c_probe_cache.record_h2c(key);
-                            }
-                            c
-                        }
-                        None => {
-                            if let Some(key) = h2c_probe_key.clone() {
-                                self.core.h2c_probe_cache.record_h1_only(key);
-                            }
-                            let (stream2, fallback_addr) = if addrs.len() > 1 {
-                                let (s, a) = crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
-                                    &self.connector,
-                                    &addrs,
-                                    local_address,
-                                )
-                                .await
-                                .map_err(Error::Io)?;
-                                (s, a)
-                            } else if let Some(local_addr) = local_address {
-                                let s = self
-                                    .connector
-                                    .connect_bound(addrs[0], local_addr)
-                                    .await
-                                    .map_err(|e| Error::Io(e).with_remote_addr(addrs[0]))?;
-                                (s, addrs[0])
-                            } else {
-                                #[cfg(feature = "tower")]
-                                let s = if let Some(ref tower_slot) = self.tower_connector {
-                                    let tower_conn = tower_slot.get::<C>();
-                                    let info = crate::connector::ConnectInfo {
-                                        uri: original_uri.clone(),
-                                        addr,
-                                    };
-                                    tower_conn
-                                        .connect(info)
+                    let probe_key = h2c_probe_key.as_ref().ok_or_else(|| {
+                        Error::Other("adaptive h2c probe is missing its route identity".into())
+                    })?;
+                    match self
+                        .core
+                        .h2c_probe_cache
+                        .begin_endpoint_probe(probe_key.endpoint(addr))
+                    {
+                        H2cProbeAction::UseH1 => self
+                            .connect_h1(tcp_stream)
+                            .await
+                            .map_err(|e| e.with_remote_addr(addr))?,
+                        H2cProbeAction::Probe(token) => {
+                            let h2c =
+                                match self.connect_h2_prior_knowledge_confirmed(tcp_stream).await {
+                                    Ok((connection, confirmation)) => confirmation
+                                        .confirmed_within::<R>()
                                         .await
-                                        .map_err(|e| Error::Io(e).with_remote_addr(addr))?
-                                } else {
-                                    self.connector
-                                        .connect(addrs[0])
-                                        .await
-                                        .map_err(|e| Error::Io(e).with_remote_addr(addrs[0]))?
+                                        .then_some(connection),
+                                    Err(_) => None,
                                 };
-                                #[cfg(not(feature = "tower"))]
-                                let s = self
-                                    .connector
-                                    .connect(addrs[0])
+                            if let Some(connection) = h2c {
+                                self.core.h2c_probe_cache.confirm_h2c_endpoint(*token);
+                                connection
+                            } else {
+                                self.core.h2c_probe_cache.reject_h2c_endpoint(&token);
+                                let stream2 =
+                                    if let Some(local_addr) = local_address {
+                                        self.connector
+                                            .connect_bound(addr, local_addr)
+                                            .await
+                                            .map_err(|e| Error::Io(e).with_remote_addr(addr))?
+                                    } else {
+                                        #[cfg(feature = "tower")]
+                                        let stream =
+                                            if let Some(ref tower_slot) = self.tower_connector {
+                                                let tower_conn = tower_slot.get::<C>();
+                                                let info = crate::connector::ConnectInfo {
+                                                    uri: original_uri.clone(),
+                                                    addr,
+                                                };
+                                                tower_conn.connect(info).await.map_err(|e| {
+                                                    Error::Io(e).with_remote_addr(addr)
+                                                })?
+                                            } else {
+                                                self.connector.connect(addr).await.map_err(|e| {
+                                                    Error::Io(e).with_remote_addr(addr)
+                                                })?
+                                            };
+                                        #[cfg(not(feature = "tower"))]
+                                        let stream = self
+                                            .connector
+                                            .connect(addr)
+                                            .await
+                                            .map_err(|e| Error::Io(e).with_remote_addr(addr))?;
+                                        stream
+                                    };
+                                #[cfg(target_os = "linux")]
+                                if let Some(iface) = interface {
+                                    stream2
+                                        .bind_device(iface)
+                                        .map_err(|e| Error::Io(e).with_remote_addr(addr))?;
+                                }
+                                if let Some(time) = tcp_keepalive {
+                                    stream2
+                                        .set_keepalive(
+                                            time,
+                                            tcp_keepalive_interval,
+                                            tcp_keepalive_retries,
+                                        )
+                                        .map_err(|e| Error::Io(e).with_remote_addr(addr))?;
+                                }
+                                if tcp_fast_open {
+                                    let _ = stream2.set_fast_open();
+                                }
+                                let mut c = self
+                                    .connect_h1(stream2)
                                     .await
-                                    .map_err(|e| Error::Io(e).with_remote_addr(addrs[0]))?;
-                                (s, addrs[0])
-                            };
-                            #[cfg(target_os = "linux")]
-                            if let Some(iface) = interface {
-                                stream2
-                                    .bind_device(iface)
-                                    .map_err(|e| Error::Io(e).with_remote_addr(fallback_addr))?;
+                                    .map_err(|e| e.with_remote_addr(addr))?;
+                                c.remote_addr = Some(addr);
+                                pending_h1_probe = Some(*token);
+                                c
                             }
-                            if let Some(time) = tcp_keepalive {
-                                stream2
-                                    .set_keepalive(
-                                        time,
-                                        tcp_keepalive_interval,
-                                        tcp_keepalive_retries,
-                                    )
-                                    .map_err(|e| Error::Io(e).with_remote_addr(fallback_addr))?;
-                            }
-                            if tcp_fast_open {
-                                let _ = stream2.set_fast_open();
-                            }
-                            let mut c = self
-                                .connect_h1(stream2)
-                                .await
-                                .map_err(|e| e.with_remote_addr(fallback_addr))?;
-                            c.remote_addr = Some(fallback_addr);
-                            c
                         }
                     }
                 } else {
@@ -1379,10 +1429,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 if conn.remote_addr.is_none() {
                     conn.remote_addr = Some(addr);
                 }
-                Ok::<(PooledConnection<RequestBodySend>, Instant), Error>((conn, Instant::now()))
+                Ok::<_, Error>((conn, Instant::now(), pending_h1_probe))
             };
 
-            let (conn, connect_done) =
+            let (conn, connect_done, pending_h1_probe) =
                 crate::timeout::connect_timeout::<R, _, _>(connect_fut, connect_timeout).await?;
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             if is_https {
@@ -1443,7 +1493,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     );
                 }
             }
-            conn
+            (conn, pending_h1_probe)
         };
 
         self.core
@@ -1524,6 +1574,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             first_byte_timeout,
         )
         .await?;
+        if let Some(token) = pending_h1_probe {
+            self.core.h2c_probe_cache.confirm_h1_endpoint(token);
+        }
         let transfer = transfer_start.elapsed();
         self.core.notify(
             &req_method,

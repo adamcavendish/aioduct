@@ -35,6 +35,8 @@ impl NoProxy {
     /// - An IP address: `127.0.0.1`
     /// - A CIDR: `10.0.0.0/8` or `2001:db8::/32`
     /// - A host with port: `example.com:8080` or `[2001:db8::1]:443`
+    ///
+    /// A single terminal DNS root dot is ignored in both rules and request hosts.
     pub fn new(rules: &str) -> Self {
         let rules = rules
             .split(',')
@@ -60,6 +62,7 @@ impl NoProxy {
     pub(crate) fn matches_with_port(&self, host: &str, port: Option<u16>) -> bool {
         let normalized_host = host.to_lowercase();
         let (host, host_port) = split_host_port(&normalized_host);
+        let host = normalize_dns_root_dot(host);
         let port = port.or(host_port);
         let host_ip = host.parse::<IpAddr>().ok();
 
@@ -79,6 +82,7 @@ impl NoProxyRule {
         }
 
         let (host, port) = split_host_port(rule);
+        let host = normalize_dns_root_dot(host);
         if host.is_empty() {
             return None;
         }
@@ -143,6 +147,10 @@ fn host_is_subdomain_of(host: &str, domain: &str) -> bool {
         .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
+fn normalize_dns_root_dot(host: &str) -> &str {
+    host.strip_suffix('.').unwrap_or(host)
+}
+
 fn split_host_port(value: &str) -> (&str, Option<u16>) {
     if let Some(rest) = value.strip_prefix('[')
         && let Some((host, tail)) = rest.split_once(']')
@@ -197,4 +205,18 @@ fn ipv6_in_cidr(ip: Ipv6Addr, network: Ipv6Addr, prefix: u8) -> bool {
         u128::MAX << (128 - prefix)
     };
     u128::from(ip) & mask == u128::from(network) & mask
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NoProxy;
+
+    #[test]
+    fn port_aware_matching_normalizes_one_terminal_dns_root_dot() {
+        let no_proxy = NoProxy::new("internal.example:443");
+
+        assert!(no_proxy.matches_with_port("internal.example.", Some(443)));
+        assert!(!no_proxy.matches_with_port("internal.example.", Some(444)));
+        assert!(!no_proxy.matches_with_port("internal.example..", Some(443)));
+    }
 }
