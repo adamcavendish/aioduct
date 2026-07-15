@@ -14,6 +14,7 @@ mod execute_local;
 mod execute_send;
 mod proxy_connect_local;
 mod proxy_connect_send;
+mod replay;
 mod request_flow;
 mod request_replay_send;
 mod resolve;
@@ -36,6 +37,8 @@ use http::{StatusCode, Uri};
 use http_body_util::BodyExt;
 use std::collections::HashSet;
 
+pub(crate) use replay::BodyReplayability;
+
 pub(crate) fn extract_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
@@ -46,37 +49,6 @@ pub(crate) fn extract_headers(headers: &HeaderMap) -> Vec<(String, String)> {
             )
         })
         .collect()
-}
-
-/// Internal request-body replay policy for stale retries and pooled connection reuse.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BodyReplayability {
-    Empty,
-    Replayable,
-    OneShot,
-}
-
-impl BodyReplayability {
-    /// Generic forwarded bodies are one-shot unless they are already empty.
-    /// Request-builder paths mark buffered bodies as replayable explicitly.
-    pub(crate) fn for_forwarded_body<B>(body: &B) -> Self
-    where
-        B: http_body::Body + ?Sized,
-    {
-        if body.is_end_stream() {
-            Self::Empty
-        } else {
-            Self::OneShot
-        }
-    }
-
-    pub(crate) fn can_start_on_pooled_connection(self) -> bool {
-        matches!(self, Self::Empty | Self::Replayable)
-    }
-
-    pub(crate) fn can_retry_after_stale_failure(self) -> bool {
-        matches!(self, Self::Empty | Self::Replayable)
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

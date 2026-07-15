@@ -6,6 +6,7 @@ use http::header::HeaderMap;
 use std::time::Duration;
 
 use super::connection_lifecycle::H2ConnectGuard;
+use super::replay::{ReplayReason, RequestReplayPolicy};
 use super::{BodyReplayability, HttpEngineCore, HttpEngineSend};
 use crate::body::RequestBodySend;
 use crate::error::Error;
@@ -117,8 +118,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             proxy_route,
         );
 
-        let can_stale_retry =
-            !self.core.no_connection_reuse && body_replayability.can_retry_after_stale_failure();
+        let replay_policy = RequestReplayPolicy::new(request.method(), body_replayability);
+        let can_stale_retry = !self.core.no_connection_reuse
+            && replay_policy.permits(ReplayReason::ProvenUnprocessed);
         let can_use_pooled_connection =
             !self.core.no_connection_reuse && body_replayability.can_start_on_pooled_connection();
 
