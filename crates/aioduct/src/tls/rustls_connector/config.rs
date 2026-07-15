@@ -241,17 +241,23 @@ impl RustlsConnector {
         }
     }
 
-    /// Get the ALPN protocol negotiated during the TLS handshake.
+    pub(crate) fn negotiated_http_protocol(
+        tls_conn: &rustls::ClientConnection,
+    ) -> Result<Option<AlpnProtocol>, &[u8]> {
+        match tls_conn.alpn_protocol() {
+            Some(b"h2") => Ok(Some(AlpnProtocol::H2)),
+            Some(b"http/1.1") => Ok(Some(AlpnProtocol::H1)),
+            Some(protocol) => Err(protocol),
+            None => Ok(None),
+        }
+    }
+
+    /// Get a recognized HTTP ALPN protocol negotiated during the TLS handshake.
+    ///
+    /// Unknown selected protocols are returned as `None` for compatibility.
+    /// Internal HTTP dispatch uses stricter validation and rejects them.
     pub fn negotiated_protocol(tls_conn: &rustls::ClientConnection) -> Option<AlpnProtocol> {
-        tls_conn.alpn_protocol().and_then(|proto| {
-            if proto == b"h2" {
-                Some(AlpnProtocol::H2)
-            } else if proto == b"http/1.1" {
-                Some(AlpnProtocol::H1)
-            } else {
-                None
-            }
-        })
+        Self::negotiated_http_protocol(tls_conn).ok().flatten()
     }
 }
 
@@ -276,17 +282,34 @@ pub(super) fn ensure_handshake_wants_read(wants_read: bool) -> io::Result<()> {
     }
 }
 
+fn new_client_connection(
+    config: Arc<rustls::ClientConfig>,
+    server_name: String,
+    reject_ech: bool,
+) -> io::Result<rustls::ClientConnection> {
+    let server_name = super::super::server_name_host(&server_name).to_owned();
+    let dns_name = ServerName::try_from(server_name)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let tls_conn = rustls::ClientConnection::new(config, dns_name).map_err(io::Error::other)?;
+    if reject_ech && tls_conn.ech_status() != rustls::client::EchStatus::NotOffered {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "HTTPS proxy TLS cannot inherit an ECH-enabled origin configuration",
+        ));
+    }
+    Ok(tls_conn)
+}
+
 async fn connect_stream<S>(
     config: Arc<rustls::ClientConfig>,
     server_name: String,
     stream: S,
+    reject_ech: bool,
 ) -> io::Result<TlsStream<S>>
 where
     S: hyper::rt::Read + hyper::rt::Write + Unpin,
 {
-    let dns_name = ServerName::try_from(server_name)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let tls_conn = rustls::ClientConnection::new(config, dns_name).map_err(io::Error::other)?;
+    let tls_conn = new_client_connection(config, server_name, reject_ech)?;
     let mut tls_stream = TlsStream::new(stream, tls_conn);
 
     // rustls queues the ClientHello on construction. Alternate writes and
@@ -337,7 +360,36 @@ where
     ) -> Pin<Box<dyn std::future::Future<Output = io::Result<Self::Stream>> + Send + '_>> {
         let server_name = server_name.to_owned();
         let config = Arc::clone(&self.config);
-        Box::pin(connect_stream(config, server_name, stream))
+        Box::pin(connect_stream(config, server_name, stream, false))
+    }
+}
+
+impl RustlsConnector {
+    pub(crate) fn connect_https_proxy_send<S>(
+        &self,
+        server_name: &str,
+        stream: S,
+    ) -> Pin<Box<dyn std::future::Future<Output = io::Result<TlsStream<S>>> + Send + '_>>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
+        let server_name = server_name.to_owned();
+        let config = Arc::clone(&self.config);
+        Box::pin(connect_stream(config, server_name, stream, true))
+    }
+
+    #[cfg(feature = "compio")]
+    pub(crate) fn connect_https_proxy_local<S>(
+        &self,
+        server_name: &str,
+        stream: S,
+    ) -> Pin<Box<dyn std::future::Future<Output = io::Result<TlsStream<S>>> + '_>>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
+    {
+        let server_name = server_name.to_owned();
+        let config = Arc::clone(&self.config);
+        Box::pin(connect_stream(config, server_name, stream, true))
     }
 }
 
@@ -355,6 +407,6 @@ where
     ) -> Pin<Box<dyn std::future::Future<Output = io::Result<Self::Stream>> + '_>> {
         let server_name = server_name.to_owned();
         let config = Arc::clone(&self.config);
-        Box::pin(connect_stream(config, server_name, stream))
+        Box::pin(connect_stream(config, server_name, stream, false))
     }
 }

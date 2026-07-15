@@ -2,12 +2,500 @@
 
 #[path = "proxy/common.rs"]
 mod common;
+#[cfg(feature = "rustls")]
+#[path = "proxy/incoming_multipart.rs"]
+mod incoming_multipart;
 #[path = "proxy/no_proxy.rs"]
 mod no_proxy;
 #[path = "proxy/socks.rs"]
 mod socks;
 
 use common::*;
+
+#[cfg(feature = "rustls-aws-lc-rs")]
+#[derive(Clone, Default)]
+struct EchPreflightSendConnector {
+    attempts: Arc<AtomicUsize>,
+}
+
+#[cfg(feature = "rustls-aws-lc-rs")]
+impl ConnectorSend for EchPreflightSendConnector {
+    type Stream = <TcpConnector as ConnectorSend>::Stream;
+
+    fn connect(&self, _addr: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        let attempts = Arc::clone(&self.attempts);
+        async move {
+            attempts.fetch_add(1, AtomicOrdering::SeqCst);
+            Err(io::Error::other("ECH preflight reached the connector"))
+        }
+    }
+}
+
+#[cfg(feature = "rustls-aws-lc-rs")]
+fn ech_grease_connector() -> aioduct::tls::RustlsConnector {
+    use rustls::crypto::hpke::Hpke as _;
+
+    let hpke = rustls::crypto::aws_lc_rs::hpke::DH_KEM_P256_HKDF_SHA256_AES_128;
+    let (placeholder_key, _) = hpke.generate_key_pair().expect("HPKE key pair");
+    let ech_mode = rustls::client::EchMode::Grease(rustls::client::EchGreaseConfig::new(
+        hpke,
+        placeholder_key,
+    ));
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_ech(ech_mode)
+    .expect("ECH config")
+    .with_root_certificates(rustls::RootCertStore::empty())
+    .with_no_client_auth();
+    aioduct::tls::RustlsConnector::new(Arc::new(config))
+}
+
+#[derive(Clone, Default)]
+struct ProxyPhaseObserver(Arc<std::sync::Mutex<Vec<&'static str>>>);
+
+impl aioduct::observer::RequestObserver for ProxyPhaseObserver {
+    fn on_event(&self, event: &aioduct::observer::RequestEvent) {
+        let phase = match &event.phase {
+            aioduct::observer::RequestPhase::DnsResolved { .. } => Some("dns"),
+            aioduct::observer::RequestPhase::TcpConnected { .. } => Some("tcp"),
+            aioduct::observer::RequestPhase::TlsHandshakeComplete { .. } => Some("tls"),
+            _ => None,
+        };
+        if let Some(phase) = phase {
+            self.0.lock().unwrap().push(phase);
+        }
+    }
+
+    fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
+}
+
+impl ProxyPhaseObserver {
+    fn phases(&self) -> Vec<&'static str> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[cfg(feature = "rustls")]
+#[derive(Clone, Default)]
+struct TlsAlpnObserver(Arc<std::sync::Mutex<Vec<Option<String>>>>);
+
+#[cfg(feature = "rustls")]
+impl aioduct::observer::RequestObserver for TlsAlpnObserver {
+    fn on_event(&self, event: &aioduct::observer::RequestEvent) {
+        if let aioduct::observer::RequestPhase::TlsHandshakeComplete { alpn_protocol, .. } =
+            &event.phase
+        {
+            self.0.lock().unwrap().push(alpn_protocol.clone());
+        }
+    }
+
+    fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
+}
+
+#[cfg(feature = "rustls")]
+impl TlsAlpnObserver {
+    fn negotiated_protocols(&self) -> Vec<Option<String>> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LiveProxyPhase {
+    Tcp(aioduct::NegotiatedProtocol),
+    Tls(Option<String>),
+}
+
+#[derive(Clone)]
+struct LiveProxyPhaseObserver(tokio::sync::mpsc::UnboundedSender<LiveProxyPhase>);
+
+impl aioduct::observer::RequestObserver for LiveProxyPhaseObserver {
+    fn on_event(&self, event: &aioduct::observer::RequestEvent) {
+        let phase = match &event.phase {
+            aioduct::observer::RequestPhase::TcpConnected { protocol, .. } => {
+                Some(LiveProxyPhase::Tcp(*protocol))
+            }
+            aioduct::observer::RequestPhase::TlsHandshakeComplete { alpn_protocol, .. } => {
+                Some(LiveProxyPhase::Tls(alpn_protocol.clone()))
+            }
+            _ => None,
+        };
+        if let Some(phase) = phase {
+            let _ = self.0.send(phase);
+        }
+    }
+
+    fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
+}
+
+#[tokio::test]
+async fn proxy_tcp_observer_phase_fires_while_connect_is_stalled() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server_release = release.clone();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        server_release.notified().await;
+        drop(stream);
+    });
+
+    let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .request_observer(LiveProxyPhaseObserver(phase_tx))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let request = tokio::spawn(async move {
+        client
+            .get("http://origin.test/observer-stall")
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+    });
+
+    let phase = tokio::time::timeout(std::time::Duration::from_secs(1), phase_rx.recv())
+        .await
+        .expect("proxy TCP observer event was buffered behind CONNECT")
+        .unwrap();
+    assert_eq!(
+        phase,
+        LiveProxyPhase::Tcp(aioduct::NegotiatedProtocol::Http1)
+    );
+    assert!(
+        !request.is_finished(),
+        "request completed before CONNECT resumed"
+    );
+
+    release.notify_one();
+    assert!(request.await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn invalid_proxy_plans_fail_before_opening_a_proxy_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+
+    let invalid_header = aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+        .unwrap()
+        .header(
+            http::header::HeaderName::from_static("x-binary"),
+            http::HeaderValue::from_bytes(&[0x80]).unwrap(),
+        );
+    let error = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(invalid_header)
+        .build()
+        .unwrap()
+        .get("http://origin.test/header")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("CONNECT headers"));
+
+    let framing_header = aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+        .unwrap()
+        .header(
+            http::header::CONTENT_LENGTH,
+            http::HeaderValue::from_static("1"),
+        );
+    let error = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(framing_header)
+        .build()
+        .unwrap()
+        .get("http://origin.test/framing-header")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("controlled by aioduct"));
+
+    let conflicting_auth = aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+        .unwrap()
+        .basic_auth("user", "password")
+        .header(
+            http::header::PROXY_AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer token"),
+        );
+    let error = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(conflicting_auth)
+        .build()
+        .unwrap()
+        .get("http://origin.test/conflicting-auth")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("one Proxy-Authorization source"));
+
+    let socks4a = aioduct::ProxyConfig::socks4(&format!("socks4a://{proxy_addr}")).unwrap();
+    let error = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(socks4a)
+        .build()
+        .unwrap()
+        .get("http://[::1]/ipv6")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("SOCKS4"));
+    assert!(error.to_string().contains("IPv6"));
+
+    let nul_user =
+        aioduct::ProxyConfig::socks4(&format!("socks4://user%00name@{proxy_addr}")).unwrap();
+    let error = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(nul_user)
+        .build()
+        .unwrap()
+        .get("http://origin.test/nul-user")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("NUL"));
+
+    let long_user = "u".repeat(256);
+    let long_credentials = aioduct::ProxyConfig::socks5(&format!("socks5://{proxy_addr}"))
+        .unwrap()
+        .basic_auth(&long_user, "password");
+    let error = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(long_credentials)
+        .build()
+        .unwrap()
+        .get("http://origin.test/long-credentials")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("255 bytes"));
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "invalid proxy configuration reached the network"
+    );
+}
+
+#[cfg(feature = "rustls-aws-lc-rs")]
+#[tokio::test]
+async fn ech_https_proxy_hops_fail_before_dns_or_connector_io() {
+    for https_hop in 0..2 {
+        let resolver_attempts = Arc::new(AtomicUsize::new(0));
+        let resolver_counter = Arc::clone(&resolver_attempts);
+        let connector = EchPreflightSendConnector::default();
+        let proxies = if https_hop == 0 {
+            vec![
+                aioduct::ProxyConfig::https("https://first-proxy.test:8443").unwrap(),
+                aioduct::ProxyConfig::http("http://second-proxy.test:8080").unwrap(),
+            ]
+        } else {
+            vec![
+                aioduct::ProxyConfig::http("http://first-proxy.test:8080").unwrap(),
+                aioduct::ProxyConfig::https("https://second-proxy.test:8443").unwrap(),
+            ]
+        };
+        let client =
+            HttpEngineSend::<TokioRuntime, EchPreflightSendConnector>::builder_with_connector(
+                connector.clone(),
+            )
+            .tls(ech_grease_connector())
+            .proxy_chain(aioduct::ProxyChain::new(proxies))
+            .resolver(move |_host: &str, _port: u16| {
+                resolver_counter.fetch_add(1, AtomicOrdering::SeqCst);
+                Box::pin(async { Ok("127.0.0.1:9".parse().unwrap()) })
+                    as std::pin::Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>>
+            })
+            .build()
+            .unwrap();
+
+        let error = client
+            .get("http://origin.test/ech-preflight")
+            .unwrap()
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot inherit an ECH-enabled origin configuration"),
+            "unexpected ECH preflight error for hop {https_hop}: {error}"
+        );
+        assert_eq!(resolver_attempts.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(connector.attempts.load(AtomicOrdering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn overlong_socks5h_targets_fail_before_one_or_two_hop_proxy_io() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_addr = listener.local_addr().unwrap();
+    let long_host = format!("{}.test", "a".repeat(256));
+
+    let one_hop = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::socks5h(&format!("socks5h://{first_addr}")).unwrap())
+        .build()
+        .unwrap();
+    let error = one_hop
+        .get(&format!("http://{long_host}/one-hop"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("255 bytes"), "{error}");
+
+    let remote_second = aioduct::ProxyConfig::http(&format!("http://{long_host}:8080")).unwrap();
+    let two_hop = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_chain(aioduct::ProxyChain::new(vec![
+            aioduct::ProxyConfig::socks5h(&format!("socks5h://{first_addr}")).unwrap(),
+            remote_second,
+        ]))
+        .build()
+        .unwrap();
+    let error = two_hop
+        .get("http://origin.test/two-hop")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("255 bytes"), "{error}");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "unencodable SOCKS5h target reached the first proxy"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_tcp_observer_fires_before_proxy_tls_stalls() {
+    aioduct_test_server::tls::install_crypto_provider();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server_release = release.clone();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        server_release.notified().await;
+        drop(stream);
+    });
+
+    let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://127.0.0.1:{}", proxy_addr.port()))
+                .unwrap(),
+        )
+        .request_observer(LiveProxyPhaseObserver(phase_tx))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let request = tokio::spawn(async move {
+        client
+            .get("http://origin.test/proxy-tls-stall")
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+    });
+
+    let phase = tokio::time::timeout(std::time::Duration::from_secs(1), phase_rx.recv())
+        .await
+        .expect("proxy TCP observer event was buffered behind proxy TLS")
+        .unwrap();
+    assert_eq!(
+        phase,
+        LiveProxyPhase::Tcp(aioduct::NegotiatedProtocol::Http1)
+    );
+    assert!(
+        !request.is_finished(),
+        "request completed before proxy TLS resumed"
+    );
+
+    release.notify_one();
+    assert!(request.await.unwrap().is_err());
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn proxy_tls_observer_phase_fires_while_connect_is_stalled() {
+    aioduct_test_server::tls::install_crypto_provider();
+    let cert = aioduct_test_server::tls::generate_self_signed(&["localhost"]);
+    let cert_der = cert.cert_der.clone();
+    let mut server_config =
+        rustls::ServerConfig::builder_with_provider(aioduct_test_server::tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.cert_der], cert.key_der)
+            .unwrap();
+    server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+    let listener = TcpListener::bind("localhost:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server_release = release.clone();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let tls = acceptor.accept(stream).await.unwrap();
+        server_release.notified().await;
+        drop(tls);
+    });
+
+    let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .add_root_certificates(&[aioduct::tls::Certificate::from_der(cert_der.to_vec())])
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap(),
+        )
+        .request_observer(LiveProxyPhaseObserver(phase_tx))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let request = tokio::spawn(async move {
+        client
+            .get("http://origin.test/proxy-tls-observer-stall")
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+    });
+
+    let proxy_phases = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let mut phases = Vec::new();
+        loop {
+            let phase = phase_rx.recv().await.unwrap();
+            let done = matches!(phase, LiveProxyPhase::Tls(_));
+            phases.push(phase);
+            if done {
+                break phases;
+            }
+        }
+    })
+    .await
+    .expect("proxy TLS observer event was buffered behind CONNECT");
+    assert_eq!(
+        proxy_phases,
+        [
+            LiveProxyPhase::Tcp(aioduct::NegotiatedProtocol::Http1),
+            LiveProxyPhase::Tls(Some("http/1.1".to_owned())),
+        ]
+    );
+    assert!(
+        !request.is_finished(),
+        "request completed before CONNECT resumed"
+    );
+
+    release.notify_one();
+    assert!(request.await.unwrap().is_err());
+}
 
 #[tokio::test]
 async fn test_http_proxy() {
@@ -29,6 +517,316 @@ async fn test_http_proxy() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
 }
+
+#[tokio::test]
+async fn force_addr_overrides_http_proxy_tunnel_destination() {
+    let (target_addr, _counter) = h1_server().await;
+    let captured_connects = captured_connects();
+    let (proxy_addr, _connections) =
+        connect_proxy_with_capture(Some(captured_connects.clone())).await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap();
+    let response = client
+        .get("http://unresolvable-force-addr.invalid:1/forced")
+        .unwrap()
+        .force_addr(target_addr)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    let requests = captured_connects.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(connect_target(&requests[0]), target_addr.to_string());
+}
+
+#[tokio::test]
+async fn proxy_establishment_reports_dns_and_tcp_observer_phases() {
+    let (target_addr, _counter) = h1_server().await;
+    let (proxy_addr, _conns) = connect_proxy().await;
+    let observer = ProxyPhaseObserver::default();
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(
+            aioduct::ProxyConfig::http(&format!(
+                "http://observer-proxy.test:{}",
+                proxy_addr.port()
+            ))
+            .unwrap(),
+        )
+        .resolve("observer-proxy.test", proxy_addr)
+        .request_observer(observer.clone())
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/observer"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+
+    let phases = observer.phases();
+    assert!(
+        phases.contains(&"dns"),
+        "missing proxy DNS phase: {phases:?}"
+    );
+    assert!(
+        phases.contains(&"tcp"),
+        "missing proxy TCP phase: {phases:?}"
+    );
+    assert!(
+        !phases.contains(&"tls"),
+        "plain proxy path emitted TLS: {phases:?}"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn proxy_establishment_reports_origin_tls_observer_phase() {
+    aioduct_test_server::tls::install_crypto_provider();
+    let (target_addr, cert_der, _counter) =
+        aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
+    let (proxy_addr, _conns) = connect_proxy().await;
+    let observer = ProxyPhaseObserver::default();
+    let certificate = aioduct::tls::Certificate::from_der(cert_der.to_vec());
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .add_root_certificates(&[certificate])
+        .danger_accept_invalid_hostnames(true)
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .request_observer(observer.clone())
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!(
+            "https://localhost:{}/observer",
+            target_addr.port()
+        ))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.text().await.unwrap(), "hello tls");
+
+    let phases = observer.phases();
+    assert!(
+        phases.contains(&"dns"),
+        "missing proxy DNS phase: {phases:?}"
+    );
+    assert!(
+        phases.contains(&"tcp"),
+        "missing proxy TCP phase: {phases:?}"
+    );
+    assert!(
+        phases.contains(&"tls"),
+        "missing origin TLS phase: {phases:?}"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn proxied_origin_tls_observer_preserves_missing_alpn() {
+    aioduct_test_server::tls::install_crypto_provider();
+    let (target_addr, cert_der, _) = aioduct_test_server::tls::tls_h1_server(&[]).await;
+    let (proxy_addr, _) = connect_proxy().await;
+    let observer = TlsAlpnObserver::default();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .add_root_certificates(&[aioduct::tls::Certificate::from_der(cert_der.to_vec())])
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .request_observer(observer.clone())
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!(
+            "https://localhost:{}/missing-alpn",
+            target_addr.port()
+        ))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.text().await.unwrap(), "hello tls");
+    assert_eq!(observer.negotiated_protocols(), [None]);
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn proxied_origin_tls_observer_fires_before_http_handshake_failure() {
+    aioduct_test_server::tls::install_crypto_provider();
+    let cert = aioduct_test_server::tls::generate_self_signed(&["localhost"]);
+    let cert_der = cert.cert_der.clone();
+    let mut config =
+        rustls::ServerConfig::builder_with_provider(aioduct_test_server::tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.cert_der], cert.key_der)
+            .unwrap();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_addr = origin.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = origin.accept().await.unwrap();
+        let tls = acceptor.accept(stream).await.unwrap();
+        drop(tls);
+    });
+
+    let (proxy_addr, _) = connect_proxy().await;
+    let observer = TlsAlpnObserver::default();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .add_root_certificates(&[aioduct::tls::Certificate::from_der(cert_der.to_vec())])
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .request_observer(observer.clone())
+        .build()
+        .unwrap();
+
+    client
+        .get(&format!(
+            "https://localhost:{}/http-handshake-abort",
+            origin_addr.port()
+        ))
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        observer.negotiated_protocols(),
+        [Some("http/1.1".to_owned())],
+        "origin TLS completion must be observable even when HTTP setup fails"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_establishment_reports_proxy_tls_observer_phase() {
+    aioduct_test_server::tls::install_crypto_provider();
+    let (target_addr, _counter) = h1_server().await;
+    let (proxy_addr, proxy_cert, _connections) = tls_connect_proxy().await;
+    let observer = ProxyPhaseObserver::default();
+    let certificate = aioduct::tls::Certificate::from_der(proxy_cert.to_vec());
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .add_root_certificates(&[certificate])
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap(),
+        )
+        .request_observer(observer.clone())
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/secure-proxy-observer"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+
+    let phases = observer.phases();
+    assert!(
+        phases.contains(&"dns"),
+        "missing proxy DNS phase: {phases:?}"
+    );
+    assert!(
+        phases.contains(&"tcp"),
+        "missing proxy TCP phase: {phases:?}"
+    );
+    assert!(
+        phases.contains(&"tls"),
+        "missing proxy TLS phase: {phases:?}"
+    );
+}
+
+#[tokio::test]
+async fn proxy_endpoint_falls_back_to_second_resolved_address() {
+    let (target_addr, _counter) = h1_server().await;
+    let (proxy_addr, _conns) = connect_proxy().await;
+    let unavailable_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable_addr = unavailable_listener.local_addr().unwrap();
+    drop(unavailable_listener);
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http("http://proxy.test:8080").unwrap())
+        .resolve_to_addrs("proxy.test", &[unavailable_addr, proxy_addr])
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/proxy-address-fallback"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+}
+
+#[tokio::test]
+async fn http_proxy_endpoint_falls_back_after_connect_transport_failure() {
+    let (target_addr, _counter) = h1_server().await;
+    let (closing_addr, closing_connections) = closing_proxy_endpoint().await;
+    let (proxy_addr, proxy_connections) = connect_proxy().await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http("http://proxy.test:8080").unwrap())
+        .resolve_to_addrs("proxy.test", &[closing_addr, proxy_addr])
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/post-tcp-connect-fallback"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    assert_eq!(closing_connections.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(proxy_connections.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_endpoint_falls_back_after_tls_transport_failure() {
+    let (target_addr, _counter) = h1_server().await;
+    let (closing_addr, closing_connections) = closing_proxy_endpoint().await;
+    let (proxy_addr, proxy_cert, proxy_connections) = tls_connect_proxy().await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&proxy_cert),
+    );
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy(aioduct::ProxyConfig::https("https://localhost:8443").unwrap())
+        .resolve_to_addrs("localhost", &[closing_addr, proxy_addr])
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/post-tcp-tls-fallback"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    assert_eq!(closing_connections.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(proxy_connections.load(AtomicOrdering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn test_http_proxy_basic_auth() {
     let (target_addr, _counter) = h1_server().await;
@@ -506,6 +1304,578 @@ async fn proxy_chain_integration() {
             .any(|req| connect_target(req) == target_addr.to_string()),
         "proxy chain should CONNECT to the target, got: {connect_reqs:?}"
     );
+}
+
+#[tokio::test]
+async fn two_http_proxy_hops_each_connect_before_origin_bytes() {
+    let (target_addr, _) = h1_server().await;
+    let first_connects = captured_connects();
+    let second_connects = captured_connects();
+    let (second_addr, _) = connect_proxy_with_capture(Some(second_connects.clone())).await;
+    let (first_addr, _) = connect_proxy_with_capture(Some(first_connects.clone())).await;
+    let chain = aioduct::ProxyChain::new(vec![
+        aioduct::ProxyConfig::http(&format!("http://{first_addr}")).unwrap(),
+        aioduct::ProxyConfig::http(&format!("http://{second_addr}")).unwrap(),
+    ]);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_chain(chain)
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/two-http-hops"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    let first = first_connects.lock().unwrap();
+    assert!(
+        first
+            .iter()
+            .any(|request| connect_target(request) == second_addr.to_string()),
+        "first proxy did not CONNECT to the second proxy: {first:?}"
+    );
+    let second = second_connects.lock().unwrap();
+    assert!(
+        second
+            .iter()
+            .any(|request| connect_target(request) == target_addr.to_string()),
+        "second proxy did not CONNECT to the origin: {second:?}"
+    );
+}
+
+#[tokio::test]
+async fn force_addr_only_overrides_origin_in_two_hop_proxy_chain() {
+    let (target_addr, _) = h1_server().await;
+    let first_connects = captured_connects();
+    let second_connects = captured_connects();
+    let (second_addr, _) = connect_proxy_with_capture(Some(second_connects.clone())).await;
+    let (first_addr, _) = connect_proxy_with_capture(Some(first_connects.clone())).await;
+    let chain = aioduct::ProxyChain::new(vec![
+        aioduct::ProxyConfig::http(&format!("http://{first_addr}")).unwrap(),
+        aioduct::ProxyConfig::http(&format!("http://{second_addr}")).unwrap(),
+    ]);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_chain(chain)
+        .build()
+        .unwrap();
+
+    let response = client
+        .get("http://unresolvable-force-addr.invalid:1/two-hop-forced")
+        .unwrap()
+        .force_addr(target_addr)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    let first = first_connects.lock().unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(connect_target(&first[0]), second_addr.to_string());
+    let second = second_connects.lock().unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(connect_target(&second[0]), target_addr.to_string());
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn two_https_proxy_hops_negotiate_h1_and_connect_plain_origin() {
+    let (target_addr, _) = h1_server().await;
+    let first_connects = captured_connects();
+    let second_connects = captured_connects();
+    let (second_addr, second_cert, _) =
+        tls_connect_proxy_with_capture(Some(second_connects.clone())).await;
+    let (first_addr, first_cert, _) =
+        tls_connect_proxy_with_capture(Some(first_connects.clone())).await;
+    let connector =
+        aioduct::tls::RustlsConnector::new(client_config_trusting(&[first_cert, second_cert]));
+    let chain = aioduct::ProxyChain::new(vec![
+        aioduct::ProxyConfig::https(&format!("https://localhost:{}", first_addr.port())).unwrap(),
+        aioduct::ProxyConfig::https(&format!("https://localhost:{}", second_addr.port())).unwrap(),
+    ]);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy_chain(chain)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/two-https-hops"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    let first = first_connects.lock().unwrap();
+    assert!(
+        first.iter().any(|request| {
+            connect_target(request) == format!("localhost:{}", second_addr.port())
+        }),
+        "first HTTPS proxy did not CONNECT to the second proxy: {first:?}"
+    );
+    let second = second_connects.lock().unwrap();
+    assert!(
+        second
+            .iter()
+            .any(|request| connect_target(request) == target_addr.to_string()),
+        "second HTTPS proxy did not CONNECT to the origin: {second:?}"
+    );
+}
+
+#[cfg(feature = "rustls")]
+async fn assert_https_then_socks_chain(second: aioduct::ProxyConfig, expected_second: String) {
+    let (target_addr, _) = h1_server().await;
+    let first_connects = captured_connects();
+    let (first_addr, first_cert, _) =
+        tls_connect_proxy_with_capture(Some(first_connects.clone())).await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&first_cert),
+    );
+    let chain = aioduct::ProxyChain::new(vec![
+        aioduct::ProxyConfig::https(&format!("https://localhost:{}", first_addr.port())).unwrap(),
+        second,
+    ]);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy_chain(chain)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/https-then-socks"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    let first = first_connects.lock().unwrap();
+    assert!(
+        first
+            .iter()
+            .any(|request| connect_target(request) == expected_second),
+        "first HTTPS proxy did not CONNECT to the SOCKS proxy: {first:?}"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_then_socks5_chain_executes_both_hops() {
+    let second_addr = socks5_proxy().await;
+    assert_https_then_socks_chain(
+        aioduct::ProxyConfig::socks5(&format!("socks5://{second_addr}")).unwrap(),
+        second_addr.to_string(),
+    )
+    .await;
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_then_socks4_chain_executes_both_hops() {
+    let second_addr = socks4_proxy().await;
+    assert_https_then_socks_chain(
+        aioduct::ProxyConfig::socks4(&format!("socks4://{second_addr}")).unwrap(),
+        second_addr.to_string(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn invalid_proxy_chain_fails_before_first_network_io() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_addr = listener.local_addr().unwrap();
+    let chain = aioduct::ProxyChain::new(vec![
+        aioduct::ProxyConfig::http(&format!("http://{first_addr}")).unwrap(),
+        aioduct::ProxyConfig::http("http://127.0.0.1:9").unwrap(),
+        aioduct::ProxyConfig::http("http://127.0.0.1:10").unwrap(),
+    ]);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_chain(chain)
+        .build()
+        .unwrap();
+
+    let error = client
+        .get("http://127.0.0.1:11/preflight")
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("longer than 2 hops"), "{error}");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "invalid proxy plan opened a network connection"
+    );
+}
+
+#[cfg(all(feature = "rustls", feature = "http3"))]
+#[tokio::test]
+async fn exact_h3_proxy_route_fails_before_first_network_io() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
+        .http3(true)
+        .unwrap()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap();
+
+    let error = client
+        .forward(
+            hyper::Request::builder()
+                .uri("/ingress")
+                .header(http::header::HOST, "downstream.test")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .upstream("https://127.0.0.1:9".parse::<http::Uri>().unwrap())
+        .on_request(|parts| parts.version = http::Version::HTTP_3)
+        .send()
+        .await
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("HTTP/3 through a proxy"),
+        "{error}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "unsupported HTTP/3 proxy route opened a network connection"
+    );
+}
+
+#[tokio::test]
+async fn h2c_prior_knowledge_survives_connect_tunnel() {
+    let (target_addr, _) = aioduct_test_server::h2::h2_server().await;
+    let (proxy_addr, _) = connect_proxy().await;
+    let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .request_observer(LiveProxyPhaseObserver(phase_tx))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/h2c-through-proxy"))
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.version(), http::Version::HTTP_2);
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    assert_eq!(
+        phase_rx.try_recv().unwrap(),
+        LiveProxyPhase::Tcp(aioduct::NegotiatedProtocol::Http1)
+    );
+    assert!(phase_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn adaptive_h2c_probes_h2_through_connect_tunnel_and_caches_route() {
+    let (target_addr, _) = aioduct_test_server::h2::h2_server().await;
+    let (proxy_addr, proxy_connections) = connect_proxy().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap();
+    let upstream = format!("http://{target_addr}")
+        .parse::<http::Uri>()
+        .unwrap();
+
+    for path in ["/first", "/cached"] {
+        let response = client
+            .forward(
+                hyper::Request::builder()
+                    .uri(path)
+                    .header(http::header::HOST, "downstream.test")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .upstream(upstream.clone())
+            .adaptive_h2c()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    }
+
+    assert_eq!(
+        proxy_connections.load(AtomicOrdering::SeqCst),
+        1,
+        "the cached H2 tunnel should be reused"
+    );
+}
+
+#[tokio::test]
+async fn adaptive_h2c_reconnects_same_proxy_route_for_h1_fallback() {
+    let (target_addr, _) = h1_server().await;
+    let (proxy_addr, proxy_connections) = connect_proxy().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap();
+    let upstream = format!("http://{target_addr}")
+        .parse::<http::Uri>()
+        .unwrap();
+
+    for path in ["/fallback", "/cached"] {
+        let response = client
+            .forward(
+                hyper::Request::builder()
+                    .uri(path)
+                    .header(http::header::HOST, "downstream.test")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .upstream(upstream.clone())
+            .adaptive_h2c()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    }
+
+    assert_eq!(
+        proxy_connections.load(AtomicOrdering::SeqCst),
+        2,
+        "one H2 probe tunnel and one cached H1 fallback tunnel are expected"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn unknown_origin_alpn_is_rejected_inside_connect_tunnel_before_http_bytes() {
+    use tokio::io::AsyncReadExt as _;
+
+    aioduct_test_server::tls::install_crypto_provider();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+    let mut server_config =
+        rustls::ServerConfig::builder_with_provider(aioduct_test_server::tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)
+            .unwrap();
+    server_config.alpn_protocols = vec![b"custom-proto".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_addr = listener.local_addr().unwrap();
+    let (read_tx, read_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = acceptor.accept(stream).await.unwrap();
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte)).await;
+        let _ = read_tx.send(read);
+    });
+
+    let (proxy_addr, _) = connect_proxy().await;
+    let mut client_config = aioduct_test_server::tls::make_client_config(&cert_der);
+    Arc::get_mut(&mut client_config).unwrap().alpn_protocols = vec![b"custom-proto".to_vec()];
+    let connector = aioduct::tls::RustlsConnector::new(client_config);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let error = client
+        .get(&format!(
+            "https://localhost:{}/unknown-alpn",
+            target_addr.port()
+        ))
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("custom-proto"),
+        "unexpected tunneled unknown-ALPN error: {error}"
+    );
+    let read = read_rx.await.unwrap();
+    assert!(
+        !matches!(read, Ok(Ok(written)) if written != 0),
+        "client sent HTTP bytes through CONNECT after unknown ALPN: {read:?}"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn adaptive_h2c_uses_normal_alpn_for_proxied_https_h1_origin() {
+    let (target_addr, target_cert, _) =
+        aioduct_test_server::tls::tls_h1_server(&[b"http/1.1"]).await;
+    let (proxy_addr, proxy_connections) = connect_proxy().await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&target_cert),
+    );
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap();
+
+    let response = client
+        .forward(
+            hyper::Request::builder()
+                .uri("/proxied-https-h1")
+                .header(http::header::HOST, "downstream.test")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .upstream(
+            format!("https://localhost:{}", target_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .adaptive_h2c()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.version(), http::Version::HTTP_11);
+    assert_eq!(response.text().await.unwrap(), "hello tls");
+    assert_eq!(
+        proxy_connections.load(AtomicOrdering::SeqCst),
+        1,
+        "proxied HTTPS must use one ALPN-negotiated tunnel, not an h2c probe and fallback"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn adaptive_h2c_uses_normal_alpn_for_proxied_https_h2_origin() {
+    let (target_addr, target_cert, _) = aioduct_test_server::tls::tls_h2_server().await;
+    let (proxy_addr, proxy_connections) = connect_proxy().await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&target_cert),
+    );
+    let observer = TlsAlpnObserver::default();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .request_observer(observer.clone())
+        .build()
+        .unwrap();
+
+    let response = client
+        .forward(
+            hyper::Request::builder()
+                .uri("/proxied-https-h2")
+                .header(http::header::HOST, "downstream.test")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .upstream(
+            format!("https://localhost:{}", target_addr.port())
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .adaptive_h2c()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "hello tls");
+    assert_eq!(observer.negotiated_protocols(), [Some("h2".to_owned())]);
+    assert_eq!(proxy_connections.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn required_h2_alpn_survives_https_origin_tunnel() {
+    let (target_addr, target_cert, _) = aioduct_test_server::tls::tls_h2_server().await;
+    let (proxy_addr, _) = connect_proxy().await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&target_cert),
+    );
+    let observer = TlsAlpnObserver::default();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .request_observer(observer.clone())
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!(
+            "https://localhost:{}/h2-through-proxy",
+            target_addr.port()
+        ))
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.version(), http::Version::HTTP_2);
+    assert_eq!(response.text().await.unwrap(), "hello tls");
+    assert_eq!(observer.negotiated_protocols(), [Some("h2".to_owned())]);
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn forwarded_exact_h1_and_h2_survive_https_origin_tunnel() {
+    let (target_addr, target_cert) = negotiated_tls_server().await;
+    let (proxy_addr, _) = connect_proxy().await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&target_cert),
+    );
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap();
+    let upstream = format!("https://localhost:{}", target_addr.port())
+        .parse::<http::Uri>()
+        .unwrap();
+
+    let exact_h1 = client
+        .forward(
+            hyper::Request::builder()
+                .uri("/ingress")
+                .version(http::Version::HTTP_2)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .upstream(upstream.clone())
+        .on_request(|parts| parts.version = http::Version::HTTP_11)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(exact_h1.version(), http::Version::HTTP_2);
+    assert_eq!(exact_h1.text().await.unwrap(), "HTTP/1.1");
+
+    let exact_h2 = client
+        .forward(
+            hyper::Request::builder()
+                .uri("/ingress")
+                .version(http::Version::HTTP_11)
+                .header(http::header::HOST, "downstream.test")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .upstream(upstream)
+        .on_request(|parts| parts.version = http::Version::HTTP_2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(exact_h2.version(), http::Version::HTTP_11);
+    assert_eq!(exact_h2.text().await.unwrap(), "HTTP/2.0");
 }
 
 #[tokio::test]
@@ -1203,6 +2573,108 @@ async fn https_proxy_tls_to_proxy_reaches_http_target() {
 
 #[cfg(feature = "rustls")]
 #[tokio::test]
+async fn https_proxy_tls_does_not_receive_origin_client_identity() {
+    aioduct_test_server::tls::install_crypto_provider();
+    let (target_addr, _) = h1_server().await;
+    let client_certificate =
+        rcgen::generate_simple_self_signed(vec!["origin-client.test".into()]).unwrap();
+    let client_certificate_der =
+        rustls::pki_types::CertificateDer::from(client_certificate.cert.der().to_vec());
+    let mut identity_pem = client_certificate.cert.pem();
+    identity_pem.push_str(&client_certificate.signing_key.serialize_pem());
+    let identity = aioduct::tls::Identity::from_pem(identity_pem.as_bytes()).unwrap();
+    let (proxy_addr, proxy_certificate, client_certificate_seen) =
+        tls_connect_proxy_observing_client_certificate(client_certificate_der).await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .add_root_certificates(&[aioduct::tls::Certificate::from_der(
+            proxy_certificate.to_vec(),
+        )])
+        .identity(identity)
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/origin-identity"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    assert!(
+        !client_certificate_seen.load(AtomicOrdering::SeqCst),
+        "origin client identity leaked to the HTTPS proxy"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_without_alpn_defaults_to_http1_connect() {
+    let (target_addr, _counter) = h1_server().await;
+    let (proxy_addr, proxy_cert, conns) = tls_connect_proxy_without_alpn().await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&proxy_cert),
+    );
+
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap(),
+        )
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/no-alpn"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    assert_eq!(conns.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
+async fn https_proxy_rejects_h2_only_endpoint_before_connect_bytes() {
+    let (proxy_addr, proxy_cert, application_data_seen) = tls_h2_only_proxy().await;
+    let connector = aioduct::tls::RustlsConnector::new(
+        aioduct_test_server::tls::make_client_config(&proxy_cert),
+    );
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .proxy(
+            aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                .unwrap(),
+        )
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+
+    let result = client
+        .get("http://127.0.0.1:9/unreachable")
+        .unwrap()
+        .send()
+        .await;
+
+    assert!(result.is_err(), "an H2-only proxy must be rejected");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !application_data_seen.load(AtomicOrdering::SeqCst),
+        "textual CONNECT bytes were sent after non-HTTP/1.1 proxy negotiation"
+    );
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test]
 async fn https_proxy_http_target_connect_includes_proxy_auth() {
     let (target_addr, _counter) = h1_server().await;
     let captured = captured_connects();
@@ -1464,39 +2936,15 @@ async fn http3_with_proxy_uses_connect_tunnel() {
 }
 
 /// Two-hop chain: SOCKS5 (first hop) → HTTP second hop.  The second hop
-/// mock reads the tunnelled HTTP request and responds with a static body.
-/// This verifies that the proxy chain infrastructure relays traffic through
-/// both hops.
+/// requires its own CONNECT before relaying to the origin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn proxy_chain_socks_then_http_connect() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // Second hop mock: reads an HTTP request and sends a static response.
-    let second_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let second_addr = second_listener.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        let (mut client, _) = second_listener.accept().await.unwrap();
-        let mut buf = vec![0u8; 4096];
-        loop {
-            let mut tmp = [0u8; 512];
-            let n = match client.read(&mut tmp).await {
-                Ok(0) | Err(_) => return,
-                Ok(n) => n,
-            };
-            buf.extend_from_slice(&tmp[..n]);
-            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                break;
-            }
-            if buf.len() > 8192 {
-                return;
-            }
-        }
-        client
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nhello aioduct")
-            .await
-            .unwrap();
-    });
+    let (target_addr, _counter) = h1_server().await;
+    let second_connects = captured_connects();
+    let (second_addr, _second_connections) =
+        connect_proxy_with_capture(Some(second_connects.clone())).await;
 
     // SOCKS5 mock: after SOCKS5 handshake, connects to second hop and relays.
     let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1534,7 +2982,7 @@ async fn proxy_chain_socks_then_http_connect() {
         .unwrap();
 
     let resp = client
-        .get("http://127.0.0.1:9999/through-chain")
+        .get(&format!("http://{target_addr}/through-chain"))
         .unwrap()
         .send()
         .await
@@ -1542,4 +2990,11 @@ async fn proxy_chain_socks_then_http_connect() {
 
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "hello aioduct");
+    let requests = second_connects.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|request| connect_target(request) == target_addr.to_string()),
+        "second proxy did not CONNECT to the origin: {requests:?}"
+    );
 }

@@ -126,20 +126,17 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         } else if proxy.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(all(feature = "rustls", feature = "compio"))]
             {
-                use crate::tls::TlsConnectLocal;
                 let tls_connector = self
                     .core
                     .tls
                     .as_ref()
                     .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                let tls_stream =
-                    <crate::tls::RustlsConnector as TlsConnectLocal<C::Stream>>::connect_local(
-                        tls_connector,
-                        proxy_authority.host(),
-                        tcp_stream,
-                    )
-                    .await
-                    .map_err(|e| Error::Tls(Box::new(e)))?;
+                let tls_stream = super::proxy_tls::connect_local(
+                    tls_connector,
+                    proxy_authority.host(),
+                    tcp_stream,
+                )
+                .await?;
                 if is_https {
                     self.connect_tunnel_local(tls_stream, proxy, target_authority, connect_timeout)
                         .await
@@ -404,20 +401,17 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         } else if first.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(all(feature = "rustls", feature = "compio"))]
             {
-                use crate::tls::TlsConnectLocal;
                 let tls_connector = self
                     .core
                     .tls
                     .as_ref()
                     .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                let tls_stream =
-                    <crate::tls::RustlsConnector as TlsConnectLocal<C::Stream>>::connect_local(
-                        tls_connector,
-                        first_authority.host(),
-                        tcp_stream,
-                    )
-                    .await
-                    .map_err(|e| Error::Tls(Box::new(e)))?;
+                let tls_stream = super::proxy_tls::connect_local(
+                    tls_connector,
+                    first_authority.host(),
+                    tcp_stream,
+                )
+                .await?;
                 let second_target = format!(
                     "{}:{}",
                     second_authority.host(),
@@ -432,14 +426,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 if second.scheme == crate::proxy::ProxyScheme::Https {
                     // TLS-wrap to the second proxy through the first proxy's
                     // tunnel, then dispatch based on target scheme and h2c flag.
-                    let tls_stream =
-                        <crate::tls::RustlsConnector as TlsConnectLocal<_>>::connect_local(
-                            tls_connector,
-                            second_authority.host(),
-                            stream,
-                        )
-                        .await
-                        .map_err(|e| Error::Tls(Box::new(e)))?;
+                    let tls_stream = super::proxy_tls::connect_local(
+                        tls_connector,
+                        second_authority.host(),
+                        stream,
+                    )
+                    .await?;
                     if is_https {
                         self.connect_tunnel_local(
                             tls_stream,
@@ -591,7 +583,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         } else if second.scheme == crate::proxy::ProxyScheme::Https {
             #[cfg(all(feature = "rustls", feature = "compio"))]
             {
-                use crate::tls::TlsConnectLocal;
                 let tls_connector = self
                     .core
                     .tls
@@ -599,13 +590,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
                 let second_authority = second.authority()?;
                 let tls_stream =
-                    <crate::tls::RustlsConnector as TlsConnectLocal<C::Stream>>::connect_local(
-                        tls_connector,
-                        second_authority.host(),
-                        stream,
-                    )
-                    .await
-                    .map_err(|e| Error::Tls(Box::new(e)))?;
+                    super::proxy_tls::connect_local(tls_connector, second_authority.host(), stream)
+                        .await?;
                 if is_https {
                     self.connect_tunnel_local(tls_stream, second, target_authority, connect_timeout)
                         .await

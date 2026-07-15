@@ -53,6 +53,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "httparse",
  "hyper",
  "js-sys",
  "memchr",

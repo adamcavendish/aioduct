@@ -222,6 +222,74 @@ async fn referer_not_leaked_on_https_to_http_downgrade() {
 
 // ── TLS Integration Tests ─────────────────────────────────────────────
 
+#[tokio::test]
+async fn unknown_selected_alpn_is_rejected_before_http_bytes() {
+    use std::sync::Arc;
+
+    use tokio::io::AsyncReadExt as _;
+
+    install_crypto_provider();
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into());
+    let mut server_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
+    server_config.alpn_protocols = vec![b"custom-proto".to_vec()];
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (read_tx, read_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = acceptor.accept(stream).await.unwrap();
+        let mut byte = [0_u8; 1];
+        let result = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte)).await;
+        let _ = read_tx.send(result);
+    });
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert_der).unwrap();
+    let mut client_config = rustls::ClientConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"custom-proto".to_vec()];
+    let connector = aioduct::tls::RustlsConnector::new(Arc::new(client_config));
+    let client: HttpEngineSend<TokioRuntime, TcpConnector> = HttpEngineSend::builder()
+        .tls(connector)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let error = client
+        .get(&format!("https://localhost:{}/", addr.port()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap_err();
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let mut unsupported_unknown_alpn = false;
+    while let Some(current) = cause {
+        unsupported_unknown_alpn |= matches!(
+            current.downcast_ref::<aioduct::Error>(),
+            Some(aioduct::Error::Unsupported(message)) if message.contains("custom-proto")
+        );
+        cause = current.source();
+    }
+    assert!(unsupported_unknown_alpn, "{error}");
+    let read = read_rx.await.unwrap();
+    assert!(
+        !matches!(read, Ok(Ok(written)) if written != 0),
+        "client sent HTTP bytes after negotiating an unknown ALPN: {read:?}"
+    );
+}
+
 // Test 1: custom CA trusts end-to-end.
 // Generate a custom CA, issue a server cert signed by it, start a TLS
 // server, and connect using RustlsConnector::with_extra_roots.
