@@ -5,8 +5,8 @@ use http::Uri;
 #[cfg(all(feature = "http3", feature = "rustls"))]
 use crate::body::RequestBodySend;
 use crate::error::Error;
-use crate::observer::{self, RequestEvent, RequestPhase};
-use crate::pool::{HttpConnection, PooledConnection};
+use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
+use crate::pool::{HttpConnection, PoolKey, PooledConnection};
 use crate::response::{BodyObserverCtx, Response};
 
 use super::replay::ReplayReason;
@@ -22,6 +22,28 @@ impl<B: 'static> Drop for H2ConnectGuard<'_, B> {
         if self.active {
             self.pool.unmark_connecting_h2(self.key);
         }
+    }
+}
+
+pub(super) enum PooledSendError<B> {
+    Recovered {
+        error: Error,
+        request: Box<http::Request<B>>,
+    },
+    Failed(Error),
+}
+
+impl<B> PooledSendError<B> {
+    pub(super) fn into_error(self) -> Error {
+        match self {
+            Self::Recovered { error, .. } | Self::Failed(error) => error,
+        }
+    }
+}
+
+impl<B> From<Error> for PooledSendError<B> {
+    fn from(error: Error) -> Self {
+        Self::Failed(error)
     }
 }
 
@@ -172,6 +194,48 @@ impl<B: 'static> HttpEngineCore<B> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn record_exact_pooled_recovery(
+        &self,
+        conn: &PooledConnection<B>,
+        evict_key: &PoolKey,
+        method: &http::Method,
+        uri: &Uri,
+        error: &Error,
+        request_start: Instant,
+        pool_checkout_start: Instant,
+    ) {
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            host = uri.host().unwrap_or(""),
+            error = %error,
+            recovery = "exact_request",
+            "connection.pool.rejected_before_serialization"
+        );
+        if conn.is_h2_or_h3() {
+            self.pool.evict(evict_key);
+        }
+        self.pool.record_stale_reuse_retry();
+        self.fire_connection_metrics(conn, true);
+        self.notify(
+            method,
+            uri,
+            RequestPhase::Failed {
+                error: error.to_string(),
+                retry: RetryKind::StaleConnection,
+                elapsed: request_start.elapsed(),
+            },
+        );
+        self.notify(
+            method,
+            uri,
+            RequestPhase::PoolCheckoutComplete {
+                outcome: observer::PoolOutcome::StaleRetry,
+                blocked_duration: pool_checkout_start.elapsed(),
+            },
+        );
+    }
+
     #[inline]
     pub(super) fn notify(&self, method: &http::Method, uri: &Uri, phase: RequestPhase) {
         if let Some(ref obs) = self.observer {
@@ -314,6 +378,77 @@ impl<B: 'static> HttpEngineCore<B> {
 
         result
     }
+
+    pub(super) async fn try_send_on_pooled_connection(
+        conn: &mut PooledConnection<B>,
+        request: http::Request<B>,
+        url: Uri,
+    ) -> Result<Response, PooledSendError<B>>
+    where
+        B: http_body::Body<Data = bytes::Bytes, Error = crate::error::Error>,
+    {
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        if matches!(&conn.conn, HttpConnection::H3(_)) {
+            return Self::send_on_connection(conn, request, url)
+                .await
+                .map_err(PooledSendError::Failed);
+        }
+
+        let body_size = request
+            .headers()
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .or_else(|| http_body::Body::size_hint(request.body()).exact())
+            .unwrap_or(0);
+
+        let result = match &mut conn.conn {
+            HttpConnection::H1(sender) => match sender.try_send_request(request).await {
+                Ok(response) => Ok(response),
+                Err(mut error) => {
+                    let request = error.take_message();
+                    let error = Error::Hyper(error.into_error());
+                    match request {
+                        Some(request) => Err(PooledSendError::Recovered {
+                            error,
+                            request: Box::new(request),
+                        }),
+                        None => Err(PooledSendError::Failed(error)),
+                    }
+                }
+            },
+            HttpConnection::H2(sender) => match sender.try_send_request(request).await {
+                Ok(response) => Ok(response),
+                Err(mut error) => {
+                    let request = error.take_message();
+                    let error = Error::Hyper(error.into_error());
+                    match request {
+                        Some(request) => Err(PooledSendError::Recovered {
+                            error,
+                            request: Box::new(request),
+                        }),
+                        None => Err(PooledSendError::Failed(error)),
+                    }
+                }
+            },
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => unreachable!("HTTP/3 is dispatched above"),
+        };
+
+        if !matches!(result, Err(PooledSendError::Recovered { .. })) {
+            conn.record_request(body_size);
+        }
+        let response = result.map(|response| {
+            let response = response.map(crate::response::ResponseBodySend::from_incoming);
+            Response::new(response, url)
+        });
+        if let Ok(ref response) = response
+            && let Some(len) = response.content_length()
+        {
+            conn.record_bytes_received(len);
+        }
+        response
+    }
 }
 
 fn h2_proves_request_was_unprocessed(err: &Error) -> bool {
@@ -335,3 +470,7 @@ fn h2_proves_request_was_unprocessed(err: &Error) -> bool {
 #[cfg(test)]
 #[path = "dispatch/tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "tokio"))]
+#[path = "dispatch/recovery_tests.rs"]
+mod recovery_tests;

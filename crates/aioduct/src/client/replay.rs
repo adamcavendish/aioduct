@@ -169,6 +169,14 @@ pub(crate) enum BodyReplayability {
     OneShot,
 }
 
+/// Marks a request that must not begin dispatch on a pooled connection.
+///
+/// Forwarded one-shot bodies use this stronger constraint because their source
+/// may already be coupled to a downstream connection. A fresh upstream
+/// connection can still enter the pool after the response completes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FreshConnectionRequired;
+
 /// Replay-relevant state after middleware has finalized the wire request.
 ///
 /// Retry policy and replay both use the method, body state, and immutable head
@@ -542,8 +550,11 @@ impl BodyReplayability {
         }
     }
 
-    pub(crate) fn can_start_on_pooled_connection(self) -> bool {
-        matches!(self, Self::Empty | Self::Replayable)
+    pub(crate) fn can_start_on_pooled_connection(
+        self,
+        supports_unsent_request_recovery: bool,
+    ) -> bool {
+        self != Self::OneShot || supports_unsent_request_recovery
     }
 
     /// Once a fresh connection has already been acquired, replacing it with a
@@ -836,5 +847,13 @@ mod tests {
         assert!(BodyReplayability::Empty.can_replace_fresh_connection());
         assert!(BodyReplayability::Replayable.can_replace_fresh_connection());
         assert!(!BodyReplayability::OneShot.can_replace_fresh_connection());
+    }
+
+    #[test]
+    fn one_shot_pool_reuse_requires_exact_recovery_support() {
+        assert!(BodyReplayability::Empty.can_start_on_pooled_connection(false));
+        assert!(BodyReplayability::Replayable.can_start_on_pooled_connection(false));
+        assert!(BodyReplayability::OneShot.can_start_on_pooled_connection(true));
+        assert!(!BodyReplayability::OneShot.can_start_on_pooled_connection(false));
     }
 }

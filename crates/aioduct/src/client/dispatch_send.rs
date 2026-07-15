@@ -4,9 +4,9 @@ use bytes::Bytes;
 use http::Uri;
 use std::time::Duration;
 
-use super::connection_lifecycle::H2ConnectGuard;
+use super::connection_lifecycle::{H2ConnectGuard, PooledSendError};
 use super::replay::{ReplayReason, RequestReplayPolicy};
-use super::{BodyReplayability, HttpEngineCore, HttpEngineSend};
+use super::{BodyReplayability, FreshConnectionRequired, HttpEngineCore, HttpEngineSend};
 use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::observer::{self, RequestPhase, RetryKind};
@@ -116,13 +116,21 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             proxy_route,
         );
 
+        let fresh_connection_required = request
+            .extensions()
+            .get::<FreshConnectionRequired>()
+            .is_some();
         let replay_policy = RequestReplayPolicy::new(request.method(), body_replayability);
         let can_stale_retry = !self.core.no_connection_reuse
             && replay_policy.permits(ReplayReason::ProvenUnprocessed);
         let can_use_pooled_connection =
-            !self.core.no_connection_reuse && body_replayability.can_start_on_pooled_connection();
+            !self.core.no_connection_reuse && !fresh_connection_required;
 
-        if can_use_pooled_connection && let Some(mut conn) = self.core.pool.checkout(&pool_key) {
+        if can_use_pooled_connection
+            && let Some(mut conn) = self.core.pool.checkout(&pool_key)
+            && body_replayability
+                .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
+        {
             #[cfg(feature = "tracing")]
             tracing::trace!(host = authority.host(), "connection.pool.hit");
 
@@ -153,7 +161,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     headers: extract_headers(request.headers()),
                 },
             );
-            match Self::send_on_connection_with_first_byte_timeout(
+            match Self::try_send_on_pooled_connection_with_first_byte_timeout(
                 &mut conn,
                 request,
                 original_uri.clone(),
@@ -194,7 +202,22 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     }
                     return Ok(resp);
                 }
-                Err(e)
+                Err(PooledSendError::Recovered {
+                    error,
+                    request: recovered,
+                }) if replay_policy.permits(ReplayReason::ExactRequestRecovered) => {
+                    self.core.record_exact_pooled_recovery(
+                        &conn,
+                        &pool_key,
+                        &req_method,
+                        original_uri,
+                        &error,
+                        request_start,
+                        pool_checkout_start,
+                    );
+                    request = *recovered;
+                }
+                Err(PooledSendError::Failed(e))
                     if saved_request.is_some()
                         && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
                             .is_some_and(|reason| replay_policy.permits(reason)) =>
@@ -240,7 +263,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         signature_headers.insert_into(request.headers_mut())?;
                     }
                 }
-                Err(e) => {
+                Err(error) => {
+                    let e = error.into_error();
                     if conn.is_h2_or_h3()
                         && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
                             .is_some()
@@ -279,6 +303,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 self.core
                     .pool
                     .checkout_coalesced(authority.host(), resolved_ip, proxy_route)
+                && body_replayability
+                    .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
             {
                 #[cfg(feature = "tracing")]
                 tracing::trace!(host = authority.host(), "connection.pool.coalesced");
@@ -310,7 +336,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         headers: extract_headers(request.headers()),
                     },
                 );
-                match Self::send_on_connection_with_first_byte_timeout(
+                match Self::try_send_on_pooled_connection_with_first_byte_timeout(
                     &mut conn,
                     request,
                     original_uri.clone(),
@@ -351,7 +377,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         }
                         return Ok(resp);
                     }
-                    Err(e)
+                    Err(PooledSendError::Recovered {
+                        error,
+                        request: recovered,
+                    }) if replay_policy.permits(ReplayReason::ExactRequestRecovered) => {
+                        let evict_key = conn.key.as_ref().unwrap_or(&pool_key);
+                        self.core.record_exact_pooled_recovery(
+                            &conn,
+                            evict_key,
+                            &req_method,
+                            original_uri,
+                            &error,
+                            request_start,
+                            pool_checkout_start,
+                        );
+                        request = *recovered;
+                    }
+                    Err(PooledSendError::Failed(e))
                         if saved_request.is_some()
                             && HttpEngineCore::<RequestBodySend>::stale_replay_reason(
                                 &conn, &e,
@@ -401,7 +443,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             signature_headers.insert_into(request.headers_mut())?;
                         }
                     }
-                    Err(e) => {
+                    Err(error) => {
+                        let e = error.into_error();
                         if conn.is_h2_or_h3()
                             && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
                                 .is_some()
@@ -597,7 +640,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 (wait_budget.as_millis() / poll_interval.as_millis().max(1)).clamp(1, 200);
             for _ in 0..max_polls {
                 R::sleep(poll_interval).await;
-                if let Some(mut conn) = self.core.pool.checkout(&pool_key) {
+                if let Some(mut conn) = self.core.pool.checkout(&pool_key)
+                    && body_replayability
+                        .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
+                {
                     self.core.pool.record_checkout_hit();
                     self.core.notify(
                         request.method(),
@@ -622,7 +668,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             headers: extract_headers(request.headers()),
                         },
                     );
-                    let result = Self::send_on_connection_with_first_byte_timeout(
+                    let result = Self::try_send_on_pooled_connection_with_first_byte_timeout(
                         &mut conn,
                         request,
                         original_uri.clone(),
@@ -663,7 +709,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             }
                             return Ok(resp);
                         }
-                        Err(e)
+                        Err(PooledSendError::Recovered {
+                            error,
+                            request: recovered,
+                        }) if replay_policy.permits(ReplayReason::ExactRequestRecovered) => {
+                            self.core.record_exact_pooled_recovery(
+                                &conn,
+                                &pool_key,
+                                &req_method,
+                                original_uri,
+                                &error,
+                                request_start,
+                                pool_checkout_start,
+                            );
+                            request = *recovered;
+                            break;
+                        }
+                        Err(PooledSendError::Failed(e))
                             if saved_request.is_some()
                                 && HttpEngineCore::<RequestBodySend>::stale_replay_reason(
                                     &conn, &e,
@@ -712,7 +774,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             }
                             break;
                         }
-                        Err(e) => {
+                        Err(error) => {
+                            let e = error.into_error();
                             if conn.is_h2_or_h3()
                                 && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
                                     .is_some()
@@ -1134,7 +1197,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         // for this key, prefer that (discard the redundant new connection).
         let is_multiplex = pooled.is_h2_or_h3() && !self.core.no_connection_reuse;
         if is_multiplex {
-            if can_use_pooled_connection && let Some(existing) = self.core.pool.checkout(&pool_key)
+            if can_use_pooled_connection
+                && body_replayability.can_replace_fresh_connection()
+                && let Some(existing) = self.core.pool.checkout(&pool_key)
+                && body_replayability
+                    .can_start_on_pooled_connection(existing.supports_unsent_request_recovery())
             {
                 drop(pooled);
                 pooled = existing;
@@ -1230,6 +1297,35 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 }
             }
             None => fut.await,
+        }
+    }
+
+    async fn try_send_on_pooled_connection_with_first_byte_timeout(
+        conn: &mut PooledConnection<RequestBodySend>,
+        request: http::Request<RequestBodySend>,
+        original_uri: Uri,
+        first_byte_timeout: Option<Duration>,
+    ) -> Result<Response, PooledSendError<RequestBodySend>> {
+        let (parts, body) = request.into_parts();
+        let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
+        let request = http::Request::from_parts(parts, http_body_util::BodyExt::boxed_unsync(body));
+        let future = HttpEngineCore::try_send_on_pooled_connection(conn, request, original_uri);
+        match first_byte_timeout {
+            Some(duration) => {
+                match crate::timeout::FirstByteTimeout::<_, R>::new(
+                    future,
+                    request_body_complete,
+                    duration,
+                )
+                .await
+                {
+                    Err(PooledSendError::Failed(Error::Timeout)) => {
+                        Err(PooledSendError::Failed(Error::ReadTimeout))
+                    }
+                    other => other,
+                }
+            }
+            None => future.await,
         }
     }
 }

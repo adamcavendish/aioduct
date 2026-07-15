@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::body::RequestBodyLocal;
-use crate::client::{BodyReplayability, HttpEngineLocal};
+use crate::client::{BodyReplayability, FreshConnectionRequired, HttpEngineLocal};
 use crate::error::{BuilderError, Error};
 use crate::message_signatures::{
     AutomaticMessageSignature, MessageSignatureConfig, MessageSignatureLocalAsyncSigner,
@@ -307,13 +307,16 @@ where
             parts.version = http::Version::HTTP_11;
         }
 
-        if parts.method == http::Method::CONNECT
-            && parts.extensions.get::<crate::Protocol>().is_some()
-        {
+        let is_h2_extended_connect = parts.method == http::Method::CONNECT
+            && parts.extensions.get::<crate::Protocol>().is_some();
+        if is_h2_extended_connect {
             parts.version = http::Version::HTTP_2;
         }
         if self.protocol_hint == ProtocolHint::H2c {
             parts.version = http::Version::HTTP_2;
+        }
+        if !is_h1_upgrade && !is_h2_extended_connect && self.protocol_hint != ProtocolHint::H2c {
+            parts.version = http::Version::HTTP_11;
         }
 
         let forwarded_values: Vec<(HeaderName, HeaderValue)> = self
@@ -438,6 +441,9 @@ where
         }
 
         let mut request = http::Request::from_parts(parts, boxed_body);
+        if body_replayability == BodyReplayability::OneShot {
+            request.extensions_mut().insert(FreshConnectionRequired);
+        }
         self.client.core.apply_automatic_content_digest(
             self.client.core.automatic_content_digest,
             request.headers_mut(),

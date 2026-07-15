@@ -13,7 +13,7 @@ use http_body::Body;
 use http_body_util::BodyExt;
 
 use crate::body::RequestBodySend;
-use crate::client::{BodyReplayability, HttpEngineSend};
+use crate::client::{BodyReplayability, FreshConnectionRequired, HttpEngineSend};
 use crate::error::{BuilderError, Error};
 use crate::message_signatures::{
     AutomaticMessageSignature, MessageSignatureAsyncSigner, MessageSignatureConfig,
@@ -280,6 +280,10 @@ where
     }
 
     /// Set a timeout for receiving response headers from the upstream.
+    ///
+    /// The timer starts after the terminal request bytes reach the transport.
+    /// Use [`Self::write_timeout`] or [`Self::timeout`] to bound a stalled
+    /// request upload.
     pub fn first_byte_timeout(mut self, duration: Duration) -> Self {
         self.first_byte_timeout = Some(duration);
         self
@@ -491,6 +495,9 @@ where
         if self.protocol_hint == ProtocolHint::H2c {
             parts.version = http::Version::HTTP_2;
         }
+        if !is_h1_upgrade && !is_h2_extended_connect && self.protocol_hint != ProtocolHint::H2c {
+            parts.version = http::Version::HTTP_11;
+        }
 
         // Save headers that were explicitly requested to be forwarded, before
         // hop-by-hop stripping might remove them.
@@ -633,6 +640,9 @@ where
         }
 
         let mut request = http::Request::from_parts(parts, boxed_body);
+        if body_replayability == BodyReplayability::OneShot {
+            request.extensions_mut().insert(FreshConnectionRequired);
+        }
         self.client.core.apply_automatic_content_digest(
             self.client.core.automatic_content_digest,
             request.headers_mut(),

@@ -156,6 +156,16 @@ impl<B> PooledConnection<B> {
         matches!(&self.conn, HttpConnection::H1(_))
     }
 
+    /// Whether the transport can return an untouched request when dispatch is
+    /// rejected before serialization.
+    pub(crate) fn supports_unsent_request_recovery(&self) -> bool {
+        match &self.conn {
+            HttpConnection::H1(_) | HttpConnection::H2(_) => true,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => false,
+        }
+    }
+
     /// Returns true if this is an HTTP/2 or HTTP/3 multiplexed connection.
     pub(crate) fn is_h2_or_h3(&self) -> bool {
         match &self.conn {
