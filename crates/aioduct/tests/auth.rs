@@ -185,6 +185,52 @@ async fn test_digest_auth_post_replays_buffered_body() {
     );
     assert_eq!(attempt.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn digest_auth_does_not_retry_a_one_shot_body_as_empty() {
+    use http_body_util::BodyExt;
+
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_for_server = attempts.clone();
+    let (addr, _counter) = h1_server_with(move |req| {
+        let attempts = attempts_for_server.clone();
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            let body = req.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, Bytes::from_static(b"one-shot digest body"));
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(401)
+                    .header(
+                        "www-authenticate",
+                        r#"Digest realm="stream@example.com", nonce="streamnonce", qop="auth""#,
+                    )
+                    .body(Full::new(Bytes::from_static(b"unauthorized")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .digest_auth("testuser", "testpass")
+        .build()
+        .unwrap();
+    let body: aioduct::body::RequestBodySend =
+        Full::new(Bytes::from_static(b"one-shot digest body"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+    let response = client
+        .post(&format!("http://{addr}/upload"))
+        .unwrap()
+        .body_stream(body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
 #[tokio::test]
 async fn test_digest_auth_no_challenge() {
     let (addr, _counter) = h1_server().await;

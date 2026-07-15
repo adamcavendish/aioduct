@@ -8,7 +8,7 @@ use http::{Method, Uri, Version};
 
 use crate::body::RequestBody;
 use crate::body::RequestBodySend;
-use crate::client::HttpEngineSend;
+use crate::client::{BodyReplayability, HttpEngineSend, ReplayReason, RequestReplayPolicy};
 use crate::error::{BuilderError, Error, SendError};
 use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::pool::ProtocolHint;
@@ -597,6 +597,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             self.protocol_hint,
             automatic_content_digest,
             self.fragment,
+            None,
         );
 
         let result = match effective_timeout {
@@ -640,6 +641,11 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             .automatic_content_digest
             .unwrap_or(self.client.core.automatic_content_digest);
         let mut last_error = None;
+        let body_replayability = match self.body.as_ref() {
+            Some(RequestBody::Buffered(_)) => BodyReplayability::Replayable,
+            Some(RequestBody::Streaming(_)) => BodyReplayability::OneShot,
+            None => BodyReplayability::Empty,
+        };
         let mut body = self.body;
         let mut retry_after_delay: Option<Duration> = None;
 
@@ -657,6 +663,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 None => None,
             };
 
+            let wire_method = std::sync::Mutex::new(self.method.clone());
             let execute_fut = self.client.execute_send(
                 self.method.clone(),
                 self.uri.clone(),
@@ -671,6 +678,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 self.protocol_hint,
                 automatic_content_digest,
                 self.fragment.clone(),
+                Some(&wire_method),
             );
 
             let result = match effective_timeout {
@@ -688,19 +696,26 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                     .await
                 }
             };
+            let wire_method = wire_method
+                .into_inner()
+                .unwrap_or_else(|error| error.into_inner());
+            let replay_policy = RequestReplayPolicy::new(&wire_method, body_replayability);
 
             match result {
                 Ok(resp) => {
                     let default_should_retry = config.retry_on_status
                         && crate::retry::is_retryable_status(resp.status())
-                        && crate::retry::is_idempotent(&self.method);
+                        && crate::retry::is_idempotent(&wire_method);
                     let should_retry =
-                        match config.classify_status(resp.status(), &self.method, attempt) {
+                        match config.classify_status(resp.status(), &wire_method, attempt) {
                             crate::retry::RetryDecision::Retry => true,
                             crate::retry::RetryDecision::DoNotRetry => false,
                             crate::retry::RetryDecision::UseDefault => default_should_retry,
                         };
-                    if should_retry && attempt < config.max_retries {
+                    let can_retry = replay_policy.permits(ReplayReason::Configured {
+                        method_authorized: should_retry,
+                    });
+                    if can_retry && attempt < config.max_retries {
                         if let Some(ref budget) = config.budget
                             && !budget.try_withdraw()
                         {
@@ -752,13 +767,16 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 }
                 Err(e) => {
                     let default_should_retry = crate::retry::is_retryable_error(&e)
-                        && crate::retry::is_idempotent(&self.method);
-                    let should_retry = match config.classify_error(&e, &self.method, attempt) {
+                        && crate::retry::is_idempotent(&wire_method);
+                    let should_retry = match config.classify_error(&e, &wire_method, attempt) {
                         crate::retry::RetryDecision::Retry => true,
                         crate::retry::RetryDecision::DoNotRetry => false,
                         crate::retry::RetryDecision::UseDefault => default_should_retry,
                     };
-                    if should_retry && attempt < config.max_retries {
+                    let can_retry = replay_policy.permits(ReplayReason::Configured {
+                        method_authorized: should_retry,
+                    });
+                    if can_retry && attempt < config.max_retries {
                         if let Some(ref budget) = config.budget
                             && !budget.try_withdraw()
                         {
