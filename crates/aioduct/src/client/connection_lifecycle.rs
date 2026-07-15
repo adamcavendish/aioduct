@@ -9,6 +9,8 @@ use crate::observer::{self, RequestEvent, RequestPhase};
 use crate::pool::{HttpConnection, PooledConnection};
 use crate::response::{BodyObserverCtx, Response};
 
+use super::replay::ReplayReason;
+
 pub(super) struct H2ConnectGuard<'a, B: 'static> {
     pub(super) pool: &'a crate::pool::ConnectionPool<B>,
     pub(super) key: &'a crate::pool::PoolKey,
@@ -229,6 +231,16 @@ impl<B: 'static> HttpEngineCore<B> {
         }
     }
 
+    pub(super) fn stale_replay_reason(
+        conn: &PooledConnection<B>,
+        err: &Error,
+    ) -> Option<ReplayReason> {
+        if matches!(conn.conn, HttpConnection::H2(_)) && h2_proves_request_was_unprocessed(err) {
+            return Some(ReplayReason::ProvenUnprocessed);
+        }
+        Self::is_stale_connection_error(err).then_some(ReplayReason::AmbiguousTransportFailure)
+    }
+
     #[cfg(test)]
     pub(crate) fn is_stale_connection_error_pub(err: &Error) -> bool {
         Self::is_stale_connection_error(err)
@@ -302,6 +314,22 @@ impl<B: 'static> HttpEngineCore<B> {
 
         result
     }
+}
+
+fn h2_proves_request_was_unprocessed(err: &Error) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(error) = source {
+        if let Some(h2_error) = error.downcast_ref::<h2::Error>() {
+            // h2 only assigns a received GOAWAY to request streams whose IDs
+            // are above the peer's last processed stream boundary.
+            return h2_error.is_remote()
+                && ((h2_error.is_reset()
+                    && h2_error.reason() == Some(h2::Reason::REFUSED_STREAM))
+                    || h2_error.is_go_away());
+        }
+        source = error.source();
+    }
+    false
 }
 
 #[cfg(test)]

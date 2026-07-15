@@ -16,6 +16,7 @@ mod proxy_connect_local;
 mod proxy_connect_send;
 mod replay;
 mod request_flow;
+mod request_replay;
 mod request_replay_send;
 mod resolve;
 
@@ -37,7 +38,9 @@ use http::{StatusCode, Uri};
 use http_body_util::BodyExt;
 use std::collections::HashSet;
 
-pub(crate) use replay::{BodyReplayability, ReplayReason, RequestReplayPolicy};
+pub(crate) use replay::{
+    BodyReplayability, FinalizedRequestState, ReplayReason, RequestReplayPolicy,
+};
 
 pub(crate) fn extract_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     headers

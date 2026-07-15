@@ -201,7 +201,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 }
                 Err(e)
                     if saved_parts.is_some()
-                        && HttpEngineCore::<RequestBodyLocal>::is_stale_connection_error(&e) =>
+                        && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(&conn, &e)
+                            .is_some_and(|reason| replay_policy.permits(reason)) =>
                 {
                     #[cfg(feature = "tracing")]
                     tracing::debug!(
@@ -258,6 +259,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     }
                 }
                 Err(e) => {
+                    if conn.is_h2_or_h3()
+                        && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(&conn, &e)
+                            .is_some()
+                    {
+                        self.core.pool.evict(&pool_key);
+                    }
                     self.core.notify(
                         &req_method,
                         original_uri,
@@ -358,16 +365,21 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                 resp.extensions_mut().insert(handle);
                             }
                             if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp) {
-                                self.core
-                                    .checkin_when_ready_local::<R, _, _>(pool_key, conn, R::spawn_local, R::sleep(self.core.pool.idle_timeout()));
+                                self.core.checkin_when_ready_local::<R, _, _>(
+                                    pool_key,
+                                    conn,
+                                    R::spawn_local,
+                                    R::sleep(self.core.pool.idle_timeout()),
+                                );
                             }
                             return Ok(resp);
                         }
                         Err(e)
                             if saved_parts.is_some()
-                                && HttpEngineCore::<RequestBodyLocal>::is_stale_connection_error(
-                                    &e,
-                                ) =>
+                                && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(
+                                    &conn, &e,
+                                )
+                                .is_some_and(|reason| replay_policy.permits(reason)) =>
                         {
                             #[cfg(feature = "tracing")]
                             tracing::debug!(
@@ -425,6 +437,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             break;
                         }
                         Err(e) => {
+                            if conn.is_h2_or_h3()
+                                && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(
+                                    &conn, &e,
+                                )
+                                .is_some()
+                            {
+                                self.core.pool.evict(&pool_key);
+                            }
                             self.core.notify(
                                 &req_method,
                                 original_uri,

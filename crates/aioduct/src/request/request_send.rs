@@ -8,7 +8,9 @@ use http::{Method, Uri, Version};
 
 use crate::body::RequestBody;
 use crate::body::RequestBodySend;
-use crate::client::{BodyReplayability, HttpEngineSend, ReplayReason, RequestReplayPolicy};
+use crate::client::{
+    BodyReplayability, FinalizedRequestState, HttpEngineSend, ReplayReason, RequestReplayPolicy,
+};
 use crate::error::{BuilderError, Error, SendError};
 use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::pool::ProtocolHint;
@@ -429,8 +431,11 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     /// Force this request to connect to a specific address, bypassing DNS
     /// resolution and Happy Eyeballs.
     ///
-    /// The `Host` header is still set from the request URL. Use this with
-    /// [`HttpEngineSend::resolve_all`] to implement custom load-balancing:
+    /// The `Host` header and TLS server name are still taken from the request
+    /// URL. When a proxy route is selected, the proxy hops are resolved
+    /// normally and this address overrides only the final tunnel destination.
+    /// Use this with [`HttpEngineSend::resolve_all`] to implement custom
+    /// load-balancing:
     ///
     /// ```ignore
     /// let addrs = client.resolve_all("my-svc.local", 8080).await?;
@@ -559,9 +564,13 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             .or(self_.client.default_retry())
             .cloned();
 
+        // Keep the public send future small even as the internal dispatch
+        // state machine grows. Callers commonly join many requests on one
+        // executor stack, so embedding either complete path here can exhaust
+        // that stack before any I/O is polled.
         let result = match effective_retry {
-            Some(config) => self_.send_with_retry(config).await,
-            None => self_.send_once().await,
+            Some(config) => Box::pin(self_.send_with_retry(config)).await,
+            None => Box::pin(self_.send_once()).await,
         };
 
         result.map_err(|error| SendError::new(error, url))
@@ -640,7 +649,6 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         let automatic_content_digest = self
             .automatic_content_digest
             .unwrap_or(self.client.core.automatic_content_digest);
-        let mut last_error = None;
         let body_replayability = match self.body.as_ref() {
             Some(RequestBody::Buffered(_)) => BodyReplayability::Replayable,
             Some(RequestBody::Streaming(_)) => BodyReplayability::OneShot,
@@ -648,8 +656,15 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         };
         let mut body = self.body;
         let mut retry_after_delay: Option<Duration> = None;
+        let finalized_request = std::sync::Mutex::new(FinalizedRequestState::new(
+            self.method.clone(),
+            body_replayability,
+            config.max_retries,
+            config.budget.clone(),
+        ));
+        let mut attempt = 0;
 
-        for attempt in 0..=config.max_retries {
+        loop {
             if attempt > 0 {
                 let delay = retry_after_delay
                     .take()
@@ -663,7 +678,6 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 None => None,
             };
 
-            let wire_method = std::sync::Mutex::new(self.method.clone());
             let execute_fut = self.client.execute_send(
                 self.method.clone(),
                 self.uri.clone(),
@@ -678,7 +692,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 self.protocol_hint,
                 automatic_content_digest,
                 self.fragment.clone(),
-                Some(&wire_method),
+                Some(&finalized_request),
             );
 
             let result = match effective_timeout {
@@ -696,10 +710,22 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                     .await
                 }
             };
-            let wire_method = wire_method
-                .into_inner()
-                .unwrap_or_else(|error| error.into_inner());
-            let replay_policy = RequestReplayPolicy::new(&wire_method, body_replayability);
+            let (wire_method, wire_uri, replay_policy, has_replay_snapshot, current_attempt) = {
+                let finalized_request = finalized_request
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                (
+                    finalized_request.method().clone(),
+                    finalized_request
+                        .effective_uri()
+                        .cloned()
+                        .unwrap_or_else(|| self.uri.clone()),
+                    RequestReplayPolicy::new(finalized_request.method(), finalized_request.body()),
+                    finalized_request.has_replay_snapshot(),
+                    finalized_request.retry_attempt(),
+                )
+            };
+            attempt = current_attempt;
 
             match result {
                 Ok(resp) => {
@@ -712,22 +738,26 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                             crate::retry::RetryDecision::DoNotRetry => false,
                             crate::retry::RetryDecision::UseDefault => default_should_retry,
                         };
-                    let can_retry = replay_policy.permits(ReplayReason::Configured {
-                        method_authorized: should_retry,
-                    });
-                    if can_retry && attempt < config.max_retries {
-                        if let Some(ref budget) = config.budget
-                            && !budget.try_withdraw()
-                        {
-                            return Ok(resp);
-                        }
+                    let can_retry = has_replay_snapshot
+                        && replay_policy.permits(ReplayReason::Configured {
+                            method_authorized: should_retry,
+                        });
+                    let next_attempt = if can_retry {
+                        finalized_request
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .try_start_configured_retry()
+                    } else {
+                        None
+                    };
+                    if let Some(next_attempt) = next_attempt {
                         retry_after_delay = crate::retry::parse_retry_after(resp.headers());
                         let err = Error::Other(format!("server error: {}", resp.status()).into());
 
                         if let Some(ref obs) = self.client.core.observer {
                             obs.on_event(&RequestEvent {
-                                method: self.method.clone(),
-                                uri: self.uri.clone(),
+                                method: wire_method.clone(),
+                                uri: wire_uri.clone(),
                                 phase: RequestPhase::Failed {
                                     error: err.to_string(),
                                     retry: RetryKind::Explicit,
@@ -741,11 +771,11 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                             retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt));
                         if let Some(ref obs) = self.client.core.observer {
                             obs.on_event(&RequestEvent {
-                                method: self.method.clone(),
-                                uri: self.uri.clone(),
+                                method: wire_method.clone(),
+                                uri: wire_uri.clone(),
                                 phase: RequestPhase::Retrying {
                                     reason: err.to_string(),
-                                    attempt: attempt + 1,
+                                    attempt: next_attempt,
                                     max_retries: config.max_retries,
                                     backoff,
                                 },
@@ -755,10 +785,17 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
                         let mw = self.client.middleware();
                         if !mw.is_empty() {
-                            mw.apply_retry(&err, &self.uri, &self.method, attempt + 1);
+                            mw.apply_retry(&err, &wire_uri, &wire_method, next_attempt);
                         }
-                        last_error = Some(err);
+                        attempt = next_attempt;
                         continue;
+                    }
+                    if finalized_request
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .retry_budget_denied()
+                    {
+                        return Ok(resp);
                     }
                     if let Some(ref budget) = config.budget {
                         budget.deposit();
@@ -773,24 +810,23 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                         crate::retry::RetryDecision::DoNotRetry => false,
                         crate::retry::RetryDecision::UseDefault => default_should_retry,
                     };
-                    let can_retry = replay_policy.permits(ReplayReason::Configured {
-                        method_authorized: should_retry,
-                    });
-                    if can_retry && attempt < config.max_retries {
-                        if let Some(ref budget) = config.budget
-                            && !budget.try_withdraw()
-                        {
-                            let mw = self.client.middleware();
-                            if !mw.is_empty() {
-                                mw.apply_error(&e, &self.uri, &self.method);
-                            }
-                            return Err(e);
-                        }
-
+                    let can_retry = has_replay_snapshot
+                        && replay_policy.permits(ReplayReason::Configured {
+                            method_authorized: should_retry,
+                        });
+                    let next_attempt = if can_retry {
+                        finalized_request
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .try_start_configured_retry()
+                    } else {
+                        None
+                    };
+                    if let Some(next_attempt) = next_attempt {
                         if let Some(ref obs) = self.client.core.observer {
                             obs.on_event(&RequestEvent {
-                                method: self.method.clone(),
-                                uri: self.uri.clone(),
+                                method: wire_method.clone(),
+                                uri: wire_uri.clone(),
                                 phase: RequestPhase::Failed {
                                     error: e.to_string(),
                                     retry: RetryKind::Explicit,
@@ -804,11 +840,11 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                             retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt));
                         if let Some(ref obs) = self.client.core.observer {
                             obs.on_event(&RequestEvent {
-                                method: self.method.clone(),
-                                uri: self.uri.clone(),
+                                method: wire_method.clone(),
+                                uri: wire_uri.clone(),
                                 phase: RequestPhase::Retrying {
                                     reason: e.to_string(),
-                                    attempt: attempt + 1,
+                                    attempt: next_attempt,
                                     max_retries: config.max_retries,
                                     backoff,
                                 },
@@ -818,40 +854,19 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
                         let mw = self.client.middleware();
                         if !mw.is_empty() {
-                            mw.apply_retry(&e, &self.uri, &self.method, attempt + 1);
+                            mw.apply_retry(&e, &wire_uri, &wire_method, next_attempt);
                         }
-                        last_error = Some(e);
+                        attempt = next_attempt;
                         continue;
                     }
                     let mw = self.client.middleware();
                     if !mw.is_empty() {
-                        mw.apply_error(&e, &self.uri, &self.method);
+                        mw.apply_error(&e, &wire_uri, &wire_method);
                     }
                     return Err(e);
                 }
             }
         }
-
-        let err = last_error.unwrap_or(Error::Other("retry exhausted".into()));
-
-        if let Some(ref obs) = self.client.core.observer {
-            obs.on_event(&RequestEvent {
-                method: self.method.clone(),
-                uri: self.uri.clone(),
-                phase: RequestPhase::Failed {
-                    error: err.to_string(),
-                    retry: RetryKind::None,
-                    elapsed: retry_start.elapsed(),
-                },
-                at: observer::Instant::now(),
-            });
-        }
-
-        let mw = self.client.middleware();
-        if !mw.is_empty() {
-            mw.apply_error(&err, &self.uri, &self.method);
-        }
-        Err(err)
     }
 }
 

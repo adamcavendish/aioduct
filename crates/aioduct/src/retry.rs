@@ -376,6 +376,17 @@ impl RetryBudget {
             .ok();
     }
 
+    /// Return one token for a retry reservation that was never dispatched.
+    pub(crate) fn refund(&self) {
+        let inner = &self.inner;
+        inner
+            .tokens
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_add(1).min(inner.max_tokens))
+            })
+            .ok();
+    }
+
     /// Returns the current number of available tokens.
     pub fn available(&self) -> u32 {
         self.inner.tokens.load(Ordering::Relaxed)

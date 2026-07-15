@@ -11,6 +11,10 @@ pub(crate) struct DigestAuth {
     nonce_counts: Arc<std::sync::Mutex<HashMap<String, u32>>>,
 }
 
+pub(crate) struct PreparedDigestChallenge {
+    params: HashMap<String, String>,
+}
+
 impl DigestAuth {
     pub(crate) fn new(username: String, password: String) -> Self {
         Self {
@@ -24,19 +28,36 @@ impl DigestAuth {
         status == StatusCode::UNAUTHORIZED && headers.contains_key(WWW_AUTHENTICATE)
     }
 
+    #[cfg(test)]
     pub(crate) fn authorize(
         &self,
         method: &Method,
         uri: &Uri,
         headers: &HeaderMap,
     ) -> Option<HeaderValue> {
+        let challenge = self.prepare(headers)?;
+        self.authorize_prepared(method, uri, &challenge)
+    }
+
+    pub(crate) fn prepare(&self, headers: &HeaderMap) -> Option<PreparedDigestChallenge> {
         let challenge = headers.get(WWW_AUTHENTICATE)?.to_str().ok()?;
         if !challenge.to_ascii_lowercase().starts_with("digest ") {
             return None;
         }
 
         let params = parse_challenge(&challenge[7..]);
+        params.get("realm")?;
+        params.get("nonce")?;
+        Some(PreparedDigestChallenge { params })
+    }
 
+    pub(crate) fn authorize_prepared(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        challenge: &PreparedDigestChallenge,
+    ) -> Option<HeaderValue> {
+        let params = &challenge.params;
         let realm = params.get("realm")?;
         let nonce = params.get("nonce")?;
         let qop = params.get("qop");
@@ -45,25 +66,21 @@ impl DigestAuth {
 
         let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
-        let nc = {
-            let Ok(mut counts) = self.nonce_counts.lock() else {
-                return None;
-            };
-            while counts.len() > 64 {
-                if let Some(evict) = counts
-                    .iter()
-                    .min_by_key(|(_, v)| **v)
-                    .map(|(k, _)| k.clone())
-                {
-                    counts.remove(&evict);
-                } else {
-                    break;
-                }
-            }
-            let entry = counts.entry(nonce.to_string()).or_insert(0);
-            *entry += 1;
-            *entry
+        let Ok(mut counts) = self.nonce_counts.lock() else {
+            return None;
         };
+        while counts.len() > 64 {
+            if let Some(evict) = counts
+                .iter()
+                .min_by_key(|(_, value)| **value)
+                .map(|(key, _)| key.clone())
+            {
+                counts.remove(&evict);
+            } else {
+                break;
+            }
+        }
+        let nc = counts.get(nonce).copied().unwrap_or(0).saturating_add(1);
         let nc_str = format!("{nc:08x}");
         let cnonce = format!("{:016x}", rand_u64());
 
@@ -107,7 +124,9 @@ impl DigestAuth {
             value.push_str(&format!(", algorithm={algorithm}"));
         }
 
-        HeaderValue::from_str(&value).ok()
+        let value = HeaderValue::from_str(&value).ok()?;
+        counts.insert(nonce.clone(), nc);
+        Some(value)
     }
 }
 
@@ -467,6 +486,25 @@ mod tests {
         let s2 = v2.to_str().unwrap().to_string();
         assert!(s1.contains("nc=00000001"));
         assert!(s2.contains("nc=00000002"));
+    }
+
+    #[test]
+    fn preparing_a_challenge_does_not_reserve_a_nonce_count() {
+        let auth = DigestAuth::new("user".into(), "pass".into());
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="prepared", qop="auth""#),
+        );
+
+        let _first = auth.prepare(&headers).unwrap();
+        let second = auth.prepare(&headers).unwrap();
+        let value = auth
+            .authorize_prepared(&Method::GET, &uri, &second)
+            .unwrap();
+
+        assert!(value.to_str().unwrap().contains("nc=00000001"));
     }
 
     #[test]

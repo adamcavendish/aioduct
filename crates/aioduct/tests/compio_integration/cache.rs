@@ -238,6 +238,74 @@ fn test_compio_cache_304_revalidation() {
     });
 }
 
+#[test]
+fn compio_configured_retry_preserves_cache_revalidation_state() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let server_count = request_count.clone();
+    let addr = start_server_with_tokio(move |request| {
+        let count = server_count.clone();
+        async move {
+            let attempt = count.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(match attempt {
+                0 => Response::builder()
+                    .header("cache-control", "max-age=0, must-revalidate")
+                    .header("etag", "\"compio-retry\"")
+                    .body(Full::new(Bytes::from_static(b"compio cached")))
+                    .unwrap(),
+                1 => {
+                    assert_eq!(request.headers()["if-none-match"], "\"compio-retry\"");
+                    Response::builder()
+                        .status(429)
+                        .header("retry-after", "0")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap()
+                }
+                _ => {
+                    assert_eq!(request.headers()["if-none-match"], "\"compio-retry\"");
+                    Response::builder()
+                        .status(304)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap()
+                }
+            })
+        }
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .cache(aioduct::cache::HttpCache::new())
+            .retry(
+                aioduct::RetryConfig::default()
+                    .max_retries(1)
+                    .initial_backoff(Duration::ZERO),
+            )
+            .build_local()
+            .unwrap();
+        let url = format!("http://{addr}/retry-revalidation");
+
+        assert_eq!(
+            client
+                .get_local(&url)
+                .unwrap()
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "compio cached"
+        );
+        let response = client.get_local(&url).unwrap().send().await.unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "compio cached");
+    });
+    assert_eq!(request_count.load(Ordering::SeqCst), 3);
+}
+
 // ── Cache invalidation on write test ───────────────────────────────
 
 #[test]

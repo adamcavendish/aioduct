@@ -6,10 +6,14 @@ use http::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Uri, Version};
 
 use crate::body::{RequestBody, RequestBodySend};
-use crate::client::HttpEngineLocal;
+use crate::client::{
+    BodyReplayability, FinalizedRequestState, HttpEngineLocal, ReplayReason, RequestReplayPolicy,
+};
 use crate::error::{BuilderError, Error};
+use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::pool::ProtocolHint;
 use crate::response::Response;
+use crate::retry::RetryConfig;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 use crate::timeout::Timeout;
 
@@ -388,8 +392,11 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
     /// Force this request to connect to a specific address, bypassing DNS
     /// resolution.
     ///
-    /// The `Host` header is still set from the request URL. Use this with
-    /// [`HttpEngineLocal::resolve_all`] to implement custom load-balancing.
+    /// The `Host` header and TLS server name are still taken from the request
+    /// URL. When a proxy route is selected, the proxy hops are resolved
+    /// normally and this address overrides only the final tunnel destination.
+    /// Use this with [`HttpEngineLocal::resolve_all`] to implement custom
+    /// load-balancing.
     pub fn force_addr(mut self, addr: std::net::SocketAddr) -> Self {
         self.force_addr = Some(addr);
         self
@@ -511,6 +518,14 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         if let Some(error) = self.builder_error.take() {
             return Err(error.into_error());
         }
+        let retry = self.client.core.retry.clone();
+        match retry {
+            Some(config) => Box::pin(self.send_with_retry(config)).await,
+            None => Box::pin(self.send_once()).await,
+        }
+    }
+
+    async fn send_once(self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
         let effective_timeout = if self.force_no_timeout {
             None
         } else {
@@ -522,6 +537,8 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         let automatic_content_digest = self
             .automatic_content_digest
             .unwrap_or(self.client.core.automatic_content_digest);
+        let method = self.method.clone();
+        let uri = self.uri.clone();
 
         let execute_fut = self.client.execute_local(
             self.method,
@@ -537,9 +554,10 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             self.protocol_hint,
             automatic_content_digest,
             self.fragment,
+            None,
         );
 
-        match effective_timeout {
+        let result = match effective_timeout {
             Some(duration) => {
                 Timeout::WithTimeout {
                     future: execute_fut,
@@ -548,6 +566,264 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                 .await
             }
             None => execute_fut.await,
+        };
+        if let Err(ref error) = result
+            && !self.client.core.middleware.is_empty()
+        {
+            self.client
+                .core
+                .middleware
+                .apply_error(error, &uri, &method);
+        }
+        result
+    }
+
+    async fn send_with_retry(
+        mut self,
+        config: RetryConfig,
+    ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
+        let retry_start = crate::clock::Instant::now();
+        let effective_timeout = if self.force_no_timeout {
+            None
+        } else {
+            self.timeout.or(self.client.core.timeout)
+        };
+        let effective_connect_timeout = self.connect_timeout.or(self.client.core.connect_timeout);
+        let effective_write_timeout = self.write_timeout.or(self.client.core.write_timeout);
+        let effective_read_timeout = self.read_timeout.or(self.client.core.read_timeout);
+        let automatic_content_digest = self
+            .automatic_content_digest
+            .unwrap_or(self.client.core.automatic_content_digest);
+        let initial_body_replayability = match self.body.as_ref() {
+            Some(RequestBody::Buffered(_)) => BodyReplayability::Replayable,
+            Some(RequestBody::Streaming(_)) => BodyReplayability::OneShot,
+            None => BodyReplayability::Empty,
+        };
+        let mut body = self.body.take();
+        let mut retry_after_delay = None;
+        let finalized_request = std::sync::Mutex::new(FinalizedRequestState::new(
+            self.method.clone(),
+            initial_body_replayability,
+            config.max_retries,
+            config.budget.clone(),
+        ));
+        let mut attempt = 0;
+
+        loop {
+            if attempt > 0 {
+                let delay = retry_after_delay
+                    .take()
+                    .unwrap_or_else(|| config.delay_for_attempt(attempt - 1));
+                R::sleep(delay).await;
+            }
+
+            let body_for_attempt = match &mut body {
+                Some(RequestBody::Buffered(bytes)) => Some(RequestBody::Buffered(bytes.clone())),
+                Some(RequestBody::Streaming(_)) => body.take(),
+                None => None,
+            };
+            let execute_fut = self.client.execute_local(
+                self.method.clone(),
+                self.uri.clone(),
+                self.headers.clone(),
+                body_for_attempt,
+                self.version,
+                effective_connect_timeout,
+                effective_write_timeout,
+                effective_read_timeout,
+                self.no_decompression,
+                self.force_addr,
+                self.protocol_hint,
+                automatic_content_digest,
+                self.fragment.clone(),
+                Some(&finalized_request),
+            );
+            let result = match effective_timeout {
+                Some(duration) => {
+                    Timeout::WithTimeout {
+                        future: execute_fut,
+                        sleep: R::sleep(duration),
+                    }
+                    .await
+                }
+                None => execute_fut.await,
+            };
+            let (wire_method, wire_uri, replay_policy, has_replay_snapshot, current_attempt) = {
+                let finalized_request = finalized_request
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                (
+                    finalized_request.method().clone(),
+                    finalized_request
+                        .effective_uri()
+                        .cloned()
+                        .unwrap_or_else(|| self.uri.clone()),
+                    RequestReplayPolicy::new(finalized_request.method(), finalized_request.body()),
+                    finalized_request.has_replay_snapshot(),
+                    finalized_request.retry_attempt(),
+                )
+            };
+            attempt = current_attempt;
+
+            match result {
+                Ok(resp) => {
+                    let default_should_retry = config.retry_on_status
+                        && crate::retry::is_retryable_status(resp.status())
+                        && crate::retry::is_idempotent(&wire_method);
+                    let should_retry =
+                        match config.classify_status(resp.status(), &wire_method, attempt) {
+                            crate::retry::RetryDecision::Retry => true,
+                            crate::retry::RetryDecision::DoNotRetry => false,
+                            crate::retry::RetryDecision::UseDefault => default_should_retry,
+                        };
+                    let can_retry = has_replay_snapshot
+                        && replay_policy.permits(ReplayReason::Configured {
+                            method_authorized: should_retry,
+                        });
+                    let next_attempt = if can_retry {
+                        finalized_request
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .try_start_configured_retry()
+                    } else {
+                        None
+                    };
+                    if let Some(next_attempt) = next_attempt {
+                        retry_after_delay = crate::retry::parse_retry_after(resp.headers());
+                        let error = Error::Other(format!("server error: {}", resp.status()).into());
+                        self.observe_retry_failure(
+                            &wire_method,
+                            &wire_uri,
+                            &error,
+                            retry_start.elapsed(),
+                        );
+                        self.observe_retrying(
+                            &wire_method,
+                            &wire_uri,
+                            &error,
+                            next_attempt,
+                            config.max_retries,
+                            retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt)),
+                        );
+                        if !self.client.core.middleware.is_empty() {
+                            self.client.core.middleware.apply_retry(
+                                &error,
+                                &wire_uri,
+                                &wire_method,
+                                next_attempt,
+                            );
+                        }
+                        attempt = next_attempt;
+                        continue;
+                    }
+                    if finalized_request
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .retry_budget_denied()
+                    {
+                        return Ok(resp);
+                    }
+                    if let Some(ref budget) = config.budget {
+                        budget.deposit();
+                    }
+                    return Ok(resp);
+                }
+                Err(error) => {
+                    let default_should_retry = crate::retry::is_retryable_error(&error)
+                        && crate::retry::is_idempotent(&wire_method);
+                    let should_retry = match config.classify_error(&error, &wire_method, attempt) {
+                        crate::retry::RetryDecision::Retry => true,
+                        crate::retry::RetryDecision::DoNotRetry => false,
+                        crate::retry::RetryDecision::UseDefault => default_should_retry,
+                    };
+                    let can_retry = has_replay_snapshot
+                        && replay_policy.permits(ReplayReason::Configured {
+                            method_authorized: should_retry,
+                        });
+                    let next_attempt = if can_retry {
+                        finalized_request
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .try_start_configured_retry()
+                    } else {
+                        None
+                    };
+                    if let Some(next_attempt) = next_attempt {
+                        self.observe_retry_failure(
+                            &wire_method,
+                            &wire_uri,
+                            &error,
+                            retry_start.elapsed(),
+                        );
+                        self.observe_retrying(
+                            &wire_method,
+                            &wire_uri,
+                            &error,
+                            next_attempt,
+                            config.max_retries,
+                            config.delay_for_attempt(attempt),
+                        );
+                        if !self.client.core.middleware.is_empty() {
+                            self.client.core.middleware.apply_retry(
+                                &error,
+                                &wire_uri,
+                                &wire_method,
+                                next_attempt,
+                            );
+                        }
+                        attempt = next_attempt;
+                        continue;
+                    }
+                    self.apply_error_middleware(&wire_method, &wire_uri, &error);
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    fn observe_retry_failure(&self, method: &Method, uri: &Uri, error: &Error, elapsed: Duration) {
+        if let Some(ref observer) = self.client.core.observer {
+            observer.on_event(&RequestEvent {
+                method: method.clone(),
+                uri: uri.clone(),
+                phase: RequestPhase::Failed {
+                    error: error.to_string(),
+                    retry: RetryKind::Explicit,
+                    elapsed,
+                },
+                at: observer::Instant::now(),
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn observe_retrying(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        error: &Error,
+        attempt: u32,
+        max_retries: u32,
+        backoff: Duration,
+    ) {
+        if let Some(ref observer) = self.client.core.observer {
+            observer.on_event(&RequestEvent {
+                method: method.clone(),
+                uri: uri.clone(),
+                phase: RequestPhase::Retrying {
+                    reason: error.to_string(),
+                    attempt,
+                    max_retries,
+                    backoff,
+                },
+                at: observer::Instant::now(),
+            });
+        }
+    }
+
+    fn apply_error_middleware(&self, method: &Method, uri: &Uri, error: &Error) {
+        if !self.client.core.middleware.is_empty() {
+            self.client.core.middleware.apply_error(error, uri, method);
         }
     }
 }

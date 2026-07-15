@@ -18,6 +18,8 @@ mod proxy_local;
 mod request_builder;
 #[path = "compio_integration/resolver.rs"]
 mod resolver;
+#[path = "compio_integration/retry_local.rs"]
+mod retry_local;
 #[path = "compio_integration/sse.rs"]
 mod sse;
 #[path = "compio_integration/streaming.rs"]

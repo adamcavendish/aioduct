@@ -1,10 +1,10 @@
 #![cfg(feature = "tokio")]
 //! Comprehensive tests for transparent stale connection retry behavior.
 //!
-//! These tests target three known production bugs:
-//! 1. `can_stale_retry` rejected non-empty bodies (POST with buffered body was not retried)
-//! 2. Pool-hit stale connections not retried at all
-//! 3. H1 connections pooled before body drained
+//! These tests cover replay safety and three connection-pool boundaries:
+//! 1. ambiguous failures only retry idempotent, reproducible requests;
+//! 2. proven-unprocessed H2 failures may retry non-idempotent requests;
+//! 3. H1 connections are pooled only after response bodies are drained.
 //!
 //! The goal is to find regressions, not prove correctness.
 
@@ -136,6 +136,91 @@ async fn h2_goaway_detected_as_stale() {
     // Connection count may be 1 or 2 depending on GOAWAY propagation timing.
     assert!(counter.requests() >= 2);
 }
+
+/// REFUSED_STREAM proves the H2 peer did not process the request, so a
+/// reproducible POST may be replayed without risking a duplicate side effect.
+#[tokio::test]
+async fn h2_refused_stream_retries_reproducible_post() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let uploaded = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let server_connections = Arc::clone(&connections);
+    let server_requests = Arc::clone(&requests);
+    let server_uploaded = Arc::clone(&uploaded);
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let connection_index = server_connections.fetch_add(1, Ordering::SeqCst);
+            let requests = Arc::clone(&server_requests);
+            let uploaded = Arc::clone(&server_uploaded);
+            tokio::spawn(async move {
+                let mut connection = h2::server::handshake(stream).await.unwrap();
+                let mut request_index = 0usize;
+                while let Some(result) = connection.accept().await {
+                    let (request, mut respond) = result.unwrap();
+                    requests.fetch_add(1, Ordering::SeqCst);
+
+                    if connection_index == 0 && request_index == 1 {
+                        assert_eq!(request.method(), http::Method::POST);
+                        respond.send_reset(h2::Reason::REFUSED_STREAM);
+                    } else {
+                        let mut body = request.into_body();
+                        let mut bytes = Vec::new();
+                        while let Some(chunk) = body.data().await {
+                            bytes.extend_from_slice(&chunk.unwrap());
+                        }
+                        if !bytes.is_empty() {
+                            uploaded.lock().unwrap().push(bytes);
+                        }
+                        respond
+                            .send_response(
+                                http::Response::builder().status(200).body(()).unwrap(),
+                                true,
+                            )
+                            .unwrap();
+                    }
+                    request_index += 1;
+                }
+            });
+        }
+    });
+
+    let client = make_h2_client();
+    let url = format!("http://{addr}/");
+    let warm = client
+        .get(&url)
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(warm.status(), 200);
+    let _ = warm.bytes().await.unwrap();
+
+    let resp = client
+        .post(&url)
+        .unwrap()
+        .body("refused-stream-body")
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .expect("REFUSED_STREAM should replay a reproducible request");
+    assert_eq!(resp.status(), 200);
+    let _ = resp.bytes().await.unwrap();
+
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+    assert_eq!(connections.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *uploaded.lock().unwrap(),
+        vec![b"refused-stream-body".to_vec()]
+    );
+}
 /// The first connection attempt is fresh, so "stale" logic must not trigger.
 /// This ensures we distinguish "stale pooled connection" from "server is down".
 #[tokio::test]
@@ -223,11 +308,10 @@ async fn retry_get_empty_body() {
     assert_eq!(resp.status(), 200);
 }
 
-/// POST with buffered bytes body on stale connection is retried.
-/// This is the fix for bug #1 (can_stale_retry rejected non-empty bodies).
+/// An ambiguous stale failure must not duplicate a non-idempotent POST.
 #[tokio::test]
-async fn retry_post_buffered_bytes() {
-    let (addr, _counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
+async fn no_retry_post_buffered_after_ambiguous_stale_failure() {
+    let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
     let client = make_client();
     let url = format!("http://{addr}/");
 
@@ -236,23 +320,95 @@ async fn retry_post_buffered_bytes() {
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
-    // POST with buffered body on stale -> must be retried -> 200.
-    let resp = client
-        .post(&url)
-        .unwrap()
-        .body("hello world")
-        .send()
-        .await
-        .expect("POST with buffered body must be retried on stale connection");
-    assert_eq!(resp.status(), 200);
+    // The server reads from the POST before resetting the connection, so the
+    // transport cannot prove whether the request was processed.
+    let result = client.post(&url).unwrap().body("hello world").send().await;
+
+    assert!(result.is_err());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        counter.connections(),
+        1,
+        "ambiguous POST must not be dispatched on a second connection"
+    );
 }
 
-/// POST with JSON body on stale connection is retried.
-/// Exact reproduction of the scheduler "connection closed" production bug.
+#[tokio::test]
+async fn processed_post_is_not_replayed_when_response_is_lost() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let side_effects = Arc::new(AtomicUsize::new(0));
+
+    let server_requests = Arc::clone(&requests);
+    let server_side_effects = Arc::clone(&side_effects);
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let requests = Arc::clone(&server_requests);
+            let side_effects = Arc::clone(&server_side_effects);
+            tokio::spawn(async move {
+                let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+                let service = hyper::service::service_fn(
+                    move |request: http::Request<hyper::body::Incoming>| {
+                        let requests = Arc::clone(&requests);
+                        let side_effects = Arc::clone(&side_effects);
+                        async move {
+                            let request_index = requests.fetch_add(1, Ordering::SeqCst);
+                            let body = request.into_body().collect().await.unwrap().to_bytes();
+                            if request_index == 0 {
+                                return Ok::<_, std::io::Error>(hyper::Response::new(
+                                    http_body_util::Full::new(Bytes::from_static(b"warm")),
+                                ));
+                            }
+
+                            assert_eq!(body, Bytes::from_static(b"single side effect"));
+                            side_effects.fetch_add(1, Ordering::SeqCst);
+                            if request_index == 1 {
+                                Err(std::io::Error::other(
+                                    "close after processing without a response",
+                                ))
+                            } else {
+                                Ok(hyper::Response::new(http_body_util::Full::new(
+                                    Bytes::from_static(b"duplicate"),
+                                )))
+                            }
+                        }
+                    },
+                );
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    let client = make_client();
+    let url = format!("http://{addr}/");
+    let warm = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(warm.text().await.unwrap(), "warm");
+
+    let result = client
+        .post(&url)
+        .unwrap()
+        .body("single side effect")
+        .send()
+        .await;
+
+    assert!(result.is_err());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(side_effects.load(Ordering::SeqCst), 1);
+}
+
+/// A JSON POST remains non-idempotent even though its body is buffered.
 #[cfg(feature = "json")]
 #[tokio::test]
-async fn retry_post_json() {
-    let (addr, _counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
+async fn no_retry_post_json_after_ambiguous_stale_failure() {
+    let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
     let client = make_client();
     let url = format!("http://{addr}/");
 
@@ -261,22 +417,22 @@ async fn retry_post_json() {
     let _ = resp.text().await.unwrap();
 
     let payload = serde_json::json!({"prompt": "test", "max_tokens": 50});
-    let resp = client
+    let result = client
         .post(&url)
         .unwrap()
         .json(&payload)
         .unwrap()
         .send()
-        .await
-        .expect("POST with JSON body must be retried on stale connection");
-    assert_eq!(resp.status(), 200);
+        .await;
+    assert!(result.is_err());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(counter.connections(), 1);
 }
 
-/// POST with form-encoded body on stale connection is retried.
-/// Form bodies are buffered (Bytes), so they should be replayable.
+/// A form POST remains non-idempotent even though its body is buffered.
 #[tokio::test]
-async fn retry_post_form() {
-    let (addr, _counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
+async fn no_retry_post_form_after_ambiguous_stale_failure() {
+    let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
     let client = make_client();
     let url = format!("http://{addr}/");
 
@@ -284,18 +440,18 @@ async fn retry_post_form() {
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
-    let resp = client
+    let result = client
         .post(&url)
         .unwrap()
         .form(&[("key", "value"), ("foo", "bar")])
         .send()
-        .await
-        .expect("POST with form body must be retried on stale connection");
-    assert_eq!(resp.status(), 200);
+        .await;
+    assert!(result.is_err());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(counter.connections(), 1);
 }
 
-/// PUT with buffered body on stale connection is retried.
-/// Non-idempotent methods with replayable bodies should still be retried on stale.
+/// PUT with a reproducible body may be retried after an ambiguous stale failure.
 #[tokio::test]
 async fn retry_put_buffered() {
     let (addr, _counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
@@ -314,6 +470,42 @@ async fn retry_put_buffered() {
         .await
         .expect("PUT with buffered body must be retried on stale connection");
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn middleware_replaced_body_is_not_reconstructed_from_original_bytes() {
+    let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(5))
+        .middleware(
+            |request: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
+                if request.method() == http::Method::PUT {
+                    *request.body_mut() =
+                        http_body_util::Full::new(Bytes::from_static(b"middleware body"))
+                            .map_err(|never| match never {})
+                            .boxed_unsync();
+                    request.headers_mut().insert(
+                        "content-encoding",
+                        HeaderValue::from_static("middleware-test"),
+                    );
+                }
+            },
+        )
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/");
+
+    let response = client.get(&url).unwrap().send().await.unwrap();
+    let _ = response.bytes().await.unwrap();
+
+    let result = client.put(&url).unwrap().body("original body").send().await;
+    assert!(
+        result.is_err(),
+        "a middleware-replaced body must not be rebuilt from the original bytes"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(counter.connections(), 1);
 }
 
 /// POST with streaming (non-replayable) body must not be retried.
@@ -513,9 +705,9 @@ async fn retry_preserves_method_uri_headers_body() {
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
-    // POST with custom header + body on the stale connection.
+    // PUT with custom header + body on the stale connection.
     let resp = client
-        .post(&url)
+        .put(&url)
         .unwrap()
         .header(
             HeaderName::from_static("x-custom-header"),
@@ -529,9 +721,9 @@ async fn retry_preserves_method_uri_headers_body() {
     assert_eq!(resp.status(), 200);
     let echo = resp.text().await.unwrap();
 
-    // Verify method is POST.
+    // Verify method is PUT.
     assert!(
-        echo.contains("POST /test-path"),
+        echo.contains("PUT /test-path"),
         "method and path not preserved in retry. Echo:\n{echo}"
     );
 
@@ -742,10 +934,10 @@ async fn rst_every_3rd_sequential_stress() {
     );
 }
 
-/// POST with buffered body through RST-every-2nd: ensures body replay works
+/// PUT with buffered body through RST-every-2nd: ensures body replay works
 /// under repeated stale scenarios, not just a single retry.
 #[tokio::test]
-async fn post_buffered_body_survives_repeated_rst() {
+async fn put_buffered_body_survives_repeated_rst() {
     let (addr, _counter) = aioduct_test_server::stale::h1_rst_every_n(2).await;
     let client = make_client_no_timeout();
     let url = format!("http://{addr}/");
@@ -754,7 +946,7 @@ async fn post_buffered_body_survives_repeated_rst() {
     let total = 30u32;
 
     for _ in 0..total {
-        match client.post(&url).unwrap().body("payload").send().await {
+        match client.put(&url).unwrap().body("payload").send().await {
             Ok(resp) if resp.status() == 200 => {
                 let _ = resp.text().await;
             }
@@ -766,7 +958,7 @@ async fn post_buffered_body_survives_repeated_rst() {
 
     assert_eq!(
         failures, 0,
-        "POST with body through RST-every-2nd: expected 0 failures, got {failures}"
+        "PUT with body through RST-every-2nd: expected 0 failures, got {failures}"
     );
 }
 
@@ -801,10 +993,10 @@ async fn retry_connection_is_reusable_after_body_drain() {
     assert_eq!(body, "ok");
 }
 
-/// Multiple concurrent POST requests with bodies through RST-on-reuse.
+/// Multiple concurrent PUT requests with bodies through RST-on-reuse.
 /// Specifically tests that body replay logic is correct under concurrency.
 #[tokio::test]
-async fn concurrent_post_with_body_stale_retry() {
+async fn concurrent_put_with_body_stale_retry() {
     // Use RST-every-2nd so multiple connections experience staleness.
     let (addr, _counter) = aioduct_test_server::stale::h1_rst_every_n(2).await;
     let client = make_client();
@@ -822,7 +1014,7 @@ async fn concurrent_post_with_body_stale_retry() {
         handles.push(tokio::spawn(async move {
             let body = format!("payload-{i}");
             let result = client_clone
-                .post(&url_clone)
+                .put(&url_clone)
                 .unwrap()
                 .body(body)
                 .send()
@@ -849,7 +1041,7 @@ async fn concurrent_post_with_body_stale_retry() {
 
     assert!(
         failures.is_empty(),
-        "concurrent POST with body stale retry: {} failures:\n{}",
+        "concurrent PUT with body stale retry: {} failures:\n{}",
         failures.len(),
         failures.join("\n")
     );

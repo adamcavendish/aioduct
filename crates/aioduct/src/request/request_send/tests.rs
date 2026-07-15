@@ -609,6 +609,268 @@ async fn retry_after_is_used_for_retryable_request_timeout_status() {
 }
 
 #[tokio::test]
+async fn configured_retry_does_not_rerun_opaque_middleware() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let server_attempts = Arc::new(AtomicU32::new(0));
+    let attempts = server_attempts.clone();
+    let (addr, counter) = aioduct_test_server::h1::h1_server_with(move |request| {
+        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+        async move {
+            assert_eq!(request.method(), Method::PUT);
+            assert_eq!(request.headers()["x-finalized-request"], "first");
+            assert!(
+                request
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .is_empty()
+            );
+            Ok(if attempt == 0 {
+                hyper::Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .body(http_body_util::Full::new(bytes::Bytes::new()))
+                    .unwrap()
+            } else {
+                hyper::Response::new(http_body_util::Full::new(bytes::Bytes::from_static(b"ok")))
+            })
+        }
+    })
+    .await;
+    let middleware_calls = Arc::new(AtomicU32::new(0));
+    let calls = middleware_calls.clone();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .middleware(
+            move |request: &mut http::Request<RequestBodySend>, _uri: &http::Uri| {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    *request.method_mut() = Method::PUT;
+                    request.headers_mut().insert(
+                        http::header::HeaderName::from_static("x-finalized-request"),
+                        http::header::HeaderValue::from_static("first"),
+                    );
+                } else {
+                    *request.method_mut() = Method::POST;
+                    *request.body_mut() =
+                        http_body_util::Full::new(bytes::Bytes::from_static(b"different request"))
+                            .map_err(|never| match never {})
+                            .boxed_unsync();
+                }
+            },
+        )
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            RetryConfig::default()
+                .max_retries(1)
+                .initial_backoff(Duration::ZERO),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(counter.requests(), 2);
+    assert_eq!(server_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(middleware_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn digest_retry_does_not_rerun_opaque_middleware() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let server_attempts = Arc::new(AtomicU32::new(0));
+    let attempts = server_attempts.clone();
+    let (addr, counter) = aioduct_test_server::h1::h1_server_with(move |request| {
+        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+        async move {
+            assert_eq!(request.method(), Method::POST);
+            assert_eq!(request.headers()["x-finalized-request"], "first");
+            if attempt > 0 {
+                assert!(request.headers().contains_key(http::header::AUTHORIZATION));
+            }
+            assert!(
+                request
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .is_empty()
+            );
+            Ok(if attempt == 0 {
+                hyper::Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .header(
+                        http::header::WWW_AUTHENTICATE,
+                        r#"Digest realm="replay", nonce="nonce", qop="auth""#,
+                    )
+                    .body(http_body_util::Full::new(bytes::Bytes::new()))
+                    .unwrap()
+            } else {
+                hyper::Response::new(http_body_util::Full::new(bytes::Bytes::from_static(b"ok")))
+            })
+        }
+    })
+    .await;
+    let middleware_calls = Arc::new(AtomicU32::new(0));
+    let calls = middleware_calls.clone();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .digest_auth("user", "pass")
+        .middleware(
+            move |request: &mut http::Request<RequestBodySend>, _uri: &http::Uri| {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    *request.method_mut() = Method::POST;
+                    request.headers_mut().insert(
+                        http::header::HeaderName::from_static("x-finalized-request"),
+                        http::header::HeaderValue::from_static("first"),
+                    );
+                } else {
+                    *request.method_mut() = Method::DELETE;
+                    *request.body_mut() =
+                        http_body_util::Full::new(bytes::Bytes::from_static(b"different request"))
+                            .map_err(|never| match never {})
+                            .boxed_unsync();
+                }
+            },
+        )
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(counter.requests(), 2);
+    assert_eq!(server_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(middleware_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn unsupported_digest_challenge_does_not_mutate_finalized_retry_state() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let (addr, counter) = aioduct_test_server::h1::h1_server_with(|_req| async {
+        Ok(hyper::Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header(http::header::WWW_AUTHENTICATE, r#"Basic realm="fallback""#)
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap())
+    })
+    .await;
+    let middleware_calls = Arc::new(AtomicU32::new(0));
+    let calls = middleware_calls.clone();
+    let classified_method = Arc::new(Mutex::new(None));
+    let observed_method = classified_method.clone();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .digest_auth("user", "pass")
+        .middleware(
+            move |request: &mut http::Request<RequestBodySend>, _uri: &http::Uri| {
+                if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                    *request.method_mut() = Method::POST;
+                }
+            },
+        )
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            RetryConfig::default()
+                .max_retries(1)
+                .initial_backoff(Duration::ZERO)
+                .classify(move |context| {
+                    *observed_method.lock().unwrap() = Some(context.method().clone());
+                    crate::retry::RetryDecision::DoNotRetry
+                }),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(counter.requests(), 1);
+    assert_eq!(middleware_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(*classified_method.lock().unwrap(), Some(Method::GET));
+}
+
+#[tokio::test]
+async fn digest_retry_respects_configured_retry_count() {
+    let (addr, counter) = aioduct_test_server::h1::h1_server_with(|_req| async {
+        Ok(hyper::Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header(
+                http::header::WWW_AUTHENTICATE,
+                r#"Digest realm="count", nonce="nonce", qop="auth""#,
+            )
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap())
+    })
+    .await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .digest_auth("user", "pass")
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(RetryConfig::default().max_retries(0))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(counter.requests(), 1);
+}
+
+#[tokio::test]
+async fn digest_retry_respects_configured_retry_budget() {
+    let (addr, counter) = aioduct_test_server::h1::h1_server_with(|_req| async {
+        Ok(hyper::Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .header(
+                http::header::WWW_AUTHENTICATE,
+                r#"Digest realm="budget", nonce="nonce", qop="auth""#,
+            )
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap())
+    })
+    .await;
+    let budget = crate::retry::RetryBudget::new(0, 0);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .digest_auth("user", "pass")
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(RetryConfig::default().max_retries(3).budget(budget.clone()))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(counter.requests(), 1);
+    assert_eq!(budget.available(), 0);
+}
+
+#[tokio::test]
 async fn send_error_contains_url() {
     // Exercises the SendError wrapping at line 333
     let client = test_client();

@@ -362,13 +362,11 @@ async fn stale_retry_skipped_for_streaming_body() {
     );
 }
 
-/// POST with buffered JSON body (.json()) on a stale connection.
-/// Now that buffered bodies are replayed on stale connection retry,
-/// this should succeed transparently — the exact fix for the scheduler
-/// "connection closed" errors on POST + .json(&data).
+/// A buffered JSON body is reproducible, but POST remains non-idempotent. An
+/// ambiguous reset after serialization must not transparently duplicate it.
 #[cfg(feature = "json")]
 #[tokio::test]
-async fn stale_retry_works_for_post_json_body() {
+async fn ambiguous_stale_failure_does_not_retry_post_json_body() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -423,9 +421,9 @@ async fn stale_retry_works_for_post_json_body() {
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
-    // POST with JSON body on the stale connection.
-    // This is the exact pattern used by the scheduler:
-    //   client.post(&url).and_then(|b| b.json(&data)).send().await
+    // POST with JSON body on the stale connection. The peer receives the
+    // beginning of the request before resetting it, so processing is
+    // ambiguous even though the body bytes are replayable.
     let payload = serde_json::json!({"prompt": "hello", "max_tokens": 100});
     let result = client
         .post(&url)
@@ -435,10 +433,15 @@ async fn stale_retry_works_for_post_json_body() {
         .send()
         .await;
 
-    // POST with buffered JSON body → replay_body available → retried → succeeds.
-    let resp = result.expect("POST with buffered JSON body should be retried on stale connection");
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "ok");
+    assert!(
+        result.is_err(),
+        "an ambiguous stale failure must not duplicate a non-idempotent POST"
+    );
+    assert_eq!(
+        conn_count.load(Ordering::SeqCst),
+        1,
+        "ambiguous POST failure must not open a retry connection"
+    );
 }
 
 /// Contrast test: GET (empty body) on the same stale connection IS retried
