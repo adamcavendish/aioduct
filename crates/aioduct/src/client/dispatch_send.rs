@@ -2,7 +2,6 @@ use crate::clock::Instant;
 
 use bytes::Bytes;
 use http::Uri;
-use http::header::HeaderMap;
 use std::time::Duration;
 
 use super::connection_lifecycle::H2ConnectGuard;
@@ -16,7 +15,7 @@ use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 
 use super::extract_headers;
-use super::request_replay_send::retry_request_from_parts;
+use super::request_replay::{ReplayableRequestHead, replay_request_send};
 
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
 
@@ -28,7 +27,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         original_uri: &Uri,
         protocol: ProtocolHint,
         replay_body: Option<Bytes>,
-        stale_retry_headers: Option<&HeaderMap>,
         connect_timeout: Option<Duration>,
         _write_timeout: Option<Duration>,
         first_byte_timeout: Option<Duration>,
@@ -139,12 +137,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 },
             );
 
-            let saved_parts = if can_stale_retry {
-                Some((
-                    request.method().clone(),
-                    request.uri().clone(),
-                    request.version(),
-                ))
+            let saved_request = if can_stale_retry {
+                Some(ReplayableRequestHead::capture(&request))
             } else {
                 None
             };
@@ -201,7 +195,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     return Ok(resp);
                 }
                 Err(e)
-                    if saved_parts.is_some()
+                    if saved_request.is_some()
                         && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
                             .is_some_and(|reason| replay_policy.permits(reason)) =>
                 {
@@ -233,11 +227,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             blocked_duration: pool_checkout_start.elapsed(),
                         },
                     );
-                    let Some((method, uri, version)) = saved_parts else {
+                    let Some(saved_request) = saved_request else {
                         return Err(e);
                     };
-                    let headers = stale_retry_headers.cloned().unwrap_or_default();
-                    request = retry_request_from_parts(method, uri, version, headers, &replay_body);
+                    request = replay_request_send(saved_request, &replay_body);
                     if sign_stale_retries
                         && let Some(signature) = self
                             .core
@@ -301,12 +294,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     },
                 );
 
-                let saved_parts = if can_stale_retry {
-                    Some((
-                        request.method().clone(),
-                        request.uri().clone(),
-                        request.version(),
-                    ))
+                let saved_request = if can_stale_retry {
+                    Some(ReplayableRequestHead::capture(&request))
                 } else {
                     None
                 };
@@ -363,7 +352,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         return Ok(resp);
                     }
                     Err(e)
-                        if saved_parts.is_some()
+                        if saved_request.is_some()
                             && HttpEngineCore::<RequestBodySend>::stale_replay_reason(
                                 &conn, &e,
                             )
@@ -398,13 +387,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 blocked_duration: pool_checkout_start.elapsed(),
                             },
                         );
-                        // saved_parts is guaranteed Some by the match arm guard.
-                        let Some((method, uri, version)) = saved_parts else {
+                        // saved_request is guaranteed Some by the match arm guard.
+                        let Some(saved_request) = saved_request else {
                             return Err(e);
                         };
-                        let headers = stale_retry_headers.cloned().unwrap_or_default();
-                        request =
-                            retry_request_from_parts(method, uri, version, headers, &replay_body);
+                        request = replay_request_send(saved_request, &replay_body);
                         if sign_stale_retries
                             && let Some(signature) = self
                                 .core
@@ -620,12 +607,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             blocked_duration: pool_checkout_start.elapsed(),
                         },
                     );
-                    let saved_parts = if can_stale_retry {
-                        Some((
-                            request.method().clone(),
-                            request.uri().clone(),
-                            request.version(),
-                        ))
+                    let saved_request = if can_stale_retry {
+                        Some(ReplayableRequestHead::capture(&request))
                     } else {
                         None
                     };
@@ -681,7 +664,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             return Ok(resp);
                         }
                         Err(e)
-                            if saved_parts.is_some()
+                            if saved_request.is_some()
                                 && HttpEngineCore::<RequestBodySend>::stale_replay_reason(
                                     &conn, &e,
                                 )
@@ -715,17 +698,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                     blocked_duration: pool_checkout_start.elapsed(),
                                 },
                             );
-                            let Some((method, uri, version)) = saved_parts else {
+                            let Some(saved_request) = saved_request else {
                                 return Err(e);
                             };
-                            let headers = stale_retry_headers.cloned().unwrap_or_default();
-                            request = retry_request_from_parts(
-                                method,
-                                uri,
-                                version,
-                                headers,
-                                &replay_body,
-                            );
+                            request = replay_request_send(saved_request, &replay_body);
                             if sign_stale_retries
                                 && let Some(signature) = self
                                     .core

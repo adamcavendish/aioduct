@@ -665,21 +665,12 @@ where
                 let signature_headers = signature.sign_send().await?;
                 signature_headers.insert_into(request.headers_mut())?;
             }
-            let post_signing_headers;
-            let stale_headers = if !client.core.no_connection_reuse {
-                post_signing_headers = request.headers().clone();
-                Some(&post_signing_headers)
-            } else {
-                None
-            };
-
             let mut resp = client
                 .execute_single_with_hint_send(
                     request,
                     &full_uri,
                     protocol_hint,
                     None,
-                    stale_headers,
                     connect_timeout,
                     write_timeout,
                     first_byte_timeout,

@@ -530,10 +530,19 @@ fn local_digest_retry_respects_configured_retry_budget() {
 fn local_digest_and_configured_retries_share_attempts_and_callbacks() {
     let attempts = Arc::new(AtomicU32::new(0));
     let server_attempts = attempts.clone();
+    let authorizations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server_authorizations = authorizations.clone();
     let addr = start_server_with_tokio(move |request| {
         let attempts = server_attempts.clone();
+        let authorizations = server_authorizations.clone();
         async move {
             let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            if let Some(value) = request.headers().get(http::header::AUTHORIZATION) {
+                authorizations
+                    .lock()
+                    .unwrap()
+                    .push(value.to_str().unwrap().to_owned());
+            }
             Ok::<_, Infallible>(match attempt {
                 0 => Response::builder()
                     .status(401)
@@ -590,4 +599,9 @@ fn local_digest_and_configured_retries_share_attempts_and_callbacks() {
         *recorder.observer_attempts.lock().unwrap(),
         vec![(1, 2), (2, 2)]
     );
+    let authorizations = authorizations.lock().unwrap();
+    assert_eq!(authorizations.len(), 2);
+    assert!(authorizations[0].contains("nc=00000001"));
+    assert!(authorizations[1].contains("nc=00000002"));
+    assert_ne!(authorizations[0], authorizations[1]);
 }

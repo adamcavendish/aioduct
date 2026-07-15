@@ -17,7 +17,6 @@ mod proxy_connect_send;
 mod replay;
 mod request_flow;
 mod request_replay;
-mod request_replay_send;
 mod resolve;
 
 pub use builder::HttpEngineBuilder;
