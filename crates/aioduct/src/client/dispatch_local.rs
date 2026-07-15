@@ -17,6 +17,18 @@ use crate::pool::PooledConnection;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal, SocketConfig};
 
+fn attach_local_upgrade_handle(
+    response: &mut Response,
+    method: &http::Method,
+    connection: &mut PooledConnection<RequestBodyLocal>,
+) {
+    let establishes_tunnel = response.status() == http::StatusCode::SWITCHING_PROTOCOLS
+        || (*method == http::Method::CONNECT && response.status().is_success());
+    if establishes_tunnel && let Some(handle) = connection.upgrade_handle_local.take() {
+        response.extensions_mut().insert(handle);
+    }
+}
+
 // ── Local path (RuntimeLocal + ConnectorLocal) ────────────────────────────────────
 
 impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
@@ -198,10 +210,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     resp.set_tls_info(conn.tls_info.clone());
                     self.core
                         .attach_observer(&mut resp, &req_method, original_uri);
-                    if let Some(handle) = conn.upgrade_handle_local.take() {
-                        resp.extensions_mut().insert(handle);
-                    }
-                    if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp) {
+                    attach_local_upgrade_handle(&mut resp, &req_method, &mut conn);
+                    HttpEngineCore::<RequestBodyLocal>::retain_connect_stream_permit(
+                        &mut resp,
+                        &req_method,
+                        &mut conn,
+                    );
+                    if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp, &req_method)
+                    {
                         self.core.checkin_when_ready_local::<R, _, _>(
                             pool_key,
                             conn,
@@ -375,10 +391,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             resp.set_tls_info(conn.tls_info.clone());
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
-                            if let Some(handle) = conn.upgrade_handle_local.take() {
-                                resp.extensions_mut().insert(handle);
-                            }
-                            if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp) {
+                            attach_local_upgrade_handle(&mut resp, &req_method, &mut conn);
+                            HttpEngineCore::<RequestBodyLocal>::retain_connect_stream_permit(
+                                &mut resp,
+                                &req_method,
+                                &mut conn,
+                            );
+                            if !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(
+                                &resp,
+                                &req_method,
+                            ) {
                                 self.core.checkin_when_ready_local::<R, _, _>(
                                     pool_key,
                                     conn,
@@ -849,11 +871,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         resp.set_tls_info(pooled.tls_info.clone());
         self.core
             .attach_observer(&mut resp, &req_method, original_uri);
-        if let Some(handle) = pooled.upgrade_handle_local.take() {
-            resp.extensions_mut().insert(handle);
-        }
+        attach_local_upgrade_handle(&mut resp, &req_method, &mut pooled);
+        HttpEngineCore::<RequestBodyLocal>::retain_connect_stream_permit(
+            &mut resp,
+            &req_method,
+            &mut pooled,
+        );
         if !self.core.no_connection_reuse
-            && !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp)
+            && !HttpEngineCore::<RequestBodyLocal>::should_skip_checkin(&resp, &req_method)
         {
             self.core.checkin_when_ready_local::<R, _, _>(
                 pool_key,

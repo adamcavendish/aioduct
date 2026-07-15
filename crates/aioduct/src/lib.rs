@@ -57,6 +57,7 @@ mod digest_fields;
 pub mod error;
 /// Forwarded header builder and parser (RFC 7239).
 pub mod forwarded;
+mod h2_h3_field_policy;
 pub(crate) mod h2c_probe;
 /// HSTS (HTTP Strict Transport Security) store.
 pub mod hsts;
@@ -64,6 +65,7 @@ pub mod hsts;
 pub mod http2;
 /// Link header parsing (RFC 8288).
 pub mod link;
+mod message_framing;
 /// RFC 9421 HTTP Message Signatures helpers.
 pub mod message_signatures;
 /// Request/response middleware trait and stack.

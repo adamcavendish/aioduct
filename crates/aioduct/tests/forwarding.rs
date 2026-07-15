@@ -1,13 +1,27 @@
 #![cfg(feature = "tokio")]
 
+#[path = "forwarding/authority.rs"]
+mod authority;
+#[path = "forwarding/connect_validation.rs"]
+mod connect_validation;
 #[path = "forwarding/early_response.rs"]
 mod early_response;
+#[path = "forwarding/framing.rs"]
+mod framing;
+#[path = "forwarding/header_sanitizer.rs"]
+mod header_sanitizer;
 #[path = "forwarding/multipart.rs"]
 mod multipart;
+#[path = "forwarding/negotiated_headers.rs"]
+mod negotiated_headers;
 #[path = "forwarding/protocol_plan.rs"]
 mod protocol_plan;
+#[path = "forwarding/request_targets.rs"]
+mod request_targets;
 #[path = "forwarding/response_finalization.rs"]
 mod response_finalization;
+#[path = "forwarding/trailers.rs"]
+mod trailers;
 #[path = "forwarding/upgrades.rs"]
 mod upgrades;
 
@@ -24,6 +38,24 @@ use tokio::net::TcpListener;
 use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
+
+pub(crate) fn valid_forward_request<B>(mut request: Request<B>) -> Request<B> {
+    if request.version() == http::Version::HTTP_11
+        && !request.headers().contains_key(http::header::HOST)
+    {
+        let host = request
+            .uri()
+            .authority()
+            .map(http::uri::Authority::as_str)
+            .unwrap_or("downstream.test")
+            .to_owned();
+        request.headers_mut().insert(
+            http::header::HOST,
+            http::HeaderValue::from_str(&host).unwrap(),
+        );
+    }
+    request
+}
 
 // =============================================================================
 // Request Forwarding Tests
@@ -60,7 +92,7 @@ async fn forward_basic_get_to_upstream() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -102,7 +134,7 @@ async fn forward_strip_prefix() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -144,7 +176,7 @@ async fn forward_preserves_query_string() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -193,7 +225,7 @@ async fn forward_strips_hop_by_hop_headers() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -249,7 +281,7 @@ async fn forward_adds_extra_headers() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -303,7 +335,7 @@ async fn forward_preserve_host() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -350,7 +382,7 @@ async fn forward_rewrites_host_by_default() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -403,7 +435,7 @@ async fn forward_post_with_body() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -448,7 +480,7 @@ async fn forward_on_request_hook() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -494,7 +526,7 @@ async fn forward_on_response_hook() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -544,7 +576,7 @@ async fn forward_timeout() {
         .unwrap();
 
     let result = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -592,7 +624,7 @@ async fn forward_remove_header() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -634,7 +666,7 @@ async fn forward_upstream_base_path() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}/v2", upstream_addr.port())
                 .parse::<http::Uri>()

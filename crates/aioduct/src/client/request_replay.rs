@@ -1,5 +1,6 @@
 use http::header::HeaderMap;
 use http::{Method, Uri, Version};
+use http_body::Body;
 use http_body_util::BodyExt;
 
 use crate::body::{RequestBodyLocal, RequestBodySend};
@@ -9,7 +10,7 @@ use crate::pool::ProtocolHint;
 struct ReplayableRequestMetadata {
     protocol_hint: Option<ProtocolHint>,
     extended_connect_protocol: Option<hyper::ext::Protocol>,
-    deferred_te_trailers: bool,
+    deferred_te: Option<crate::forward::dispatch_plan::DeferredTe>,
     deferred_forward_framing: Option<crate::forward::dispatch_plan::DeferredForwardFraming>,
     deferred_forward_trailers: Option<crate::forward::dispatch_plan::DeferredForwardTrailers>,
     deferred_forward_target: Option<crate::forward::dispatch_plan::DeferredForwardTarget>,
@@ -21,9 +22,9 @@ impl ReplayableRequestMetadata {
         Self {
             protocol_hint: extensions.get::<ProtocolHint>().copied(),
             extended_connect_protocol: extensions.get::<hyper::ext::Protocol>().cloned(),
-            deferred_te_trailers: extensions
-                .get::<crate::forward::dispatch_plan::DeferredTeTrailers>()
-                .is_some(),
+            deferred_te: extensions
+                .get::<crate::forward::dispatch_plan::DeferredTe>()
+                .copied(),
             deferred_forward_framing: extensions
                 .get::<crate::forward::dispatch_plan::DeferredForwardFraming>()
                 .copied(),
@@ -46,8 +47,8 @@ impl ReplayableRequestMetadata {
         if let Some(protocol) = self.extended_connect_protocol {
             extensions.insert(protocol);
         }
-        if self.deferred_te_trailers {
-            extensions.insert(crate::forward::dispatch_plan::DeferredTeTrailers);
+        if let Some(deferred_te) = self.deferred_te {
+            extensions.insert(deferred_te);
         }
         if let Some(framing) = self.deferred_forward_framing {
             extensions.insert(framing);
@@ -74,16 +75,24 @@ pub(super) struct ReplayableRequestHead {
     uri: Uri,
     version: Version,
     headers: HeaderMap,
+    preserve_content_length: bool,
     metadata: ReplayableRequestMetadata,
 }
 
 impl ReplayableRequestHead {
-    pub(super) fn capture<B>(request: &http::Request<B>) -> Self {
+    pub(super) fn capture<B>(request: &http::Request<B>) -> Self
+    where
+        B: Body,
+    {
+        let preserve_content_length = request.body().size_hint().exact().is_some_and(|length| {
+            crate::message_framing::known_h1_content_length(request.headers()) == Some(length)
+        });
         Self {
             method: request.method().clone(),
             uri: request.uri().clone(),
             version: request.version(),
             headers: request.headers().clone(),
+            preserve_content_length,
             metadata: ReplayableRequestMetadata::capture(request.extensions()),
         }
     }
@@ -113,7 +122,9 @@ impl ReplayableRequestHead {
         request
             .headers_mut()
             .remove(http::header::TRANSFER_ENCODING);
-        request.headers_mut().remove(http::header::CONTENT_LENGTH);
+        if !self.preserve_content_length {
+            request.headers_mut().remove(http::header::CONTENT_LENGTH);
+        }
         self.metadata.restore(request.extensions_mut());
         request
     }
@@ -156,7 +167,9 @@ mod tests {
             .header(http::header::CONTENT_LENGTH, "7")
             .header(http::header::TRANSFER_ENCODING, "chunked")
             .header("x-request", "preserved")
-            .body(())
+            .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                b"payload",
+            )))
             .unwrap();
         request.extensions_mut().insert(ProtocolHint::H2c);
         request
@@ -190,5 +203,19 @@ mod tests {
             Some("websocket")
         );
         assert!(replay.extensions().get::<UnknownExtension>().is_none());
+    }
+
+    #[test]
+    fn replay_preserves_matching_unambiguous_content_length() {
+        let request = http::Request::builder()
+            .header(http::header::CONTENT_LENGTH, "7")
+            .body(http_body_util::Full::new(bytes::Bytes::from_static(
+                b"payload",
+            )))
+            .unwrap();
+
+        let replay = ReplayableRequestHead::capture(&request).into_request(());
+
+        assert_eq!(replay.headers()[http::header::CONTENT_LENGTH], "7");
     }
 }

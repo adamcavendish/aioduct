@@ -75,6 +75,28 @@ async fn forward_all_ingress_versions_canonicalize_to_http11() {
 }
 
 #[tokio::test]
+async fn forward_unrelated_hook_does_not_pin_the_ingress_protocol() {
+    let addr = start_h1_version_server().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+
+    let response = client
+        .forward(crate::valid_forward_request(empty_request(
+            http::Version::HTTP_3,
+        )))
+        .upstream(format!("http://{addr}").parse::<http::Uri>().unwrap())
+        .on_request(|parts| {
+            parts
+                .headers
+                .insert("x-hooked", http::HeaderValue::from_static("yes"));
+        })
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "HTTP/1.1");
+}
+
+#[tokio::test]
 async fn forward_http3_ingress_canonicalizes_to_h2c() {
     let (addr, _) = aioduct_test_server::h2::h2_server_with(|req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(

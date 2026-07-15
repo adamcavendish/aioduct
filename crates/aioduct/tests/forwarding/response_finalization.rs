@@ -1,10 +1,13 @@
 use std::convert::Infallible;
+use std::future::Future;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::runtime::{ConnectorSend, TokioRuntime};
 use aioduct::{
     CONTENT_DIGEST, Error, HttpEngineSend, MessageSignatureBase, MessageSignatureComponent,
     MessageSignatureConfig, MessageSignatureError, sha256_content_digest_value,
@@ -23,6 +26,48 @@ fn unused_signature(_: &[u8]) -> Result<Vec<u8>, MessageSignatureError> {
 
 fn fail_response_signature(_: &[u8]) -> Result<Vec<u8>, MessageSignatureError> {
     Err(MessageSignatureError::Signer("response failed".to_owned()))
+}
+
+#[derive(Clone, Default)]
+struct RejectingConnector {
+    attempts: Arc<AtomicUsize>,
+}
+
+impl RejectingConnector {
+    fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
+    }
+}
+
+impl ConnectorSend for RejectingConnector {
+    type Stream = <TcpConnector as ConnectorSend>::Stream;
+
+    fn connect(&self, _addr: SocketAddr) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        async { Err(io::Error::other("pre-I/O validation reached the connector")) }
+    }
+
+    fn connect_bound(
+        &self,
+        _addr: SocketAddr,
+        _local: IpAddr,
+    ) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        async { Err(io::Error::other("pre-I/O validation reached the connector")) }
+    }
+}
+
+fn rejecting_client() -> (
+    HttpEngineSend<TokioRuntime, RejectingConnector>,
+    RejectingConnector,
+) {
+    let connector = RejectingConnector::default();
+    let client = HttpEngineSend::<TokioRuntime, RejectingConnector>::builder_with_connector(
+        connector.clone(),
+    )
+    .build()
+    .unwrap();
+    (client, connector)
 }
 
 #[tokio::test]
@@ -75,7 +120,7 @@ async fn forward_response_signature_covers_response_hook_and_strips_hop_by_hop()
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -157,7 +202,7 @@ async fn forward_response_content_digest_is_signed_and_preserves_body() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -213,7 +258,7 @@ async fn forward_response_content_digest_rejects_body_over_limit() {
         .unwrap();
 
     let result = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -231,26 +276,7 @@ async fn forward_response_content_digest_rejects_body_over_limit() {
 
 #[tokio::test]
 async fn forward_response_content_digest_rejects_connect_before_upstream() {
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let server_attempts = attempts.clone();
-    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let upstream_addr = upstream.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        let (stream, _) = upstream.accept().await.unwrap();
-        server_attempts.fetch_add(1, Ordering::SeqCst);
-        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
-        let _ = server_http1::Builder::new()
-            .serve_connection(
-                io,
-                service_fn(|_req: Request<hyper::body::Incoming>| async move {
-                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
-                }),
-            )
-            .await;
-    });
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let (client, connector) = rejecting_client();
     let incoming_req = http::Request::builder()
         .method(http::Method::CONNECT)
         .uri("example.com:443")
@@ -258,12 +284,8 @@ async fn forward_response_content_digest_rejects_connect_before_upstream() {
         .unwrap();
 
     let result = client
-        .forward(incoming_req)
-        .upstream(
-            format!("http://127.0.0.1:{}", upstream_addr.port())
-                .parse::<http::Uri>()
-                .unwrap(),
-        )
+        .forward(crate::valid_forward_request(incoming_req))
+        .upstream("http://127.0.0.1:9".parse::<http::Uri>().unwrap())
         .response_content_digest(1024)
         .send()
         .await;
@@ -272,8 +294,7 @@ async fn forward_response_content_digest_rejects_connect_before_upstream() {
         Error::Unsupported(message) => assert!(message.contains("CONNECT")),
         other => panic!("expected unsupported error, got {other:?}"),
     }
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    assert_eq!(connector.attempts(), 0);
 }
 
 #[tokio::test]
@@ -308,7 +329,7 @@ async fn forward_response_content_digest_preserves_existing_field() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -359,7 +380,7 @@ async fn forward_response_content_digest_skips_head_response() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -406,7 +427,7 @@ async fn forward_response_content_digest_skips_not_modified_response() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -468,7 +489,7 @@ async fn forward_response_signature_related_request_uses_inbound_request() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}/api", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -494,6 +515,68 @@ async fn forward_response_signature_related_request_uses_inbound_request() {
     assert!(bases[0].contains(r#""host";req: downstream.example"#));
     assert!(!bases[0].contains("127.0.0.1"));
     assert!(!bases[0].contains("/api/public"));
+}
+
+#[tokio::test]
+async fn forward_response_signature_uses_semantic_h2_options_target() {
+    let (upstream_addr, _) = aioduct_test_server::h1::h1_server_with(|_request| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"ok"))))
+    })
+    .await;
+    let bases = Arc::new(Mutex::new(Vec::new()));
+    let signer_bases = bases.clone();
+    let signer = move |base: &[u8]| -> Result<Vec<u8>, MessageSignatureError> {
+        signer_bases
+            .lock()
+            .unwrap()
+            .push(std::str::from_utf8(base).unwrap().to_owned());
+        Ok(b"related-options".to_vec())
+    };
+    let config = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::status())
+        .component(MessageSignatureComponent::target_uri().related_request())
+        .component(MessageSignatureComponent::request_target().related_request());
+    let request_uri = http::Uri::builder()
+        .scheme("https")
+        .authority("downstream.example")
+        .path_and_query("*")
+        .build()
+        .unwrap();
+    let incoming_request = Request::builder()
+        .method(http::Method::OPTIONS)
+        .uri(request_uri)
+        .version(http::Version::HTTP_2)
+        .header(http::header::HOST, "downstream.example")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+
+    let response = HttpEngineSend::<TokioRuntime, TcpConnector>::new()
+        .forward(crate::valid_forward_request(incoming_request))
+        .upstream(
+            format!("http://{upstream_addr}/proxy/base")
+                .parse::<http::Uri>()
+                .unwrap(),
+        )
+        .response_message_signature(config, signer)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "ok");
+    let bases = bases.lock().unwrap();
+    assert_eq!(bases.len(), 1);
+    assert!(
+        bases[0].contains(r#""@target-uri";req: https://downstream.example"#),
+        "{}",
+        bases[0]
+    );
+    assert!(
+        bases[0].contains(r#""@request-target";req: *"#),
+        "{}",
+        bases[0]
+    );
+    assert!(!bases[0].contains("/proxy/base"), "{}", bases[0]);
 }
 
 #[tokio::test]
@@ -539,7 +622,7 @@ async fn forward_response_signature_accepts_absolute_inbound_target_uri() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -560,30 +643,11 @@ async fn forward_response_signature_accepts_absolute_inbound_target_uri() {
 
 #[tokio::test]
 async fn forward_response_signature_requires_downstream_uri_before_upstream() {
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let server_attempts = attempts.clone();
-    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let upstream_addr = upstream.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        let (stream, _) = upstream.accept().await.unwrap();
-        server_attempts.fetch_add(1, Ordering::SeqCst);
-        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
-        let _ = server_http1::Builder::new()
-            .serve_connection(
-                io,
-                service_fn(|_req: Request<hyper::body::Incoming>| async move {
-                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
-                }),
-            )
-            .await;
-    });
-
     let config = MessageSignatureConfig::new("sig1")
         .unwrap()
         .component(MessageSignatureComponent::status())
         .component(MessageSignatureComponent::target_uri().related_request());
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let (client, connector) = rejecting_client();
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/origin-form")
@@ -591,12 +655,8 @@ async fn forward_response_signature_requires_downstream_uri_before_upstream() {
         .unwrap();
 
     let result = client
-        .forward(incoming_req)
-        .upstream(
-            format!("http://127.0.0.1:{}", upstream_addr.port())
-                .parse::<http::Uri>()
-                .unwrap(),
-        )
+        .forward(crate::valid_forward_request(incoming_req))
+        .upstream("http://127.0.0.1:9".parse::<http::Uri>().unwrap())
         .response_message_signature(config, unused_signature)
         .send()
         .await;
@@ -605,36 +665,16 @@ async fn forward_response_signature_requires_downstream_uri_before_upstream() {
         Error::Unsupported(message) => assert!(message.contains("downstream_target_uri")),
         other => panic!("expected unsupported error, got {other:?}"),
     }
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    assert_eq!(connector.attempts(), 0);
 }
 
 #[tokio::test]
 async fn forward_response_signature_rejects_trailers_before_upstream() {
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let server_attempts = attempts.clone();
-    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let upstream_addr = upstream.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        let (stream, _) = upstream.accept().await.unwrap();
-        server_attempts.fetch_add(1, Ordering::SeqCst);
-        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
-        let _ = server_http1::Builder::new()
-            .serve_connection(
-                io,
-                service_fn(|_req: Request<hyper::body::Incoming>| async move {
-                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
-                }),
-            )
-            .await;
-    });
-
     let config = MessageSignatureConfig::new("sig1")
         .unwrap()
         .component(MessageSignatureComponent::status())
         .component(MessageSignatureComponent::header(HeaderName::from_static("expires")).trailer());
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let (client, connector) = rejecting_client();
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/trailers")
@@ -642,12 +682,8 @@ async fn forward_response_signature_rejects_trailers_before_upstream() {
         .unwrap();
 
     let result = client
-        .forward(incoming_req)
-        .upstream(
-            format!("http://127.0.0.1:{}", upstream_addr.port())
-                .parse::<http::Uri>()
-                .unwrap(),
-        )
+        .forward(crate::valid_forward_request(incoming_req))
+        .upstream("http://127.0.0.1:9".parse::<http::Uri>().unwrap())
         .response_message_signature(config, unused_signature)
         .send()
         .await;
@@ -656,8 +692,7 @@ async fn forward_response_signature_rejects_trailers_before_upstream() {
         Error::Unsupported(message) => assert!(message.contains("trailer")),
         other => panic!("expected unsupported error, got {other:?}"),
     }
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    assert_eq!(connector.attempts(), 0);
 }
 
 #[tokio::test]
@@ -712,7 +747,7 @@ async fn forward_response_signature_replaces_owned_label_and_preserves_others() 
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -746,29 +781,10 @@ async fn forward_response_signature_replaces_owned_label_and_preserves_others() 
 
 #[tokio::test]
 async fn forward_response_signature_rechecks_request_after_on_request() {
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let server_attempts = attempts.clone();
-    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let upstream_addr = upstream.local_addr().unwrap();
-
-    tokio::spawn(async move {
-        let (stream, _) = upstream.accept().await.unwrap();
-        server_attempts.fetch_add(1, Ordering::SeqCst);
-        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
-        let _ = server_http1::Builder::new()
-            .serve_connection(
-                io,
-                service_fn(|_req: Request<hyper::body::Incoming>| async move {
-                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
-                }),
-            )
-            .await;
-    });
-
     let config = MessageSignatureConfig::new("sig1")
         .unwrap()
         .component(MessageSignatureComponent::status());
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let (client, connector) = rejecting_client();
     let incoming_req = http::Request::builder()
         .method("GET")
         .uri("/connect-late")
@@ -776,12 +792,8 @@ async fn forward_response_signature_rechecks_request_after_on_request() {
         .unwrap();
 
     let result = client
-        .forward(incoming_req)
-        .upstream(
-            format!("http://127.0.0.1:{}", upstream_addr.port())
-                .parse::<http::Uri>()
-                .unwrap(),
-        )
+        .forward(crate::valid_forward_request(incoming_req))
+        .upstream("http://127.0.0.1:9".parse::<http::Uri>().unwrap())
         .on_request(|parts| {
             parts.method = http::Method::CONNECT;
         })
@@ -793,8 +805,7 @@ async fn forward_response_signature_rechecks_request_after_on_request() {
         Error::Unsupported(message) => assert!(message.contains("CONNECT")),
         other => panic!("expected unsupported error, got {other:?}"),
     }
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(attempts.load(Ordering::SeqCst), 0);
+    assert_eq!(connector.attempts(), 0);
 }
 
 #[tokio::test]
@@ -834,7 +845,7 @@ async fn forward_response_async_signing_is_included_in_timeout() {
         .unwrap();
 
     let result = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()
@@ -879,7 +890,7 @@ async fn forward_response_signing_failure_returns_error() {
         .unwrap();
 
     let result = client
-        .forward(incoming_req)
+        .forward(crate::valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", upstream_addr.port())
                 .parse::<http::Uri>()

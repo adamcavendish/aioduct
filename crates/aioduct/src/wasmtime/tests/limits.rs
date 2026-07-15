@@ -2,11 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn response_header_limit_is_enforced() {
-    let response = b"HTTP/1.1 200 OK\r\nx-large: abcdefghijklmnop\r\ncontent-length: 0\r\n\r\n";
+    let response = b"HTTP/1.1 200 OK\r\nx-large: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\ncontent-length: 0\r\n\r\n";
     let (addr, _seen) = raw_server(response).await;
     let policy = ExactOriginPolicy::new(&format!("http://{addr}"))
         .expect("policy should build")
-        .header_limit(8);
+        .header_limit(64);
     let host = test_host(policy);
     let err = host
         .send_inner(request(format!("http://{addr}/")), config(false))
@@ -14,7 +14,7 @@ async fn response_header_limit_is_enforced() {
         .expect_err("response headers should exceed limit");
     assert!(matches!(
         err,
-        ErrorCode::HttpResponseHeaderSectionSize(Some(8))
+        ErrorCode::HttpResponseHeaderSectionSize(Some(64))
     ));
 }
 
@@ -57,7 +57,7 @@ async fn request_trailer_header_limit_is_enforced() {
     let observed = reasons.clone();
     let policy = ExactOriginPolicy::new("http://example.com")
         .expect("policy should build")
-        .header_limit(8)
+        .header_limit(64)
         .on_rejection(move |reason| {
             observed.lock().expect("observer lock").push(reason);
         });
@@ -68,7 +68,12 @@ async fn request_trailer_header_limit_is_enforced() {
         .expect("host should build");
 
     let mut trailers = HeaderMap::new();
-    trailers.insert("x-large", HeaderValue::from_static("abcdefghijklmnop"));
+    trailers.insert(
+        "x-large",
+        HeaderValue::from_static(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    );
     let req = hyper::Request::builder()
         .method(http::Method::POST)
         .uri("http://example.com/")
@@ -81,7 +86,7 @@ async fn request_trailer_header_limit_is_enforced() {
 
     assert!(matches!(
         err,
-        ErrorCode::HttpRequestTrailerSectionSize(Some(8))
+        ErrorCode::HttpRequestTrailerSectionSize(Some(64))
     ));
     let captured = reasons.lock().expect("observer lock");
     assert_eq!(captured.as_slice(), &[RejectionReason::HeaderLimit]);
@@ -93,12 +98,17 @@ async fn response_trailer_header_limit_is_enforced() {
     let observed = reasons.clone();
     let policy = ExactOriginPolicy::new("http://example.com")
         .expect("policy should build")
-        .header_limit(8)
+        .header_limit(64)
         .on_rejection(move |reason| {
             observed.lock().expect("observer lock").push(reason);
         });
     let mut trailers = HeaderMap::new();
-    trailers.insert("x-large", HeaderValue::from_static("abcdefghijklmnop"));
+    trailers.insert(
+        "x-large",
+        HeaderValue::from_static(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    );
     let host = WasiHttpHost::builder()
         .transport(TrailerResponseTransport { trailers })
         .policy(policy)
@@ -118,7 +128,7 @@ async fn response_trailer_header_limit_is_enforced() {
 
     assert!(matches!(
         err,
-        ErrorCode::HttpResponseTrailerSectionSize(Some(8))
+        ErrorCode::HttpResponseTrailerSectionSize(Some(64))
     ));
     let captured = reasons.lock().expect("observer lock");
     assert_eq!(captured.as_slice(), &[RejectionReason::HeaderLimit]);

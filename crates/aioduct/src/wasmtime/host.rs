@@ -6,7 +6,7 @@ use ::wasmtime_wasi_http::p2::types::{
     HostFutureIncomingResponse, IncomingResponse, OutgoingRequestConfig,
 };
 use ::wasmtime_wasi_http::p2::{HttpResult, WasiHttpHooks};
-use http::header::HeaderName;
+use http::header::{HOST, HeaderName, HeaderValue};
 use http_body_util::BodyExt;
 
 #[cfg(feature = "tokio")]
@@ -97,6 +97,15 @@ impl WasiHttpHost {
             .check_request_body_known_limit(request.headers(), request.body())?;
 
         let (mut parts, body) = request.into_parts();
+        if parts.version == http::Version::HTTP_11 && !parts.headers.contains_key(HOST) {
+            let authority = parts
+                .uri
+                .authority()
+                .ok_or(ErrorCode::HttpRequestUriInvalid)?;
+            let host = HeaderValue::try_from(authority.as_str())
+                .map_err(|_| ErrorCode::HttpRequestUriInvalid)?;
+            parts.headers.insert(HOST, host);
+        }
         for name in self.policy.injected_headers.keys() {
             if parts.headers.contains_key(name) {
                 return Err(self.policy.request_denied(RejectionReason::ProtectedHeader));

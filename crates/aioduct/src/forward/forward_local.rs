@@ -15,14 +15,14 @@ use bytes::Bytes;
 use http::Uri;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http_body::Body;
-use http_body_util::BodyExt;
 
 use super::dispatch_plan::{
-    ForwardDispatchPlan, ForwardMode, ForwardRewrite, rewrite_for_upstream,
+    ForwardDispatchPlan, ForwardRewrite, capture_downstream_connect_protocol, rewrite_for_upstream,
 };
 use super::{
-    apply_forward_response_content_digest, hop_by_hop, is_h1_upgrade_request,
+    apply_forward_response_content_digest, is_h1_upgrade_request,
     prepare_forward_response_related_request, reject_response_finalization_for_tunnel_or_upgrade,
+    sanitize_forward_response_body,
 };
 
 type RequestHook = Box<dyn FnOnce(&mut http::request::Parts)>;
@@ -311,12 +311,16 @@ where
         if self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers) {
             self.forward_headers.push(http::header::CONNECTION);
             self.forward_headers.push(http::header::UPGRADE);
+            if super::hop_by_hop::is_h2c_upgrade(&parts.headers) {
+                self.forward_headers
+                    .push(HeaderName::from_static("http2-settings"));
+            }
         }
 
         let upstream = self
             .upstream
             .ok_or_else(|| Error::InvalidUrl("forward: no upstream configured".into()))?;
-        let rewritten_uri = rewrite_for_upstream(
+        let rewritten = rewrite_for_upstream(
             &mut parts,
             ForwardRewrite {
                 upstream: &upstream,
@@ -338,7 +342,9 @@ where
 
         let plan = ForwardDispatchPlan::finalize(
             &mut parts,
-            &rewritten_uri,
+            &rewritten.uri,
+            &rewritten.inbound_target,
+            &rewritten.trailer_policy,
             self.protocol_hint,
             self.force_h1_upgrade,
             downstream_h1_upgrade_offer,
@@ -352,19 +358,24 @@ where
             self.preserve_host,
         )?;
         plan.apply(&mut parts, body.is_end_stream())?;
+        super::validate_forward_content_length(&mut parts.headers, body.size_hint())?;
         let full_uri = plan.full_uri().clone();
-        let forward_mode = plan.mode();
+        let response_header_policy = plan.response_header_policy();
 
         let body_replayability = BodyReplayability::for_forwarded_body(&body);
+        let request_trailer_policy = plan.request_trailer_policy();
+        let write_timeout = self.write_timeout;
 
-        let mut boxed_body: RequestBodyLocal = Box::pin(body.map_err(|e| {
-            let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();
-            Error::Other(boxed)
-        }));
-        if let Some(duration) = self.write_timeout {
-            let timeout_body = crate::timeout::WriteTimeoutBody::<_, R>::new(boxed_body, duration);
-            boxed_body = Box::pin(timeout_body);
-        }
+        let boxed_body: RequestBodyLocal = Box::pin(super::TrailerSanitizedBody::new(
+            body,
+            request_trailer_policy,
+        ));
+        let boxed_body: RequestBodyLocal = match write_timeout {
+            Some(duration) => Box::pin(crate::timeout::WriteTimeoutBody::<_, R>::new(
+                boxed_body, duration,
+            )),
+            None => boxed_body,
+        };
 
         let mut request = http::Request::from_parts(parts, boxed_body);
         if body_replayability == BodyReplayability::OneShot {
@@ -379,7 +390,6 @@ where
         let protocol_hint = plan.protocol_hint();
         let connect_timeout = self.connect_timeout;
         let first_byte_timeout = self.first_byte_timeout;
-        let write_timeout = self.write_timeout;
         let read_timeout = self.read_timeout;
         let sign_final_request = self.sign_final_request;
         let response_message_signature = self.response_message_signature;
@@ -388,14 +398,18 @@ where
         let response_processing_enabled =
             response_signing_enabled || response_content_digest_max_bytes.is_some();
         let response_request_method = request.method().clone();
-        let mut on_response = self.on_response;
-        let on_response_before_signing = if response_processing_enabled {
-            on_response.take()
-        } else {
-            None
-        };
+        let on_response = self.on_response;
         let timeout = self.timeout.or(client.core.timeout);
         let send_fut = Box::pin(async move {
+            super::project_deferred_headers_for_signature(&mut request);
+            if sign_final_request
+                && let Some(signature) = client
+                    .core
+                    .prepare_final_request_signature(&full_uri, &mut request)?
+            {
+                let signature_headers = signature.sign_local().await?;
+                signature_headers.insert_into(request.headers_mut())?;
+            }
             let mut resp = client
                 .execute_single_local(
                     request,
@@ -411,6 +425,15 @@ where
                 )
                 .await?;
 
+            let upstream_response_version = resp.version();
+            let upstream_response_status = resp.status();
+            super::hop_by_hop::validate_inbound_response_headers(
+                upstream_response_version,
+                &response_request_method,
+                upstream_response_status,
+                resp.headers_mut(),
+            )?;
+
             if response_processing_enabled && resp.status() == http::StatusCode::SWITCHING_PROTOCOLS
             {
                 return Err(Error::Unsupported(
@@ -419,25 +442,40 @@ where
                 ));
             }
 
-            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
-                && forward_mode != ForwardMode::H1Upgrade
-            {
-                let resp_headers = resp.headers_mut();
-                hop_by_hop::strip_hop_by_hop(resp_headers);
+            resp.set_version(response_header_policy.downstream_version());
+
+            let trailer_policy = response_header_policy.sanitize(
+                resp.status(),
+                resp.headers_mut(),
+                Some(upstream_response_version),
+            )?;
+            let mut resp =
+                sanitize_forward_response_body::<R>(resp, trailer_policy, read_timeout).await?;
+
+            if let Some(hook) = on_response {
+                let response_status = resp.status();
+                let upgrade_selection =
+                    response_header_policy.upgrade_selection(response_status, resp.headers())?;
+                resp.run_hook_preserving_dispatch_extensions(hook);
+                resp.set_version(response_header_policy.downstream_version());
+                response_header_policy
+                    .validate_response_hook_status(response_status, resp.status())?;
+                response_header_policy.validate_preserved_upgrade_selection(
+                    resp.status(),
+                    resp.headers(),
+                    upgrade_selection.as_ref(),
+                )?;
+                let trailer_policy =
+                    response_header_policy.sanitize(resp.status(), resp.headers_mut(), None)?;
+                resp =
+                    sanitize_forward_response_body::<R>(resp, trailer_policy, read_timeout).await?;
             }
 
-            if let Some(hook) = on_response_before_signing {
-                hook(&mut resp);
-            }
-
-            if response_processing_enabled {
-                hop_by_hop::strip_hop_by_hop(resp.headers_mut());
-            }
-
-            let mut resp = apply_forward_response_content_digest(
+            let mut resp = apply_forward_response_content_digest::<R>(
                 resp,
                 response_content_digest_max_bytes,
                 &response_request_method,
+                read_timeout,
             )
             .await?;
 
@@ -462,19 +500,16 @@ where
             Ok(resp)
         });
 
-        let mut resp = if let Some(duration) = timeout {
+        let result = if let Some(duration) = timeout {
             crate::timeout::Timeout::WithTimeout {
                 future: send_fut,
                 sleep: R::sleep(duration),
             }
-            .await?
+            .await
         } else {
-            send_fut.await?
+            send_fut.await
         };
-
-        if let Some(hook) = on_response {
-            hook(&mut resp);
-        }
+        let resp = result?;
 
         if let Some(duration) = read_timeout {
             Ok(resp.into_local_with_read_timeout::<R>(duration))
@@ -497,6 +532,7 @@ mod tests {
     fn dummy_request(path: &str) -> http::Request<http_body_util::Empty<Bytes>> {
         http::Request::builder()
             .uri(path)
+            .header(http::header::HOST, "downstream.test")
             .body(http_body_util::Empty::new())
             .unwrap()
     }

@@ -27,7 +27,7 @@ async fn forward_strip_prefix_rewrites_path() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .strip_prefix("/api/v1")
         .timeout(Duration::from_secs(5))
@@ -113,7 +113,7 @@ async fn forward_on_request_and_on_response_hooks() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .on_request(|parts| {
             parts.headers.insert(
@@ -218,7 +218,7 @@ async fn forward_uses_client_timeout_when_no_explicit_timeout() {
         .unwrap();
 
     let result = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .send()
         .await;
@@ -256,7 +256,7 @@ async fn forward_preserve_host_with_upstream_base_path() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}/api/v2"))
         .preserve_host()
         .send()
@@ -312,7 +312,7 @@ async fn forward_remove_and_forward_header_combined() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .forward_header(http::header::AUTHORIZATION)
         .remove_header(http::header::COOKIE)
@@ -388,7 +388,7 @@ async fn forward_adaptive_h2c_exercises_path() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .adaptive_h2c()
         .send()
@@ -1065,7 +1065,7 @@ async fn adaptive_h2c_probe_error_connects_h1_fallback() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .adaptive_h2c()
         .timeout(Duration::from_secs(5))

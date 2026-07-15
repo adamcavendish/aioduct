@@ -1,7 +1,7 @@
 /// Connection pool module with types for managing idle connections.
 pub(crate) mod connection;
 
-pub(crate) use connection::{HttpConnection, PooledConnection};
+pub(crate) use connection::{ActiveStreamPermit, HttpConnection, PooledConnection};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;

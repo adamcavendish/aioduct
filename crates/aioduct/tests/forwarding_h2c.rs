@@ -15,6 +15,18 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 use aioduct_test_server::h1::h1_server_with;
 use aioduct_test_server::h2::h2_server_with;
 
+fn valid_forward_request<B>(mut request: http::Request<B>) -> http::Request<B> {
+    if request.version() == http::Version::HTTP_11
+        && !request.headers().contains_key(http::header::HOST)
+    {
+        request.headers_mut().insert(
+            http::header::HOST,
+            http::HeaderValue::from_static("downstream.test"),
+        );
+    }
+    request
+}
+
 // =============================================================================
 // Per-Forward h2c and Adaptive h2c Tests
 // =============================================================================
@@ -36,7 +48,7 @@ async fn forward_h2c_to_h2_upstream() {
         .unwrap();
 
     let resp = client
-        .forward(incoming_req)
+        .forward(valid_forward_request(incoming_req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -69,7 +81,7 @@ async fn forward_adaptive_h2c_to_h2_server() {
         .unwrap();
 
     let resp = client
-        .forward(req1)
+        .forward(valid_forward_request(req1))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -91,7 +103,7 @@ async fn forward_adaptive_h2c_to_h2_server() {
         .unwrap();
 
     let resp = client
-        .forward(req2)
+        .forward(valid_forward_request(req2))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -125,7 +137,7 @@ async fn forward_adaptive_h2c_falls_back_to_h1() {
         .unwrap();
 
     let resp = client
-        .forward(req1)
+        .forward(valid_forward_request(req1))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -147,7 +159,7 @@ async fn forward_adaptive_h2c_falls_back_to_h1() {
         .unwrap();
 
     let resp = client
-        .forward(req2)
+        .forward(valid_forward_request(req2))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -180,7 +192,7 @@ async fn forward_h2c_preserves_request_body() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -224,7 +236,7 @@ async fn forward_h2c_rewrites_host_and_preserves_custom_headers() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -260,7 +272,7 @@ async fn forward_h2c_with_strip_prefix() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -291,7 +303,7 @@ async fn forward_h2c_with_upstream_base_path() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}/v2", addr.port())
                 .parse::<http::Uri>()
@@ -329,7 +341,7 @@ async fn forward_h2c_extra_and_remove_headers() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -368,7 +380,7 @@ async fn forward_h2c_on_request_hook() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -400,7 +412,7 @@ async fn forward_h2c_on_response_hook() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -445,7 +457,7 @@ async fn forward_h2c_timeout() {
         .unwrap();
 
     let result = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -481,7 +493,7 @@ async fn forward_h2c_preserve_host() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -520,7 +532,7 @@ async fn forward_adaptive_h2c_probe_cache_isolates_authorities() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", h2_addr.port())
                 .parse::<http::Uri>()
@@ -541,7 +553,7 @@ async fn forward_adaptive_h2c_probe_cache_isolates_authorities() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", h1_addr.port())
                 .parse::<http::Uri>()
@@ -562,7 +574,7 @@ async fn forward_adaptive_h2c_probe_cache_isolates_authorities() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", h2_addr.port())
                 .parse::<http::Uri>()
@@ -596,7 +608,7 @@ async fn forward_h2c_query_string_preserved() {
         .unwrap();
 
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(
             format!("http://127.0.0.1:{}", addr.port())
                 .parse::<http::Uri>()
@@ -635,7 +647,7 @@ async fn forward_mixed_h1_h2c_pool_isolation() {
         .unwrap();
 
     let resp = client
-        .forward(req_h1)
+        .forward(valid_forward_request(req_h1))
         .upstream(
             format!("http://127.0.0.1:{}", h1_addr.port())
                 .parse::<http::Uri>()
@@ -655,7 +667,7 @@ async fn forward_mixed_h1_h2c_pool_isolation() {
         .unwrap();
 
     let resp = client
-        .forward(req_h2)
+        .forward(valid_forward_request(req_h2))
         .upstream(
             format!("http://127.0.0.1:{}", h2_addr.port())
                 .parse::<http::Uri>()
@@ -676,7 +688,7 @@ async fn forward_mixed_h1_h2c_pool_isolation() {
         .unwrap();
 
     let resp = client
-        .forward(req_h1_again)
+        .forward(valid_forward_request(req_h1_again))
         .upstream(
             format!("http://127.0.0.1:{}", h1_addr.port())
                 .parse::<http::Uri>()

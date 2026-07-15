@@ -16,6 +16,7 @@ pub struct UpgradedLocal {
     io: Box<dyn LocalIo>,
     read_buf: bytes::Bytes,
     read_buf_pos: usize,
+    _active_stream_permit: Option<crate::pool::ActiveStreamPermit>,
 }
 
 impl UpgradedLocal {
@@ -27,6 +28,7 @@ impl UpgradedLocal {
             io: Box::new(io),
             read_buf,
             read_buf_pos: 0,
+            _active_stream_permit: None,
         }
     }
 }
@@ -148,6 +150,34 @@ pub(crate) async fn on_upgrade_local_manual(
         }
     })
     .await
+}
+
+pub(crate) async fn on_upgrade_local(
+    response: &mut http::Response<crate::body::ResponseBodyLocal>,
+    active_stream_permit: Option<crate::pool::ActiveStreamPermit>,
+) -> Result<UpgradedLocal, Error> {
+    if response.extensions().get::<UpgradeHandleLocal>().is_some() {
+        let mut upgraded = on_upgrade_local_manual(response).await?;
+        upgraded._active_stream_permit = active_stream_permit;
+        return Ok(upgraded);
+    }
+
+    if response
+        .extensions()
+        .get::<hyper::upgrade::OnUpgrade>()
+        .is_some()
+    {
+        let upgraded = hyper::upgrade::on(response)
+            .await
+            .map_err(|error| Error::Other(Box::new(error)))?;
+        let mut upgraded = UpgradedLocal::new(upgraded, bytes::Bytes::new());
+        upgraded._active_stream_permit = active_stream_permit;
+        return Ok(upgraded);
+    }
+
+    let mut upgraded = on_upgrade_local_manual(response).await?;
+    upgraded._active_stream_permit = active_stream_permit;
+    Ok(upgraded)
 }
 
 #[cfg(all(test, feature = "tokio"))]

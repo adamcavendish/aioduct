@@ -191,6 +191,7 @@ async fn forward_preserves_method_and_body() {
     let req = http::Request::builder()
         .method(http::Method::POST)
         .uri(format!("http://{upstream_addr}/"))
+        .header(http::header::HOST, upstream_addr.to_string())
         .body(Full::new(Bytes::from("payload")))
         .unwrap();
 
@@ -225,6 +226,7 @@ async fn forward_strips_connection_header() {
         .method(http::Method::GET)
         .uri("/test")
         .header("Connection", "keep-alive")
+        .header(http::header::HOST, "downstream.test")
         .header("X-Custom", "preserved")
         .body(Full::new(Bytes::new()))
         .unwrap();
@@ -259,6 +261,7 @@ async fn forward_with_custom_connector() {
     let req = http::Request::builder()
         .method(http::Method::GET)
         .uri("/hello")
+        .header(http::header::HOST, "downstream.test")
         .body(Full::new(Bytes::new()))
         .unwrap();
 

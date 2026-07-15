@@ -9,11 +9,15 @@ use crate::error::Error;
 /// `Write` traits for use with WebSocket libraries.
 pub struct UpgradedSend {
     inner: hyper::upgrade::Upgraded,
+    _active_stream_permit: Option<crate::pool::ActiveStreamPermit>,
 }
 
 impl UpgradedSend {
     pub(crate) fn new(inner: hyper::upgrade::Upgraded) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            _active_stream_permit: None,
+        }
     }
 
     /// Consume the upgraded connection, returning the underlying
@@ -120,10 +124,14 @@ impl tokio::io::AsyncWrite for UpgradedSend {
 
 pub(crate) async fn on_upgrade(
     response: &mut http::Response<crate::response::ResponseBodySend>,
+    active_stream_permit: Option<crate::pool::ActiveStreamPermit>,
 ) -> Result<UpgradedSend, Error> {
     let on_upgrade = hyper::upgrade::on(response);
     let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;
-    Ok(UpgradedSend::new(upgraded))
+    Ok(UpgradedSend {
+        inner: upgraded,
+        _active_stream_permit: active_stream_permit,
+    })
 }
 
 #[cfg(all(test, feature = "tokio"))]

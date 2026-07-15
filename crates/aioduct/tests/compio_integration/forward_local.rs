@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "forward_local/connect_validation.rs"]
+mod connect_validation;
+
 fn start_stale_multipart_server_with_tokio()
 -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -74,7 +77,344 @@ fn start_stale_multipart_server_with_tokio()
     (rx.recv().unwrap(), connections)
 }
 
+fn start_h2_options_server_with_tokio() -> SocketAddr {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let (addr, _) = aioduct_test_server::h2::h2_server_with(|request| async move {
+                let authority = request
+                    .uri()
+                    .authority()
+                    .map(http::uri::Authority::as_str)
+                    .unwrap_or("missing");
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                    "method={};version={:?};scheme={};authority={authority};path={}",
+                    request.method(),
+                    request.version(),
+                    request.uri().scheme_str().unwrap_or("missing"),
+                    request.uri().path(),
+                )))))
+            })
+            .await;
+            tx.send(addr).unwrap();
+            std::future::pending::<()>().await;
+        });
+    });
+    rx.recv().unwrap()
+}
+
+fn start_h2_trailer_server_with_tokio() -> SocketAddr {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                tx.send(listener.local_addr().unwrap()).unwrap();
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    tokio::spawn(async move {
+                        let io = aioduct_test_server::TokioIo::new(stream);
+                        let _ = hyper::server::conn::http2::Builder::new(
+                            aioduct_test_server::TokioExec,
+                        )
+                        .serve_connection(
+                            io,
+                            service_fn(|_request| async move {
+                                let mut trailers = http::HeaderMap::new();
+                                trailers.insert("x-result-checksum", "sum".parse().unwrap());
+                                let frames = futures_util::stream::iter([
+                                    Ok::<_, Infallible>(http_body::Frame::data(
+                                        Bytes::from_static(b"data"),
+                                    )),
+                                    Ok(http_body::Frame::trailers(trailers)),
+                                ]);
+                                Ok::<_, Infallible>(
+                                    Response::builder()
+                                        .header(http::header::CONTENT_LENGTH, "4")
+                                        .header(http::header::TRAILER, "x-result-checksum")
+                                        .body(http_body_util::StreamBody::new(frames))
+                                        .unwrap(),
+                                )
+                            }),
+                        )
+                        .await;
+                    });
+                }
+            });
+    });
+    rx.recv().unwrap()
+}
+
+fn start_h2_bodyless_trailer_server_with_tokio(status: http::StatusCode) -> SocketAddr {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                tx.send(listener.local_addr().unwrap()).unwrap();
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    tokio::spawn(async move {
+                        let io = aioduct_test_server::TokioIo::new(stream);
+                        let _ = hyper::server::conn::http2::Builder::new(
+                            aioduct_test_server::TokioExec,
+                        )
+                        .serve_connection(
+                            io,
+                            service_fn(move |_request| async move {
+                                let mut trailers = http::HeaderMap::new();
+                                trailers.insert("x-result", "must-reject".parse().unwrap());
+                                let frames = futures_util::stream::iter([Ok::<_, Infallible>(
+                                    http_body::Frame::<Bytes>::trailers(trailers),
+                                )]);
+                                Ok::<_, Infallible>(
+                                    Response::builder()
+                                        .status(status)
+                                        .body(http_body_util::StreamBody::new(frames))
+                                        .unwrap(),
+                                )
+                            }),
+                        )
+                        .await;
+                    });
+                }
+            });
+    });
+    rx.recv().unwrap()
+}
+
+fn start_h2_forbidden_payload_server_with_tokio(status: http::StatusCode) -> SocketAddr {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                tx.send(listener.local_addr().unwrap()).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut connection = h2::server::handshake(stream).await.unwrap();
+                let (_request, mut respond) = connection.accept().await.unwrap().unwrap();
+                let mut body = respond
+                    .send_response(Response::builder().status(status).body(()).unwrap(), false)
+                    .unwrap();
+                body.send_data(Bytes::from_static(b"forbidden"), true)
+                    .unwrap();
+                let _ = tokio::time::timeout(Duration::from_secs(1), connection.accept()).await;
+            });
+    });
+    rx.recv().unwrap()
+}
+
+#[cfg(feature = "rustls")]
+fn start_tls_h2_authority_server_with_tokio() -> (
+    SocketAddr,
+    rustls::pki_types::CertificateDer<'static>,
+    aioduct_test_server::ConnectionCounter,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async move {
+            let (addr, cert, counter) =
+                aioduct_test_server::tls::tls_h2_server_with(|request| async move {
+                    let authority = request
+                        .uri()
+                        .authority()
+                        .map(http::uri::Authority::as_str)
+                        .unwrap_or("missing");
+                    let host = request
+                        .headers()
+                        .get(http::header::HOST)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("missing");
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                        "authority={authority};host={host}"
+                    )))))
+                })
+                .await;
+            tx.send((addr, cert, counter)).unwrap();
+            std::future::pending::<()>().await;
+        });
+    });
+    rx.recv().unwrap()
+}
+
+#[cfg(feature = "rustls")]
+fn start_tls_options_server_with_tokio() -> (
+    SocketAddr,
+    rustls::pki_types::CertificateDer<'static>,
+    aioduct_test_server::ConnectionCounter,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let (addr, cert, counter) = aioduct_test_server::tls::tls_server_with(
+                    &[b"h2", b"http/1.1"],
+                    |request| async move {
+                        let authority = request
+                            .uri()
+                            .authority()
+                            .map(http::uri::Authority::as_str)
+                            .unwrap_or("missing");
+                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+                            "version={:?};authority={authority};path={}",
+                            request.version(),
+                            request.uri().path()
+                        )))))
+                    },
+                )
+                .await;
+                tx.send((addr, cert, counter)).unwrap();
+                std::future::pending::<()>().await;
+            });
+    });
+    rx.recv().unwrap()
+}
+
 // ── Forward: on_request hook ──────────────────────────────────────────
+
+#[test]
+fn test_compio_forward_h2c_options_asterisk() {
+    let upstream_addr = start_h2_options_server_with_tokio();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let request = http::Request::builder()
+            .method(http::Method::OPTIONS)
+            .uri("*")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = HttpEngineLocal::<CompioRuntime, TcpConnector>::new()
+            .forward_local(valid_forward_request(request))
+            .upstream(
+                format!("http://{upstream_addr}")
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .h2c()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.text().await.unwrap(),
+            // h2's server-side URI cannot retain `:scheme` without an
+            // authority. The missing URI authority proves that the literal
+            // asterisk-form target did not gain `:authority` while forwarding.
+            "method=OPTIONS;version=HTTP/2.0;scheme=missing;authority=missing;path=*"
+        );
+    });
+}
+
+#[cfg(feature = "rustls")]
+#[test]
+fn test_compio_forward_local_https_options_uses_h1_and_rejects_exact_h2() {
+    let (addr, cert, counter) = start_tls_options_server_with_tokio();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let connector =
+            aioduct::tls::RustlsConnector::new(aioduct_test_server::tls::make_client_config(&cert));
+        let client: HttpEngineLocal<CompioRuntime, TcpConnector> = HttpEngineLocal::builder()
+            .tls(connector)
+            .build_local()
+            .unwrap();
+        let request = http::Request::builder()
+            .method(http::Method::OPTIONS)
+            .uri("*")
+            .version(http::Version::HTTP_11)
+            .header(http::header::HOST, "downstream.test")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = client
+            .forward_local(request)
+            .upstream(format!("https://localhost:{}", addr.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.text().await.unwrap(),
+            "version=HTTP/1.1;authority=missing;path=*"
+        );
+
+        let request = http::Request::builder()
+            .method(http::Method::OPTIONS)
+            .uri("*")
+            .version(http::Version::HTTP_11)
+            .header(http::header::HOST, "downstream.test")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let error = client
+            .forward_local(request)
+            .upstream(format!("https://localhost:{}", addr.port()))
+            .on_request(|parts| parts.version = http::Version::HTTP_2)
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, aioduct::Error::Unsupported(ref message) if message.contains("cannot be represented by the HTTP/2 transport")),
+            "{error}"
+        );
+    });
+
+    assert_eq!(counter.requests(), 1);
+}
+
+#[test]
+fn test_compio_forward_h2c_options_signature_uses_asterisk_semantics() {
+    let upstream_addr = start_h2_options_server_with_tokio();
+    let bases = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let signer_bases = bases.clone();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let config = MessageSignatureConfig::new("sig1")
+            .unwrap()
+            .component(MessageSignatureComponent::target_uri())
+            .component(MessageSignatureComponent::request_target());
+        let signer = move |base: &[u8]| -> Result<Vec<u8>, aioduct::MessageSignatureError> {
+            signer_bases
+                .lock()
+                .unwrap()
+                .push(std::str::from_utf8(base).unwrap().to_owned());
+            Ok(b"compio-options".to_vec())
+        };
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .message_signature(config, signer)
+            .build_local()
+            .unwrap();
+        let request = http::Request::builder()
+            .method(http::Method::OPTIONS)
+            .uri("*")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = client
+            .forward_local(valid_forward_request(request))
+            .upstream(
+                format!("http://{upstream_addr}/proxy/base")
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .h2c()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+    });
+
+    let bases = bases.lock().unwrap();
+    assert_eq!(bases.len(), 1);
+    assert!(
+        bases[0].contains(&format!(r#""@target-uri": http://{upstream_addr}"#)),
+        "{}",
+        bases[0]
+    );
+    assert!(bases[0].contains(r#""@request-target": *"#), "{}", bases[0]);
+    assert!(!bases[0].contains("/proxy/base"), "{}", bases[0]);
+}
 
 #[test]
 fn test_compio_forward_on_request_hook() {
@@ -96,7 +436,7 @@ fn test_compio_forward_on_request_hook() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -186,6 +526,227 @@ fn test_compio_forward_rejects_exact_http3_before_io() {
 }
 
 #[test]
+fn test_compio_forward_local_rejects_connect_host_without_port_before_io() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let request = http::Request::builder()
+            .method(http::Method::CONNECT)
+            .uri("target.example:443")
+            .version(http::Version::HTTP_11)
+            .header(http::header::HOST, "target.example")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let error = HttpEngineLocal::<CompioRuntime, TcpConnector>::new()
+            .forward_local(request)
+            .upstream(format!("http://{addr}").parse::<http::Uri>().unwrap())
+            .send()
+            .await
+            .unwrap_err();
+        assert!(matches!(error, aioduct::Error::InvalidHeader(_)), "{error}");
+    });
+
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn test_compio_forward_uses_shared_header_sanitizer() {
+    let upstream_addr = start_server_with_tokio(|req| async move {
+        let request_clean = !req.headers().contains_key("connection")
+            && !req.headers().contains_key("x-first-hop")
+            && !req.headers().contains_key("x-second-hop")
+            && !req.headers().contains_key("upgrade")
+            && !req.headers().contains_key("te");
+        let mut response = Response::new(Full::new(Bytes::from(request_clean.to_string())));
+        response.headers_mut().append(
+            "connection",
+            http::header::HeaderValue::from_static("x-upstream-hop"),
+        );
+        response.headers_mut().insert(
+            "x-upstream-hop",
+            http::header::HeaderValue::from_static("secret"),
+        );
+        Ok::<_, Infallible>(response)
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let mut incoming = http::Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        incoming.headers_mut().append(
+            "connection",
+            http::header::HeaderValue::from_static("X-First-Hop"),
+        );
+        incoming.headers_mut().append(
+            "connection",
+            http::header::HeaderValue::from_static("x-SECOND-hop, bad token"),
+        );
+        incoming.headers_mut().insert(
+            "x-first-hop",
+            http::header::HeaderValue::from_static("secret-1"),
+        );
+        incoming.headers_mut().insert(
+            "x-second-hop",
+            http::header::HeaderValue::from_static("secret-2"),
+        );
+        incoming
+            .headers_mut()
+            .insert("upgrade", http::header::HeaderValue::from_static("h2c"));
+        incoming
+            .headers_mut()
+            .insert("te", http::header::HeaderValue::from_static("trailers"));
+
+        let resp = client
+            .forward_local(super::valid_forward_request(incoming))
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .on_response(|response| {
+                response.headers_mut().append(
+                    "connection",
+                    http::header::HeaderValue::from_static("x-hook-hop"),
+                );
+                response.headers_mut().insert(
+                    "x-hook-hop",
+                    http::header::HeaderValue::from_static("secret"),
+                );
+            })
+            .send()
+            .await
+            .unwrap();
+
+        assert!(!resp.headers().contains_key("connection"));
+        assert!(!resp.headers().contains_key("x-upstream-hop"));
+        assert!(!resp.headers().contains_key("x-hook-hop"));
+        assert_eq!(resp.text().await.unwrap(), "true");
+    });
+}
+
+#[test]
+fn test_compio_forward_local_restores_canonical_host_after_sanitization() {
+    let addr = start_server_with_tokio(|request| async move {
+        let host = request
+            .headers()
+            .get(http::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("missing");
+        let connection = request
+            .headers()
+            .get(http::header::CONNECTION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("missing");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "host={host};connection={connection}"
+        )))))
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let request = http::Request::builder()
+            .method(http::Method::GET)
+            .uri("/chat")
+            .version(http::Version::HTTP_11)
+            .header(http::header::HOST, "broker.test")
+            .header(http::header::CONNECTION, "upgrade, host")
+            .header(http::header::UPGRADE, "websocket")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let response = HttpEngineLocal::<CompioRuntime, TcpConnector>::new()
+            .forward_local(request)
+            .upstream(format!("http://{addr}").parse::<http::Uri>().unwrap())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.text().await.unwrap(),
+            format!("host={addr};connection=upgrade")
+        );
+    });
+}
+
+#[test]
+fn test_compio_forward_strips_forbidden_trailer_fields() {
+    let upstream_addr = start_server_with_tokio(|request| async move {
+        let negotiated_trailers = request
+            .headers()
+            .get(http::header::TE)
+            .is_some_and(|value| value == "trailers")
+            && request
+                .headers()
+                .get(http::header::CONNECTION)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .any(|token| token.eq_ignore_ascii_case("te"))
+                });
+        let collected = request.into_body().collect().await.unwrap();
+        let trailers = collected.trailers().unwrap();
+        let clean = negotiated_trailers
+            && trailers
+                .get("x-upload-checksum")
+                .is_some_and(|v| v == "local")
+            && !trailers.contains_key(http::header::AUTHORIZATION)
+            && !trailers.contains_key(http::header::CONTENT_TYPE)
+            && !trailers.contains_key(http::header::CONNECTION)
+            && !trailers.contains_key("x-hop-secret");
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(clean.to_string()))))
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let mut trailers = http::HeaderMap::new();
+        trailers.insert("x-upload-checksum", "local".parse().unwrap());
+        trailers.insert(
+            http::header::AUTHORIZATION,
+            "Bearer secret".parse().unwrap(),
+        );
+        trailers.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+        trailers.insert(http::header::CONNECTION, "x-hop-secret".parse().unwrap());
+        trailers.insert("x-hop-secret", "secret".parse().unwrap());
+        let body = http_body_util::StreamBody::new(futures_util::stream::iter([
+            Ok::<_, Infallible>(http_body::Frame::data(Bytes::from_static(b"body"))),
+            Ok(http_body::Frame::trailers(trailers)),
+        ]));
+        let incoming = http::Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                http::header::TRAILER,
+                "x-upload-checksum, Authorization, Content-Type",
+            )
+            .header(http::header::CONNECTION, "TE")
+            .header(http::header::TE, "trailers")
+            .body(body)
+            .unwrap();
+
+        let response = client
+            .forward_local(super::valid_forward_request(incoming))
+            .upstream(
+                format!("http://127.0.0.1:{}", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.text().await.unwrap(), "true");
+    });
+}
+
+#[test]
 fn test_compio_forward_automatic_message_signature() {
     let upstream_addr = start_server_with_tokio(|req| async move {
         let signature_input = req
@@ -219,7 +780,7 @@ fn test_compio_forward_automatic_message_signature() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -272,7 +833,7 @@ compio-file-bytes\r\n\
             .unwrap();
 
         let response = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(upstream.parse::<http::Uri>().unwrap())
             .send()
             .await
@@ -291,6 +852,63 @@ compio-file-bytes\r\n\
 // ── Forward: on_response hook ─────────────────────────────────────────
 
 #[test]
+fn test_compio_forward_on_response_cannot_promote_failed_connect_to_success() {
+    let upstream_addr = start_server_with_tokio(|request| async move {
+        let status = if request.method() == http::Method::CONNECT {
+            http::StatusCode::PROXY_AUTHENTICATION_REQUIRED
+        } else {
+            assert_eq!(request.uri().path(), "/replacement");
+            http::StatusCode::OK
+        };
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(status)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+    });
+    let replacement_runtime = tokio::runtime::Runtime::new().unwrap();
+    let replacement = replacement_runtime.block_on(async {
+        aioduct::HttpEngineSend::<
+            aioduct::runtime::TokioRuntime,
+            aioduct::runtime::tokio_rt::TcpConnector,
+        >::new()
+        .get(&format!("http://{upstream_addr}/replacement"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap()
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let request = http::Request::builder()
+            .method(http::Method::CONNECT)
+            .uri("target.example:443")
+            .version(http::Version::HTTP_11)
+            .header(http::header::HOST, "target.example:443")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let error = HttpEngineLocal::<CompioRuntime, TcpConnector>::new()
+            .forward_local(request)
+            .upstream(
+                format!("http://{upstream_addr}")
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .on_response(move |response| *response = replacement)
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, aioduct::Error::InvalidHeader(ref message) if message.contains("establishes a tunnel")),
+            "{error}"
+        );
+    });
+}
+
+#[test]
 fn test_compio_forward_on_response_hook() {
     let upstream_addr = start_server_with_tokio(|_req| async move {
         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("original"))))
@@ -305,7 +923,7 @@ fn test_compio_forward_on_response_hook() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -366,7 +984,7 @@ fn test_compio_forward_response_message_signature() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -426,7 +1044,7 @@ fn test_compio_forward_response_content_digest_is_signed() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -478,7 +1096,7 @@ fn test_compio_forward_response_content_digest_skips_not_modified_response() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -522,7 +1140,7 @@ fn test_compio_forward_response_async_signing_is_included_in_timeout() {
             .unwrap();
 
         let result = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -560,7 +1178,7 @@ fn test_compio_forward_remove_header() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -599,7 +1217,7 @@ fn test_compio_forward_forward_header() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -616,7 +1234,7 @@ fn test_compio_forward_forward_header() {
 }
 
 #[test]
-fn test_compio_forward_upgrade_field_without_connection_upgrade_token_strips_connection() {
+fn test_compio_forward_upgrade_field_without_connection_upgrade_token_strips_upgrade_fields() {
     let upstream_addr = start_server_with_tokio(|req| async move {
         let has_connection = req.headers().contains_key("connection");
         let has_upgrade = req.headers().contains_key("upgrade");
@@ -637,7 +1255,7 @@ fn test_compio_forward_upgrade_field_without_connection_upgrade_token_strips_con
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -647,7 +1265,7 @@ fn test_compio_forward_upgrade_field_without_connection_upgrade_token_strips_con
             .await
             .unwrap();
 
-        assert_eq!(resp.text().await.unwrap(), "conn=false,upgrade=true");
+        assert_eq!(resp.text().await.unwrap(), "conn=false,upgrade=false");
     });
 }
 
@@ -669,7 +1287,7 @@ fn test_compio_forward_timeout() {
             .unwrap();
 
         let result = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -719,7 +1337,7 @@ fn test_compio_forward_async_signing_is_included_in_timeout() {
             .unwrap();
 
         let result = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -752,7 +1370,7 @@ fn test_compio_forward_upstream_base_path() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}/api/v1", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -785,7 +1403,7 @@ fn test_compio_forward_query_string_preserved() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(
                 format!("http://127.0.0.1:{}", upstream_addr.port())
                     .parse::<http::Uri>()
@@ -817,7 +1435,10 @@ fn test_compio_forward_no_upstream_errors() {
             .body(Full::new(Bytes::new()))
             .unwrap();
 
-        let result = client.forward_local(incoming).send().await;
+        let result = client
+            .forward_local(super::valid_forward_request(incoming))
+            .send()
+            .await;
         assert!(result.is_err(), "forward without upstream should fail");
     });
 }
@@ -848,7 +1469,7 @@ fn test_compio_forward_local_preserve_host_with_base_path() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(format!("http://{addr}/api/v2"))
             .preserve_host()
             .send()
@@ -865,6 +1486,243 @@ fn test_compio_forward_local_preserve_host_with_base_path() {
             "base path should be prepended, got: {body}"
         );
     });
+}
+
+#[cfg(feature = "rustls")]
+#[test]
+fn test_compio_forward_local_preserve_host_sets_negotiated_h2_authority() {
+    const ORIGINAL_AUTHORITY: &str = "local-original.example:8443";
+    let (addr, cert, _counter) = start_tls_h2_authority_server_with_tokio();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let connector =
+            aioduct::tls::RustlsConnector::new(aioduct_test_server::tls::make_client_config(&cert));
+        let client: HttpEngineLocal<CompioRuntime, TcpConnector> = HttpEngineLocal::builder()
+            .tls(connector)
+            .build_local()
+            .unwrap();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/resource")
+            .header(http::header::HOST, ORIGINAL_AUTHORITY)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let response = client
+            .forward_local(super::valid_forward_request(incoming))
+            .upstream(format!("https://localhost:{}", addr.port()))
+            .preserve_host()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.text().await.unwrap(),
+            format!("authority={ORIGINAL_AUTHORITY};host={ORIGINAL_AUTHORITY}")
+        );
+    });
+}
+
+#[cfg(feature = "rustls")]
+#[test]
+fn test_compio_forward_local_rejects_invalid_te_after_h2_negotiation() {
+    let (addr, cert, counter) = start_tls_h2_authority_server_with_tokio();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let connector =
+            aioduct::tls::RustlsConnector::new(aioduct_test_server::tls::make_client_config(&cert));
+        let client: HttpEngineLocal<CompioRuntime, TcpConnector> = HttpEngineLocal::builder()
+            .tls(connector)
+            .build_local()
+            .unwrap();
+        let incoming = http::Request::builder()
+            .uri("/resource")
+            .header(http::header::TE, "gzip")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let error = client
+            .forward_local(super::valid_forward_request(incoming))
+            .upstream(format!("https://localhost:{}", addr.port()))
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, aioduct::Error::InvalidHeader(_)));
+        assert_eq!(counter.requests(), 0);
+    });
+}
+
+#[cfg(feature = "rustls")]
+#[test]
+fn test_compio_forward_local_rejects_invalid_header_value_after_h2_negotiation() {
+    let (addr, cert, counter) = start_tls_h2_authority_server_with_tokio();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let connector =
+            aioduct::tls::RustlsConnector::new(aioduct_test_server::tls::make_client_config(&cert));
+        let client: HttpEngineLocal<CompioRuntime, TcpConnector> = HttpEngineLocal::builder()
+            .tls(connector)
+            .build_local()
+            .unwrap();
+        let incoming = http::Request::builder()
+            .uri("/resource")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let error = client
+            .forward_local(super::valid_forward_request(incoming))
+            .upstream(format!("https://localhost:{}", addr.port()))
+            .on_request(|parts| {
+                parts.headers.insert(
+                    "x-invalid",
+                    http::HeaderValue::from_bytes(b" leading-space").unwrap(),
+                );
+            })
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, aioduct::Error::InvalidHeader(_)), "{error}");
+        assert_eq!(counter.requests(), 0);
+    });
+}
+
+#[cfg(feature = "rustls")]
+#[test]
+fn test_compio_forward_local_rejects_post_hook_content_length_mismatch() {
+    let (addr, cert, counter) = start_tls_h2_authority_server_with_tokio();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let connector =
+            aioduct::tls::RustlsConnector::new(aioduct_test_server::tls::make_client_config(&cert));
+        let client: HttpEngineLocal<CompioRuntime, TcpConnector> = HttpEngineLocal::builder()
+            .tls(connector)
+            .build_local()
+            .unwrap();
+        let incoming = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/upload")
+            .body(Full::new(Bytes::from_static(b"data")))
+            .unwrap();
+
+        let error = client
+            .forward_local(super::valid_forward_request(incoming))
+            .upstream(format!("https://localhost:{}", addr.port()))
+            .on_request(|parts| {
+                parts
+                    .headers
+                    .insert(http::header::CONTENT_LENGTH, "3".parse().unwrap());
+            })
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, aioduct::Error::InvalidHeader(_)), "{error}");
+        assert_eq!(counter.requests(), 0);
+    });
+}
+
+#[test]
+fn test_compio_forward_local_translates_h2_trailers_for_http10() {
+    let addr = start_h2_trailer_server_with_tokio();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let incoming = http::Request::builder()
+            .method(http::Method::GET)
+            .uri("/result")
+            .version(http::Version::HTTP_10)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let response = client
+            .forward_local(incoming)
+            .upstream(format!("http://{addr}"))
+            .h2c()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.version(), http::Version::HTTP_10);
+        assert_eq!(response.headers()[http::header::CONTENT_LENGTH], "4");
+        assert!(
+            !response
+                .headers()
+                .contains_key(http::header::TRANSFER_ENCODING)
+        );
+        assert!(!response.headers().contains_key(http::header::TRAILER));
+        let collected = response
+            .into_http_response()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        assert!(collected.trailers().is_none());
+        assert_eq!(collected.to_bytes(), Bytes::from_static(b"data"));
+    });
+}
+
+#[test]
+fn test_compio_forward_local_rejects_h2_204_and_304_trailers_before_handoff() {
+    for status in [http::StatusCode::NO_CONTENT, http::StatusCode::NOT_MODIFIED] {
+        let addr = start_h2_bodyless_trailer_server_with_tokio(status);
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+            let incoming = http::Request::builder()
+                .method(http::Method::GET)
+                .uri("/bodyless-trailers")
+                .version(http::Version::HTTP_11)
+                .header(http::header::HOST, "downstream.test")
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+
+            let error = client
+                .forward_local(incoming)
+                .upstream(format!("http://{addr}"))
+                .h2c()
+                .send()
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("must not contain trailers"),
+                "unexpected {status} error: {error}"
+            );
+        });
+    }
+}
+
+#[test]
+fn test_compio_forward_local_rejects_h2_head_and_205_payloads_before_handoff() {
+    for (method, status) in [
+        (http::Method::HEAD, http::StatusCode::OK),
+        (http::Method::GET, http::StatusCode::RESET_CONTENT),
+    ] {
+        let addr = start_h2_forbidden_payload_server_with_tokio(status);
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let request = http::Request::builder()
+                .method(method.clone())
+                .uri("/forbidden-payload")
+                .version(http::Version::HTTP_11)
+                .header(http::header::HOST, "downstream.test")
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            let error = HttpEngineLocal::<CompioRuntime, TcpConnector>::new()
+                .forward_local(request)
+                .upstream(format!("http://{addr}").parse::<http::Uri>().unwrap())
+                .h2c()
+                .send()
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    aioduct::Error::Hyper(_) | aioduct::Error::InvalidHeader(_)
+                ),
+                "unexpected Local {method} {status} error: {error}"
+            );
+        });
+    }
 }
 
 // ── Forward local: strip prefix ───────────────────────────────────────
@@ -887,7 +1745,7 @@ fn test_compio_forward_local_strip_prefix() {
             .unwrap();
 
         let resp = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(format!("http://{addr}"))
             .strip_prefix("/api")
             .send()
@@ -933,7 +1791,7 @@ fn test_compio_forward_local_client_timeout() {
             .unwrap();
 
         let result = client
-            .forward_local(incoming)
+            .forward_local(super::valid_forward_request(incoming))
             .upstream(format!("http://{addr}"))
             .send()
             .await;

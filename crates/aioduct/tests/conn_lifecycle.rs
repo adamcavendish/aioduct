@@ -31,6 +31,18 @@ fn client_with_timeout(t: Duration) -> HttpEngineSend<TokioRuntime, TcpConnector
         .unwrap()
 }
 
+fn valid_forward_request<B>(mut request: http::Request<B>) -> http::Request<B> {
+    if request.version() == http::Version::HTTP_11
+        && !request.headers().contains_key(http::header::HOST)
+    {
+        request.headers_mut().insert(
+            http::header::HOST,
+            http::HeaderValue::from_static("downstream.test"),
+        );
+    }
+    request
+}
+
 #[path = "conn_lifecycle/h1_reuse.rs"]
 mod h1_reuse;
 #[path = "conn_lifecycle/h2_reuse.rs"]

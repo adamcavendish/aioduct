@@ -6,7 +6,7 @@ mod tests;
 
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use crate::clock::Instant;
@@ -149,6 +149,39 @@ pub(crate) struct BodyObserverCtx {
     pub(crate) response_started: Instant,
 }
 
+struct DispatchOwnedExtensions {
+    on_upgrade: Option<hyper::upgrade::OnUpgrade>,
+    local_upgrade: Option<crate::upgrade::UpgradeHandleLocal>,
+    stream_permit: Option<UpgradeStreamPermit>,
+}
+
+#[derive(Clone)]
+struct UpgradeStreamPermit(Arc<Mutex<Option<crate::pool::ActiveStreamPermit>>>);
+
+impl UpgradeStreamPermit {
+    fn new(permit: crate::pool::ActiveStreamPermit) -> Self {
+        Self(Arc::new(Mutex::new(Some(permit))))
+    }
+
+    fn retire_transport(&self) {
+        if let Some(permit) = self
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            permit.retire_transport();
+        }
+    }
+
+    fn take(self) -> Option<crate::pool::ActiveStreamPermit> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+}
+
 impl<B> std::fmt::Debug for Response<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Response")
@@ -182,11 +215,42 @@ impl Response {
             fragment: None,
         }
     }
+
+    pub(crate) fn hold_active_stream_permit(&mut self, permit: crate::pool::ActiveStreamPermit) {
+        self.inner
+            .extensions_mut()
+            .insert(UpgradeStreamPermit::new(permit));
+    }
 }
 
 // ── Methods available for all body types ─────────────────────────────────────
 
 impl<B> Response<B> {
+    pub(crate) fn run_hook_preserving_dispatch_extensions(&mut self, hook: impl FnOnce(&mut Self)) {
+        let owned = DispatchOwnedExtensions::take(self.inner.extensions_mut());
+        hook(self);
+        owned.restore(self.inner.extensions_mut());
+    }
+
+    pub(crate) fn map_body<C>(self, map: impl FnOnce(B) -> C) -> Response<C> {
+        let (parts, body) = self.inner.into_parts();
+        Response {
+            inner: http::Response::from_parts(parts, map(body)),
+            url: self.url,
+            remote_addr: self.remote_addr,
+            tls_info: self.tls_info,
+            observer_ctx: self.observer_ctx,
+            fragment: self.fragment,
+        }
+    }
+
+    pub(crate) fn take_upgrade_stream_permit(&mut self) -> Option<crate::pool::ActiveStreamPermit> {
+        self.inner
+            .extensions_mut()
+            .remove::<UpgradeStreamPermit>()
+            .and_then(UpgradeStreamPermit::take)
+    }
+
     pub(crate) fn set_remote_addr(&mut self, addr: Option<SocketAddr>) {
         self.remote_addr = addr;
     }
@@ -257,8 +321,15 @@ impl<B> Response<B> {
         self.inner.version()
     }
 
+    pub(crate) fn set_version(&mut self, version: Version) {
+        *self.inner.version_mut() = version;
+    }
+
     /// Consume this response and return the underlying `http::Response`.
     pub fn into_http_response(self) -> http::Response<B> {
+        if let Some(permit) = self.inner.extensions().get::<UpgradeStreamPermit>() {
+            permit.retire_transport();
+        }
         self.inner
     }
 
@@ -318,6 +389,30 @@ impl<B> Response<B> {
 // ── Body consumption methods available for all body types ───────────────────
 
 impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
+    pub(crate) async fn into_drained_body(self) -> Result<Response, Error> {
+        let Response {
+            inner,
+            url,
+            remote_addr,
+            tls_info,
+            observer_ctx,
+            fragment,
+        } = self;
+        let (parts, body) = inner.into_parts();
+        body.collect().await?;
+        let empty = http_body_util::Empty::<Bytes>::new()
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        Ok(Response {
+            inner: http::Response::from_parts(parts, ResponseBodySend::from_boxed(empty)),
+            url,
+            remote_addr,
+            tls_info,
+            observer_ctx,
+            fragment,
+        })
+    }
+
     pub(crate) async fn into_buffered_with_limit(
         self,
         max_bytes: usize,
@@ -545,5 +640,27 @@ impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
             return None;
         }
         Some(self.json().await)
+    }
+}
+
+impl DispatchOwnedExtensions {
+    fn take(extensions: &mut http::Extensions) -> Self {
+        Self {
+            on_upgrade: extensions.remove::<hyper::upgrade::OnUpgrade>(),
+            local_upgrade: extensions.remove::<crate::upgrade::UpgradeHandleLocal>(),
+            stream_permit: extensions.remove::<UpgradeStreamPermit>(),
+        }
+    }
+
+    fn restore(self, extensions: &mut http::Extensions) {
+        if let Some(on_upgrade) = self.on_upgrade {
+            extensions.insert(on_upgrade);
+        }
+        if let Some(local_upgrade) = self.local_upgrade {
+            extensions.insert(local_upgrade);
+        }
+        if let Some(stream_permit) = self.stream_permit {
+            extensions.insert(stream_permit);
+        }
     }
 }
