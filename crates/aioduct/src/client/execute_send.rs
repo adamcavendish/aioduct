@@ -34,6 +34,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         protocol_hint: crate::pool::ProtocolHint,
         automatic_content_digest: bool,
         mut original_fragment: Option<String>,
+        wire_method: Option<&std::sync::Mutex<Method>>,
     ) -> Result<Response, Error> {
         if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
@@ -61,7 +62,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 &mut current_headers,
             );
 
-            let (req_body, body_for_replay, mut digest_body, body_replayability) =
+            let (req_body, mut body_for_replay, mut digest_body, mut body_replayability) =
                 match current_body.take() {
                     Some(RequestBody::Buffered(b)) => {
                         let body_clone = RequestBody::Buffered(b.clone());
@@ -102,9 +103,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 None => req_body,
             };
             let mut body_replaced = None;
-            let req_body = if automatic_content_digest
-                && matches!(digest_body, ContentDigestBody::Buffered(_))
-            {
+            let req_body = if !self.core.middleware.is_empty() {
                 let (tracked_body, replaced) = track_body_replacement(req_body);
                 body_replaced = Some(replaced);
                 tracked_body
@@ -138,6 +137,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .is_some_and(|replaced| replaced.load(Ordering::Relaxed))
             {
                 digest_body = ContentDigestBody::Unavailable;
+                body_for_replay = None;
+                body_replayability =
+                    BodyReplayability::for_forwarded_body(request.body());
+            }
+            if let Some(wire_method) = wire_method {
+                *wire_method.lock().unwrap_or_else(|error| error.into_inner()) =
+                    request.method().clone();
             }
 
             // Strip user-supplied framing headers to prevent request smuggling.
@@ -257,6 +263,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     protocol_hint,
                     automatic_content_digest,
                     digest_body.clone(),
+                    body_replayability,
+                    wire_method,
                 )
                 .await?;
             if let Some(value) = current_headers.get(AUTHORIZATION).cloned() {
@@ -330,6 +338,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         protocol_hint: crate::pool::ProtocolHint,
         automatic_content_digest: bool,
         mut digest_body: ContentDigestBody,
+        body_replayability: BodyReplayability,
+        wire_method: Option<&std::sync::Mutex<Method>>,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -340,18 +350,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let Some(auth_value) = digest.authorize(method, uri, resp.headers()) else {
             return Ok(resp);
         };
+        if !body_replayability.can_reproduce() {
+            return Ok(resp);
+        }
 
         let version = resp.version();
         let _ = resp.bytes().await;
         headers.insert(AUTHORIZATION, auth_value);
 
         let replay_for_stale = body_for_replay.clone();
-        let body_replayability = if replay_for_stale.is_some() {
-            BodyReplayability::Replayable
-        } else {
-            BodyReplayability::Empty
-        };
-
         let retry_body: RequestBodySend = match body_for_replay {
             Some(b) => http_body_util::Full::new(b)
                 .map_err(|never| match never {})
@@ -388,6 +395,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .is_some_and(|replaced| replaced.load(Ordering::Relaxed))
         {
             digest_body = ContentDigestBody::Unavailable;
+        }
+        if let Some(wire_method) = wire_method {
+            *wire_method.lock().unwrap_or_else(|error| error.into_inner()) =
+                retry_request.method().clone();
         }
         // Strip framing headers on retry — after middleware.
         retry_request

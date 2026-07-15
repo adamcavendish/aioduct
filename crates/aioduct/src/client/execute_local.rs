@@ -60,7 +60,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 &mut current_headers,
             );
 
-            let (req_body, body_for_replay, mut digest_body, body_replayability) =
+            let (req_body, mut body_for_replay, mut digest_body, mut body_replayability) =
                 match current_body.take() {
                     Some(RequestBody::Buffered(b)) => {
                         let body_clone = RequestBody::Buffered(b.clone());
@@ -124,6 +124,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     .apply_request_local(&mut request, &current_uri)
             {
                 digest_body = ContentDigestBody::Unavailable;
+                body_for_replay = None;
+                body_replayability =
+                    BodyReplayability::for_forwarded_body(request.body());
             }
 
             // Strip user-supplied framing headers to prevent request smuggling.
@@ -234,6 +237,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     protocol_hint,
                     automatic_content_digest,
                     digest_body.clone(),
+                    body_replayability,
                 )
                 .await?;
             if let Some(value) = current_headers.get(AUTHORIZATION).cloned() {
@@ -305,6 +309,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         protocol_hint: crate::pool::ProtocolHint,
         automatic_content_digest: bool,
         mut digest_body: ContentDigestBody,
+        body_replayability: BodyReplayability,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -315,18 +320,15 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         let Some(auth_value) = digest.authorize(method, uri, resp.headers()) else {
             return Ok(resp);
         };
+        if !body_replayability.can_reproduce() {
+            return Ok(resp);
+        }
 
         let version = resp.version();
         let _ = resp.bytes().await;
         headers.insert(AUTHORIZATION, auth_value);
 
         let replay_for_stale = body_for_replay.clone();
-        let body_replayability = if replay_for_stale.is_some() {
-            BodyReplayability::Replayable
-        } else {
-            BodyReplayability::Empty
-        };
-
         let retry_body: RequestBodyLocal = match body_for_replay {
             Some(b) => Box::pin(http_body_util::Full::new(b).map_err(|never| match never {})),
             None => {

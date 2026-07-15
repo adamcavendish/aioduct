@@ -37,7 +37,7 @@ use http::{StatusCode, Uri};
 use http_body_util::BodyExt;
 use std::collections::HashSet;
 
-pub(crate) use replay::BodyReplayability;
+pub(crate) use replay::{BodyReplayability, ReplayReason, RequestReplayPolicy};
 
 pub(crate) fn extract_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     headers

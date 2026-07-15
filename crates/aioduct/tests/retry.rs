@@ -6,8 +6,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::Response;
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener;
 
 use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
@@ -55,6 +57,49 @@ async fn test_retry_on_server_error() {
     let body = resp.text().await.unwrap();
     assert_eq!(body, "success");
     assert_eq!(attempt.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn retry_uses_method_after_middleware() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_for_server = attempts.clone();
+    let (addr, _counter) = h1_server_with(move |req| {
+        let attempts = attempts_for_server.clone();
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(req.method(), http::Method::POST);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(500)
+                    .body(Full::new(Bytes::from_static(b"not retried")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .middleware(
+            |request: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
+                *request.method_mut() = http::Method::POST;
+            },
+        )
+        .build()
+        .unwrap();
+    let response = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(1)
+                .initial_backoff(Duration::ZERO),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -772,4 +817,119 @@ async fn classifier_retry_bounded_by_max_retries() {
     assert_eq!(resp.status(), http::StatusCode::NOT_FOUND);
     // 1 initial + 2 retries = 3 attempts.
     assert_eq!(attempt.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn streaming_body_status_is_not_retried_as_empty() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_clone = Arc::clone(&attempts);
+
+    let (addr, _counter) = h1_server_with(move |req| {
+        let attempts = Arc::clone(&attempts_clone);
+        async move {
+            let body = req.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, Bytes::from_static(b"streaming payload"));
+            attempts.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(503)
+                    .body(Full::new(Bytes::from_static(b"retry later")))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+
+    let body = Full::new(Bytes::from_static(b"streaming payload"))
+        .map_err(|never| match never {})
+        .boxed_unsync();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let resp = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .body_stream(body)
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::ZERO),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn consumed_streaming_body_error_is_not_retried_as_empty() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_clone = Arc::clone(&attempts);
+
+    let server = tokio::spawn(async move {
+        while let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(Duration::from_millis(250), listener.accept()).await
+        {
+            attempts_clone.fetch_add(1, Ordering::SeqCst);
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let (header_end, content_length) = loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let header_end = header_end + 4;
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                break (header_end, content_length);
+            };
+
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            assert_eq!(
+                &request[header_end..header_end + content_length],
+                b"streaming payload"
+            );
+            drop(stream);
+        }
+    });
+
+    let body = Full::new(Bytes::from_static(b"streaming payload"))
+        .map_err(|never| match never {})
+        .boxed_unsync();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let result = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .body_stream(body)
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .initial_backoff(Duration::ZERO),
+        )
+        .send()
+        .await;
+
+    assert!(result.is_err());
+    server.await.unwrap();
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }
