@@ -98,11 +98,28 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         if through_proxy && effective_protocol == ProtocolHint::AdaptiveH2c {
             effective_protocol = ProtocolHint::Auto;
         }
+        if effective_protocol == ProtocolHint::Http3 {
+            if through_proxy {
+                return Err(Error::Unsupported(
+                    "HTTP/3 through a proxy requires CONNECT-UDP and is not supported".to_owned(),
+                ));
+            }
+            if !is_https {
+                return Err(Error::Unsupported(
+                    "HTTP/3 requires an HTTPS origin".to_owned(),
+                ));
+            }
+            #[cfg(not(all(feature = "http3", feature = "rustls")))]
+            return Err(Error::Unsupported(
+                "HTTP/3 support is not enabled".to_owned(),
+            ));
+        }
 
         let force_h2c = matches!(
             effective_protocol,
-            ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
+            ProtocolHint::Http2 | ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
         );
+        let force_h1 = effective_protocol == ProtocolHint::Http1;
 
         // Compute a stable proxy route identity for pool-key segregation.
         // Requests through different proxies (or direct vs proxied) must not
@@ -123,10 +140,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let mut pool_key = crate::pool::PoolKey::with_hint_and_route(
             scheme.clone(),
             authority.clone(),
-            if force_h2c {
-                ProtocolHint::H2c
-            } else {
-                ProtocolHint::Auto
+            match effective_protocol {
+                ProtocolHint::Http1 => ProtocolHint::Http1,
+                ProtocolHint::Http2 => ProtocolHint::Http2,
+                ProtocolHint::Http3 => ProtocolHint::Http3,
+                ProtocolHint::H2c | ProtocolHint::AdaptiveH2c => ProtocolHint::H2c,
+                ProtocolHint::Auto => ProtocolHint::Auto,
             },
             proxy_route,
         );
@@ -347,6 +366,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             && is_https
             && !h3_dispatch_selected
             && can_use_pooled_connection
+            && effective_protocol == ProtocolHint::Auto
         {
             let port = authority.port_u16().unwrap_or(443);
             let resolved_ip = self
@@ -559,8 +579,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             {
                 let alt_svc = self.core.alt_svc_cache.lookup_h3(authority);
                 let used_alt_svc = alt_svc.is_some();
-                let opportunistic_h3 = !self.core.prefer_h3 && used_alt_svc;
-                let use_h3 = self.core.prefer_h3 || used_alt_svc;
+                let opportunistic_h3 = effective_protocol == ProtocolHint::Auto
+                    && !self.core.prefer_h3
+                    && used_alt_svc;
+                let use_h3 = effective_protocol == ProtocolHint::Http3
+                    || (effective_protocol == ProtocolHint::Auto
+                        && (self.core.prefer_h3 || used_alt_svc));
                 if !use_h3 {
                     break 'h3_dispatch;
                 }
@@ -794,6 +818,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         }
 
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        if effective_protocol == ProtocolHint::Http3 {
+            return Err(Error::Unsupported(
+                "HTTP/3 forwarding requires a client configured with http3(true)".to_owned(),
+            ));
+        }
+
         if !pool_miss_recorded {
             self.core.notify(
                 request.method(),
@@ -808,7 +839,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         // H2/H3 multiplexing: if another task is already establishing an H2
         // connection for this key, wait briefly and retry checkout instead of
         // opening a redundant connection.
-        let may_h2 = force_h2c || is_https;
+        let may_h2 = !force_h1 && (force_h2c || is_https);
         let mut owns_h2_mark = false;
         if may_h2 && can_use_pooled_connection && {
             let already_marked = self.core.pool.mark_connecting_h2(&pool_key);
@@ -1189,7 +1220,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 tracing::trace!(addr = %addr, "tcp.connect.done");
 
                 let mut conn = if is_https {
-                    self.connect_tls(tcp_stream, authority.host())
+                    self.connect_tls_with_hint(tcp_stream, authority.host(), effective_protocol)
                         .await
                         .map_err(|e| e.with_remote_addr(addr))?
                 } else if matches!(effective_protocol, ProtocolHint::AdaptiveH2c) {

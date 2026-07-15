@@ -50,6 +50,65 @@ use super::HttpEngineCore;
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
 impl<B: 'static> HttpEngineCore<B> {
+    pub(super) fn finalize_deferred_request_headers<ReqBody>(
+        request: &mut http::Request<ReqBody>,
+        connection: &PooledConnection<B>,
+    ) -> Result<(), Error> {
+        if let Some(target) = request
+            .extensions()
+            .get::<crate::forward::dispatch_plan::DeferredForwardTarget>()
+            .cloned()
+        {
+            target.apply(request, connection.version());
+        }
+
+        if request
+            .extensions()
+            .get::<crate::forward::dispatch_plan::DeferredTeTrailers>()
+            .is_some()
+        {
+            request.headers_mut().remove(http::header::TE);
+            if connection.is_h2_or_h3() {
+                request
+                    .headers_mut()
+                    .insert(http::header::TE, http::HeaderValue::from_static("trailers"));
+            } else {
+                crate::forward::restore_h1_te_trailers(request.headers_mut());
+            }
+        }
+        if let Some(framing) = request
+            .extensions()
+            .get::<crate::forward::dispatch_plan::DeferredForwardFraming>()
+            .copied()
+        {
+            framing.apply(request.headers_mut(), connection.version())?;
+        }
+        if let Some(trailers) = request
+            .extensions()
+            .get::<crate::forward::dispatch_plan::DeferredForwardTrailers>()
+        {
+            trailers.apply(connection.version());
+        }
+        Ok(())
+    }
+
+    pub(super) fn prepare_request_target_for_connection<ReqBody>(
+        request: &mut http::Request<ReqBody>,
+        connection: &PooledConnection<B>,
+        full_uri: &Uri,
+    ) -> Result<(), Error> {
+        match &connection.conn {
+            HttpConnection::H1(_) => prepare_h1_request_target(request),
+            HttpConnection::H2(_) => {
+                prepare_h2_or_h3_request_target(request, full_uri, http::Version::HTTP_2)
+            }
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => {
+                prepare_h2_or_h3_request_target(request, full_uri, http::Version::HTTP_3)
+            }
+        }
+    }
+
     #[cfg(feature = "rustls")]
     fn populate_sans(conn: &mut PooledConnection<B>) {
         if conn.is_h2_or_h3()
@@ -343,12 +402,15 @@ impl<B: 'static> HttpEngineCore<B> {
 
     pub(super) async fn send_on_connection(
         conn: &mut PooledConnection<B>,
-        request: http::Request<B>,
+        mut request: http::Request<B>,
         url: Uri,
     ) -> Result<Response, Error>
     where
         B: http_body::Body<Data = bytes::Bytes, Error = crate::error::Error>,
     {
+        Self::finalize_deferred_request_headers(&mut request, conn)?;
+        Self::prepare_request_target_for_connection(&mut request, conn, &url)?;
+
         #[cfg(feature = "tracing")]
         let proto = match &conn.conn {
             HttpConnection::H1(_) => "h1",
@@ -379,9 +441,15 @@ impl<B: 'static> HttpEngineCore<B> {
                 Ok(Response::new(resp, url))
             }
             HttpConnection::H2(sender) => {
+                let request_method = request.method().clone();
                 let resp = sender.send_request(request).await?;
-                let resp = resp.map(crate::response::ResponseBodySend::from_incoming);
-                Ok(Response::new(resp, url))
+                if let Err(error) = validate_h2_connect_tunnel_response(&request_method, &resp) {
+                    conn.retire_multiplex_transport();
+                    Err(error)
+                } else {
+                    let resp = resp.map(crate::response::ResponseBodySend::from_incoming);
+                    Ok(Response::new(resp, url))
+                }
             }
             #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(_) => Err(Error::Unsupported(
@@ -405,12 +473,17 @@ impl<B: 'static> HttpEngineCore<B> {
 
     pub(super) async fn try_send_on_pooled_connection(
         conn: &mut PooledConnection<B>,
-        request: http::Request<B>,
+        mut request: http::Request<B>,
         url: Uri,
     ) -> Result<Response, PooledSendError<B>>
     where
         B: http_body::Body<Data = bytes::Bytes, Error = crate::error::Error>,
     {
+        Self::finalize_deferred_request_headers(&mut request, conn)
+            .map_err(PooledSendError::Failed)?;
+        Self::prepare_request_target_for_connection(&mut request, conn, &url)
+            .map_err(PooledSendError::Failed)?;
+
         #[cfg(all(feature = "http3", feature = "rustls"))]
         if matches!(&conn.conn, HttpConnection::H3(_)) {
             return Self::send_on_connection(conn, request, url)
@@ -441,20 +514,32 @@ impl<B: 'static> HttpEngineCore<B> {
                     }
                 }
             },
-            HttpConnection::H2(sender) => match sender.try_send_request(request).await {
-                Ok(response) => Ok(response),
-                Err(mut error) => {
-                    let request = error.take_message();
-                    let error = Error::Hyper(error.into_error());
-                    match request {
-                        Some(request) => Err(PooledSendError::Recovered {
-                            error,
-                            request: Box::new(request),
-                        }),
-                        None => Err(PooledSendError::Failed(error)),
+            HttpConnection::H2(sender) => {
+                let request_method = request.method().clone();
+                match sender.try_send_request(request).await {
+                    Ok(response) => {
+                        if let Err(error) =
+                            validate_h2_connect_tunnel_response(&request_method, &response)
+                        {
+                            conn.retire_multiplex_transport();
+                            Err(PooledSendError::Failed(error))
+                        } else {
+                            Ok(response)
+                        }
+                    }
+                    Err(mut error) => {
+                        let request = error.take_message();
+                        let error = Error::Hyper(error.into_error());
+                        match request {
+                            Some(request) => Err(PooledSendError::Recovered {
+                                error,
+                                request: Box::new(request),
+                            }),
+                            None => Err(PooledSendError::Failed(error)),
+                        }
                     }
                 }
-            },
+            }
             #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(_) => unreachable!("HTTP/3 is dispatched above"),
         };
@@ -479,7 +564,7 @@ impl<B: 'static> HttpEngineCore<B> {
 impl HttpEngineCore<crate::body::RequestBodySend> {
     pub(super) async fn send_on_connection_send<R>(
         conn: &mut PooledConnection<crate::body::RequestBodySend>,
-        request: http::Request<crate::body::RequestBodySend>,
+        mut request: http::Request<crate::body::RequestBodySend>,
         url: Uri,
         write_timeout: Option<std::time::Duration>,
     ) -> Result<Response, Error>
@@ -489,6 +574,8 @@ impl HttpEngineCore<crate::body::RequestBodySend> {
         if !matches!(conn.conn, HttpConnection::H3(_)) {
             return Self::send_on_connection(conn, request, url).await;
         }
+        Self::finalize_deferred_request_headers(&mut request, conn)?;
+        Self::prepare_request_target_for_connection(&mut request, conn, &url)?;
 
         #[cfg(feature = "tracing")]
         tracing::trace!(
@@ -542,6 +629,74 @@ impl HttpEngineCore<crate::body::RequestBodySend> {
         }
         Self::try_send_on_pooled_connection(conn, request, url).await
     }
+}
+
+fn validate_h2_connect_tunnel_response<B>(
+    method: &http::Method,
+    response: &http::Response<B>,
+) -> Result<(), Error> {
+    if *method == http::Method::CONNECT
+        && response.status().is_success()
+        && response.status() != http::StatusCode::OK
+    {
+        return Err(Error::Unsupported(
+            "HTTP/2 CONNECT tunnel handoff requires status 200 because the HTTP/2 transport does not expose an upgrade stream for other successful statuses"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_h1_request_target<B>(request: &mut http::Request<B>) -> Result<(), Error> {
+    if request.method() != http::Method::CONNECT && request.uri().scheme().is_some() {
+        let target = request
+            .uri()
+            .path_and_query()
+            .map(|value| value.as_str())
+            .unwrap_or("/")
+            .parse::<Uri>()
+            .map_err(|error| {
+                Error::InvalidUrl(format!("invalid HTTP/1 request target: {error}"))
+            })?;
+        *request.uri_mut() = target;
+    }
+    Ok(())
+}
+
+fn prepare_h2_or_h3_request_target<B>(
+    request: &mut http::Request<B>,
+    full_uri: &Uri,
+    version: http::Version,
+) -> Result<(), Error> {
+    if request.method() == http::Method::CONNECT || request.uri().scheme().is_some() {
+        return Ok(());
+    }
+    if request.uri().path() == "*" {
+        if request.method() == http::Method::OPTIONS
+            && version == http::Version::HTTP_2
+            && request.version() == http::Version::HTTP_11
+        {
+            if full_uri.scheme() != Some(&http::uri::Scheme::HTTP) {
+                return Err(Error::Unsupported(
+                    "authority-omitted OPTIONS * requires an HTTP scheme for HTTP/2 translation"
+                        .to_owned(),
+                ));
+            }
+            // h2's HTTP/1 translation mode supplies `:scheme = http` while
+            // preserving `:path = *` and omitting `:authority`.
+            return Ok(());
+        }
+        return Err(Error::Unsupported(format!(
+            "OPTIONS * cannot be represented with complete pseudo-headers by the {version:?} transport"
+        )));
+    }
+
+    let mut parts = full_uri.clone().into_parts();
+    parts.path_and_query = request.uri().path_and_query().cloned();
+    *request.uri_mut() = Uri::from_parts(parts).map_err(|error| {
+        Error::InvalidUrl(format!("invalid {version:?} request target: {error}"))
+    })?;
+    Ok(())
 }
 
 fn h2_proves_request_was_unprocessed(err: &Error) -> bool {

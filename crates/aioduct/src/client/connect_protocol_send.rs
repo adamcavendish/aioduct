@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use crate::body::RequestBodySend;
 use crate::error::Error;
-use crate::pool::PooledConnection;
+use crate::pool::{PooledConnection, ProtocolHint};
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
 use super::HttpEngineSend;
@@ -64,6 +64,17 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         tcp_stream: C::Stream,
         host: &str,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
+        self.connect_tls_with_hint(tcp_stream, host, ProtocolHint::Auto)
+            .await
+    }
+
+    #[cfg(feature = "rustls")]
+    pub(crate) async fn connect_tls_with_hint(
+        &self,
+        tcp_stream: C::Stream,
+        host: &str,
+        protocol_hint: ProtocolHint,
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
         use crate::tls::TlsConnect;
         use std::time::Instant;
 
@@ -72,14 +83,24 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
         let tls_start = Instant::now();
 
-        let tls_connector = self
+        let mut tls_connector = self
             .core
             .tls
-            .as_ref()
-            .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+            .as_deref()
+            .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?
+            .clone();
+        match protocol_hint {
+            ProtocolHint::Http1 => {
+                tls_connector.config_mut().alpn_protocols = vec![b"http/1.1".to_vec()];
+            }
+            ProtocolHint::Http2 | ProtocolHint::H2c => {
+                tls_connector.config_mut().alpn_protocols = vec![b"h2".to_vec()];
+            }
+            ProtocolHint::Auto | ProtocolHint::Http3 | ProtocolHint::AdaptiveH2c => {}
+        }
 
         let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
-            tls_connector,
+            &tls_connector,
             host,
             tcp_stream,
         )
@@ -101,6 +122,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             "tls.handshake.done",
         );
         let tls_info = tls_stream.tls_info();
+
+        if matches!(protocol_hint, ProtocolHint::Http2 | ProtocolHint::H2c)
+            && alpn != Some(crate::tls::AlpnProtocol::H2)
+        {
+            return Err(Error::Unsupported(
+                "upstream did not negotiate required HTTP/2 ALPN".to_owned(),
+            ));
+        }
 
         match alpn {
             Some(crate::tls::AlpnProtocol::H2) => {
@@ -137,6 +166,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         &self,
         _tcp_stream: C::Stream,
         _host: &str,
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
+        Err(Error::Tls(
+            "HTTPS requires the `rustls` TLS backend feature".into(),
+        ))
+    }
+
+    #[cfg(not(feature = "rustls"))]
+    pub(crate) async fn connect_tls_with_hint(
+        &self,
+        _tcp_stream: C::Stream,
+        _host: &str,
+        _protocol_hint: ProtocolHint,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
         Err(Error::Tls(
             "HTTPS requires the `rustls` TLS backend feature".into(),

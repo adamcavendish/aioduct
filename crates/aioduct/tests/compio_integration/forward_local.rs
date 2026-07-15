@@ -118,6 +118,74 @@ fn test_compio_forward_on_request_hook() {
 }
 
 #[test]
+fn test_compio_forward_finalizes_hook_uri_and_ingress_version() {
+    let upstream_addr = start_server_with_tokio(|req| async move {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
+            "{:?} {}",
+            req.version(),
+            req.uri()
+        )))))
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/ingress")
+            .version(http::Version::HTTP_3)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let resp = client
+            .forward_local(super::valid_forward_request(incoming))
+            .upstream(
+                format!("http://127.0.0.1:{}/base", upstream_addr.port())
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .on_request(|parts| {
+                parts.uri = "/hooked?q=local".parse().unwrap();
+            })
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.text().await.unwrap(), "HTTP/1.1 /hooked?q=local");
+    });
+}
+
+#[test]
+fn test_compio_forward_rejects_exact_http3_before_io() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::new();
+        let incoming = http::Request::builder()
+            .method("GET")
+            .uri("/ingress")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let error = client
+            .forward_local(super::valid_forward_request(incoming))
+            .upstream(format!("http://{addr}").parse::<http::Uri>().unwrap())
+            .on_request(|parts| parts.version = http::Version::HTTP_3)
+            .send()
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, aioduct::Error::Unsupported(_)));
+    });
+
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
 fn test_compio_forward_automatic_message_signature() {
     let upstream_addr = start_server_with_tokio(|req| async move {
         let signature_input = req

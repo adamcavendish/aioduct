@@ -536,6 +536,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     Some(authenticated.clone()),
                 );
         }
+
         let effective_uri = authenticated.effective_uri().clone();
         let body_replayability = authenticated.body_replayability();
         let _ = resp.bytes().await;

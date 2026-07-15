@@ -18,7 +18,10 @@ fn test_request_body(bytes: &'static [u8]) -> RequestBodySend {
         .boxed_unsync()
 }
 
-async fn assert_recovered_request(result: Result<Response, PooledSendError<RequestBodySend>>) {
+async fn assert_recovered_request(
+    result: Result<Response, PooledSendError<RequestBodySend>>,
+    expected_uri: &str,
+) {
     let recovered = match result {
         Err(PooledSendError::Recovered { request, .. }) => *request,
         Ok(_) => panic!("closed pooled dispatcher unexpectedly returned a response"),
@@ -28,7 +31,7 @@ async fn assert_recovered_request(result: Result<Response, PooledSendError<Reque
     };
 
     assert_eq!(recovered.method(), http::Method::POST);
-    assert_eq!(recovered.uri(), "/upload");
+    assert_eq!(recovered.uri(), expected_uri);
     assert_eq!(
         recovered.into_body().collect().await.unwrap().to_bytes(),
         bytes::Bytes::from_static(b"one-shot-upload")
@@ -51,7 +54,7 @@ async fn pooled_h1_rejection_recovers_exact_unsent_request() {
     let uri = "http://example.com/upload".parse().unwrap();
 
     let result = Core::try_send_on_pooled_connection(&mut pooled, request, uri).await;
-    assert_recovered_request(result).await;
+    assert_recovered_request(result, "/upload").await;
     assert_eq!(pooled.requests_served(), 0);
 }
 
@@ -86,7 +89,7 @@ async fn pooled_h2_rejection_recovers_exact_unsent_request() {
     let uri = "https://example.com/upload".parse().unwrap();
 
     let result = Core::try_send_on_pooled_connection(&mut pooled, request, uri).await;
-    assert_recovered_request(result).await;
+    assert_recovered_request(result, "https://example.com/upload").await;
     assert_eq!(pooled.requests_served(), 0);
     server.abort();
 }
