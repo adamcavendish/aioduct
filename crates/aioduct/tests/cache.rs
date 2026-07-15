@@ -188,6 +188,176 @@ async fn test_cache_304_revalidation() {
     assert_eq!(resp.text().await.unwrap(), "original");
     assert_eq!(attempt.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn configured_retry_preserves_cache_entry_for_304_revalidation() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let server_attempts = attempts.clone();
+    let (addr, _counter) = h1_server_with(move |request| {
+        let attempts = server_attempts.clone();
+        async move {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, Infallible>(match attempt {
+                0 => Response::builder()
+                    .header("cache-control", "max-age=0, must-revalidate")
+                    .header("etag", "\"retry-v1\"")
+                    .body(Full::new(Bytes::from_static(b"cached across retry")))
+                    .unwrap(),
+                1 => {
+                    assert_eq!(request.headers()["if-none-match"], "\"retry-v1\"");
+                    Response::builder()
+                        .status(429)
+                        .header("retry-after", "0")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap()
+                }
+                _ => {
+                    assert_eq!(request.headers()["if-none-match"], "\"retry-v1\"");
+                    Response::builder()
+                        .status(304)
+                        .header("etag", "\"retry-v1\"")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap()
+                }
+            })
+        }
+    })
+    .await;
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cache(aioduct::HttpCache::new())
+        .build()
+        .unwrap();
+    let url = format!("http://{addr}/retry-revalidation");
+
+    assert_eq!(
+        client
+            .get(&url)
+            .unwrap()
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "cached across retry"
+    );
+    let response = client
+        .get(&url)
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(1)
+                .initial_backoff(std::time::Duration::ZERO),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "cached across retry");
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn configured_retry_preserves_stale_if_error_for_transport_failure() {
+    let (origin_addr, _counter) = h1_server_with(|_request| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("cache-control", "max-age=0, stale-if-error=3600")
+                .header("etag", "\"transport-v1\"")
+                .body(Full::new(Bytes::from_static(b"stale after retry failure")))
+                .unwrap(),
+        )
+    })
+    .await;
+    let retry_server_hits = Arc::new(AtomicU32::new(0));
+    let retry_server_hits_clone = retry_server_hits.clone();
+    let (retry_addr, _counter) = h1_server_with(move |request| {
+        let hits = retry_server_hits_clone.clone();
+        async move {
+            hits.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.headers()["if-none-match"], "\"transport-v1\"");
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(429)
+                    .header("retry-after", "0")
+                    .header("connection", "close")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+        }
+    })
+    .await;
+    let dead_addr = {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        addr
+    };
+
+    let cache = aioduct::HttpCache::new();
+    let populate_client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cache(cache.clone())
+        .resolver(move |_host: &str, _port: u16| {
+            Box::pin(async move { Ok(origin_addr) })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
+                >
+        })
+        .build()
+        .unwrap();
+    let url = format!(
+        "http://cache-retry.test:{}/retry-stale-if-error#cache-fragment",
+        origin_addr.port()
+    );
+    assert_eq!(
+        populate_client
+            .get(&url)
+            .unwrap()
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "stale after retry failure"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let resolutions = Arc::new(AtomicU32::new(0));
+    let resolver_calls = resolutions.clone();
+    let retry_client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cache(cache)
+        .resolver(move |_host: &str, _port: u16| {
+            let attempt = resolver_calls.fetch_add(1, Ordering::SeqCst);
+            let addr = if attempt == 0 { retry_addr } else { dead_addr };
+            Box::pin(async move { Ok(addr) })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
+                >
+        })
+        .build()
+        .unwrap();
+    let response = retry_client
+        .get(&url)
+        .unwrap()
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(1)
+                .initial_backoff(std::time::Duration::ZERO),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.fragment(), Some("cache-fragment"));
+    assert_eq!(response.text().await.unwrap(), "stale after retry failure");
+    assert_eq!(retry_server_hits.load(Ordering::SeqCst), 1);
+    assert!(resolutions.load(Ordering::SeqCst) >= 2);
+}
+
 #[tokio::test]
 async fn cache_last_modified_revalidation() {
     let attempt = Arc::new(AtomicU32::new(0));

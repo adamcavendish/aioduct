@@ -202,7 +202,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 }
                 Err(e)
                     if saved_parts.is_some()
-                        && HttpEngineCore::<RequestBodySend>::is_stale_connection_error(&e) =>
+                        && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
+                            .is_some_and(|reason| replay_policy.permits(reason)) =>
                 {
                     #[cfg(feature = "tracing")]
                     tracing::debug!(
@@ -247,6 +248,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     }
                 }
                 Err(e) => {
+                    if conn.is_h2_or_h3()
+                        && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
+                            .is_some()
+                    {
+                        self.core.pool.evict(&pool_key);
+                    }
                     self.core.notify(
                         &req_method,
                         original_uri,
@@ -357,7 +364,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     }
                     Err(e)
                         if saved_parts.is_some()
-                            && HttpEngineCore::<RequestBodySend>::is_stale_connection_error(&e) =>
+                            && HttpEngineCore::<RequestBodySend>::stale_replay_reason(
+                                &conn, &e,
+                            )
+                            .is_some_and(|reason| replay_policy.permits(reason)) =>
                     {
                         #[cfg(feature = "tracing")]
                         tracing::debug!(
@@ -405,6 +415,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         }
                     }
                     Err(e) => {
+                        if conn.is_h2_or_h3()
+                            && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
+                                .is_some()
+                        {
+                            let evict_key = conn.key.as_ref().unwrap_or(&pool_key);
+                            self.core.pool.evict(evict_key);
+                        }
                         self.core.notify(
                             &req_method,
                             original_uri,
@@ -665,9 +682,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         }
                         Err(e)
                             if saved_parts.is_some()
-                                && HttpEngineCore::<RequestBodySend>::is_stale_connection_error(
-                                    &e,
-                                ) =>
+                                && HttpEngineCore::<RequestBodySend>::stale_replay_reason(
+                                    &conn, &e,
+                                )
+                                .is_some_and(|reason| replay_policy.permits(reason)) =>
                         {
                             #[cfg(feature = "tracing")]
                             tracing::debug!(
@@ -719,6 +737,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             break;
                         }
                         Err(e) => {
+                            if conn.is_h2_or_h3()
+                                && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
+                                    .is_some()
+                            {
+                                self.core.pool.evict(&pool_key);
+                            }
                             self.core.notify(
                                 &req_method,
                                 original_uri,

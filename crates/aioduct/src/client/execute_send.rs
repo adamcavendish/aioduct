@@ -2,16 +2,14 @@ use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderMap};
 use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::{Context, Poll};
 use std::time::Duration;
 
-use super::{BodyReplayability, HttpEngineSend};
+use super::replay::{FinalizedCacheState, FinalizedRequestSnapshot, audit_send_body};
+use super::{BodyReplayability, FinalizedRequestState, HttpEngineSend};
 use crate::body::{RequestBody, RequestBodySend};
 use crate::digest_fields::ContentDigestBody;
 use crate::error::Error;
+use crate::observer::RequestPhase;
 use crate::response::Response;
 use crate::runtime::{ConnectorSend, RuntimePoll};
 
@@ -34,11 +32,24 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         protocol_hint: crate::pool::ProtocolHint,
         automatic_content_digest: bool,
         mut original_fragment: Option<String>,
-        wire_method: Option<&std::sync::Mutex<Method>>,
+        finalized_request: Option<&std::sync::Mutex<FinalizedRequestState>>,
     ) -> Result<Response, Error> {
-        if self.core.https_only && original_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+        let mut replay_snapshot = finalized_request.and_then(|state| {
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take_pending_replay()
+        });
+        if let Some(snapshot) = replay_snapshot.as_ref() {
+            original_fragment = snapshot.fragment().map(str::to_owned);
+        }
+        let first_uri = replay_snapshot
+            .as_ref()
+            .map(FinalizedRequestSnapshot::effective_uri)
+            .unwrap_or(&original_uri);
+        if self.core.https_only && first_uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
             return Err(Error::HttpsOnly(
-                original_uri.scheme_str().unwrap_or("none").to_owned(),
+                first_uri.scheme_str().unwrap_or("none").to_owned(),
             ));
         }
 
@@ -47,148 +58,242 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .map(|a| a.host().to_owned())
             .unwrap_or_default();
 
-        let mut current_uri = self.core.maybe_upgrade_hsts(original_uri);
-        let mut current_method = method;
+        let mut current_uri = replay_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.effective_uri().clone())
+            .unwrap_or_else(|| self.core.maybe_upgrade_hsts(original_uri));
+        let mut current_method = replay_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.method().clone())
+            .unwrap_or(method);
         let mut current_body = body;
-        let mut current_headers = headers;
+        let mut current_headers = replay_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.headers().clone())
+            .unwrap_or(headers);
 
-        self.core
-            .apply_default_headers_with(&mut current_headers, no_decompression);
+        if replay_snapshot.is_none() {
+            self.core
+                .apply_default_headers_with(&mut current_headers, no_decompression);
+        }
 
         for _ in 0..=self.core.redirect_policy.max_redirects() {
-            self.core.prepare_request_headers(
-                &current_uri,
-                Some(&site_for_cookies),
-                &mut current_headers,
-            );
+            let (
+                request,
+                body_for_replay,
+                body_replayability,
+                body_audit,
+                replay_bytes_for_snapshot,
+                mut cache_entry,
+                stale_if_error,
+                mut cache_request_headers,
+                finalized_cache_state,
+            ) = if let Some(snapshot) = replay_snapshot.take() {
+                current_uri = snapshot.effective_uri().clone();
+                current_headers = snapshot.headers().clone();
 
-            let (req_body, mut body_for_replay, mut digest_body, mut body_replayability) =
-                match current_body.take() {
-                    Some(RequestBody::Buffered(b)) => {
-                        let body_clone = RequestBody::Buffered(b.clone());
-                        let digest_body = ContentDigestBody::Buffered(b.clone());
-                        (
-                            RequestBody::Buffered(b).into_hyper_body(),
-                            Some(body_clone),
-                            digest_body,
-                            BodyReplayability::Replayable,
-                        )
+                let replay_body = snapshot.body_bytes();
+                let req_body: RequestBodySend = http_body_util::Full::new(replay_body)
+                    .map_err(|never| match never {})
+                    .boxed_unsync();
+                let req_body = match write_timeout {
+                    Some(duration) => {
+                        crate::timeout::WriteTimeoutBody::<_, R>::new(req_body, duration)
+                            .map_err(|error| error)
+                            .boxed_unsync()
                     }
-                    Some(rb @ RequestBody::Streaming(_)) => (
-                        rb.into_hyper_body(),
-                        None,
-                        ContentDigestBody::Unavailable,
-                        BodyReplayability::OneShot,
-                    ),
-                    None => {
-                        let empty: RequestBodySend = http_body_util::Full::new(Bytes::new())
+                    None => req_body,
+                };
+                let finalized_cache_state = snapshot.cache_state().clone();
+                let cache_entry = finalized_cache_state.cache_entry();
+                let stale_if_error = finalized_cache_state.stale_if_error();
+                let cache_request_headers = finalized_cache_state.request_headers().clone();
+                let request = snapshot.to_request(req_body);
+                let body_for_replay = snapshot.stale_replay_bytes().map(RequestBody::Buffered);
+                let replay_bytes_for_snapshot = snapshot.stale_replay_bytes();
+
+                (
+                    request,
+                    body_for_replay,
+                    snapshot.body_replayability(),
+                    None,
+                    replay_bytes_for_snapshot,
+                    cache_entry,
+                    stale_if_error,
+                    cache_request_headers,
+                    finalized_cache_state,
+                )
+            } else {
+                if let Some(finalized_request) = finalized_request {
+                    finalized_request
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .clear_replay_snapshot();
+                }
+                self.core.prepare_request_headers(
+                    &current_uri,
+                    Some(&site_for_cookies),
+                    &mut current_headers,
+                );
+
+                let (req_body, mut body_for_replay, mut digest_body, mut body_replayability) =
+                    match current_body.take() {
+                        Some(RequestBody::Buffered(body)) => {
+                            let body_clone = RequestBody::Buffered(body.clone());
+                            let digest_body = ContentDigestBody::Buffered(body.clone());
+                            (
+                                RequestBody::Buffered(body).into_hyper_body(),
+                                Some(body_clone),
+                                digest_body,
+                                BodyReplayability::Replayable,
+                            )
+                        }
+                        Some(body @ RequestBody::Streaming(_)) => (
+                            body.into_hyper_body(),
+                            None,
+                            ContentDigestBody::Unavailable,
+                            BodyReplayability::OneShot,
+                        ),
+                        None => {
+                            let empty: RequestBodySend = http_body_util::Full::new(Bytes::new())
+                                .map_err(|never| match never {})
+                                .boxed_unsync();
+                            (
+                                empty,
+                                None,
+                                ContentDigestBody::None,
+                                BodyReplayability::Empty,
+                            )
+                        }
+                    };
+
+                let req_body = match write_timeout {
+                    Some(duration) => {
+                        crate::timeout::WriteTimeoutBody::<_, R>::new(req_body, duration)
+                            .map_err(|error| error)
+                            .boxed_unsync()
+                    }
+                    None => req_body,
+                };
+                let req_uri: Uri = match current_uri.path_and_query() {
+                    Some(path_and_query) => Uri::from(path_and_query.clone()),
+                    None => Uri::from_static("/"),
+                };
+                let mut builder = http::Request::builder()
+                    .method(current_method.clone())
+                    .uri(req_uri);
+                if let Some(version) = version {
+                    builder = builder.version(version);
+                }
+
+                let mut request = builder.body(req_body)?;
+                *request.headers_mut() = current_headers.clone();
+                let middleware_replay_body = match body_for_replay.as_ref() {
+                    Some(RequestBody::Buffered(body)) => Some(body.clone()),
+                    _ => None,
+                };
+                let replay_bytes_for_snapshot = middleware_replay_body.clone();
+                let mut body_audit = None;
+                if !self.core.middleware.is_empty() {
+                    self.core
+                        .middleware
+                        .apply_request(&mut request, &current_uri);
+                    digest_body = ContentDigestBody::Unavailable;
+                    body_for_replay = None;
+                    if let Some(expected) = middleware_replay_body {
+                        let placeholder = http_body_util::Full::new(Bytes::new())
                             .map_err(|never| match never {})
                             .boxed_unsync();
-                        (
-                            empty,
-                            None,
-                            ContentDigestBody::None,
-                            BodyReplayability::Empty,
-                        )
+                        let body = std::mem::replace(request.body_mut(), placeholder);
+                        let (body, audit) = audit_send_body(body, expected);
+                        *request.body_mut() = body;
+                        body_audit = Some(audit);
+                        body_replayability = BodyReplayability::OneShot;
+                    } else {
+                        body_replayability =
+                            BodyReplayability::after_middleware(body_replayability, request.body());
                     }
-                };
-
-            // Apply write timeout to the request body if configured.
-            let req_body = match write_timeout {
-                Some(duration) => {
-                    let timeout_body =
-                        crate::timeout::WriteTimeoutBody::<_, R>::new(req_body, duration);
-                    timeout_body.map_err(|e| e).boxed_unsync()
                 }
-                None => req_body,
-            };
-            let mut body_replaced = None;
-            let req_body = if !self.core.middleware.is_empty() {
-                let (tracked_body, replaced) = track_body_replacement(req_body);
-                body_replaced = Some(replaced);
-                tracked_body
-            } else {
-                req_body
-            };
+                current_method = request.method().clone();
+                if let Some(finalized_request) = finalized_request {
+                    finalized_request
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .record_finalized(current_method.clone(), body_replayability, None);
+                }
 
-            let req_uri: Uri = match current_uri.path_and_query() {
-                Some(pq) => Uri::from(pq.clone()),
-                None => Uri::from_static("/"),
-            };
+                request
+                    .headers_mut()
+                    .remove(http::header::TRANSFER_ENCODING);
+                request.headers_mut().remove(http::header::CONTENT_LENGTH);
+                self.core.apply_automatic_content_digest(
+                    automatic_content_digest,
+                    request.headers_mut(),
+                    &digest_body,
+                )?;
 
-            let mut builder = http::Request::builder()
-                .method(current_method.clone())
-                .uri(req_uri);
-
-            if let Some(ver) = version {
-                builder = builder.version(ver);
-            }
-
-            let mut request = builder.body(req_body)?;
-            *request.headers_mut() = current_headers.clone();
-
-            if !self.core.middleware.is_empty() {
-                self.core
-                    .middleware
-                    .apply_request(&mut request, &current_uri);
-            }
-            if body_replaced
-                .as_ref()
-                .is_some_and(|replaced| replaced.load(Ordering::Relaxed))
-            {
-                digest_body = ContentDigestBody::Unavailable;
-                body_for_replay = None;
-                body_replayability =
-                    BodyReplayability::for_forwarded_body(request.body());
-            }
-            if let Some(wire_method) = wire_method {
-                *wire_method.lock().unwrap_or_else(|error| error.into_inner()) =
-                    request.method().clone();
-            }
-
-            // Strip user-supplied framing headers to prevent request smuggling.
-            // Runs AFTER middleware so middleware cannot re-inject them.
-            request
-                .headers_mut()
-                .remove(http::header::TRANSFER_ENCODING);
-            request.headers_mut().remove(http::header::CONTENT_LENGTH);
-
-            self.core.apply_automatic_content_digest(
-                automatic_content_digest,
-                request.headers_mut(),
-                &digest_body,
-            )?;
-
-            let (cache_state, stale_if_error) =
-                self.core
-                    .cache_lookup(&current_method, &current_uri, request.headers_mut());
-            let mut cache_entry = match cache_state {
-                CacheLookupOutcome::Fresh(resp) => {
-                    let mut resp = *resp;
-                    if !self.core.middleware.is_empty() {
-                        resp.apply_middleware(&self.core.middleware, &current_uri);
-                    }
+                let (cache_state, stale_if_error) =
                     self.core
-                        .attach_observer(&mut resp, &current_method, &current_uri);
-                    return Ok(resp);
-                }
-                CacheLookupOutcome::Stale(entry) => Some(entry),
-                CacheLookupOutcome::Miss => None,
-            };
-            sync_cache_validators(request.headers(), &mut current_headers);
-            let mut cache_request_headers = request.headers().clone();
-            if let Some(signature) = self
-                .core
-                .prepare_final_request_signature(&current_uri, &mut request)?
-            {
-                let signature_headers = signature.sign_send().await?;
-                signature_headers.insert_into(request.headers_mut())?;
-            }
+                        .cache_lookup(&current_method, &current_uri, request.headers_mut());
+                let cache_entry = match cache_state {
+                    CacheLookupOutcome::Fresh(response) => {
+                        let mut response = *response;
+                        if !self.core.middleware.is_empty() {
+                            response.apply_middleware(&self.core.middleware, &current_uri);
+                        }
+                        self.core
+                            .attach_observer(&mut response, &current_method, &current_uri);
+                        response.set_fragment(original_fragment.clone());
+                        return Ok(response);
+                    }
+                    CacheLookupOutcome::Stale(entry) => Some(entry),
+                    CacheLookupOutcome::Miss => None,
+                };
+                sync_cache_validators(request.headers(), &mut current_headers);
+                let cache_request_headers = request.headers().clone();
+                let finalized_cache_state = FinalizedCacheState::new(
+                    cache_entry.clone(),
+                    stale_if_error,
+                    cache_request_headers.clone(),
+                );
 
+                (
+                    request,
+                    body_for_replay,
+                    body_replayability,
+                    body_audit,
+                    replay_bytes_for_snapshot,
+                    cache_entry,
+                    stale_if_error,
+                    cache_request_headers,
+                    finalized_cache_state,
+                )
+            };
+
+            current_method = request.method().clone();
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
                 Some(RequestBody::Buffered(b)) => Some(b.clone()),
                 _ => None,
             };
+            let finalized_snapshot = FinalizedRequestSnapshot::capture(
+                &request,
+                &current_uri,
+                replay_bytes_for_snapshot,
+                body_replayability,
+                body_audit,
+                finalized_cache_state,
+                original_fragment.clone(),
+            );
+            if let Some(finalized_request) = finalized_request {
+                finalized_request
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .record_finalized(
+                        current_method.clone(),
+                        body_replayability,
+                        finalized_snapshot.clone(),
+                    );
+            }
 
             let post_middleware_headers;
             let stale_headers = if !self.core.no_connection_reuse {
@@ -225,7 +330,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         // guard above. Use take() to move ownership out.
                         if let Some(cached) = cache_entry.take() {
                             let http_resp = cached.into_http_response();
-                            return Ok(Response::from_boxed(http_resp, current_uri));
+                            let mut response = Response::from_boxed(http_resp, current_uri);
+                            response.set_fragment(original_fragment.clone());
+                            return Ok(response);
                         }
                         // Unreachable: if the guard matched, cache_entry was Some.
                         return Err(Error::Other(
@@ -240,43 +347,41 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         && cached.age <= sie_duration
                     {
                         let http_resp = cached.into_http_response();
-                        return Ok(Response::from_boxed(http_resp, current_uri));
+                        let mut response = Response::from_boxed(http_resp, current_uri);
+                        response.set_fragment(original_fragment.clone());
+                        return Ok(response);
                     }
                     return Err(e);
                 }
             };
 
-            let replay_bytes = match body_for_replay.as_ref() {
-                Some(RequestBody::Buffered(b)) => Some(b.clone()),
-                _ => None,
-            };
             let resp = self
                 .maybe_retry_digest(
                     resp,
-                    &current_method,
-                    &current_uri,
                     &mut current_headers,
-                    replay_bytes,
+                    finalized_snapshot.as_ref(),
                     connect_timeout,
                     write_timeout,
                     force_addr,
                     protocol_hint,
-                    automatic_content_digest,
-                    digest_body.clone(),
-                    body_replayability,
-                    wire_method,
+                    finalized_request,
                 )
                 .await?;
             if let Some(value) = current_headers.get(AUTHORIZATION).cloned() {
                 cache_request_headers.insert(AUTHORIZATION, value);
             }
 
+            let body_for_redirect = finalized_snapshot
+                .as_ref()
+                .and_then(FinalizedRequestSnapshot::stale_replay_bytes)
+                .map(RequestBody::Buffered)
+                .or(body_for_replay);
             match self.core.post_execute(
                 &resp,
                 &current_method,
                 &current_uri,
                 &mut current_headers,
-                body_for_replay,
+                body_for_redirect,
                 original_fragment.as_deref(),
             )? {
                 PostExecuteAction::Done => {
@@ -328,18 +433,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     async fn maybe_retry_digest(
         &self,
         resp: Response,
-        method: &Method,
-        uri: &Uri,
         headers: &mut HeaderMap,
-        body_for_replay: Option<Bytes>,
+        snapshot: Option<&FinalizedRequestSnapshot>,
         connect_timeout: Option<Duration>,
         write_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
-        automatic_content_digest: bool,
-        mut digest_body: ContentDigestBody,
-        body_replayability: BodyReplayability,
-        wire_method: Option<&std::sync::Mutex<Method>>,
+        finalized_request: Option<&std::sync::Mutex<FinalizedRequestState>>,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -347,82 +447,96 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         if !digest.needs_retry(resp.status(), resp.headers()) {
             return Ok(resp);
         }
-        let Some(auth_value) = digest.authorize(method, uri, resp.headers()) else {
+        let Some(snapshot) = snapshot else {
             return Ok(resp);
         };
-        if !body_replayability.can_reproduce() {
+        if !snapshot.is_replayable() {
             return Ok(resp);
         }
 
-        let version = resp.version();
-        let _ = resp.bytes().await;
-        headers.insert(AUTHORIZATION, auth_value);
-
-        let replay_for_stale = body_for_replay.clone();
-        let retry_body: RequestBodySend = match body_for_replay {
-            Some(b) => http_body_util::Full::new(b)
-                .map_err(|never| match never {})
-                .boxed_unsync(),
-            None => http_body_util::Full::new(Bytes::new())
-                .map_err(|never| match never {})
-                .boxed_unsync(),
+        let challenge_headers = resp.headers().clone();
+        let Some(challenge) = digest.prepare(&challenge_headers) else {
+            return Ok(resp);
         };
-        let mut body_replaced = None;
-        let retry_body =
-            if automatic_content_digest && matches!(digest_body, ContentDigestBody::Buffered(_)) {
-                let (tracked_body, replaced) = track_body_replacement(retry_body);
-                body_replaced = Some(replaced);
-                tracked_body
-            } else {
-                retry_body
+        let (attempt, max_retries) = if let Some(finalized_request) = finalized_request {
+            let mut state = finalized_request
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(attempt) = state.try_start_retry() else {
+                return Ok(resp);
             };
-
-        let retry_uri: Uri = match uri.path_and_query() {
-            Some(pq) => Uri::from(pq.clone()),
-            None => Uri::from_static("/"),
+            (attempt, state.max_retries())
+        } else {
+            (1, 1)
         };
-        let mut retry_builder = http::Request::builder()
-            .method(method.clone())
-            .uri(retry_uri);
-        retry_builder = retry_builder.version(version);
-        let mut retry_request = retry_builder.body(retry_body)?;
-        *retry_request.headers_mut() = headers.clone();
+        let Some(auth_value) =
+            digest.authorize_prepared(snapshot.method(), snapshot.request_uri(), &challenge)
+        else {
+            if let Some(finalized_request) = finalized_request {
+                finalized_request
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .cancel_retry_reservation();
+            }
+            return Ok(resp);
+        };
+
+        let retry_reason = Error::Other("digest authentication challenge".into());
+        self.core.notify(
+            snapshot.method(),
+            snapshot.effective_uri(),
+            RequestPhase::Retrying {
+                reason: retry_reason.to_string(),
+                attempt,
+                max_retries,
+                backoff: Duration::ZERO,
+            },
+        );
         if !self.core.middleware.is_empty() {
-            self.core.middleware.apply_request(&mut retry_request, uri);
+            self.core.middleware.apply_retry(
+                &retry_reason,
+                snapshot.effective_uri(),
+                snapshot.method(),
+                attempt,
+            );
         }
-        if body_replaced
-            .as_ref()
-            .is_some_and(|replaced| replaced.load(Ordering::Relaxed))
-        {
-            digest_body = ContentDigestBody::Unavailable;
+
+        let authenticated = snapshot.with_authorization(auth_value);
+        let replay_for_stale = authenticated.stale_replay_bytes();
+        let retry_body: RequestBodySend = http_body_util::Full::new(authenticated.body_bytes())
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let retry_body = match write_timeout {
+            Some(duration) => crate::timeout::WriteTimeoutBody::<_, R>::new(retry_body, duration)
+                .map_err(|error| error)
+                .boxed_unsync(),
+            None => retry_body,
+        };
+        let retry_request = authenticated.to_request(retry_body);
+        *headers = authenticated.headers().clone();
+        if let Some(finalized_request) = finalized_request {
+            finalized_request
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .record_finalized(
+                    authenticated.method().clone(),
+                    authenticated.body_replayability(),
+                    Some(authenticated.clone()),
+                );
         }
-        if let Some(wire_method) = wire_method {
-            *wire_method.lock().unwrap_or_else(|error| error.into_inner()) =
-                retry_request.method().clone();
-        }
-        // Strip framing headers on retry — after middleware.
-        retry_request
-            .headers_mut()
-            .remove(http::header::TRANSFER_ENCODING);
-        retry_request
-            .headers_mut()
-            .remove(http::header::CONTENT_LENGTH);
-        self.core.apply_automatic_content_digest(
-            automatic_content_digest,
-            retry_request.headers_mut(),
-            &digest_body,
-        )?;
-        if let Some(signature) = self
-            .core
-            .prepare_final_request_signature(uri, &mut retry_request)?
-        {
-            let signature_headers = signature.sign_send().await?;
-            signature_headers.insert_into(retry_request.headers_mut())?;
-        }
+        let effective_uri = authenticated.effective_uri().clone();
+        let body_replayability = authenticated.body_replayability();
         let retry_headers_for_stale = retry_request.headers().clone();
+        let _ = resp.bytes().await;
+        if let Some(finalized_request) = finalized_request {
+            finalized_request
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .commit_retry_reservation();
+        }
         self.execute_single_with_hint_send(
             retry_request,
-            uri,
+            &effective_uri,
             protocol_hint,
             replay_for_stale,
             Some(&retry_headers_for_stale),
@@ -485,47 +599,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
         Ok(resp)
     }
-}
-
-struct BodyReplacementTracker {
-    inner: RequestBodySend,
-    replaced: Arc<AtomicBool>,
-}
-
-impl http_body::Body for BodyReplacementTracker {
-    type Data = Bytes;
-    type Error = Error;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.inner).poll_frame(cx)
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        self.inner.size_hint()
-    }
-}
-
-impl Drop for BodyReplacementTracker {
-    fn drop(&mut self) {
-        self.replaced.store(true, Ordering::Relaxed);
-    }
-}
-
-fn track_body_replacement(body: RequestBodySend) -> (RequestBodySend, Arc<AtomicBool>) {
-    let replaced = Arc::new(AtomicBool::new(false));
-    let tracked = BodyReplacementTracker {
-        inner: body,
-        replaced: Arc::clone(&replaced),
-    }
-    .boxed_unsync();
-    (tracked, replaced)
 }
 
 fn sync_cache_validators(source: &HeaderMap, target: &mut HeaderMap) {

@@ -67,6 +67,7 @@ futures-channel.workspace = true
 futures-core.workspace = true
 futures-io = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
+h2.workspace = true
 h3 = { workspace = true, optional = true }
 h3-quinn = { workspace = true, optional = true }
 hickory-resolver = { workspace = true, optional = true }

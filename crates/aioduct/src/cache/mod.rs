@@ -323,6 +323,7 @@ pub(crate) enum CacheLookup {
     Miss,
 }
 
+#[derive(Clone)]
 pub(crate) struct CachedResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
