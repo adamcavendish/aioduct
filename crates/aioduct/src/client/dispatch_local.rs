@@ -3,10 +3,12 @@ use http::Uri;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use super::connection_lifecycle::H2ConnectGuard;
+use super::connection_lifecycle::{H2ConnectGuard, PooledSendError};
 use super::replay::{ReplayReason, RequestReplayPolicy};
 use super::request_replay::{ReplayableRequestHead, replay_request_local};
-use super::{BodyReplayability, HttpEngineCore, HttpEngineLocal, extract_headers};
+use super::{
+    BodyReplayability, FreshConnectionRequired, HttpEngineCore, HttpEngineLocal, extract_headers,
+};
 use crate::body::RequestBodyLocal;
 use crate::clock::Instant;
 use crate::error::Error;
@@ -118,12 +120,20 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         };
         let may_h2 = is_https || force_h2c;
 
+        let fresh_connection_required = request
+            .extensions()
+            .get::<FreshConnectionRequired>()
+            .is_some();
         let replay_policy = RequestReplayPolicy::new(request.method(), body_replayability);
         let can_stale_retry = !self.core.no_connection_reuse
             && replay_policy.permits(ReplayReason::ProvenUnprocessed);
         let can_use_pooled_connection =
-            !self.core.no_connection_reuse && body_replayability.can_start_on_pooled_connection();
-        if can_use_pooled_connection && let Some(mut conn) = self.core.pool.checkout(&pool_key) {
+            !self.core.no_connection_reuse && !fresh_connection_required;
+        if can_use_pooled_connection
+            && let Some(mut conn) = self.core.pool.checkout(&pool_key)
+            && body_replayability
+                .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
+        {
             self.core.pool.record_checkout_hit();
             self.core.notify(
                 request.method(),
@@ -150,7 +160,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     headers: extract_headers(request.headers()),
                 },
             );
-            match Self::send_on_connection_with_first_byte_timeout(
+            match Self::try_send_on_pooled_connection_with_first_byte_timeout(
                 &mut conn,
                 request,
                 original_uri.clone(),
@@ -194,7 +204,22 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     }
                     return Ok(resp);
                 }
-                Err(e)
+                Err(PooledSendError::Recovered {
+                    error,
+                    request: recovered,
+                }) if replay_policy.permits(ReplayReason::ExactRequestRecovered) => {
+                    self.core.record_exact_pooled_recovery(
+                        &conn,
+                        &pool_key,
+                        &req_method,
+                        original_uri,
+                        &error,
+                        request_start,
+                        pool_checkout_start,
+                    );
+                    request = *recovered;
+                }
+                Err(PooledSendError::Failed(e))
                     if saved_request.is_some()
                         && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(&conn, &e)
                             .is_some_and(|reason| replay_policy.permits(reason)) =>
@@ -241,7 +266,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         signature_headers.insert_into(request.headers_mut())?;
                     }
                 }
-                Err(e) => {
+                Err(error) => {
+                    let e = error.into_error();
                     if conn.is_h2_or_h3()
                         && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(&conn, &e)
                             .is_some()
@@ -283,7 +309,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 (wait_budget.as_millis() / poll_interval.as_millis().max(1)).clamp(1, 200);
             for _ in 0..max_polls {
                 R::sleep(poll_interval).await;
-                if let Some(mut conn) = self.core.pool.checkout(&pool_key) {
+                if let Some(mut conn) = self.core.pool.checkout(&pool_key)
+                    && body_replayability
+                        .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
+                {
                     self.core.pool.record_checkout_hit();
                     self.core.notify(
                         request.method(),
@@ -308,7 +337,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             headers: extract_headers(request.headers()),
                         },
                     );
-                    match Self::send_on_connection_with_first_byte_timeout(
+                    match Self::try_send_on_pooled_connection_with_first_byte_timeout(
                         &mut conn,
                         request,
                         original_uri.clone(),
@@ -352,7 +381,23 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             }
                             return Ok(resp);
                         }
-                        Err(e)
+                        Err(PooledSendError::Recovered {
+                            error,
+                            request: recovered,
+                        }) if replay_policy.permits(ReplayReason::ExactRequestRecovered) => {
+                            self.core.record_exact_pooled_recovery(
+                                &conn,
+                                &pool_key,
+                                &req_method,
+                                original_uri,
+                                &error,
+                                request_start,
+                                pool_checkout_start,
+                            );
+                            request = *recovered;
+                            break;
+                        }
+                        Err(PooledSendError::Failed(e))
                             if saved_request.is_some()
                                 && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(
                                     &conn, &e,
@@ -401,7 +446,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             }
                             break;
                         }
-                        Err(e) => {
+                        Err(error) => {
+                            let e = error.into_error();
                             if conn.is_h2_or_h3()
                                 && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(
                                     &conn, &e,
@@ -734,7 +780,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
         let is_multiplex = pooled.is_h2_or_h3() && !self.core.no_connection_reuse;
         if is_multiplex {
-            if can_use_pooled_connection && let Some(existing) = self.core.pool.checkout(&pool_key)
+            if can_use_pooled_connection
+                && body_replayability.can_replace_fresh_connection()
+                && let Some(existing) = self.core.pool.checkout(&pool_key)
+                && body_replayability
+                    .can_start_on_pooled_connection(existing.supports_unsent_request_recovery())
             {
                 drop(pooled);
                 pooled = existing;
@@ -833,6 +883,35 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 }
             }
             None => fut.await,
+        }
+    }
+
+    async fn try_send_on_pooled_connection_with_first_byte_timeout(
+        conn: &mut PooledConnection<RequestBodyLocal>,
+        request: http::Request<RequestBodyLocal>,
+        original_uri: Uri,
+        first_byte_timeout: Option<Duration>,
+    ) -> Result<Response, PooledSendError<RequestBodyLocal>> {
+        let (parts, body) = request.into_parts();
+        let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
+        let request = http::Request::from_parts(parts, Box::pin(body) as RequestBodyLocal);
+        let future = HttpEngineCore::try_send_on_pooled_connection(conn, request, original_uri);
+        match first_byte_timeout {
+            Some(duration) => {
+                match crate::timeout::FirstByteTimeout::<_, R>::new(
+                    future,
+                    request_body_complete,
+                    duration,
+                )
+                .await
+                {
+                    Err(PooledSendError::Failed(Error::Timeout)) => {
+                        Err(PooledSendError::Failed(Error::ReadTimeout))
+                    }
+                    other => other,
+                }
+            }
+            None => future.await,
         }
     }
 }

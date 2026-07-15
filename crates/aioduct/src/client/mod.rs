@@ -38,7 +38,8 @@ use http_body_util::BodyExt;
 use std::collections::HashSet;
 
 pub(crate) use replay::{
-    BodyReplayability, FinalizedRequestState, ReplayReason, RequestReplayPolicy,
+    BodyReplayability, FinalizedRequestState, FreshConnectionRequired, ReplayReason,
+    RequestReplayPolicy,
 };
 
 pub(crate) fn extract_headers(headers: &HeaderMap) -> Vec<(String, String)> {

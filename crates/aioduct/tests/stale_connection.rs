@@ -279,10 +279,11 @@ async fn stale_retry_does_not_loop_on_persistent_failure() {
 }
 
 /// Body safety: requests with streaming (non-cloneable) bodies must not be
-/// transparently retried. They should avoid already-pooled connections so the
-/// body is not consumed by a stale write in the first place.
+/// transparently retried after a pooled H1 dispatcher accepts them for
+/// serialization. At that point Hyper cannot return the exact request, so a
+/// fresh retry could duplicate a side effect.
 #[tokio::test]
-async fn stale_retry_skipped_for_streaming_body() {
+async fn streaming_body_failure_after_serialization_is_not_retried() {
     use http_body_util::BodyExt;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -339,26 +340,28 @@ async fn stale_retry_skipped_for_streaming_body() {
     assert_eq!(resp.status(), 200);
     let _ = resp.text().await.unwrap();
 
-    // POST with streaming body. It should skip the stale pooled connection and
-    // succeed on a fresh one, without attempting to replay the body.
+    // POST with streaming body. The pooled dispatcher accepts the request,
+    // then the peer resets the connection after receiving its first byte.
     let stream_body: aioduct::body::RequestBodySend =
         http_body_util::Full::new(Bytes::from("payload"))
             .map_err(|never| match never {})
             .boxed_unsync();
 
-    let resp = client
+    let result = client
         .post(&url)
         .unwrap()
         .body_stream(stream_body)
         .send()
-        .await
-        .expect("streaming body should use a fresh connection instead of a stale pooled one");
+        .await;
 
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "ok");
     assert!(
-        conn_count.load(Ordering::SeqCst) >= 2,
-        "streaming body should skip the pooled stale connection"
+        result.is_err(),
+        "a one-shot request accepted for serialization must not be replayed"
+    );
+    assert_eq!(
+        conn_count.load(Ordering::SeqCst),
+        1,
+        "post-serialization failure must not open a retry connection"
     );
 }
 

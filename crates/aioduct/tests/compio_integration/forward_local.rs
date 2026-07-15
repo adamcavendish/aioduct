@@ -203,18 +203,19 @@ compio-file-bytes\r\n\
             .body(Full::new(body))
             .unwrap();
 
-        let resp = client
+        let response = client
             .forward_local(incoming)
             .upstream(upstream.parse::<http::Uri>().unwrap())
             .send()
             .await
-            .unwrap();
+            .expect("a forwarded one-shot body should start on a fresh connection");
 
-        assert_eq!(resp.status(), http::StatusCode::OK);
-        assert_eq!(resp.text().await.unwrap(), "fresh");
-        assert!(
-            counter.load(std::sync::atomic::Ordering::SeqCst) >= 2,
-            "non-replayable forward_local bodies should skip the stale pooled connection"
+        assert_eq!(response.text().await.unwrap(), "fresh");
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the forwarded one-shot body must bypass the stale pooled connection"
         );
     });
 }

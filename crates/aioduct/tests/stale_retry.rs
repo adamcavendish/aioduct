@@ -508,9 +508,9 @@ async fn middleware_replaced_body_is_not_reconstructed_from_original_bytes() {
     assert_eq!(counter.connections(), 1);
 }
 
-/// POST with streaming (non-replayable) body must not be retried.
-/// Instead, it should avoid the already-pooled connection and start on a
-/// fresh connection so the body is not consumed by a stale write.
+/// POST with a streaming body must not be retried after the pooled H1
+/// dispatcher accepted it for serialization. Hyper cannot return the exact
+/// request at that point, so a fresh retry could duplicate a side effect.
 #[tokio::test]
 async fn no_retry_streaming_body() {
     let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
@@ -528,19 +528,22 @@ async fn no_retry_streaming_body() {
             .map_err(|never| match never {})
             .boxed_unsync();
 
-    let resp = client
+    let result = client
         .post(&url)
         .unwrap()
         .body_stream(stream_body)
         .send()
-        .await
-        .expect("streaming body should use a fresh connection instead of a stale pooled one");
+        .await;
 
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "ok");
     assert!(
-        counter.connections() >= 2,
-        "streaming body should skip the pooled stale connection"
+        result.is_err(),
+        "streaming request accepted by the stale transport must not be replayed"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        counter.connections(),
+        1,
+        "post-serialization failure must not open a retry connection"
     );
 }
 
