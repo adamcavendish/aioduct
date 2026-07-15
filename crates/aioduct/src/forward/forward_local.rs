@@ -17,7 +17,9 @@ use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http_body::Body;
 use http_body_util::BodyExt;
 
-use super::dispatch_plan::{ForwardDispatchPlan, ForwardRewrite, rewrite_for_upstream};
+use super::dispatch_plan::{
+    ForwardDispatchPlan, ForwardMode, ForwardRewrite, rewrite_for_upstream,
+};
 use super::{
     apply_forward_response_content_digest, hop_by_hop, is_h1_upgrade_request,
     prepare_forward_response_related_request, reject_response_finalization_for_tunnel_or_upgrade,
@@ -262,6 +264,9 @@ where
     }
 
     /// Marks this as an HTTP/1.1 upgrade request.
+    ///
+    /// The request must still contain valid `Connection: upgrade` and
+    /// `Upgrade` fields; this method cannot infer a stripped protocol value.
     pub fn upgrade(mut self) -> Self {
         self.force_h1_upgrade = true;
         self.forward_headers.push(http::header::CONNECTION);
@@ -287,24 +292,23 @@ where
             return Err(error.into_error());
         }
         let (mut parts, body) = self.request.into_parts();
+        let downstream_connect_protocol = capture_downstream_connect_protocol(&mut parts)?;
+        let downstream_version = parts.version;
+        let downstream_method = parts.method.clone();
+        let downstream_h1_upgrade_offer = super::hop_by_hop::h1_upgrade_offer(&parts.headers);
+        let downstream_accepts_trailers = super::hop_by_hop::downstream_accepts_response_trailers(
+            downstream_version,
+            &parts.headers,
+        );
         let response_finalization_enabled = self.response_message_signature.is_some()
             || self.response_content_digest_max_bytes.is_some();
 
         let response_related_request = prepare_forward_response_related_request(
             self.response_message_signature.as_ref(),
             self.downstream_target_uri.as_ref(),
-            self.force_h1_upgrade,
             &parts,
         )?;
-        if response_finalization_enabled {
-            reject_response_finalization_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
-        }
-
-        let is_h1_upgrade = self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers);
-        let is_h2_extended_connect_before_hook = parts.method == http::Method::CONNECT
-            && parts.extensions.get::<crate::Protocol>().is_some();
-
-        if is_h1_upgrade {
+        if self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers) {
             self.forward_headers.push(http::header::CONNECTION);
             self.forward_headers.push(http::header::UPGRADE);
         }
@@ -312,7 +316,7 @@ where
         let upstream = self
             .upstream
             .ok_or_else(|| Error::InvalidUrl("forward: no upstream configured".into()))?;
-        let full_uri = rewrite_for_upstream(
+        let rewritten_uri = rewrite_for_upstream(
             &mut parts,
             ForwardRewrite {
                 upstream: &upstream,
@@ -323,40 +327,33 @@ where
                 remove_headers: &self.remove_headers,
             },
         )?;
-        let pre_hook_plan = ForwardDispatchPlan::from_legacy_classification(
-            full_uri.clone(),
-            &parts.method,
-            self.protocol_hint,
-            is_h1_upgrade,
-            is_h2_extended_connect_before_hook,
-        )?;
-        pre_hook_plan.prepare_legacy_version(&mut parts);
-        if !is_h1_upgrade
-            && !is_h2_extended_connect_before_hook
-            && self.protocol_hint != ProtocolHint::H2c
-        {
-            parts.version = http::Version::HTTP_11;
-        }
-
+        let version_before_hook = parts.version;
         if let Some(hook) = self.on_request {
             hook(&mut parts);
         }
-
+        let version_changed_by_hook = parts.version != version_before_hook;
         if response_finalization_enabled {
             reject_response_finalization_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
         }
 
-        let is_h2_extended_connect = parts.method == http::Method::CONNECT
-            && parts.extensions.get::<crate::Protocol>().is_some();
-        let plan = ForwardDispatchPlan::from_legacy_classification(
-            full_uri,
-            &parts.method,
+        let plan = ForwardDispatchPlan::finalize(
+            &mut parts,
+            &rewritten_uri,
             self.protocol_hint,
-            is_h1_upgrade,
-            is_h2_extended_connect,
+            self.force_h1_upgrade,
+            downstream_h1_upgrade_offer,
+            version_changed_by_hook,
+            false,
+            true,
+            downstream_connect_protocol.as_deref(),
+            downstream_version,
+            &downstream_method,
+            downstream_accepts_trailers,
+            self.preserve_host,
         )?;
-        plan.apply_request_target(&mut parts);
+        plan.apply(&mut parts, body.is_end_stream())?;
         let full_uri = plan.full_uri().clone();
+        let forward_mode = plan.mode();
 
         let body_replayability = BodyReplayability::for_forwarded_body(&body);
 
@@ -398,16 +395,7 @@ where
             None
         };
         let timeout = self.timeout.or(client.core.timeout);
-        let send_fut = async move {
-            if sign_final_request
-                && let Some(signature) = client
-                    .core
-                    .prepare_final_request_signature(&full_uri, &mut request)?
-            {
-                let signature_headers = signature.sign_local().await?;
-                signature_headers.insert_into(request.headers_mut())?;
-            }
-
+        let send_fut = Box::pin(async move {
             let mut resp = client
                 .execute_single_local(
                     request,
@@ -431,7 +419,9 @@ where
                 ));
             }
 
-            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS && !is_h1_upgrade {
+            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
+                && forward_mode != ForwardMode::H1Upgrade
+            {
                 let resp_headers = resp.headers_mut();
                 hop_by_hop::strip_hop_by_hop(resp_headers);
             }
@@ -470,7 +460,7 @@ where
             }
 
             Ok(resp)
-        };
+        });
 
         let mut resp = if let Some(duration) = timeout {
             crate::timeout::Timeout::WithTimeout {

@@ -315,6 +315,9 @@ fn pool_key_different_hints_not_equal() {
 #[test]
 fn protocol_hint_debug() {
     assert_eq!(format!("{:?}", ProtocolHint::Auto), "Auto");
+    assert_eq!(format!("{:?}", ProtocolHint::Http1), "Http1");
+    assert_eq!(format!("{:?}", ProtocolHint::Http2), "Http2");
+    assert_eq!(format!("{:?}", ProtocolHint::Http3), "Http3");
     assert_eq!(format!("{:?}", ProtocolHint::H2c), "H2c");
     assert_eq!(format!("{:?}", ProtocolHint::AdaptiveH2c), "AdaptiveH2c");
 }

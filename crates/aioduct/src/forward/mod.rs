@@ -1,6 +1,6 @@
 //! Request forwarding for proxy/gateway use cases.
 
-mod dispatch_plan;
+pub(crate) mod dispatch_plan;
 pub(crate) mod forward_local;
 mod hop_by_hop;
 
@@ -69,7 +69,6 @@ pub(crate) fn reject_response_finalization_for_tunnel_or_upgrade(
 pub(crate) fn prepare_forward_response_related_request(
     signature: Option<&AutomaticMessageSignature>,
     downstream_target_uri: Option<&Uri>,
-    force_h1_upgrade: bool,
     parts: &http::request::Parts,
 ) -> Result<Option<ForwardResponseRelatedRequest>, Error> {
     let Some(signature) = signature else {
@@ -82,7 +81,6 @@ pub(crate) fn prepare_forward_response_related_request(
             "automatic response message signing does not support trailer components".to_owned(),
         ));
     }
-    reject_response_finalization_for_tunnel_or_upgrade(parts, force_h1_upgrade)?;
 
     if !requirements.has_related_request_components {
         return Ok(None);
@@ -451,9 +449,9 @@ where
     /// Marks this as an HTTP/1.1 upgrade request, preserving Connection and
     /// Upgrade headers through hop-by-hop stripping.
     ///
-    /// Usually unnecessary — H1 upgrades are auto-detected from headers.
-    /// Use this if the framework stripped those headers before passing the
-    /// request to you.
+    /// Usually unnecessary because H1 upgrades are auto-detected from valid
+    /// `Connection: upgrade` and `Upgrade` fields. This method does not invent
+    /// a missing upgrade protocol; those fields must still be present.
     pub fn upgrade(mut self) -> Self {
         self.force_h1_upgrade = true;
         self.forward_headers.push(http::header::CONNECTION);
@@ -467,27 +465,22 @@ where
             return Err(error.into_error());
         }
         let (mut parts, body) = self.request.into_parts();
+        let downstream_connect_protocol = capture_downstream_connect_protocol(&mut parts)?;
+        let downstream_version = parts.version;
+        let downstream_method = parts.method.clone();
+        let downstream_h1_upgrade_offer = hop_by_hop::h1_upgrade_offer(&parts.headers);
+        let downstream_accepts_trailers =
+            hop_by_hop::downstream_accepts_response_trailers(downstream_version, &parts.headers);
         let response_finalization_enabled = self.response_message_signature.is_some()
             || self.response_content_digest_max_bytes.is_some();
 
         let response_related_request = prepare_forward_response_related_request(
             self.response_message_signature.as_ref(),
             self.downstream_target_uri.as_ref(),
-            self.force_h1_upgrade,
             &parts,
         )?;
-        if response_finalization_enabled {
-            reject_response_finalization_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
-        }
-
-        // Detect upgrade requests
-        let is_h1_upgrade = self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers);
-
-        let is_h2_extended_connect = parts.method == http::Method::CONNECT
-            && parts.extensions.get::<hyper::ext::Protocol>().is_some();
-
-        // Auto-preserve upgrade headers.
-        if is_h1_upgrade {
+        // Preserve inbound upgrade fields across the initial hop-header cleanup.
+        if self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers) {
             self.forward_headers.push(http::header::CONNECTION);
             self.forward_headers.push(http::header::UPGRADE);
         }
@@ -498,7 +491,7 @@ where
         let upstream = self
             .upstream
             .ok_or_else(|| Error::InvalidUrl("forward: no upstream configured".into()))?;
-        let full_uri = rewrite_for_upstream(
+        let rewritten_uri = rewrite_for_upstream(
             &mut parts,
             ForwardRewrite {
                 upstream: &upstream,
@@ -509,31 +502,36 @@ where
                 remove_headers: &self.remove_headers,
             },
         )?;
-        let pre_hook_plan = ForwardDispatchPlan::from_legacy_classification(
-            full_uri.clone(),
-            &parts.method,
-            self.protocol_hint,
-            is_h1_upgrade,
-            is_h2_extended_connect,
-        )?;
-        pre_hook_plan.prepare_legacy_version(&mut parts);
-
+        let version_before_hook = parts.version;
         if let Some(hook) = self.on_request {
             hook(&mut parts);
         }
-
+        let version_changed_by_hook = parts.version != version_before_hook;
         if response_finalization_enabled {
             reject_response_finalization_for_tunnel_or_upgrade(&parts, self.force_h1_upgrade)?;
         }
 
-        let plan = ForwardDispatchPlan::from_legacy_classification(
-            full_uri,
-            &parts.method,
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        let allow_h3 = self.client.core.h3_endpoint.is_some();
+        #[cfg(not(all(feature = "http3", feature = "rustls")))]
+        let allow_h3 = false;
+
+        let plan = ForwardDispatchPlan::finalize(
+            &mut parts,
+            &rewritten_uri,
             self.protocol_hint,
-            is_h1_upgrade,
-            is_h2_extended_connect,
+            self.force_h1_upgrade,
+            downstream_h1_upgrade_offer,
+            version_changed_by_hook,
+            allow_h3,
+            true,
+            downstream_connect_protocol.as_deref(),
+            downstream_version,
+            &downstream_method,
+            downstream_accepts_trailers,
+            self.preserve_host,
         )?;
-        plan.apply_request_target(&mut parts);
+        plan.apply(&mut parts, body.is_end_stream())?;
         let full_uri = plan.full_uri().clone();
         let forward_mode = plan.mode();
 
@@ -585,15 +583,10 @@ where
             None
         };
         let timeout = self.timeout.or(client.core.timeout);
-        let send_fut = async move {
-            if sign_final_request
-                && let Some(signature) = client
-                    .core
-                    .prepare_final_request_signature(&full_uri, &mut request)?
-            {
-                let signature_headers = signature.sign_send().await?;
-                signature_headers.insert_into(request.headers_mut())?;
-            }
+        // Bound the stack footprint of concurrent broker handlers. The
+        // forwarding lifecycle includes dispatch and response finalization,
+        // but callers should retain only one pointer per in-flight request.
+        let send_fut = Box::pin(async move {
             let mut resp = client
                 .execute_single_with_hint_send(
                     request,
@@ -659,7 +652,7 @@ where
             }
 
             Ok(resp)
-        };
+        });
 
         let mut resp = if let Some(duration) = timeout {
             crate::timeout::Timeout::WithTimeout {

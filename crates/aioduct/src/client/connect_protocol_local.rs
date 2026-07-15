@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use crate::body::RequestBodyLocal;
 use crate::error::Error;
-use crate::pool::PooledConnection;
+use crate::pool::{PooledConnection, ProtocolHint};
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
 use super::HttpEngineLocal;
@@ -79,20 +79,41 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         tcp_stream: C::Stream,
         host: &str,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+        self.connect_tls_local_with_hint(tcp_stream, host, ProtocolHint::Auto)
+            .await
+    }
+
+    #[cfg(all(feature = "rustls", feature = "compio"))]
+    pub(crate) async fn connect_tls_local_with_hint(
+        &self,
+        tcp_stream: C::Stream,
+        host: &str,
+        protocol_hint: ProtocolHint,
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         use crate::tls::TlsConnectLocal;
         use std::time::Instant;
 
         let tls_start = Instant::now();
 
-        let tls_connector = self
+        let mut tls_connector = self
             .core
             .tls
-            .as_ref()
-            .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+            .as_deref()
+            .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?
+            .clone();
+        match protocol_hint {
+            ProtocolHint::Http1 => {
+                tls_connector.config_mut().alpn_protocols = vec![b"http/1.1".to_vec()];
+            }
+            ProtocolHint::Http2 | ProtocolHint::H2c => {
+                tls_connector.config_mut().alpn_protocols = vec![b"h2".to_vec()];
+            }
+            ProtocolHint::Auto | ProtocolHint::Http3 | ProtocolHint::AdaptiveH2c => {}
+        }
 
         let tls_stream =
             <crate::tls::RustlsConnector as TlsConnectLocal<C::Stream>>::connect_local(
-                tls_connector,
+                &tls_connector,
                 host,
                 tcp_stream,
             )
@@ -103,6 +124,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
         let alpn = crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
         let tls_info = tls_stream.tls_info();
+
+        if matches!(protocol_hint, ProtocolHint::Http2 | ProtocolHint::H2c)
+            && alpn != Some(crate::tls::AlpnProtocol::H2)
+        {
+            return Err(Error::Unsupported(
+                "upstream did not negotiate required HTTP/2 ALPN".to_owned(),
+            ));
+        }
 
         match alpn {
             Some(crate::tls::AlpnProtocol::H2) => {
@@ -160,11 +189,35 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         ))
     }
 
+    #[cfg(all(feature = "rustls", not(feature = "compio")))]
+    pub(crate) async fn connect_tls_local_with_hint(
+        &self,
+        _tcp_stream: C::Stream,
+        _host: &str,
+        _protocol_hint: ProtocolHint,
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+        Err(Error::Tls(
+            "TLS with !Send streams requires the compio feature".into(),
+        ))
+    }
+
     #[cfg(not(feature = "rustls"))]
     pub(crate) async fn connect_tls_local(
         &self,
         _tcp_stream: C::Stream,
         _host: &str,
+    ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
+        Err(Error::Tls(
+            "HTTPS requires the `rustls` TLS backend feature".into(),
+        ))
+    }
+
+    #[cfg(not(feature = "rustls"))]
+    pub(crate) async fn connect_tls_local_with_hint(
+        &self,
+        _tcp_stream: C::Stream,
+        _host: &str,
+        _protocol_hint: ProtocolHint,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         Err(Error::Tls(
             "HTTPS requires the `rustls` TLS backend feature".into(),

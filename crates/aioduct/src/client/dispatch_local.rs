@@ -83,11 +83,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         if through_proxy && effective_hint == crate::pool::ProtocolHint::AdaptiveH2c {
             effective_hint = crate::pool::ProtocolHint::Auto;
         }
+        if effective_hint == crate::pool::ProtocolHint::Http3 {
+            return Err(Error::Unsupported(
+                "HTTP/3 is unavailable on Local runtimes".to_owned(),
+            ));
+        }
 
         let force_h2c = matches!(
             effective_hint,
-            crate::pool::ProtocolHint::H2c | crate::pool::ProtocolHint::AdaptiveH2c
+            crate::pool::ProtocolHint::Http2
+                | crate::pool::ProtocolHint::H2c
+                | crate::pool::ProtocolHint::AdaptiveH2c
         );
+        let force_h1 = effective_hint == crate::pool::ProtocolHint::Http1;
 
         // Compute a stable proxy route identity for pool-key segregation.
         let proxy_route = if let Some(ref chain) = self.core.proxy_chain {
@@ -103,22 +111,21 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             crate::pool::ProxyRoute::DIRECT
         };
 
-        let mut pool_key = if force_h2c {
-            crate::pool::PoolKey::with_hint_and_route(
-                scheme.clone(),
-                authority.clone(),
-                crate::pool::ProtocolHint::H2c,
-                proxy_route,
-            )
-        } else {
-            crate::pool::PoolKey::with_hint_and_route(
-                scheme.clone(),
-                authority.clone(),
-                crate::pool::ProtocolHint::Auto,
-                proxy_route,
-            )
-        };
-        let may_h2 = is_https || force_h2c;
+        let mut pool_key = crate::pool::PoolKey::with_hint_and_route(
+            scheme.clone(),
+            authority.clone(),
+            match effective_hint {
+                crate::pool::ProtocolHint::Http1 => crate::pool::ProtocolHint::Http1,
+                crate::pool::ProtocolHint::Http2 => crate::pool::ProtocolHint::Http2,
+                crate::pool::ProtocolHint::Http3 => crate::pool::ProtocolHint::Http3,
+                crate::pool::ProtocolHint::H2c | crate::pool::ProtocolHint::AdaptiveH2c => {
+                    crate::pool::ProtocolHint::H2c
+                }
+                crate::pool::ProtocolHint::Auto => crate::pool::ProtocolHint::Auto,
+            },
+            proxy_route,
+        );
+        let may_h2 = !force_h1 && (is_https || force_h2c);
 
         let fresh_connection_required = request
             .extensions()
@@ -598,7 +605,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 }
 
                 let mut conn = if is_https {
-                    self.connect_tls_local(tcp_stream, authority.host())
+                    self.connect_tls_local_with_hint(tcp_stream, authority.host(), effective_hint)
                         .await
                         .map_err(|e| e.with_remote_addr(addr))?
                 } else if force_h2c && effective_hint == crate::pool::ProtocolHint::AdaptiveH2c {

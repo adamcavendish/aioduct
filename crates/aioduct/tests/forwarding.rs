@@ -4,6 +4,8 @@
 mod early_response;
 #[path = "forwarding/multipart.rs"]
 mod multipart;
+#[path = "forwarding/protocol_plan.rs"]
+mod protocol_plan;
 #[path = "forwarding/response_finalization.rs"]
 mod response_finalization;
 #[path = "forwarding/upgrades.rs"]

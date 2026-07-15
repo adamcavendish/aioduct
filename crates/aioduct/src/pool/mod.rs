@@ -23,6 +23,12 @@ pub(crate) enum ProtocolHint {
     /// No preference — use whatever the connection negotiates.
     #[default]
     Auto,
+    /// Require HTTP/1.1.
+    Http1,
+    /// Require HTTP/2, using ALPN for TLS and prior knowledge for plaintext.
+    Http2,
+    /// Require HTTP/3.
+    Http3,
     /// Force HTTP/2 prior knowledge (h2c).
     H2c,
     /// Adaptive: try h2c, fall back to h1 if rejected. Caches the result.

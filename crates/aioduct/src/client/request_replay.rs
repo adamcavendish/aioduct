@@ -9,6 +9,11 @@ use crate::pool::ProtocolHint;
 struct ReplayableRequestMetadata {
     protocol_hint: Option<ProtocolHint>,
     extended_connect_protocol: Option<hyper::ext::Protocol>,
+    deferred_te_trailers: bool,
+    deferred_forward_framing: Option<crate::forward::dispatch_plan::DeferredForwardFraming>,
+    deferred_forward_trailers: Option<crate::forward::dispatch_plan::DeferredForwardTrailers>,
+    deferred_forward_target: Option<crate::forward::dispatch_plan::DeferredForwardTarget>,
+    forward_signing_target: Option<crate::forward::dispatch_plan::ForwardSigningTarget>,
 }
 
 impl ReplayableRequestMetadata {
@@ -16,6 +21,21 @@ impl ReplayableRequestMetadata {
         Self {
             protocol_hint: extensions.get::<ProtocolHint>().copied(),
             extended_connect_protocol: extensions.get::<hyper::ext::Protocol>().cloned(),
+            deferred_te_trailers: extensions
+                .get::<crate::forward::dispatch_plan::DeferredTeTrailers>()
+                .is_some(),
+            deferred_forward_framing: extensions
+                .get::<crate::forward::dispatch_plan::DeferredForwardFraming>()
+                .copied(),
+            deferred_forward_trailers: extensions
+                .get::<crate::forward::dispatch_plan::DeferredForwardTrailers>()
+                .cloned(),
+            deferred_forward_target: extensions
+                .get::<crate::forward::dispatch_plan::DeferredForwardTarget>()
+                .cloned(),
+            forward_signing_target: extensions
+                .get::<crate::forward::dispatch_plan::ForwardSigningTarget>()
+                .cloned(),
         }
     }
 
@@ -25,6 +45,21 @@ impl ReplayableRequestMetadata {
         }
         if let Some(protocol) = self.extended_connect_protocol {
             extensions.insert(protocol);
+        }
+        if self.deferred_te_trailers {
+            extensions.insert(crate::forward::dispatch_plan::DeferredTeTrailers);
+        }
+        if let Some(framing) = self.deferred_forward_framing {
+            extensions.insert(framing);
+        }
+        if let Some(trailers) = self.deferred_forward_trailers {
+            extensions.insert(trailers);
+        }
+        if let Some(target) = self.deferred_forward_target {
+            extensions.insert(target);
+        }
+        if let Some(target) = self.forward_signing_target {
+            extensions.insert(target);
         }
     }
 }
@@ -68,6 +103,7 @@ impl ReplayableRequestHead {
     pub(super) fn headers_mut(&mut self) -> &mut HeaderMap {
         &mut self.headers
     }
+
     pub(super) fn into_request<B>(self, body: B) -> http::Request<B> {
         let mut request = http::Request::new(body);
         *request.method_mut() = self.method;
