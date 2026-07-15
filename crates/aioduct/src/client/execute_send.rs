@@ -40,6 +40,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .unwrap_or_else(|error| error.into_inner())
                 .take_pending_replay()
         });
+        if let (Some(snapshot), Some(digest)) =
+            (replay_snapshot.as_mut(), self.core.digest_auth.as_ref())
+        {
+            snapshot.refresh_digest_authorization(digest);
+        }
         if let Some(snapshot) = replay_snapshot.as_ref() {
             original_fragment = snapshot.fragment().map(str::to_owned);
         }
@@ -79,7 +84,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
         for _ in 0..=self.core.redirect_policy.max_redirects() {
             let (
-                request,
+                mut request,
                 body_for_replay,
                 body_replayability,
                 body_audit,
@@ -270,6 +275,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 )
             };
 
+            if let Some(signature) = self
+                .core
+                .prepare_final_request_signature(&current_uri, &mut request)?
+            {
+                let signature_headers = signature.sign_send().await?;
+                signature_headers.insert_into(request.headers_mut())?;
+            }
+
             current_method = request.method().clone();
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
                 Some(RequestBody::Buffered(b)) => Some(b.clone()),
@@ -295,21 +308,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     );
             }
 
-            let post_middleware_headers;
-            let stale_headers = if !self.core.no_connection_reuse {
-                post_middleware_headers = request.headers().clone();
-                Some(&post_middleware_headers)
-            } else {
-                None
-            };
-
             let resp = match self
                 .execute_single_with_hint_send(
                     request,
                     &current_uri,
                     protocol_hint,
                     replay_bytes_for_stale,
-                    stale_headers,
                     connect_timeout,
                     write_timeout,
                     None,
@@ -501,7 +505,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             );
         }
 
-        let authenticated = snapshot.with_authorization(auth_value);
+        let authenticated = snapshot.with_digest_authorization(auth_value, challenge);
         let replay_for_stale = authenticated.stale_replay_bytes();
         let retry_body: RequestBodySend = http_body_util::Full::new(authenticated.body_bytes())
             .map_err(|never| match never {})
@@ -512,8 +516,16 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 .boxed_unsync(),
             None => retry_body,
         };
-        let retry_request = authenticated.to_request(retry_body);
+        let mut retry_request = authenticated.to_request(retry_body);
         *headers = authenticated.headers().clone();
+        if let Some(signature) = self
+            .core
+            .prepare_final_request_signature(authenticated.effective_uri(), &mut retry_request)?
+        {
+            let signature_headers = signature.sign_send().await?;
+            signature_headers.insert_into(retry_request.headers_mut())?;
+        }
+        let authenticated = authenticated.with_request_head_from(&retry_request);
         if let Some(finalized_request) = finalized_request {
             finalized_request
                 .lock()
@@ -526,7 +538,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         }
         let effective_uri = authenticated.effective_uri().clone();
         let body_replayability = authenticated.body_replayability();
-        let retry_headers_for_stale = retry_request.headers().clone();
         let _ = resp.bytes().await;
         if let Some(finalized_request) = finalized_request {
             finalized_request
@@ -539,7 +550,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             &effective_uri,
             protocol_hint,
             replay_for_stale,
-            Some(&retry_headers_for_stale),
             connect_timeout,
             write_timeout,
             None,

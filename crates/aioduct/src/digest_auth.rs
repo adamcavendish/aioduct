@@ -11,6 +11,7 @@ pub(crate) struct DigestAuth {
     nonce_counts: Arc<std::sync::Mutex<HashMap<String, u32>>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct PreparedDigestChallenge {
     params: HashMap<String, String>,
 }

@@ -43,6 +43,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 .unwrap_or_else(|error| error.into_inner())
                 .take_pending_replay()
         });
+        if let (Some(snapshot), Some(digest)) =
+            (replay_snapshot.as_mut(), self.core.digest_auth.as_ref())
+        {
+            snapshot.refresh_digest_authorization(digest);
+        }
         if let Some(snapshot) = replay_snapshot.as_ref() {
             original_fragment = snapshot.fragment().map(str::to_owned);
         }
@@ -82,7 +87,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
         for _ in 0..=self.core.redirect_policy.max_redirects() {
             let (
-                request,
+                mut request,
                 body_for_replay,
                 body_replayability,
                 body_audit,
@@ -270,6 +275,14 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     finalized_cache_state,
                 )
             };
+
+            if let Some(signature) = self
+                .core
+                .prepare_final_request_signature(&current_uri, &mut request)?
+            {
+                let signature_headers = signature.sign_local().await?;
+                signature_headers.insert_into(request.headers_mut())?;
+            }
 
             current_method = request.method().clone();
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
@@ -493,7 +506,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             );
         }
 
-        let authenticated = snapshot.with_authorization(auth_value);
+        let authenticated = snapshot.with_digest_authorization(auth_value, challenge);
         let replay_for_stale = authenticated.stale_replay_bytes();
         let retry_body: RequestBodyLocal = Box::pin(
             http_body_util::Full::new(authenticated.body_bytes()).map_err(|never| match never {}),
@@ -504,8 +517,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             )),
             None => retry_body,
         };
-        let retry_request = authenticated.to_request(retry_body);
+        let mut retry_request = authenticated.to_request(retry_body);
         *headers = authenticated.headers().clone();
+        if let Some(signature) = self
+            .core
+            .prepare_final_request_signature(authenticated.effective_uri(), &mut retry_request)?
+        {
+            let signature_headers = signature.sign_local().await?;
+            signature_headers.insert_into(retry_request.headers_mut())?;
+        }
+        let authenticated = authenticated.with_request_head_from(&retry_request);
         if let Some(finalized_request) = finalized_request {
             finalized_request
                 .lock()

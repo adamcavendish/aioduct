@@ -281,10 +281,19 @@ impl aioduct::RequestObserver for DigestRetryRecorder {
 async fn digest_and_configured_retries_share_attempts_and_callbacks() {
     let attempts = Arc::new(AtomicU32::new(0));
     let server_attempts = attempts.clone();
+    let authorizations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server_authorizations = authorizations.clone();
     let (addr, _counter) = h1_server_with(move |request| {
         let attempts = server_attempts.clone();
+        let authorizations = server_authorizations.clone();
         async move {
             let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            if let Some(value) = request.headers().get(http::header::AUTHORIZATION) {
+                authorizations
+                    .lock()
+                    .unwrap()
+                    .push(value.to_str().unwrap().to_owned());
+            }
             Ok::<_, Infallible>(match attempt {
                 0 => Response::builder()
                     .status(401)
@@ -301,10 +310,17 @@ async fn digest_and_configured_retries_share_attempts_and_callbacks() {
                         .body(Full::new(Bytes::new()))
                         .unwrap()
                 }
-                _ => {
-                    assert!(request.headers().contains_key(http::header::AUTHORIZATION));
+                2 => {
+                    let authorization = request
+                        .headers()
+                        .get(http::header::AUTHORIZATION)
+                        .expect("configured retry must preserve Digest state")
+                        .to_str()
+                        .unwrap();
+                    assert!(authorization.contains("nc=00000002"), "{authorization}");
                     Response::new(Full::new(Bytes::from_static(b"ok")))
                 }
+                attempt => panic!("unexpected Digest retry attempt {attempt}"),
             })
         }
     })
@@ -339,6 +355,11 @@ async fn digest_and_configured_retries_share_attempts_and_callbacks() {
         *recorder.observer_attempts.lock().unwrap(),
         vec![(1, 2), (2, 2)]
     );
+    let authorizations = authorizations.lock().unwrap();
+    assert_eq!(authorizations.len(), 2);
+    assert!(authorizations[0].contains("nc=00000001"));
+    assert!(authorizations[1].contains("nc=00000002"));
+    assert_ne!(authorizations[0], authorizations[1]);
 }
 
 async fn assert_denied_digest_retry_does_not_advance_nonce(denied_retry: aioduct::RetryConfig) {

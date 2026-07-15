@@ -1,11 +1,11 @@
 use bytes::Bytes;
 use http::Uri;
-use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use super::connection_lifecycle::H2ConnectGuard;
 use super::replay::{ReplayReason, RequestReplayPolicy};
+use super::request_replay::{ReplayableRequestHead, replay_request_local};
 use super::{BodyReplayability, HttpEngineCore, HttpEngineLocal, extract_headers};
 use crate::body::RequestBodyLocal;
 use crate::clock::Instant;
@@ -134,13 +134,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 },
             );
 
-            let saved_parts = if can_stale_retry {
-                Some((
-                    request.method().clone(),
-                    request.uri().clone(),
-                    request.headers().clone(),
-                    request.version(),
-                ))
+            let saved_request = if can_stale_retry {
+                Some(ReplayableRequestHead::capture(&request))
             } else {
                 None
             };
@@ -200,7 +195,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     return Ok(resp);
                 }
                 Err(e)
-                    if saved_parts.is_some()
+                    if saved_request.is_some()
                         && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(&conn, &e)
                             .is_some_and(|reason| replay_policy.permits(reason)) =>
                 {
@@ -232,23 +227,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             blocked_duration: pool_checkout_start.elapsed(),
                         },
                     );
-                    // saved_parts is guaranteed Some by the match arm guard.
-                    let Some((method, uri, headers, version)) = saved_parts else {
+                    // saved_request is guaranteed Some by the match arm guard.
+                    let Some(saved_request) = saved_request else {
                         return Err(e);
                     };
-                    let retry_body_bytes = replay_body
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or_else(bytes::Bytes::new);
-                    let body: RequestBodyLocal = Box::pin(
-                        http_body_util::Full::new(retry_body_bytes).map_err(|never| match never {}),
-                    );
-                    let mut retry_req = http::Request::new(body);
-                    *retry_req.method_mut() = method;
-                    *retry_req.uri_mut() = uri;
-                    *retry_req.headers_mut() = headers;
-                    *retry_req.version_mut() = version;
-                    request = retry_req;
+                    request = replay_request_local(saved_request, &replay_body);
                     if sign_stale_retries
                         && let Some(signature) = self
                             .core
@@ -310,13 +293,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             blocked_duration: pool_checkout_start.elapsed(),
                         },
                     );
-                    let saved_parts = if can_stale_retry {
-                        Some((
-                            request.method().clone(),
-                            request.uri().clone(),
-                            request.headers().clone(),
-                            request.version(),
-                        ))
+                    let saved_request = if can_stale_retry {
+                        Some(ReplayableRequestHead::capture(&request))
                     } else {
                         None
                     };
@@ -375,7 +353,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             return Ok(resp);
                         }
                         Err(e)
-                            if saved_parts.is_some()
+                            if saved_request.is_some()
                                 && HttpEngineCore::<RequestBodyLocal>::stale_replay_reason(
                                     &conn, &e,
                                 )
@@ -409,23 +387,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                     blocked_duration: pool_checkout_start.elapsed(),
                                 },
                             );
-                            let Some((method, uri, headers, version)) = saved_parts else {
+                            let Some(saved_request) = saved_request else {
                                 return Err(e);
                             };
-                            let retry_body_bytes = replay_body
-                                .as_ref()
-                                .cloned()
-                                .unwrap_or_else(bytes::Bytes::new);
-                            let body: RequestBodyLocal = Box::pin(
-                                http_body_util::Full::new(retry_body_bytes)
-                                    .map_err(|never| match never {}),
-                            );
-                            let mut retry_req = http::Request::new(body);
-                            *retry_req.method_mut() = method;
-                            *retry_req.uri_mut() = uri;
-                            *retry_req.headers_mut() = headers;
-                            *retry_req.version_mut() = version;
-                            request = retry_req;
+                            request = replay_request_local(saved_request, &replay_body);
                             if sign_stale_retries
                                 && let Some(signature) = self
                                     .core

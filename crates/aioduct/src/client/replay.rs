@@ -182,6 +182,7 @@ pub(crate) struct FinalizedRequestSnapshot {
     body_audit: Option<BodyReplayAudit>,
     cache_state: FinalizedCacheState,
     fragment: Option<String>,
+    digest_challenge: Option<crate::digest_auth::PreparedDigestChallenge>,
 }
 
 #[derive(Clone)]
@@ -260,6 +261,7 @@ impl FinalizedRequestSnapshot {
             body_audit,
             cache_state,
             fragment,
+            digest_challenge: None,
         })
     }
 
@@ -306,7 +308,11 @@ impl FinalizedRequestSnapshot {
             .then(|| self.body.clone())
     }
 
-    pub(crate) fn with_authorization(&self, value: HeaderValue) -> Self {
+    pub(crate) fn with_digest_authorization(
+        &self,
+        value: HeaderValue,
+        challenge: crate::digest_auth::PreparedDigestChallenge,
+    ) -> Self {
         let mut snapshot = self.clone();
         snapshot
             .head
@@ -316,7 +322,31 @@ impl FinalizedRequestSnapshot {
             .cache_state
             .request_headers
             .insert(AUTHORIZATION, value);
+        snapshot.digest_challenge = Some(challenge);
         snapshot
+    }
+
+    pub(crate) fn with_request_head_from<B>(&self, request: &http::Request<B>) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.head = ReplayableRequestHead::capture(request);
+        snapshot
+    }
+
+    /// Refresh credentials only for a configured replay. Transport recovery
+    /// retains the exact serialized authorization because the prior attempt is
+    /// known or assumed not to have consumed its nonce count.
+    pub(crate) fn refresh_digest_authorization(&mut self, digest: &crate::digest_auth::DigestAuth) {
+        let Some(challenge) = self.digest_challenge.as_ref() else {
+            return;
+        };
+        let Some(value) = digest.authorize_prepared(self.method(), self.request_uri(), challenge)
+        else {
+            return;
+        };
+        self.head.headers_mut().insert(AUTHORIZATION, value.clone());
+        self.cache_state
+            .request_headers
+            .insert(AUTHORIZATION, value);
     }
 
     pub(crate) fn to_request<B>(&self, body: B) -> http::Request<B> {
