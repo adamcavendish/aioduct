@@ -58,23 +58,72 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         Ok(PooledConnection::new_h2(sender))
     }
 
-    #[cfg(feature = "rustls")]
-    pub(crate) async fn connect_tls(
+    pub(crate) async fn connect_h2_prior_knowledge_confirmed<S>(
         &self,
-        tcp_stream: C::Stream,
+        stream: S,
+    ) -> Result<
+        (
+            PooledConnection<RequestBodySend>,
+            super::h2_peer_settings::H2PeerSettingsConfirmation,
+        ),
+        Error,
+    >
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
+        let receive_max_frame_size = self
+            .core
+            .http2
+            .as_ref()
+            .and_then(|config| config.max_frame_size)
+            .map_or(crate::http2::Http2Config::DEFAULT_MAX_FRAME_SIZE, |size| {
+                size as usize
+            });
+        let (stream, confirmation) =
+            super::h2_peer_settings::observe_h2_peer_settings(stream, receive_max_frame_size);
+        let connection = self.connect_h2_prior_knowledge(stream).await?;
+        Ok((connection, confirmation))
+    }
+
+    #[cfg(all(feature = "rustls", feature = "tokio", test))]
+    pub(crate) async fn connect_tls<S>(
+        &self,
+        tcp_stream: S,
         host: &str,
-    ) -> Result<PooledConnection<RequestBodySend>, Error> {
+    ) -> Result<PooledConnection<RequestBodySend>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
         self.connect_tls_with_hint(tcp_stream, host, ProtocolHint::Auto)
             .await
     }
 
     #[cfg(feature = "rustls")]
-    pub(crate) async fn connect_tls_with_hint(
+    pub(crate) async fn connect_tls_with_hint<S>(
         &self,
-        tcp_stream: C::Stream,
+        tcp_stream: S,
         host: &str,
         protocol_hint: ProtocolHint,
-    ) -> Result<PooledConnection<RequestBodySend>, Error> {
+    ) -> Result<PooledConnection<RequestBodySend>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
+        self.connect_tls_with_hint_observed(tcp_stream, host, protocol_hint, |_, _| {})
+            .await
+    }
+
+    #[cfg(feature = "rustls")]
+    pub(crate) async fn connect_tls_with_hint_observed<S, F>(
+        &self,
+        tcp_stream: S,
+        host: &str,
+        protocol_hint: ProtocolHint,
+        on_tls_complete: F,
+    ) -> Result<PooledConnection<RequestBodySend>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+        F: FnOnce(&crate::tls::TlsStream<S>, std::time::Duration),
+    {
         use crate::tls::TlsConnect;
         use std::time::Instant;
 
@@ -99,7 +148,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ProtocolHint::Auto | ProtocolHint::Http3 | ProtocolHint::AdaptiveH2c => {}
         }
 
-        let tls_stream = <crate::tls::RustlsConnector as TlsConnect<C::Stream>>::connect(
+        let tls_stream = <crate::tls::RustlsConnector as TlsConnect<S>>::connect(
             &tls_connector,
             host,
             tcp_stream,
@@ -112,8 +161,16 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         })?;
 
         let tls_duration = tls_start.elapsed();
+        on_tls_complete(&tls_stream, tls_duration);
 
-        let alpn = crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
+        let alpn =
+            crate::tls::RustlsConnector::negotiated_http_protocol(tls_stream.tls_connection())
+                .map_err(|protocol| {
+                    Error::Unsupported(format!(
+                        "upstream negotiated unsupported ALPN protocol `{}`",
+                        String::from_utf8_lossy(protocol)
+                    ))
+                })?;
 
         #[cfg(feature = "tracing")]
         tracing::trace!(
@@ -162,23 +219,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     }
 
     #[cfg(not(feature = "rustls"))]
-    pub(crate) async fn connect_tls(
+    pub(crate) async fn connect_tls_with_hint<S>(
         &self,
-        _tcp_stream: C::Stream,
-        _host: &str,
-    ) -> Result<PooledConnection<RequestBodySend>, Error> {
-        Err(Error::Tls(
-            "HTTPS requires the `rustls` TLS backend feature".into(),
-        ))
-    }
-
-    #[cfg(not(feature = "rustls"))]
-    pub(crate) async fn connect_tls_with_hint(
-        &self,
-        _tcp_stream: C::Stream,
+        _tcp_stream: S,
         _host: &str,
         _protocol_hint: ProtocolHint,
-    ) -> Result<PooledConnection<RequestBodySend>, Error> {
+    ) -> Result<PooledConnection<RequestBodySend>, Error>
+    where
+        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
         Err(Error::Tls(
             "HTTPS requires the `rustls` TLS backend feature".into(),
         ))

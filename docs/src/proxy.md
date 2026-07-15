@@ -303,11 +303,7 @@ Any combination of proxy schemes is supported for both hops:
 | HTTP | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
 | SOCKS5/SOCKS5h | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
 | SOCKS4 | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
-| HTTPS | HTTP/HTTPS | Yes |
-| HTTPS | SOCKS5/SOCKS5h/SOCKS4 | No\* |
-
-\* When the first hop is an HTTPS proxy, the stream is TLS-wrapped and
-cannot be converted back to a raw TCP stream for a SOCKS handshake.
+| HTTPS | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
 
 When both a proxy chain and a single proxy are configured, the chain
 takes priority.
@@ -327,12 +323,19 @@ For HTTPS requests through an HTTP proxy, the client:
 
 1. Connects to the proxy via TCP
 2. Sends `CONNECT host:port HTTP/1.1` to establish a tunnel
-3. Waits for a `200` response from the proxy
+3. Waits for a successful `2xx` response from the proxy
 4. Performs TLS handshake through the tunnel
 5. Sends the actual HTTPS request over the encrypted connection
 
 This ensures end-to-end encryption — the proxy only sees the target
 hostname, not the request content.
+
+Proxy plans are validated before DNS or TCP I/O. This includes rejecting
+non-textual HTTP CONNECT header values, NUL-containing SOCKS4 user IDs,
+SOCKS4/SOCKS4a IPv6 targets, and SOCKS5 credentials longer than the protocol's
+255-byte fields. DNS, TCP, proxy TLS, CONNECT, and origin TLS observer phases
+are emitted when each phase completes, rather than being buffered until the
+whole proxy attempt succeeds or fails.
 
 ### HTTPS Proxy
 
@@ -455,6 +458,11 @@ behavior on those targets.
 - SOCKS4 supports optional user ID authentication
 - Proxy chaining supports up to 2 hops
 - CONNECT headers on SOCKS proxies are rejected with a clear error before any I/O.
+- HTTP CONNECT headers must contain textual values that can be encoded on the
+  HTTP/1.1 CONNECT request.
+- SOCKS4 and SOCKS4a cannot carry IPv6 destinations, and SOCKS4 user IDs
+  cannot contain NUL bytes.
+- SOCKS5 usernames and passwords are limited to 255 bytes each.
 - `EnvCredentialResolver` applies the same credentials to all proxies (the
   `key` parameter is reserved for future per-proxy resolvers)
 - The HTTP proxy URI must use `http://` or `https://` scheme; SOCKS proxies

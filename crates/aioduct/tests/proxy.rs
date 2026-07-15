@@ -5,6 +5,9 @@ mod common;
 #[cfg(feature = "rustls")]
 #[path = "proxy/incoming_multipart.rs"]
 mod incoming_multipart;
+#[cfg(feature = "rustls")]
+#[path = "proxy/mixed_chain.rs"]
+mod mixed_chain;
 #[path = "proxy/no_proxy.rs"]
 mod no_proxy;
 #[path = "proxy/socks.rs"]
@@ -126,6 +129,41 @@ impl aioduct::observer::RequestObserver for LiveProxyPhaseObserver {
     }
 
     fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
+}
+
+async fn silent_h2c_then_h1_origin() -> SocketAddr {
+    use tokio::io::AsyncReadExt as _;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let connection = accepted.fetch_add(1, AtomicOrdering::SeqCst);
+            tokio::spawn(async move {
+                if connection == 0 {
+                    let mut preface = [0_u8; 24];
+                    stream.read_exact(&mut preface).await.unwrap();
+                    assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+                    std::future::pending::<()>().await;
+                }
+
+                let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(
+                        io,
+                        hyper::service::service_fn(|_| async {
+                            Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
+                                "h1 fallback",
+                            ))))
+                        }),
+                    )
+                    .await;
+            });
+        }
+    });
+    addr
 }
 
 #[tokio::test]
@@ -1485,6 +1523,72 @@ async fn https_then_socks4_chain_executes_both_hops() {
     .await;
 }
 
+#[cfg(feature = "rustls")]
+async fn assert_mixed_chain_send(
+    first: mixed_chain::ProxyKind,
+    second: mixed_chain::ProxyKind,
+    origin_protocol: mixed_chain::OriginProtocol,
+) {
+    use mixed_chain::{FIRST_PROXY_HOST, LiveMixedProxyChain, ORIGIN_HOST, SECOND_PROXY_HOST};
+
+    let fixture = LiveMixedProxyChain::start_with_origin(first, second, origin_protocol);
+    let connector = aioduct::tls::RustlsConnector::new(mixed_chain::client_config_trusting(
+        fixture.certificates(),
+    ));
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(connector)
+        .proxy_chain(aioduct::ProxyChain::new(vec![
+            fixture.first_proxy(),
+            fixture.second_proxy(),
+        ]))
+        .resolve(FIRST_PROXY_HOST, fixture.first_addr())
+        .resolve(SECOND_PROXY_HOST, fixture.second_addr())
+        .resolve(ORIGIN_HOST, fixture.origin_addr())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&fixture.origin_url())
+        .unwrap()
+        .send()
+        .await
+        .unwrap_or_else(|error| {
+            panic!("{first:?} -> {second:?} via {origin_protocol:?} failed: {error}")
+        });
+    assert_eq!(response.text().await.unwrap(), "mixed-chain-ok");
+    fixture.assert_wire_order();
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_two_hop_proxy_pairs_execute_in_wire_order() {
+    let cases = mixed_chain::ordered_proxy_pairs();
+    mixed_chain::assert_complete_ordered_pairs(&cases);
+    for (first, second) in cases {
+        assert_mixed_chain_send(first, second, mixed_chain::OriginProtocol::Http1).await;
+    }
+}
+
+#[cfg(feature = "rustls")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chained_https_origins_negotiate_h1_and_h2_for_all_proxy_pairs() {
+    let cases = mixed_chain::ordered_proxy_pairs();
+    mixed_chain::assert_complete_ordered_pairs(&cases);
+    assert!(
+        cases.contains(&(mixed_chain::ProxyKind::Https, mixed_chain::ProxyKind::Https)),
+        "HTTPS origin matrix must include HTTPS -> HTTPS -> HTTPS triple TLS"
+    );
+    for protocol in [
+        mixed_chain::OriginProtocol::HttpsHttp1,
+        mixed_chain::OriginProtocol::HttpsHttp2,
+    ] {
+        for &(first, second) in &cases {
+            assert_mixed_chain_send(first, second, protocol).await;
+        }
+    }
+}
+
 #[tokio::test]
 async fn invalid_proxy_chain_fails_before_first_network_io() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1651,6 +1755,41 @@ async fn adaptive_h2c_reconnects_same_proxy_route_for_h1_fallback() {
         proxy_connections.load(AtomicOrdering::SeqCst),
         2,
         "one H2 probe tunnel and one cached H1 fallback tunnel are expected"
+    );
+}
+
+#[tokio::test]
+async fn adaptive_h2c_times_out_silent_settings_through_proxy() {
+    let target_addr = silent_h2c_then_h1_origin().await;
+    let (proxy_addr, proxy_connections) = connect_proxy().await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        .build()
+        .unwrap();
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        client
+            .forward(
+                hyper::Request::builder()
+                    .uri("/silent-settings")
+                    .header(http::header::HOST, "downstream.test")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .upstream(format!("http://{target_addr}"))
+            .adaptive_h2c()
+            .send(),
+    )
+    .await
+    .expect("silent HTTP/2 SETTINGS probe did not fall back")
+    .unwrap();
+
+    assert_eq!(response.text().await.unwrap(), "h1 fallback");
+    assert_eq!(
+        proxy_connections.load(AtomicOrdering::SeqCst),
+        2,
+        "the timed-out H2 probe must reconnect through the same proxy for H1"
     );
 }
 

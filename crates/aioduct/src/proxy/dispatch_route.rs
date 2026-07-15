@@ -4,7 +4,7 @@ use http::uri::{Authority, Scheme};
 use crate::error::Error;
 use crate::pool::{ProtocolHint, ProxyRoute};
 
-use super::{ProxyChain, ProxyConfig, ProxySettings};
+use super::{ProxyChain, ProxyConfig, ProxyEstablishmentPlan, ProxySettings};
 
 #[derive(Clone)]
 pub(crate) struct ProxyDestination {
@@ -14,8 +14,8 @@ pub(crate) struct ProxyDestination {
 }
 
 impl ProxyDestination {
-    fn from_uri(uri: &Uri) -> Result<Self, Error> {
-        let scheme = uri
+    pub(super) fn from_uri(uri: &Uri) -> Result<Self, Error> {
+        let parsed_scheme = uri
             .scheme()
             .cloned()
             .ok_or_else(|| Error::InvalidUrl("missing scheme".into()))?;
@@ -28,7 +28,7 @@ impl ProxyDestination {
                 "destination authority must not contain userinfo".into(),
             ));
         }
-        let (scheme, default_port) = match scheme.as_str() {
+        let (scheme, default_port) = match parsed_scheme.as_str() {
             value if value.eq_ignore_ascii_case("http") => (Scheme::HTTP, 80),
             value if value.eq_ignore_ascii_case("https") => (Scheme::HTTPS, 443),
             other => {
@@ -102,9 +102,19 @@ impl ProxyDispatchRoute {
     ) -> Result<Self, Error> {
         let destination = ProxyDestination::from_uri(uri)?;
         let selection = if let Some(chain) = chain {
-            ProxySelection::Chain(chain.clone())
-        } else if let Some(proxy) = settings.and_then(|settings| settings.proxy_for(uri)) {
-            ProxySelection::Single(proxy)
+            let mut chain = chain.clone();
+            if let Some(settings) = settings {
+                for proxy in &mut chain.proxies {
+                    settings.resolve_credentials(proxy);
+                }
+            }
+            ProxySelection::Chain(chain)
+        } else if let Some(settings) = settings {
+            settings.validate_for_uri(uri)?;
+            match settings.proxy_for(uri) {
+                Some(proxy) => ProxySelection::Single(proxy),
+                None => ProxySelection::Direct,
+            }
         } else {
             ProxySelection::Direct
         };
@@ -132,35 +142,12 @@ impl ProxyDispatchRoute {
         })
     }
 
-    pub(crate) fn apply_adaptive_h2c_cache(&mut self, cached_h2c: Option<bool>) {
-        self.protocol_hint = match cached_h2c {
-            Some(true) => ProtocolHint::H2c,
-            Some(false) => ProtocolHint::Auto,
-            None if self.is_proxied() => ProtocolHint::Auto,
-            None => ProtocolHint::AdaptiveH2c,
-        };
-    }
-
     pub(crate) fn destination(&self) -> &ProxyDestination {
         &self.destination
     }
 
     pub(crate) fn is_proxied(&self) -> bool {
         !matches!(self.selection, ProxySelection::Direct)
-    }
-
-    pub(crate) fn single_proxy(&self) -> Option<&ProxyConfig> {
-        match &self.selection {
-            ProxySelection::Single(proxy) => Some(proxy),
-            ProxySelection::Direct | ProxySelection::Chain(_) => None,
-        }
-    }
-
-    pub(crate) fn chain(&self) -> Option<&ProxyChain> {
-        match &self.selection {
-            ProxySelection::Chain(chain) => Some(chain),
-            ProxySelection::Direct | ProxySelection::Single(_) => None,
-        }
     }
 
     pub(crate) fn pool_identity(&self) -> ProxyRoute {
@@ -170,11 +157,45 @@ impl ProxyDispatchRoute {
     pub(crate) fn protocol_hint(&self) -> ProtocolHint {
         self.protocol_hint
     }
+
+    #[cfg(test)]
+    pub(crate) fn establishment_plan(&self) -> Result<Option<ProxyEstablishmentPlan>, Error> {
+        self.establishment_plan_with_protocol(self.protocol_hint)
+    }
+
+    pub(crate) fn establishment_plan_with_protocol(
+        &self,
+        protocol_hint: ProtocolHint,
+    ) -> Result<Option<ProxyEstablishmentPlan>, Error> {
+        let proxies = match &self.selection {
+            ProxySelection::Direct => return Ok(None),
+            ProxySelection::Single(proxy) => vec![proxy.clone()],
+            ProxySelection::Chain(chain) => chain.proxies.clone(),
+        };
+        ProxyEstablishmentPlan::new(&self.destination, proxies, protocol_hint).map(Some)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use crate::proxy_credential::CredentialResolver;
+
     use super::*;
+
+    struct RecordingCredentialResolver {
+        calls: Arc<Mutex<Vec<String>>>,
+        username: &'static str,
+        password: String,
+    }
+
+    impl CredentialResolver for RecordingCredentialResolver {
+        fn resolve(&self, key: &str) -> Option<(String, String)> {
+            self.calls.lock().unwrap().push(key.to_owned());
+            Some((self.username.to_owned(), self.password.clone()))
+        }
+    }
 
     fn test_secret(byte: u8) -> String {
         String::from_utf8(vec![byte; 12]).unwrap()
@@ -255,13 +276,136 @@ mod tests {
     }
 
     #[test]
+    fn malformed_env_proxy_configuration_fails_during_pre_io_route_resolution() {
+        let _guard = crate::proxy::tests::ENV_MUTEX.lock().unwrap();
+        let uri = "http://would-require-dns.invalid/resource"
+            .parse::<Uri>()
+            .unwrap();
+        for value in [
+            "http://proxy.test:",
+            "http://proxy.test:not-a-port",
+            "http://proxy.test:99999",
+        ] {
+            unsafe {
+                std::env::set_var("TEST_ROUTE_PROXY_UPPER", value);
+                std::env::set_var("test_route_proxy_lower", "http://proxy.test:8080");
+            }
+            let settings = ProxySettings::from_env_variables(
+                "TEST_ROUTE_PROXY_UPPER",
+                "test_route_proxy_lower",
+                "TEST_ROUTE_HTTPS_PROXY_UPPER",
+                "test_route_https_proxy_lower",
+                crate::proxy::NoProxy::default(),
+            );
+
+            let error =
+                ProxyDispatchRoute::resolve(&uri, None, Some(&settings), ProtocolHint::Auto, None)
+                    .unwrap_err();
+            assert!(
+                matches!(&error, Error::InvalidUrl(message) if message.contains("TEST_ROUTE_PROXY_UPPER")),
+                "unexpected route error for {value}: {error}"
+            );
+        }
+
+        unsafe {
+            std::env::remove_var("TEST_ROUTE_PROXY_UPPER");
+            std::env::remove_var("test_route_proxy_lower");
+        }
+    }
+
+    #[test]
+    fn explicit_proxy_precedence_does_not_surface_unused_env_errors() {
+        let _guard = crate::proxy::tests::ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var("TEST_PRECEDENCE_HTTP_PROXY", "http://proxy.test:99999");
+            std::env::set_var("test_precedence_http_proxy", "http://proxy.test:8080");
+            std::env::set_var(
+                "TEST_PRECEDENCE_HTTPS_PROXY",
+                "http://secure-proxy.test:8443",
+            );
+        }
+        let settings = ProxySettings::from_env_variables(
+            "TEST_PRECEDENCE_HTTP_PROXY",
+            "test_precedence_http_proxy",
+            "TEST_PRECEDENCE_HTTPS_PROXY",
+            "test_precedence_https_proxy",
+            crate::proxy::NoProxy::default(),
+        );
+
+        let https_uri = "https://origin.test/resource".parse::<Uri>().unwrap();
+        assert!(
+            ProxyDispatchRoute::resolve(
+                &https_uri,
+                None,
+                Some(&settings),
+                ProtocolHint::Auto,
+                None,
+            )
+            .unwrap()
+            .is_proxied(),
+            "an invalid HTTP_PROXY must not poison a valid HTTPS_PROXY route"
+        );
+
+        let http_uri = "http://origin.test/resource".parse::<Uri>().unwrap();
+        let chain = ProxyChain::new(vec![
+            ProxyConfig::http("http://first.test:8080").unwrap(),
+            ProxyConfig::socks5("socks5://second.test:1080").unwrap(),
+        ]);
+        assert!(
+            ProxyDispatchRoute::resolve(
+                &http_uri,
+                Some(&chain),
+                Some(&settings),
+                ProtocolHint::Auto,
+                None,
+            )
+            .is_ok(),
+            "an explicit proxy chain must take precedence over environment proxies"
+        );
+
+        let bypassed = settings
+            .clone()
+            .no_proxy(crate::proxy::NoProxy::new("origin.test"));
+        assert!(
+            !ProxyDispatchRoute::resolve(
+                &http_uri,
+                None,
+                Some(&bypassed),
+                ProtocolHint::Auto,
+                None,
+            )
+            .unwrap()
+            .is_proxied(),
+            "NO_PROXY must bypass an unused malformed proxy endpoint"
+        );
+
+        let overridden = settings.http(ProxyConfig::http("http://override.test:8080").unwrap());
+        assert!(
+            ProxyDispatchRoute::resolve(
+                &http_uri,
+                None,
+                Some(&overridden),
+                ProtocolHint::Auto,
+                None,
+            )
+            .unwrap()
+            .is_proxied(),
+            "an explicit HTTP proxy must replace its stored environment error"
+        );
+
+        unsafe {
+            std::env::remove_var("TEST_PRECEDENCE_HTTP_PROXY");
+            std::env::remove_var("test_precedence_http_proxy");
+            std::env::remove_var("TEST_PRECEDENCE_HTTPS_PROXY");
+        }
+    }
+
+    #[test]
     fn route_owns_direct_single_and_chain_selections() {
         let uri: Uri = "https://example.test/path".parse().unwrap();
         let direct =
             ProxyDispatchRoute::resolve(&uri, None, None, ProtocolHint::Auto, None).unwrap();
         assert!(!direct.is_proxied());
-        assert!(direct.single_proxy().is_none());
-        assert!(direct.chain().is_none());
         assert_eq!(direct.pool_identity(), ProxyRoute::DIRECT);
 
         let password = test_secret(b'a');
@@ -274,11 +418,6 @@ mod tests {
             ProxyDispatchRoute::resolve(&uri, None, Some(&settings), ProtocolHint::Auto, None)
                 .unwrap();
         assert!(single.is_proxied());
-        assert_eq!(
-            single.single_proxy().map(ProxyConfig::route_identity),
-            Some(first.route_identity())
-        );
-        assert!(single.chain().is_none());
         assert_ne!(single.pool_identity(), ProxyRoute::DIRECT);
 
         let chain = ProxyChain::new(vec![first, second]);
@@ -291,11 +430,6 @@ mod tests {
         )
         .unwrap();
         assert!(chained.is_proxied());
-        assert!(chained.single_proxy().is_none());
-        assert_eq!(
-            chained.chain().map(ProxyChain::route_identity),
-            Some(chain.route_identity())
-        );
         assert_ne!(chained.pool_identity(), single.pool_identity());
     }
 
@@ -336,15 +470,17 @@ mod tests {
         }
 
         let uri: Uri = "https://example.test/path".parse().unwrap();
+        let first_password = test_secret(b'a');
+        let second_password = test_secret(b'b');
         let first = ProxySettings::all(
             ProxyConfig::http("http://proxy.test:8080")
                 .unwrap()
-                .basic_auth("user", &test_secret(b'a')),
+                .basic_auth("user", &first_password),
         );
         let second = ProxySettings::all(
             ProxyConfig::http("http://proxy.test:8080")
                 .unwrap()
-                .basic_auth("user", &test_secret(b'b')),
+                .basic_auth("user", &second_password),
         );
         let first = ProxyDispatchRoute::resolve(&uri, None, Some(&first), ProtocolHint::Auto, None)
             .unwrap()
@@ -366,6 +502,125 @@ mod tests {
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[&first], 1);
         assert_eq!(routes[&second], 2);
+    }
+
+    #[test]
+    fn two_hop_chain_resolves_each_missing_credential_once_before_planning() {
+        let uri: Uri = "https://example.test/path".parse().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let password = test_secret(b'a');
+        let settings =
+            ProxySettings::default().proxy_credential_resolver(RecordingCredentialResolver {
+                calls: calls.clone(),
+                username: "resolved",
+                password: password.clone(),
+            });
+        let chain = ProxyChain::new(vec![
+            ProxyConfig::http("http://first.test:8080").unwrap(),
+            ProxyConfig::socks5("socks5://second.test:1080").unwrap(),
+        ]);
+
+        let route = ProxyDispatchRoute::resolve(
+            &uri,
+            Some(&chain),
+            Some(&settings),
+            ProtocolHint::Auto,
+            None,
+        )
+        .unwrap();
+        let resolved_identity = route.pool_identity();
+        let plan = route.establishment_plan().unwrap().unwrap();
+
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            ["first.test:8080", "second.test:1080"]
+        );
+        for hop in [plan.first(), plan.second().unwrap()] {
+            let auth = hop.proxy().auth.as_ref().unwrap();
+            assert_eq!(auth.username, "resolved");
+            assert_eq!(auth.password, password);
+        }
+
+        let explicit_chain = ProxyChain::new(vec![
+            ProxyConfig::http("http://first.test:8080")
+                .unwrap()
+                .basic_auth("resolved", &password),
+            ProxyConfig::socks5("socks5://second.test:1080")
+                .unwrap()
+                .basic_auth("resolved", &password),
+        ]);
+        let explicit_route = ProxyDispatchRoute::resolve(
+            &uri,
+            Some(&explicit_chain),
+            None,
+            ProtocolHint::Auto,
+            None,
+        )
+        .unwrap();
+        assert_eq!(resolved_identity, explicit_route.pool_identity());
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn chain_route_identity_segregates_resolved_credentials_and_preserves_explicit_auth() {
+        let uri: Uri = "https://example.test/path".parse().unwrap();
+        let explicit_password = test_secret(b'e');
+        let first_password = test_secret(b'a');
+        let second_password = test_secret(b'b');
+        let chain = ProxyChain::new(vec![
+            ProxyConfig::http("http://first.test:8080")
+                .unwrap()
+                .basic_auth("explicit", &explicit_password),
+            ProxyConfig::http("http://second.test:8080").unwrap(),
+        ]);
+        let first_calls = Arc::new(Mutex::new(Vec::new()));
+        let second_calls = Arc::new(Mutex::new(Vec::new()));
+        let first_settings =
+            ProxySettings::default().proxy_credential_resolver(RecordingCredentialResolver {
+                calls: first_calls.clone(),
+                username: "resolved",
+                password: first_password.clone(),
+            });
+        let second_settings =
+            ProxySettings::default().proxy_credential_resolver(RecordingCredentialResolver {
+                calls: second_calls.clone(),
+                username: "resolved",
+                password: second_password.clone(),
+            });
+
+        let first = ProxyDispatchRoute::resolve(
+            &uri,
+            Some(&chain),
+            Some(&first_settings),
+            ProtocolHint::Auto,
+            None,
+        )
+        .unwrap();
+        let second = ProxyDispatchRoute::resolve(
+            &uri,
+            Some(&chain),
+            Some(&second_settings),
+            ProtocolHint::Auto,
+            None,
+        )
+        .unwrap();
+
+        assert_ne!(first.pool_identity(), second.pool_identity());
+        assert_eq!(first_calls.lock().unwrap().as_slice(), ["second.test:8080"]);
+        assert_eq!(
+            second_calls.lock().unwrap().as_slice(),
+            ["second.test:8080"]
+        );
+
+        for (route, expected_password) in [(first, first_password), (second, second_password)] {
+            let plan = route.establishment_plan().unwrap().unwrap();
+            let explicit = plan.first().proxy().auth.as_ref().unwrap();
+            assert_eq!(explicit.username, "explicit");
+            assert_eq!(explicit.password, explicit_password);
+            let resolved = plan.second().unwrap().proxy().auth.as_ref().unwrap();
+            assert_eq!(resolved.username, "resolved");
+            assert_eq!(resolved.password, expected_password);
+        }
     }
 
     #[test]

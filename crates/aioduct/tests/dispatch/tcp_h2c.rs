@@ -165,6 +165,7 @@ async fn adaptive_h2c_probe_falls_back_to_h1() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .no_connection_reuse()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -187,7 +188,7 @@ async fn adaptive_h2c_probe_falls_back_to_h1() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "h1 fallback ok");
 
-    // Second request uses cached h1_only result (pool_key.protocol set to Auto)
+    // The second request must use the cached H1 result even though pooling is disabled.
     let incoming2 = http::Request::builder()
         .method(http::Method::GET)
         .uri("/fallback-test2")
@@ -206,11 +207,10 @@ async fn adaptive_h2c_probe_falls_back_to_h1() {
     assert_eq!(resp2.status(), http::StatusCode::OK);
     assert_eq!(resp2.text().await.unwrap(), "h1 fallback ok");
 
-    // Probe fails on conn 1, fallback opens conn 2, second request may reuse
-    assert!(
-        counter.connections() >= 2,
-        "adaptive h2c probe + fallback should use at least 2 connections, got {}",
-        counter.connections()
+    assert_eq!(
+        counter.connections(),
+        3,
+        "one H2 probe, one H1 fallback, and one cached fresh H1 connection are expected"
     );
 }
 

@@ -1,662 +1,511 @@
-use std::time::Duration;
+use std::net::SocketAddr;
+
+use http::{Method, Uri};
 
 use crate::body::RequestBodySend;
+use crate::clock::Instant;
 use crate::error::Error;
+use crate::h2c_probe::{H2cProbeAction, H2cProbeKey, H2cProbeToken};
 use crate::pool::PooledConnection;
-use crate::proxy::ProxyConfig;
-use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
+use crate::proxy::ProxyEstablishmentPlan;
+use crate::runtime::{ConnectorSend, RuntimePoll};
 
 use super::HttpEngineSend;
+use super::h2_peer_settings::H2PeerSettingsRequirement;
+use super::proxy_connect::{
+    ProxyAttemptError, ProxyAttemptObservation, ProxyConnectCandidates, ProxyConnectionTransitions,
+    ProxyEndpointFailureOwner, ProxyHopTransition, ProxyHopTransport, ProxyNegotiation,
+    ProxyOriginProtocol, ProxyTargetAttempt, classify_first_proxy_endpoint_error,
+    classify_pre_request_endpoint_error, classify_socks4_error, classify_socks5_error,
+    configure_proxy_socket,
+};
+use super::proxy_stream::ProxyStreamSend;
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
-    pub(crate) async fn connect_via_proxy_send(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn connect_via_proxy_plan_adaptive_h2c_send(
         &self,
-        proxy: &ProxyConfig,
-        target_authority: &http::uri::Authority,
-        is_https: bool,
-        connect_timeout: Option<Duration>,
-        force_h2c: bool,
-    ) -> Result<PooledConnection<RequestBodySend>, Error> {
-        proxy.validate_for_use()?;
-        let proxy_authority = proxy.authority()?;
-        let default_port = proxy.default_port();
-        let proxy_addr = self
-            .core
-            .resolve_authority(proxy_authority, default_port)
-            .await?;
-        let tcp_stream = if let Some(local_addr) = self.core.local_address {
-            self.connector
-                .connect_bound(proxy_addr, local_addr)
-                .await
-                .map_err(Error::Io)?
-        } else {
-            self.connector
-                .connect(proxy_addr)
-                .await
-                .map_err(Error::Io)?
-        };
-        #[cfg(target_os = "linux")]
-        if let Some(ref iface) = self.core.interface {
-            tcp_stream.bind_device(iface).map_err(Error::Io)?;
-        }
-        if let Some(time) = self.core.tcp_keepalive {
-            tcp_stream
-                .set_keepalive(
-                    time,
-                    self.core.tcp_keepalive_interval,
-                    self.core.tcp_keepalive_retries,
-                )
-                .map_err(Error::Io)?;
-        }
-        if self.core.tcp_fast_open {
-            let _ = tcp_stream.set_fast_open();
-        }
-
-        if proxy.scheme == crate::proxy::ProxyScheme::Socks5
-            || proxy.scheme == crate::proxy::ProxyScheme::Socks5h
-        {
-            let host = target_authority.host();
-            let port = target_authority
-                .port_u16()
-                .unwrap_or(if is_https { 443 } else { 80 });
-            let dns = if proxy.scheme == crate::proxy::ProxyScheme::Socks5h {
-                crate::socks5::Socks5Dns::Remote
-            } else {
-                crate::socks5::Socks5Dns::Local
-            };
-            // Pre-resolve for Socks5Dns::Local
-            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
-                let addr = self.core.resolve_authority(target_authority, port).await?;
-                Some(addr.ip())
-            } else {
-                None
-            };
-            let mut stream = tcp_stream;
-            crate::timeout::connect_timeout::<R, _, _>(
-                async {
-                    crate::socks5::socks5_handshake_async(
-                        &mut stream,
-                        host,
-                        port,
-                        proxy.auth.as_ref(),
-                        dns,
-                        resolved_addr,
-                    )
-                    .await
-                    .map_err(Error::Io)
-                },
-                connect_timeout,
-            )
-            .await?;
-            if is_https {
-                self.connect_tls(stream, host).await
-            } else if force_h2c {
-                self.connect_h2_prior_knowledge(stream).await
-            } else {
-                self.connect_h1(stream).await
-            }
-        } else if proxy.scheme == crate::proxy::ProxyScheme::Socks4 {
-            let host = target_authority.host();
-            let port = target_authority
-                .port_u16()
-                .unwrap_or(if is_https { 443 } else { 80 });
-            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-            }
-            crate::socks4::socks4a_handshake(&mut std_stream, host, port, proxy.auth.as_ref())
-                .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
-            }
-            let tcp_stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            if is_https {
-                self.connect_tls(tcp_stream, host).await
-            } else if force_h2c {
-                self.connect_h2_prior_knowledge(tcp_stream).await
-            } else {
-                self.connect_h1(tcp_stream).await
-            }
-        } else if proxy.scheme == crate::proxy::ProxyScheme::Https {
-            #[cfg(feature = "rustls")]
-            {
-                let tls_connector = self
-                    .core
-                    .tls
-                    .as_ref()
-                    .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                let tls_stream = super::proxy_tls::connect_send(
-                    tls_connector,
-                    proxy_authority.host(),
-                    tcp_stream,
-                )
-                .await?;
-                if is_https {
-                    self.connect_tunnel_send(tls_stream, proxy, target_authority, connect_timeout)
-                        .await
-                } else {
-                    // HTTPS proxy for HTTP target: CONNECT through TLS pipe.
-                    let port = target_authority.port_u16().unwrap_or(80);
-                    let target = format!("{}:{port}", target_authority.host());
-                    let tunnel_stream =
-                        super::connect_handshake::do_connect_handshake(tls_stream, proxy, &target)
-                            .await?;
-                    if force_h2c {
-                        self.connect_h2_prior_knowledge(tunnel_stream).await
-                    } else {
-                        self.connect_h1(tunnel_stream).await
-                    }
-                }
-            }
-            #[cfg(not(feature = "rustls"))]
-            {
-                Err(Error::Tls(
-                    "HTTPS proxy requires the `rustls` TLS backend feature".into(),
-                ))
-            }
-        } else if is_https {
-            self.connect_tunnel_send(tcp_stream, proxy, target_authority, connect_timeout)
-                .await
-        } else {
-            // HTTP proxy for HTTP target: CONNECT to create a raw pipe.
-            let port = target_authority.port_u16().unwrap_or(80);
-            let target = format!("{}:{port}", target_authority.host());
-            let tunnel_stream =
-                super::connect_handshake::do_connect_handshake(tcp_stream, proxy, &target).await?;
-            if force_h2c {
-                self.connect_h2_prior_knowledge(tunnel_stream).await
-            } else {
-                self.connect_h1(tunnel_stream).await
-            }
-        }
-    }
-
-    /// Perform an HTTP CONNECT handshake through `stream` to `target`.
-    /// Returns the stream unchanged on success (type-preserving for chaining).
-    pub(crate) async fn connect_tunnel_send<S>(
-        &self,
-        stream: S,
-        proxy: &ProxyConfig,
-        target_authority: &http::uri::Authority,
-        _connect_timeout: Option<Duration>,
-    ) -> Result<PooledConnection<RequestBodySend>, Error>
-    where
-        S: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
-    {
-        let port = target_authority.port_u16().unwrap_or(443);
-        let target = format!("{}:{port}", target_authority.host());
-        let tunnel_stream =
-            super::connect_handshake::do_connect_handshake(stream, proxy, &target).await?;
+        h2_plan: &ProxyEstablishmentPlan,
+        h1_plan: &ProxyEstablishmentPlan,
+        method: &Method,
+        uri: &Uri,
+        force_addr: Option<SocketAddr>,
+        probe_key: &H2cProbeKey,
+    ) -> Result<(PooledConnection<RequestBodySend>, Option<H2cProbeToken>), Error> {
         #[cfg(feature = "rustls")]
-        {
-            let stream = tunnel_stream;
-            let host = target_authority.host();
-            use crate::tls::TlsConnect;
-            use std::time::Instant;
-
-            let tls_connector = self
-                .core
-                .tls
-                .as_ref()
-                .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-
-            let tls_start = Instant::now();
-            let tls_stream = <crate::tls::RustlsConnector as TlsConnect<S>>::connect(
-                tls_connector,
-                host,
-                stream,
-            )
-            .await
-            .map_err(|e| {
-                #[cfg(feature = "tracing")]
-                tracing::trace!(host = host, error = %e, "tls.handshake.error");
-                Error::Tls(Box::new(e))
-            })?;
-
-            let tls_duration = tls_start.elapsed();
-            let alpn =
-                crate::tls::RustlsConnector::negotiated_protocol(tls_stream.tls_connection());
-            let tls_info = tls_stream.tls_info();
-
-            match alpn {
-                Some(crate::tls::AlpnProtocol::H2) => {
-                    let mut builder = hyper::client::conn::http2::Builder::new(
-                        crate::runtime::executor::poll_executor::<R>(),
-                    );
-                    if let Some(ref h2) = self.core.http2 {
-                        h2.apply(&mut builder);
-                    }
-                    let (sender, conn) = builder.handshake(tls_stream).await?;
-                    R::spawn_send(async move {
-                        let _ = conn.await;
-                    });
-                    let mut pooled = PooledConnection::new_h2(sender);
-                    pooled.tls_info = Some(tls_info);
-                    pooled.tls_handshake_duration = Some(tls_duration);
-                    Ok(pooled)
-                }
-                _ => {
-                    let (sender, conn) = hyper::client::conn::http1::handshake(tls_stream).await?;
-                    R::spawn_send(async move {
-                        let _ = conn.with_upgrades().await;
-                    });
-                    let mut pooled = PooledConnection::new_h1(sender);
-                    pooled.tls_info = Some(tls_info);
-                    pooled.tls_handshake_duration = Some(tls_duration);
-                    Ok(pooled)
-                }
-            }
+        if h2_plan.requires_tls() && self.core.tls.is_none() {
+            return Err(Error::Tls("no TLS connector configured".into()));
+        }
+        #[cfg(feature = "rustls")]
+        if let Some(connector) = self.core.tls.as_deref() {
+            super::proxy_tls::preflight_https_proxy_hops(connector, h2_plan)?;
+            super::proxy_tls::preflight_https_proxy_hops(connector, h1_plan)?;
         }
         #[cfg(not(feature = "rustls"))]
-        {
-            drop(tunnel_stream);
-            Err(Error::Tls(
-                "HTTPS CONNECT tunnel requires the `rustls` TLS backend feature".into(),
-            ))
+        if h2_plan.requires_tls() || h1_plan.requires_tls() {
+            return Err(Error::Tls(
+                "HTTPS origins and proxies require the `rustls` TLS backend feature".into(),
+            ));
         }
+
+        let candidates =
+            ProxyConnectCandidates::resolve(&self.core, h2_plan, method, uri, force_addr).await?;
+        candidates
+            .try_each_target(|first_proxy_addrs, targets| {
+                self.connect_via_proxy_attempt_adaptive_h2c_send(
+                    h2_plan,
+                    h1_plan,
+                    first_proxy_addrs,
+                    targets,
+                    method,
+                    uri,
+                    probe_key,
+                )
+            })
+            .await
     }
 
-    async fn connect_two_hop_send(
+    pub(crate) async fn connect_via_proxy_plan_send(
         &self,
-        first: &ProxyConfig,
-        second: &ProxyConfig,
-        target_authority: &http::uri::Authority,
-        is_https: bool,
-        connect_timeout: Option<Duration>,
-        force_h2c: bool,
+        plan: &ProxyEstablishmentPlan,
+        method: &Method,
+        uri: &Uri,
+        force_addr: Option<SocketAddr>,
+        h2_peer_settings: H2PeerSettingsRequirement,
     ) -> Result<PooledConnection<RequestBodySend>, Error> {
-        let second_authority = second.authority()?;
-        let second_default_port = second.default_port();
-        let second_host = second_authority.host();
-        let second_port = second_authority.port_u16().unwrap_or(second_default_port);
+        #[cfg(feature = "rustls")]
+        if plan.requires_tls() && self.core.tls.is_none() {
+            return Err(Error::Tls("no TLS connector configured".into()));
+        }
+        #[cfg(feature = "rustls")]
+        if let Some(connector) = self.core.tls.as_deref() {
+            super::proxy_tls::preflight_https_proxy_hops(connector, plan)?;
+        }
+        #[cfg(not(feature = "rustls"))]
+        if plan.requires_tls() {
+            return Err(Error::Tls(
+                "HTTPS origins and proxies require the `rustls` TLS backend feature".into(),
+            ));
+        }
 
-        let first_authority = first.authority()?;
-        let first_addr = self
-            .core
-            .resolve_authority(first_authority, first.default_port())
-            .await?;
+        let candidates =
+            ProxyConnectCandidates::resolve(&self.core, plan, method, uri, force_addr).await?;
+        candidates
+            .try_each_target(|first_proxy_addrs, targets| {
+                self.connect_via_proxy_attempt_send(
+                    plan,
+                    first_proxy_addrs,
+                    targets,
+                    method,
+                    uri,
+                    h2_peer_settings,
+                )
+            })
+            .await
+    }
 
-        let tcp_stream = if let Some(local_addr) = self.core.local_address {
-            self.connector
-                .connect_bound(first_addr, local_addr)
-                .await
-                .map_err(Error::Io)?
-        } else {
-            self.connector
-                .connect(first_addr)
-                .await
-                .map_err(Error::Io)?
+    async fn connect_via_proxy_attempt_send(
+        &self,
+        plan: &ProxyEstablishmentPlan,
+        first_proxy_addrs: Vec<SocketAddr>,
+        targets: ProxyTargetAttempt,
+        method: &Method,
+        uri: &Uri,
+        h2_peer_settings: H2PeerSettingsRequirement,
+    ) -> Result<PooledConnection<RequestBodySend>, ProxyAttemptError> {
+        let tcp_start = Instant::now();
+        let (stream, remote_addr) = self.connect_first_proxy_send(&first_proxy_addrs).await?;
+        self.connect_via_proxy_stream_send(
+            stream,
+            remote_addr,
+            tcp_start,
+            plan,
+            targets,
+            method,
+            uri,
+            h2_peer_settings,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn connect_via_proxy_attempt_adaptive_h2c_send(
+        &self,
+        h2_plan: &ProxyEstablishmentPlan,
+        h1_plan: &ProxyEstablishmentPlan,
+        first_proxy_addrs: Vec<SocketAddr>,
+        targets: ProxyTargetAttempt,
+        method: &Method,
+        uri: &Uri,
+        probe_key: &H2cProbeKey,
+    ) -> Result<(PooledConnection<RequestBodySend>, Option<H2cProbeToken>), ProxyAttemptError> {
+        let tcp_start = Instant::now();
+        let (stream, remote_addr) = self.connect_first_proxy_send(&first_proxy_addrs).await?;
+        let endpoint_key = probe_key.proxy_endpoint(
+            remote_addr,
+            targets.first_target_addr,
+            targets.second_target_addr,
+        );
+        let probe_token = match self.core.h2c_probe_cache.begin_endpoint_probe(endpoint_key) {
+            H2cProbeAction::UseH1 => {
+                let connection = self
+                    .connect_via_proxy_stream_send(
+                        stream,
+                        remote_addr,
+                        tcp_start,
+                        h1_plan,
+                        targets,
+                        method,
+                        uri,
+                        H2PeerSettingsRequirement::NotRequired,
+                    )
+                    .await?;
+                return Ok((connection, None));
+            }
+            H2cProbeAction::Probe(token) => *token,
         };
 
-        #[cfg(target_os = "linux")]
-        if let Some(ref iface) = self.core.interface {
-            tcp_stream.bind_device(iface).map_err(Error::Io)?;
-        }
-        if let Some(time) = self.core.tcp_keepalive {
-            tcp_stream
-                .set_keepalive(
-                    time,
-                    self.core.tcp_keepalive_interval,
-                    self.core.tcp_keepalive_retries,
-                )
-                .map_err(Error::Io)?;
-        }
-        if self.core.tcp_fast_open {
-            let _ = tcp_stream.set_fast_open();
-        }
-
-        if first.scheme == crate::proxy::ProxyScheme::Socks5
-            || first.scheme == crate::proxy::ProxyScheme::Socks5h
+        match self
+            .connect_via_proxy_stream_send(
+                stream,
+                remote_addr,
+                tcp_start,
+                h2_plan,
+                targets,
+                method,
+                uri,
+                H2PeerSettingsRequirement::Required,
+            )
+            .await
         {
-            let dns = if first.scheme == crate::proxy::ProxyScheme::Socks5h {
-                crate::socks5::Socks5Dns::Remote
-            } else {
-                crate::socks5::Socks5Dns::Local
-            };
-            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
-                let addr = self
-                    .core
-                    .resolve_authority(second_authority, second_default_port)
-                    .await?;
-                Some(addr.ip())
-            } else {
-                None
-            };
-            let mut stream = tcp_stream;
-            crate::timeout::connect_timeout::<R, _, _>(
-                async {
-                    crate::socks5::socks5_handshake_async(
-                        &mut stream,
-                        second_host,
-                        second_port,
-                        first.auth.as_ref(),
-                        dns,
-                        resolved_addr,
-                    )
-                    .await
-                    .map_err(Error::Io)
-                },
-                connect_timeout,
-            )
-            .await?;
-            self.connect_second_hop_send(
-                stream,
-                second,
-                target_authority,
-                is_https,
-                connect_timeout,
-                force_h2c,
-            )
-            .await
-        } else if first.scheme == crate::proxy::ProxyScheme::Socks4 {
-            let mut std_stream = self.connector.into_std_tcp(tcp_stream).map_err(Error::Io)?;
-            if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
+            Ok(connection) => {
+                self.core.h2c_probe_cache.confirm_h2c_endpoint(probe_token);
+                Ok((connection, None))
             }
-            crate::socks4::socks4a_handshake(
-                &mut std_stream,
-                second_host,
-                second_port,
-                first.auth.as_ref(),
-            )
-            .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
+            Err(ProxyAttemptError::LocalTarget { hop, source }) => {
+                Err(ProxyAttemptError::LocalTarget { hop, source })
             }
-            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            self.connect_second_hop_send(
-                stream,
-                second,
-                target_authority,
-                is_https,
-                connect_timeout,
-                force_h2c,
-            )
-            .await
-        } else if first.scheme == crate::proxy::ProxyScheme::Https {
-            #[cfg(feature = "rustls")]
-            {
-                let tls_connector = self
-                    .core
-                    .tls
-                    .as_ref()
-                    .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                let tls_stream = super::proxy_tls::connect_send(
-                    tls_connector,
-                    first_authority.host(),
-                    tcp_stream,
-                )
-                .await?;
-                let second_target = format!(
-                    "{}:{}",
-                    second_authority.host(),
-                    second_authority.port_u16().unwrap_or(second.default_port())
-                );
-                let stream = super::connect_handshake::do_connect_handshake(
-                    tls_stream,
-                    first,
-                    &second_target,
-                )
-                .await?;
-                if second.scheme == crate::proxy::ProxyScheme::Https {
-                    // TLS-wrap to the second proxy through the first proxy's
-                    // tunnel, then dispatch based on target scheme and h2c flag.
-                    let tls_stream = super::proxy_tls::connect_send(
-                        tls_connector,
-                        second_authority.host(),
-                        stream,
-                    )
-                    .await?;
-                    if is_https {
-                        self.connect_tunnel_send(
-                            tls_stream,
-                            second,
-                            target_authority,
-                            connect_timeout,
-                        )
+            Err(error @ ProxyAttemptError::FirstProxyEndpoint { .. }) => Err(error),
+            Err(ProxyAttemptError::Fatal(error)) => Err(ProxyAttemptError::Fatal(error)),
+            Err(ProxyAttemptError::AdaptiveH2cRejected(_)) => {
+                self.core.h2c_probe_cache.reject_h2c_endpoint(&probe_token);
+                let fallback_start = Instant::now();
+                let (stream, fallback_addr) =
+                    self.connect_first_proxy_send(&[remote_addr])
                         .await
-                    } else if force_h2c {
-                        let port = target_authority.port_u16().unwrap_or(80);
-                        let target = format!("{}:{port}", target_authority.host());
-                        let tunnel_stream = super::connect_handshake::do_connect_handshake(
-                            tls_stream, second, &target,
-                        )
-                        .await?;
-                        self.connect_h2_prior_knowledge(tunnel_stream).await
-                    } else {
-                        self.connect_h1(tls_stream).await
-                    }
-                } else {
-                    if is_https {
-                        self.connect_tunnel_send(stream, second, target_authority, connect_timeout)
-                            .await
-                    } else if force_h2c {
-                        let port = target_authority.port_u16().unwrap_or(80);
-                        let target = format!("{}:{port}", target_authority.host());
-                        let tunnel_stream =
-                            super::connect_handshake::do_connect_handshake(stream, second, &target)
-                                .await?;
-                        self.connect_h2_prior_knowledge(tunnel_stream).await
-                    } else {
-                        self.connect_h1(stream).await
-                    }
-                }
-            }
-            #[cfg(not(feature = "rustls"))]
-            {
-                Err(Error::Tls(
-                    "HTTPS proxy requires the `rustls` TLS backend feature".into(),
-                ))
-            }
-        } else {
-            // HTTP proxy: CONNECT through first to reach second
-            let second_target = format!(
-                "{}:{}",
-                second_authority.host(),
-                second_authority.port_u16().unwrap_or(second.default_port())
-            );
-            let stream =
-                super::connect_handshake::do_connect_handshake(tcp_stream, first, &second_target)
+                        .map_err(|error| classify_first_proxy_endpoint_error(remote_addr, error))?;
+                debug_assert_eq!(fallback_addr, remote_addr);
+                let connection = self
+                    .connect_via_proxy_stream_send(
+                        stream,
+                        fallback_addr,
+                        fallback_start,
+                        h1_plan,
+                        targets,
+                        method,
+                        uri,
+                        H2PeerSettingsRequirement::NotRequired,
+                    )
                     .await?;
-            self.connect_second_hop_send(
-                stream,
-                second,
-                target_authority,
-                is_https,
-                connect_timeout,
-                force_h2c,
-            )
-            .await
+                Ok((connection, Some(probe_token)))
+            }
         }
     }
 
-    /// Second-hop dispatch: the stream is already connected to `second`'s proxy.
-    /// Routes via SOCKS5/SOCKS4 handshake or HTTP CONNECT depending on the scheme.
-    async fn connect_second_hop_send(
+    #[allow(clippy::too_many_arguments)]
+    async fn connect_via_proxy_stream_send(
         &self,
         stream: C::Stream,
-        second: &ProxyConfig,
-        target_authority: &http::uri::Authority,
-        is_https: bool,
-        connect_timeout: Option<Duration>,
-        force_h2c: bool,
-    ) -> Result<PooledConnection<RequestBodySend>, Error> {
-        let target_host = target_authority.host();
-        let target_port = target_authority
-            .port_u16()
-            .unwrap_or(if is_https { 443 } else { 80 });
-
-        if second.scheme == crate::proxy::ProxyScheme::Socks5
-            || second.scheme == crate::proxy::ProxyScheme::Socks5h
-        {
-            let dns = if second.scheme == crate::proxy::ProxyScheme::Socks5h {
-                crate::socks5::Socks5Dns::Remote
-            } else {
-                crate::socks5::Socks5Dns::Local
-            };
-            let resolved_addr = if dns == crate::socks5::Socks5Dns::Local {
-                let addr = self
-                    .core
-                    .resolve_authority(target_authority, target_port)
-                    .await?;
-                Some(addr.ip())
-            } else {
-                None
-            };
-            let mut s = stream;
-            crate::timeout::connect_timeout::<R, _, _>(
-                async {
-                    crate::socks5::socks5_handshake_async(
-                        &mut s,
-                        target_host,
-                        target_port,
-                        second.auth.as_ref(),
-                        dns,
-                        resolved_addr,
+        remote_addr: SocketAddr,
+        tcp_start: Instant,
+        plan: &ProxyEstablishmentPlan,
+        targets: ProxyTargetAttempt,
+        method: &Method,
+        uri: &Uri,
+        h2_peer_settings: H2PeerSettingsRequirement,
+    ) -> Result<PooledConnection<RequestBodySend>, ProxyAttemptError> {
+        let mut observation = ProxyAttemptObservation::new(
+            &self.core,
+            method,
+            uri,
+            plan.first().scheme(),
+            plan.protocol_hint(),
+            remote_addr,
+            tcp_start.elapsed(),
+        );
+        let mut connection = match ProxyHopTransport::for_hop(plan.first()) {
+            ProxyHopTransport::Tls {
+                server_name: _server_name,
+            } => {
+                #[cfg(feature = "rustls")]
+                {
+                    let connector = self
+                        .core
+                        .tls
+                        .as_deref()
+                        .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+                    let tls_start = Instant::now();
+                    let stream = super::proxy_tls::connect_send(
+                        connector,
+                        _server_name,
+                        ProxyStreamSend::new(stream),
                     )
                     .await
-                    .map_err(Error::Io)
-                },
-                connect_timeout,
+                    .map_err(|error| classify_first_proxy_endpoint_error(remote_addr, error))?;
+                    observation.record_proxy_tls(&stream, tls_start.elapsed());
+                    self.connect_after_first_proxy_send(
+                        ProxyStreamSend::new(stream),
+                        remote_addr,
+                        plan,
+                        targets,
+                        &mut observation,
+                        h2_peer_settings,
+                    )
+                    .await?
+                }
+                #[cfg(not(feature = "rustls"))]
+                unreachable!()
+            }
+            ProxyHopTransport::Plain => {
+                self.connect_after_first_proxy_send(
+                    ProxyStreamSend::new(stream),
+                    remote_addr,
+                    plan,
+                    targets,
+                    &mut observation,
+                    h2_peer_settings,
+                )
+                .await?
+            }
+        };
+        connection.remote_addr = Some(remote_addr);
+        Ok(connection)
+    }
+
+    async fn connect_first_proxy_send(
+        &self,
+        addrs: &[SocketAddr],
+    ) -> Result<(C::Stream, SocketAddr), Error> {
+        let (stream, remote_addr) = crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
+            &self.connector,
+            addrs,
+            self.core.local_address,
+        )
+        .await
+        .map_err(Error::Io)?;
+
+        configure_proxy_socket(&self.core, &stream)?;
+
+        Ok((stream, remote_addr))
+    }
+
+    async fn connect_after_first_proxy_send(
+        &self,
+        stream: ProxyStreamSend,
+        first_proxy_addr: SocketAddr,
+        plan: &ProxyEstablishmentPlan,
+        targets: ProxyTargetAttempt,
+        observation: &mut ProxyAttemptObservation,
+        h2_peer_settings: H2PeerSettingsRequirement,
+    ) -> Result<PooledConnection<RequestBodySend>, ProxyAttemptError> {
+        let transitions = ProxyConnectionTransitions::new(
+            plan,
+            targets.first_target_addr,
+            targets.second_target_addr,
+        );
+        let first = transitions.first();
+        let stream = self
+            .negotiate_proxy_send(
+                stream,
+                first.negotiation()?,
+                Some(ProxyEndpointFailureOwner::FirstProxy(first_proxy_addr)),
             )
             .await?;
-            if is_https {
-                self.connect_tls(s, target_host).await
-            } else if force_h2c {
-                self.connect_h2_prior_knowledge(s).await
-            } else {
-                self.connect_h1(s).await
-            }
-        } else if second.scheme == crate::proxy::ProxyScheme::Socks4 {
-            let mut std_stream = self.connector.into_std_tcp(stream).map_err(Error::Io)?;
-            if let Some(timeout) = connect_timeout {
-                std_stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-                std_stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(Error::Io)?;
-            }
-            crate::socks4::socks4a_handshake(
-                &mut std_stream,
-                target_host,
-                target_port,
-                second.auth.as_ref(),
-            )
-            .map_err(Error::Io)?;
-            if connect_timeout.is_some() {
-                std_stream.set_read_timeout(None).map_err(Error::Io)?;
-                std_stream.set_write_timeout(None).map_err(Error::Io)?;
-            }
-            let stream = self.connector.from_std_tcp(std_stream).map_err(Error::Io)?;
-            if is_https {
-                self.connect_tls(stream, target_host).await
-            } else {
-                self.connect_plaintext_with_hint(stream, force_h2c).await
-            }
-        } else if second.scheme == crate::proxy::ProxyScheme::Https {
-            #[cfg(feature = "rustls")]
-            {
-                let tls_connector = self
-                    .core
-                    .tls
-                    .as_ref()
-                    .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                let second_authority = second.authority()?;
-                let tls_stream =
-                    super::proxy_tls::connect_send(tls_connector, second_authority.host(), stream)
-                        .await?;
-                if is_https {
-                    self.connect_tunnel_send(tls_stream, second, target_authority, connect_timeout)
+        let Some(second) = transitions.second() else {
+            return self
+                .connect_proxy_origin_send(stream, plan, observation, h2_peer_settings)
+                .await
+                .map_err(|error| {
+                    if h2_peer_settings.is_required() {
+                        first.classify_adaptive_h2c_setup_error(error)
+                    } else {
+                        first.classify_target_setup_error(error)
+                    }
+                });
+        };
+
+        match second.transport() {
+            ProxyHopTransport::Tls {
+                server_name: _server_name,
+            } => {
+                #[cfg(feature = "rustls")]
+                {
+                    let connector = self
+                        .core
+                        .tls
+                        .as_deref()
+                        .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
+                    let tls_start = Instant::now();
+                    let stream = super::proxy_tls::connect_send(connector, _server_name, stream)
                         .await
-                } else if force_h2c {
-                    // H2 prior-knowledge through an HTTPS proxy: CONNECT first
-                    // to create a raw pipe to the target, then send the preface.
-                    let port = target_authority.port_u16().unwrap_or(80);
-                    let target = format!("{}:{port}", target_authority.host());
-                    let tunnel_stream =
-                        super::connect_handshake::do_connect_handshake(tls_stream, second, &target)
-                            .await?;
-                    self.connect_h2_prior_knowledge(tunnel_stream).await
-                } else {
-                    self.connect_plaintext_with_hint(tls_stream, force_h2c)
-                        .await
-                }
-            }
-            #[cfg(not(feature = "rustls"))]
-            {
-                Err(Error::Tls(
-                    "HTTPS proxy requires the `rustls` TLS backend feature".into(),
-                ))
-            }
-        } else {
-            // HTTP: CONNECT through second to reach target
-            if is_https {
-                self.connect_tunnel_send(stream, second, target_authority, connect_timeout)
+                        .map_err(|error| first.classify_target_setup_error(error))?;
+                    observation.record_proxy_tls(&stream, tls_start.elapsed());
+                    self.connect_final_proxy_send(
+                        ProxyStreamSend::new(stream),
+                        second,
+                        first
+                            .local_target_hop()
+                            .map(ProxyEndpointFailureOwner::LocalTarget),
+                        plan,
+                        observation,
+                        h2_peer_settings,
+                    )
                     .await
-            } else if force_h2c {
-                // H2 prior-knowledge through an HTTP proxy: CONNECT first
-                // to create a raw pipe to the target, then send the preface.
-                let port = target_authority.port_u16().unwrap_or(80);
-                let target = format!("{}:{port}", target_authority.host());
-                let tunnel_stream =
-                    super::connect_handshake::do_connect_handshake(stream, second, &target).await?;
-                self.connect_h2_prior_knowledge(tunnel_stream).await
-            } else {
-                self.connect_plaintext_with_hint(stream, force_h2c).await
+                }
+                #[cfg(not(feature = "rustls"))]
+                unreachable!()
+            }
+            ProxyHopTransport::Plain => {
+                self.connect_final_proxy_send(
+                    stream,
+                    second,
+                    first
+                        .local_target_hop()
+                        .map(ProxyEndpointFailureOwner::LocalTarget),
+                    plan,
+                    observation,
+                    h2_peer_settings,
+                )
+                .await
             }
         }
     }
 
-    pub(crate) async fn connect_via_proxy_chain_send(
+    async fn connect_final_proxy_send(
         &self,
-        chain: &crate::proxy::ProxyChain,
-        target_authority: &http::uri::Authority,
-        is_https: bool,
-        connect_timeout: Option<Duration>,
-        force_h2c: bool,
-    ) -> Result<PooledConnection<RequestBodySend>, Error> {
-        for proxy in chain.iter() {
-            proxy.validate_for_use()?;
+        stream: ProxyStreamSend,
+        transition: ProxyHopTransition<'_>,
+        endpoint_failure_owner: Option<ProxyEndpointFailureOwner>,
+        plan: &ProxyEstablishmentPlan,
+        observation: &mut ProxyAttemptObservation,
+        h2_peer_settings: H2PeerSettingsRequirement,
+    ) -> Result<PooledConnection<RequestBodySend>, ProxyAttemptError> {
+        let stream = self
+            .negotiate_proxy_send(stream, transition.negotiation()?, endpoint_failure_owner)
+            .await?;
+        self.connect_proxy_origin_send(stream, plan, observation, h2_peer_settings)
+            .await
+            .map_err(|error| {
+                if h2_peer_settings.is_required() {
+                    transition.classify_adaptive_h2c_setup_error(error)
+                } else {
+                    transition.classify_target_setup_error(error)
+                }
+            })
+    }
+
+    async fn negotiate_proxy_send(
+        &self,
+        mut stream: ProxyStreamSend,
+        negotiation: ProxyNegotiation<'_>,
+        endpoint_failure_owner: Option<ProxyEndpointFailureOwner>,
+    ) -> Result<ProxyStreamSend, ProxyAttemptError> {
+        match negotiation {
+            ProxyNegotiation::HttpConnect {
+                proxy,
+                connect_target,
+            } => super::connect_handshake::do_connect_handshake(
+                stream,
+                proxy,
+                connect_target.as_ref(),
+            )
+            .await
+            .map_err(|error| classify_pre_request_endpoint_error(endpoint_failure_owner, error)),
+            ProxyNegotiation::Socks4Local {
+                address,
+                auth,
+                fallback_hop,
+            } => {
+                crate::socks4::socks4_handshake_async(
+                    &mut stream,
+                    *address.ip(),
+                    address.port(),
+                    auth,
+                )
+                .await
+                .map_err(|error| {
+                    classify_socks4_error(Some(fallback_hop), endpoint_failure_owner, error)
+                })?;
+                Ok(stream)
+            }
+            ProxyNegotiation::Socks4aRemote { host, port, auth } => {
+                crate::socks4::socks4a_handshake_async(&mut stream, host, port, auth)
+                    .await
+                    .map_err(|error| classify_socks4_error(None, endpoint_failure_owner, error))?;
+                Ok(stream)
+            }
+            ProxyNegotiation::Socks5 {
+                host,
+                port,
+                auth,
+                dns,
+                resolved_addr,
+                fallback_hop,
+            } => {
+                crate::socks5::socks5_handshake_async(
+                    &mut stream,
+                    host,
+                    port,
+                    auth,
+                    dns,
+                    resolved_addr,
+                )
+                .await
+                .map_err(|error| {
+                    classify_socks5_error(fallback_hop, endpoint_failure_owner, error)
+                })?;
+                Ok(stream)
+            }
         }
-        match chain.len() {
-            0 => Err(Error::Other("empty proxy chain".into())),
-            1 => {
-                self.connect_via_proxy_send(
-                    &chain.proxies[0],
-                    target_authority,
-                    is_https,
-                    connect_timeout,
-                    force_h2c,
-                )
-                .await
+    }
+
+    async fn connect_proxy_origin_send(
+        &self,
+        stream: ProxyStreamSend,
+        plan: &ProxyEstablishmentPlan,
+        _observation: &mut ProxyAttemptObservation,
+        h2_peer_settings: H2PeerSettingsRequirement,
+    ) -> Result<PooledConnection<RequestBodySend>, Error> {
+        match ProxyOriginProtocol::for_plan(plan)? {
+            ProxyOriginProtocol::Tls {
+                server_name: _server_name,
+                protocol_hint: _protocol_hint,
+            } => {
+                #[cfg(feature = "rustls")]
+                return self
+                    .connect_tls_with_hint_observed(
+                        stream,
+                        _server_name,
+                        _protocol_hint,
+                        |stream, duration| _observation.record_proxy_tls(stream, duration),
+                    )
+                    .await;
+                #[cfg(not(feature = "rustls"))]
+                unreachable!();
             }
-            2 => {
-                self.connect_two_hop_send(
-                    &chain.proxies[0],
-                    &chain.proxies[1],
-                    target_authority,
-                    is_https,
-                    connect_timeout,
-                    force_h2c,
-                )
-                .await
+            ProxyOriginProtocol::Http1 => self.connect_h1(stream).await,
+            ProxyOriginProtocol::Http2 if h2_peer_settings.is_required() => {
+                let (connection, confirmation) =
+                    self.connect_h2_prior_knowledge_confirmed(stream).await?;
+                if confirmation.confirmed_within::<R>().await {
+                    Ok(connection)
+                } else {
+                    Err(Error::Other(
+                        "proxy tunnel peer did not send an HTTP/2 SETTINGS preface".into(),
+                    ))
+                }
             }
-            n => Err(Error::Other(
-                format!("proxy chains longer than 2 hops are not yet supported (got {n})").into(),
-            )),
+            ProxyOriginProtocol::Http2 => self.connect_h2_prior_knowledge(stream).await,
         }
     }
 }

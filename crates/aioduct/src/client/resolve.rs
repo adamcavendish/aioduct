@@ -3,6 +3,7 @@ use crate::error::Error;
 use super::HttpEngineCore;
 
 impl<B> HttpEngineCore<B> {
+    #[allow(dead_code, reason = "used by later request dispatch integration")]
     pub(crate) async fn resolve_authority(
         &self,
         authority: &http::uri::Authority,
@@ -13,6 +14,7 @@ impl<B> HttpEngineCore<B> {
         self.resolve_authority_raw(host, port).await
     }
 
+    #[allow(dead_code, reason = "used by later request dispatch integration")]
     pub(crate) async fn resolve_authority_raw(
         &self,
         host: &str,

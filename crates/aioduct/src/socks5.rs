@@ -27,6 +27,83 @@ pub(crate) enum Socks5Dns {
     Remote,
 }
 
+fn append_target_address(
+    connect_msg: &mut Vec<u8>,
+    host: &str,
+    dns: Socks5Dns,
+    resolved_addr: Option<IpAddr>,
+) -> io::Result<()> {
+    let addr = match dns {
+        Socks5Dns::Local => Some(resolved_addr.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SOCKS5: resolved_addr required for Socks5Dns::Local",
+            )
+        })?),
+        Socks5Dns::Remote => host.parse().ok(),
+    };
+    if let Some(addr) = addr {
+        match addr {
+            IpAddr::V4(v4) => {
+                connect_msg.push(ATYP_IPV4);
+                connect_msg.extend_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                connect_msg.push(ATYP_IPV6);
+                connect_msg.extend_from_slice(&v6.octets());
+            }
+        }
+        return Ok(());
+    }
+
+    let host_bytes = host.as_bytes();
+    if host_bytes.len() > 255 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "SOCKS5: hostname too long",
+        ));
+    }
+    connect_msg.push(ATYP_DOMAIN);
+    connect_msg.push(host_bytes.len() as u8);
+    connect_msg.extend_from_slice(host_bytes);
+    Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) enum Socks5HandshakeError {
+    Io(io::Error),
+    Authentication(io::Error),
+    Protocol(io::Error),
+    ConnectRejected { code: u8, message: &'static str },
+}
+
+impl Socks5HandshakeError {
+    pub(crate) fn is_target_connect_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::ConnectRejected {
+                code: 0x03..=0x06 | 0x08,
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn into_io(self) -> io::Error {
+        match self {
+            Self::Io(error) | Self::Authentication(error) | Self::Protocol(error) => error,
+            Self::ConnectRejected { code, message } => {
+                io::Error::other(format!("SOCKS5: {message} (code 0x{code:02x})"))
+            }
+        }
+    }
+}
+
+impl From<io::Error> for Socks5HandshakeError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn socks5_handshake(
     stream: &mut TcpStream,
@@ -103,33 +180,11 @@ pub(crate) fn socks5_handshake(
     connect_msg.push(CMD_CONNECT);
     connect_msg.push(0x00); // reserved
 
-    match dns {
-        Socks5Dns::Local => {
-            let addr = resolve_host(host, port)?;
-            match addr {
-                IpAddr::V4(v4) => {
-                    connect_msg.push(ATYP_IPV4);
-                    connect_msg.extend_from_slice(&v4.octets());
-                }
-                IpAddr::V6(v6) => {
-                    connect_msg.push(ATYP_IPV6);
-                    connect_msg.extend_from_slice(&v6.octets());
-                }
-            }
-        }
-        Socks5Dns::Remote => {
-            let host_bytes = host.as_bytes();
-            if host_bytes.len() > 255 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "SOCKS5: hostname too long",
-                ));
-            }
-            connect_msg.push(ATYP_DOMAIN);
-            connect_msg.push(host_bytes.len() as u8);
-            connect_msg.extend_from_slice(host_bytes);
-        }
-    }
+    let resolved_addr = match dns {
+        Socks5Dns::Local => Some(resolve_host(host, port)?),
+        Socks5Dns::Remote => None,
+    };
+    append_target_address(&mut connect_msg, host, dns, resolved_addr)?;
     connect_msg.push((port >> 8) as u8);
     connect_msg.push(port as u8);
     stream.write_all(&connect_msg)?;
@@ -141,6 +196,12 @@ pub(crate) fn socks5_handshake(
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("SOCKS5: unexpected reply version {}", reply_header[0]),
+        ));
+    }
+    if reply_header[2] != 0x00 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("SOCKS5: unexpected reserved byte 0x{:02x}", reply_header[2]),
         ));
     }
 
@@ -205,7 +266,7 @@ pub(crate) async fn socks5_handshake_async<S>(
     auth: Option<&ProxyAuth>,
     dns: Socks5Dns,
     resolved_addr: Option<IpAddr>,
-) -> io::Result<()>
+) -> Result<(), Socks5HandshakeError>
 where
     S: hyper::rt::Read + hyper::rt::Write + Unpin,
 {
@@ -262,28 +323,28 @@ where
     read_exact(stream, &mut resp).await?;
 
     if resp[0] != SOCKS5_VERSION {
-        return Err(io::Error::new(
+        return Err(Socks5HandshakeError::Protocol(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("SOCKS5: unexpected version {}", resp[0]),
-        ));
+        )));
     }
 
     match resp[1] {
         AUTH_NONE => {}
         AUTH_USERNAME_PASSWORD => {
             let auth = auth.ok_or_else(|| {
-                io::Error::new(
+                Socks5HandshakeError::Authentication(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "SOCKS5: server requires auth but none provided",
-                )
+                ))
             })?;
             let mut auth_msg = Vec::with_capacity(3 + auth.username.len() + auth.password.len());
             auth_msg.push(USERNAME_PASSWORD_VERSION);
             if auth.username.len() > 255 || auth.password.len() > 255 {
-                return Err(io::Error::new(
+                return Err(Socks5HandshakeError::Authentication(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "SOCKS5: username and password must be at most 255 bytes",
-                ));
+                )));
             }
             auth_msg.push(auth.username.len() as u8);
             auth_msg.extend_from_slice(auth.username.as_bytes());
@@ -293,24 +354,30 @@ where
 
             let mut auth_resp = [0u8; 2];
             read_exact(stream, &mut auth_resp).await?;
+            if auth_resp[0] != USERNAME_PASSWORD_VERSION {
+                return Err(Socks5HandshakeError::Protocol(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("SOCKS5: unexpected authentication version {}", auth_resp[0]),
+                )));
+            }
             if auth_resp[1] != 0x00 {
-                return Err(io::Error::new(
+                return Err(Socks5HandshakeError::Authentication(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "SOCKS5: authentication failed",
-                ));
+                )));
             }
         }
         AUTH_NO_ACCEPTABLE => {
-            return Err(io::Error::new(
+            return Err(Socks5HandshakeError::Authentication(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "SOCKS5: no acceptable authentication method",
-            ));
+            )));
         }
         other => {
-            return Err(io::Error::new(
+            return Err(Socks5HandshakeError::Protocol(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("SOCKS5: unsupported auth method {other}"),
-            ));
+            )));
         }
     }
 
@@ -320,38 +387,8 @@ where
     connect_msg.push(CMD_CONNECT);
     connect_msg.push(0x00);
 
-    match dns {
-        Socks5Dns::Local => {
-            let addr = resolved_addr.ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "SOCKS5: resolved_addr required for Socks5Dns::Local",
-                )
-            })?;
-            match addr {
-                IpAddr::V4(v4) => {
-                    connect_msg.push(ATYP_IPV4);
-                    connect_msg.extend_from_slice(&v4.octets());
-                }
-                IpAddr::V6(v6) => {
-                    connect_msg.push(ATYP_IPV6);
-                    connect_msg.extend_from_slice(&v6.octets());
-                }
-            }
-        }
-        Socks5Dns::Remote => {
-            let host_bytes = host.as_bytes();
-            if host_bytes.len() > 255 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "SOCKS5: hostname too long",
-                ));
-            }
-            connect_msg.push(ATYP_DOMAIN);
-            connect_msg.push(host_bytes.len() as u8);
-            connect_msg.extend_from_slice(host_bytes);
-        }
-    }
+    append_target_address(&mut connect_msg, host, dns, resolved_addr)
+        .map_err(Socks5HandshakeError::Protocol)?;
     connect_msg.push((port >> 8) as u8);
     connect_msg.push(port as u8);
     write_all(stream, &connect_msg).await?;
@@ -361,10 +398,16 @@ where
     read_exact(stream, &mut reply_header).await?;
 
     if reply_header[0] != SOCKS5_VERSION {
-        return Err(io::Error::new(
+        return Err(Socks5HandshakeError::Protocol(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("SOCKS5: unexpected reply version {}", reply_header[0]),
-        ));
+        )));
+    }
+    if reply_header[2] != 0x00 {
+        return Err(Socks5HandshakeError::Protocol(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("SOCKS5: unexpected reserved byte 0x{:02x}", reply_header[2]),
+        )));
     }
 
     if reply_header[1] != REPLY_SUCCESS {
@@ -379,10 +422,10 @@ where
             0x08 => "address type not supported",
             _ => "unknown error",
         };
-        return Err(io::Error::other(format!(
-            "SOCKS5: {msg} (code 0x{:02x})",
-            reply_header[1]
-        )));
+        return Err(Socks5HandshakeError::ConnectRejected {
+            code: reply_header[1],
+            message: msg,
+        });
     }
 
     // Read and discard the bound address
@@ -402,10 +445,10 @@ where
             read_exact(stream, &mut buf).await?;
         }
         other => {
-            return Err(io::Error::new(
+            return Err(Socks5HandshakeError::Protocol(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("SOCKS5: unknown address type {other}"),
-            ));
+            )));
         }
     }
 
@@ -432,6 +475,74 @@ mod tests {
         v.extend_from_slice(&[127, 0, 0, 1]);
         v.extend_from_slice(&[0x00, 0x50]);
         v
+    }
+
+    #[test]
+    fn remote_dns_encodes_ip_literals_as_addresses() {
+        let mut ipv4 = Vec::new();
+        append_target_address(&mut ipv4, "192.0.2.4", Socks5Dns::Remote, None).unwrap();
+        assert_eq!(ipv4, [ATYP_IPV4, 192, 0, 2, 4]);
+
+        let mut ipv6 = Vec::new();
+        append_target_address(&mut ipv6, "2001:db8::1", Socks5Dns::Remote, None).unwrap();
+        assert_eq!(ipv6[0], ATYP_IPV6);
+        assert_eq!(
+            &ipv6[1..],
+            &"2001:db8::1"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets()
+        );
+    }
+
+    #[test]
+    fn remote_dns_keeps_hostnames_as_domains() {
+        let mut target = Vec::new();
+        append_target_address(&mut target, "example.test", Socks5Dns::Remote, None).unwrap();
+        assert_eq!(target[0], ATYP_DOMAIN);
+        assert_eq!(target[1], 12);
+        assert_eq!(&target[2..], b"example.test");
+    }
+
+    #[test]
+    fn only_target_connect_rejections_are_retryable() {
+        for code in [0x03, 0x04, 0x05, 0x06, 0x08] {
+            let error = Socks5HandshakeError::ConnectRejected {
+                code,
+                message: "target failure",
+            };
+            assert!(error.is_target_connect_failure(), "code 0x{code:02x}");
+        }
+
+        for code in [0x01, 0x02, 0x07, 0x09] {
+            let error = Socks5HandshakeError::ConnectRejected {
+                code,
+                message: "fatal failure",
+            };
+            assert!(!error.is_target_connect_failure(), "code 0x{code:02x}");
+        }
+
+        assert!(
+            !Socks5HandshakeError::Authentication(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "bad credentials",
+            ))
+            .is_target_connect_failure()
+        );
+        assert!(
+            !Socks5HandshakeError::Protocol(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "malformed reply",
+            ))
+            .is_target_connect_failure()
+        );
+        assert!(
+            !Socks5HandshakeError::Io(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "transport closed",
+            ))
+            .is_target_connect_failure()
+        );
     }
 
     fn domain_reply(domain: &str) -> Vec<u8> {
@@ -629,6 +740,29 @@ mod tests {
                 let err = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
                     .unwrap_err();
                 assert!(err.to_string().contains("unexpected reply version"));
+            },
+        );
+    }
+
+    #[test]
+    fn handshake_rejects_nonzero_reply_reserved_byte() {
+        run_test(
+            |server| {
+                let mut greeting = [0u8; 3];
+                server.read_exact(&mut greeting).unwrap();
+                server.write_all(&[SOCKS5_VERSION, AUTH_NONE]).unwrap();
+                let mut connect = [0u8; 256];
+                let _ = server.read(&mut connect).unwrap();
+                server
+                    .write_all(&[SOCKS5_VERSION, REPLY_SUCCESS, 0x01, ATYP_IPV4])
+                    .unwrap();
+                server.write_all(&[127, 0, 0, 1, 0x00, 0x50]).unwrap();
+            },
+            |client| {
+                let error = socks5_handshake(client, "example.com", 80, None, Socks5Dns::Remote)
+                    .unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert!(error.to_string().contains("reserved byte 0x01"));
             },
         );
     }

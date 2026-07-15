@@ -3,9 +3,10 @@ use super::*;
 use super::settings::env_proxy;
 use crate::error::Error;
 use http::Uri;
+use std::sync::{Arc, Mutex};
 
 /// Serializes env var mutations to prevent flakiness under `--test-threads > 1`.
-static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(super) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn no_proxy_wildcard_matches_everything() {
@@ -167,7 +168,7 @@ fn proxy_settings_no_proxy_matches_implicit_default_ports() {
 }
 
 #[test]
-fn proxy_settings_match_mixed_case_schemes() {
+fn proxy_settings_match_mixed_case_schemes_and_default_ports() {
     let settings = ProxySettings::default()
         .http(ProxyConfig::http("http://http-proxy.test").unwrap())
         .https(ProxyConfig::http("http://https-proxy.test").unwrap())
@@ -203,6 +204,117 @@ fn proxy_config_http_valid() {
 }
 
 #[test]
+fn proxy_constructors_canonicalize_mixed_case_schemes() {
+    type Constructor = fn(&str) -> Result<ProxyConfig, Error>;
+    let cases: [(&str, &str, ProxyScheme, Constructor); 6] = [
+        ("HTTP", "http", ProxyScheme::Http, ProxyConfig::http),
+        ("HtTpS", "https", ProxyScheme::Https, ProxyConfig::https),
+        ("SoCkS4", "socks4", ProxyScheme::Socks4, ProxyConfig::socks4),
+        (
+            "SoCkS4A",
+            "socks4a",
+            ProxyScheme::Socks4a,
+            ProxyConfig::socks4,
+        ),
+        ("SoCkS5", "socks5", ProxyScheme::Socks5, ProxyConfig::socks5),
+        (
+            "SoCkS5H",
+            "socks5h",
+            ProxyScheme::Socks5h,
+            ProxyConfig::socks5h,
+        ),
+    ];
+
+    for (raw_scheme, canonical_scheme, expected, constructor) in cases {
+        let value = format!("{raw_scheme}://proxy.test:1080");
+        let config = constructor(&value).unwrap();
+        assert_eq!(config.scheme, expected, "{value}");
+        assert_eq!(config.uri.scheme_str(), Some(canonical_scheme), "{value}");
+
+        let detected = ProxyConfig::detect_from_url(&value).unwrap();
+        assert_eq!(detected.scheme, expected, "detect {value}");
+        assert_eq!(detected.uri.scheme_str(), Some(canonical_scheme));
+    }
+}
+
+#[test]
+fn every_proxy_constructor_rejects_invalid_explicit_ports() {
+    type Constructor = fn(&str) -> Result<ProxyConfig, Error>;
+    let constructors: [(&str, Constructor); 6] = [
+        ("http", ProxyConfig::http),
+        ("https", ProxyConfig::https),
+        ("socks4", ProxyConfig::socks4),
+        ("socks4a", ProxyConfig::socks4),
+        ("socks5", ProxyConfig::socks5),
+        ("socks5h", ProxyConfig::socks5h),
+    ];
+
+    for (scheme, constructor) in constructors {
+        for authority in [
+            "proxy.test:99999",
+            "proxy.test:",
+            "proxy.test:not-a-port",
+            "user:secret@proxy.test:99999",
+            "user:secret@proxy.test:",
+            "user:secret@proxy.test:not-a-port",
+            "[2001:db8::1]:99999",
+            "[2001:db8::1]:",
+            "[2001:db8::1]:not-a-port",
+        ] {
+            let value = format!("{scheme}://{authority}");
+            let error = constructor(&value).unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidUrl(ref message) if message.contains("invalid proxy endpoint port")),
+                "unexpected error for {value}: {error}"
+            );
+            assert!(
+                ProxyConfig::detect_from_url(&value).is_none(),
+                "detected malformed endpoint {value}"
+            );
+        }
+    }
+}
+
+#[test]
+fn malformed_proxy_endpoint_cannot_alias_default_port_route_identity() {
+    let valid = ProxyConfig::http("http://proxy.test").unwrap();
+    let malformed = ProxyConfig {
+        uri: "http://proxy.test:99999".parse().unwrap(),
+        scheme: ProxyScheme::Http,
+        auth: None,
+        connect_headers: Vec::new(),
+    };
+
+    assert!(matches!(
+        malformed.validate_for_use(),
+        Err(Error::InvalidUrl(_))
+    ));
+    assert_ne!(malformed.route_identity(), valid.route_identity());
+}
+
+#[test]
+fn proxy_route_identity_uses_the_effective_endpoint_and_auth() {
+    let first = ProxyConfig::http("http://old:credentials@PROXY.TEST/ignored?route=one")
+        .unwrap()
+        .basic_auth("effective", "credential");
+    let second = ProxyConfig::http("http://proxy.test:80/other?route=two")
+        .unwrap()
+        .basic_auth("effective", "credential");
+
+    assert_eq!(first.route_identity(), second.route_identity());
+}
+
+#[test]
+fn proxy_route_identity_canonicalizes_ip_addresses_but_not_ports() {
+    let expanded = ProxyConfig::http("http://[0:0:0:0:0:0:0:1]/path").unwrap();
+    let compressed = ProxyConfig::http("http://[::1]:80/other").unwrap();
+    let non_default = ProxyConfig::http("http://[::1]:8080/other").unwrap();
+
+    assert_eq!(expanded.route_identity(), compressed.route_identity());
+    assert_ne!(expanded.route_identity(), non_default.route_identity());
+}
+
+#[test]
 fn proxy_config_http_wrong_scheme() {
     assert!(ProxyConfig::http("https://proxy:8080").is_err());
 }
@@ -229,7 +341,7 @@ fn proxy_config_socks4_valid() {
 #[test]
 fn proxy_config_socks4a_valid() {
     let cfg = ProxyConfig::socks4("socks4a://proxy:1080").unwrap();
-    assert_eq!(cfg.scheme, ProxyScheme::Socks4);
+    assert_eq!(cfg.scheme, ProxyScheme::Socks4a);
 }
 
 #[test]
@@ -408,7 +520,7 @@ fn proxy_for_no_host_still_checks_scheme() {
 fn env_proxy_socks5() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("TEST_SOCKS5_UPPER", "socks5://proxy:1080") };
-    let result = env_proxy("TEST_SOCKS5_UPPER", "test_socks5_lower");
+    let result = env_proxy("TEST_SOCKS5_UPPER", "test_socks5_lower").unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().scheme, ProxyScheme::Socks5);
     unsafe { std::env::remove_var("TEST_SOCKS5_UPPER") };
@@ -418,7 +530,7 @@ fn env_proxy_socks5() {
 fn env_proxy_socks4() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("TEST_SOCKS4_UPPER", "socks4://proxy:1080") };
-    let result = env_proxy("TEST_SOCKS4_UPPER", "test_socks4_lower");
+    let result = env_proxy("TEST_SOCKS4_UPPER", "test_socks4_lower").unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().scheme, ProxyScheme::Socks4);
     unsafe { std::env::remove_var("TEST_SOCKS4_UPPER") };
@@ -428,9 +540,9 @@ fn env_proxy_socks4() {
 fn env_proxy_socks4a() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("TEST_SOCKS4A_UPPER", "socks4a://proxy:1080") };
-    let result = env_proxy("TEST_SOCKS4A_UPPER", "test_socks4a_lower");
+    let result = env_proxy("TEST_SOCKS4A_UPPER", "test_socks4a_lower").unwrap();
     assert!(result.is_some());
-    assert_eq!(result.unwrap().scheme, ProxyScheme::Socks4);
+    assert_eq!(result.unwrap().scheme, ProxyScheme::Socks4a);
     unsafe { std::env::remove_var("TEST_SOCKS4A_UPPER") };
 }
 
@@ -438,7 +550,7 @@ fn env_proxy_socks4a() {
 fn env_proxy_http() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("TEST_HTTP_PROXY_UPPER", "http://proxy:8080") };
-    let result = env_proxy("TEST_HTTP_PROXY_UPPER", "test_http_proxy_lower");
+    let result = env_proxy("TEST_HTTP_PROXY_UPPER", "test_http_proxy_lower").unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().scheme, ProxyScheme::Http);
     unsafe { std::env::remove_var("TEST_HTTP_PROXY_UPPER") };
@@ -448,7 +560,7 @@ fn env_proxy_http() {
 fn env_proxy_https_scheme() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("TEST_HTTPS_PROXY_VAL", "https://secure-proxy:443") };
-    let result = env_proxy("TEST_HTTPS_PROXY_VAL", "test_https_proxy_val_lower");
+    let result = env_proxy("TEST_HTTPS_PROXY_VAL", "test_https_proxy_val_lower").unwrap();
     assert!(result.is_some());
     let cfg = result.unwrap();
     assert_eq!(cfg.scheme, ProxyScheme::Https);
@@ -460,7 +572,7 @@ fn env_proxy_https_scheme() {
 fn env_proxy_bare_hostname() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("TEST_BARE_HOST_PROXY", "proxy-host:3128") };
-    let result = env_proxy("TEST_BARE_HOST_PROXY", "test_bare_host_proxy_lower");
+    let result = env_proxy("TEST_BARE_HOST_PROXY", "test_bare_host_proxy_lower").unwrap();
     assert!(result.is_some());
     let cfg = result.unwrap();
     assert_eq!(cfg.scheme, ProxyScheme::Http);
@@ -472,7 +584,7 @@ fn env_proxy_bare_hostname() {
 fn env_proxy_empty_value() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("TEST_EMPTY_PROXY", "") };
-    let result = env_proxy("TEST_EMPTY_PROXY", "test_empty_proxy_lower");
+    let result = env_proxy("TEST_EMPTY_PROXY", "test_empty_proxy_lower").unwrap();
     assert!(result.is_none());
     unsafe { std::env::remove_var("TEST_EMPTY_PROXY") };
 }
@@ -482,7 +594,7 @@ fn env_proxy_missing() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::remove_var("TEST_MISSING_UPPER") };
     unsafe { std::env::remove_var("test_missing_lower") };
-    let result = env_proxy("TEST_MISSING_UPPER", "test_missing_lower");
+    let result = env_proxy("TEST_MISSING_UPPER", "test_missing_lower").unwrap();
     assert!(result.is_none());
 }
 
@@ -491,9 +603,31 @@ fn env_proxy_lowercase_fallback() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::remove_var("TEST_LOWER_UPPER") };
     unsafe { std::env::set_var("test_lower_lower", "http://proxy:80") };
-    let result = env_proxy("TEST_LOWER_UPPER", "test_lower_lower");
+    let result = env_proxy("TEST_LOWER_UPPER", "test_lower_lower").unwrap();
     assert!(result.is_some());
     unsafe { std::env::remove_var("test_lower_lower") };
+}
+
+#[test]
+fn malformed_uppercase_env_proxy_takes_precedence_over_valid_lowercase() {
+    let _guard = ENV_MUTEX.lock().unwrap();
+    unsafe {
+        std::env::set_var("TEST_INVALID_PROXY_UPPER", "http://proxy.test:99999");
+        std::env::set_var("test_invalid_proxy_lower", "http://proxy.test:8080");
+    }
+
+    let error = env_proxy("TEST_INVALID_PROXY_UPPER", "test_invalid_proxy_lower").unwrap_err();
+    assert!(
+        error
+            .into_error()
+            .to_string()
+            .contains("TEST_INVALID_PROXY_UPPER")
+    );
+
+    unsafe {
+        std::env::remove_var("TEST_INVALID_PROXY_UPPER");
+        std::env::remove_var("test_invalid_proxy_lower");
+    }
 }
 
 #[test]
@@ -671,6 +805,147 @@ fn proxy_chain_clone() {
 
 // --- ProxySettings credential resolver tests ---
 
+#[derive(Clone)]
+struct RecordingCredentialResolver {
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl crate::proxy_credential::CredentialResolver for RecordingCredentialResolver {
+    fn resolve(&self, key: &str) -> Option<(String, String)> {
+        self.calls.lock().unwrap().push(key.to_owned());
+        Some(("resolved".to_owned(), "credential".to_owned()))
+    }
+}
+
+fn recording_credential_resolver() -> (RecordingCredentialResolver, Arc<Mutex<Vec<String>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let resolver = RecordingCredentialResolver {
+        calls: calls.clone(),
+    };
+    (resolver, calls)
+}
+
+fn recording_credential_settings() -> (ProxySettings, Arc<Mutex<Vec<String>>>) {
+    let (resolver, calls) = recording_credential_resolver();
+    let settings = ProxySettings::default().proxy_credential_resolver(resolver);
+    (settings, calls)
+}
+
+#[test]
+fn credential_resolver_keys_use_canonical_effective_authorities() {
+    let (settings, calls) = recording_credential_settings();
+    let proxies = [
+        ProxyConfig::http("http://PROXY.TEST").unwrap(),
+        ProxyConfig::http("http://[0:0:0:0:0:0:0:1]").unwrap(),
+        ProxyConfig::https("https://PROXY.TEST").unwrap(),
+        ProxyConfig::https("https://[2001:db8::1]").unwrap(),
+        ProxyConfig::socks4("socks4://PROXY.TEST").unwrap(),
+        ProxyConfig::socks4("socks4://[2001:db8::2]").unwrap(),
+        ProxyConfig::socks4("socks4a://PROXY.TEST").unwrap(),
+        ProxyConfig::socks4("socks4a://[2001:db8::3]").unwrap(),
+        ProxyConfig::socks5("socks5://PROXY.TEST").unwrap(),
+        ProxyConfig::socks5("socks5://[2001:db8::4]").unwrap(),
+        ProxyConfig::socks5h("socks5h://PROXY.TEST").unwrap(),
+        ProxyConfig::socks5h("socks5h://[2001:db8::5]").unwrap(),
+        ProxyConfig::socks5("socks5://[2001:db8::6]:1443").unwrap(),
+    ];
+
+    for mut proxy in proxies {
+        settings.resolve_credentials(&mut proxy);
+        assert!(proxy.auth.is_some());
+    }
+
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        [
+            "proxy.test:80",
+            "[::1]:80",
+            "proxy.test:443",
+            "[2001:db8::1]:443",
+            "proxy.test:1080",
+            "[2001:db8::2]:1080",
+            "proxy.test:1080",
+            "[2001:db8::3]:1080",
+            "proxy.test:1080",
+            "[2001:db8::4]:1080",
+            "proxy.test:1080",
+            "[2001:db8::5]:1080",
+            "[2001:db8::6]:1443",
+        ]
+    );
+}
+
+#[test]
+fn single_proxy_authorization_header_prevents_credential_resolution() {
+    let (resolver, calls) = recording_credential_resolver();
+    let settings = ProxySettings::all(ProxyConfig::http("http://proxy.test").unwrap().header(
+        http::header::PROXY_AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer single-token"),
+    ))
+    .proxy_credential_resolver(resolver);
+
+    let proxy = settings
+        .proxy_for(&"https://origin.test/path".parse().unwrap())
+        .unwrap();
+
+    assert!(proxy.auth.is_none());
+    assert!(proxy.validate_for_use().is_ok());
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn custom_proxy_authorization_header_prevents_credential_resolution() {
+    let (resolver, calls) = recording_credential_resolver();
+    let custom_proxy = ProxyConfig::https("https://proxy.test").unwrap().header(
+        http::header::PROXY_AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer custom-token"),
+    );
+    let settings = ProxySettings::default()
+        .custom(move |_| Some(custom_proxy.clone()))
+        .proxy_credential_resolver(resolver);
+
+    let proxy = settings
+        .proxy_for(&"https://origin.test/path".parse().unwrap())
+        .unwrap();
+
+    assert!(proxy.auth.is_none());
+    assert!(proxy.validate_for_use().is_ok());
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn proxy_chain_resolves_only_hops_without_proxy_authorization_headers() {
+    let (settings, calls) = recording_credential_settings();
+    let chain = ProxyChain::new(vec![
+        ProxyConfig::http("http://first.test").unwrap().header(
+            http::header::PROXY_AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer chain-token"),
+        ),
+        ProxyConfig::socks5("socks5://second.test").unwrap(),
+    ]);
+
+    let route = ProxyDispatchRoute::resolve(
+        &"https://origin.test/path".parse().unwrap(),
+        Some(&chain),
+        Some(&settings),
+        crate::pool::ProtocolHint::Auto,
+        None,
+    )
+    .unwrap();
+    let plan = route.establishment_plan().unwrap().unwrap();
+
+    assert_eq!(calls.lock().unwrap().as_slice(), ["second.test:1080"]);
+    assert!(plan.first().proxy().auth.is_none());
+    assert_eq!(
+        plan.first().proxy().connect_headers[0].0,
+        http::header::PROXY_AUTHORIZATION
+    );
+    let second_auth = plan.second().unwrap().proxy().auth.as_ref().unwrap();
+    assert_eq!(second_auth.username, "resolved");
+    assert_eq!(second_auth.password, "credential");
+}
+
 #[test]
 fn proxy_for_resolves_credentials_when_missing() {
     let _guard = ENV_MUTEX.lock().unwrap();
@@ -775,7 +1050,7 @@ fn detect_from_url_socks4() {
 #[test]
 fn detect_from_url_socks4a() {
     let cfg = ProxyConfig::detect_from_url("socks4a://proxy:1080").unwrap();
-    assert_eq!(cfg.scheme, ProxyScheme::Socks4);
+    assert_eq!(cfg.scheme, ProxyScheme::Socks4a);
 }
 
 #[test]
@@ -847,6 +1122,61 @@ fn header_appends_connect_headers() {
 }
 
 #[test]
+fn http_connect_rejects_reserved_custom_headers() {
+    for name in [
+        "authorization",
+        "connection",
+        "content-length",
+        "expect",
+        "host",
+        "http2-settings",
+        "keep-alive",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    ] {
+        let config = ProxyConfig::http("http://proxy:8080").unwrap().header(
+            http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            http::HeaderValue::from_static("injected"),
+        );
+        assert!(
+            matches!(config.validate_for_use(), Err(Error::InvalidHeader(_))),
+            "accepted reserved CONNECT header {name}"
+        );
+    }
+}
+
+#[test]
+fn http_connect_accepts_one_custom_proxy_authorization_source() {
+    let token = || {
+        (
+            http::header::PROXY_AUTHORIZATION,
+            http::HeaderValue::from_static("Bearer proxy-token"),
+        )
+    };
+    let (name, value) = token();
+    let custom = ProxyConfig::http("http://proxy:8080")
+        .unwrap()
+        .header(name, value);
+    assert!(custom.validate_for_use().is_ok());
+
+    let (name, value) = token();
+    let conflicting = custom.clone().header(name, value);
+    assert!(matches!(
+        conflicting.validate_for_use(),
+        Err(Error::InvalidHeader(_))
+    ));
+
+    let generated_and_custom = custom.basic_auth("user", "password");
+    assert!(matches!(
+        generated_and_custom.validate_for_use(),
+        Err(Error::InvalidHeader(_))
+    ));
+}
+
+#[test]
 fn route_identity_differs_by_connect_headers() {
     let base = ProxyConfig::http("http://proxy:8080").unwrap();
     let with_header = ProxyConfig::http("http://proxy:8080").unwrap().header(
@@ -856,31 +1186,12 @@ fn route_identity_differs_by_connect_headers() {
     // Different CONNECT headers must segregate pooled routes.
     assert_ne!(base.route_identity(), with_header.route_identity());
 
-    // Same headers identify the same route.
+    // Same headers hash equally.
     let with_header2 = ProxyConfig::http("http://proxy:8080").unwrap().header(
         http::header::HeaderName::from_static("x-token"),
         http::HeaderValue::from_static("abc"),
     );
     assert_eq!(with_header.route_identity(), with_header2.route_identity());
-}
-
-#[test]
-fn route_identity_canonicalizes_proxy_host_and_default_port() {
-    let implicit = ProxyConfig::http("http://EXAMPLE.com").unwrap();
-    let explicit = ProxyConfig::http("http://example.COM:80").unwrap();
-
-    assert_eq!(implicit.route_identity(), explicit.route_identity());
-}
-
-#[test]
-fn route_identity_canonicalizes_uri_and_configured_auth() {
-    let secret = String::from_utf8(vec![b's'; 12]).unwrap();
-    let uri_auth = ProxyConfig::http(&format!("http://user:{secret}@EXAMPLE.com")).unwrap();
-    let configured_auth = ProxyConfig::http("http://example.com:80")
-        .unwrap()
-        .basic_auth("user", &secret);
-
-    assert_eq!(uri_auth.route_identity(), configured_auth.route_identity());
 }
 
 #[test]
@@ -922,4 +1233,38 @@ fn debug_redacts_connect_header_values() {
         !dbg.contains("supersecret"),
         "header value must not leak in Debug: {dbg}"
     );
+}
+
+#[test]
+fn debug_redacts_proxy_auth_and_connect_credentials_at_every_config_level() {
+    let config = ProxyConfig::http(
+        "http://debug-username-secret:debug-password-secret@proxy.test:8080/\
+         debug-path-secret?token=debug-query-secret",
+    )
+    .unwrap()
+    .header(
+        http::header::PROXY_AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer debug-connect-header-secret"),
+    );
+    let auth_debug = format!("{:?}", config.auth.as_ref().unwrap());
+    let config_debug = format!("{config:?}");
+    let settings_debug = format!("{:?}", ProxySettings::all(config.clone()));
+    let chain_debug = format!("{:?}", ProxyChain::single(config));
+
+    for debug in [&auth_debug, &config_debug, &settings_debug, &chain_debug] {
+        for secret in [
+            "debug-username-secret",
+            "debug-password-secret",
+            "debug-connect-header-secret",
+            "debug-path-secret",
+            "debug-query-secret",
+        ] {
+            assert!(!debug.contains(secret), "credential leaked in {debug}");
+        }
+    }
+
+    assert!(auth_debug.contains("[redacted]"));
+    assert!(config_debug.contains("proxy-authorization"));
+    assert!(settings_debug.contains("ProxySettings"));
+    assert!(chain_debug.contains("ProxyChain"));
 }

@@ -68,6 +68,34 @@ fn start_server_tokio() -> SocketAddr {
     start_server_with_tokio(|req| async { hello(req).await })
 }
 
+fn start_counting_h1_server_tokio() -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>)
+{
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let connections = Arc::new(AtomicUsize::new(0));
+    let server_connections = Arc::clone(&connections);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            tx.send(listener.local_addr().unwrap()).unwrap();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                server_connections.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+                    let _ = server_http1::Builder::new()
+                        .serve_connection(io, service_fn(hello))
+                        .await;
+                });
+            }
+        });
+    });
+    (rx.recv().unwrap(), connections)
+}
+
 fn read_raw_request_headers(stream: &mut std::net::TcpStream) {
     use std::io::Read;
 
@@ -426,6 +454,42 @@ fn test_compio_no_connection_reuse() {
         assert_eq!(resp2.status(), http::StatusCode::OK);
         let _ = resp2.text().await.unwrap();
     });
+}
+
+#[test]
+fn compio_adaptive_h2c_caches_direct_h1_endpoint_without_pool_reuse() {
+    use std::sync::atomic::Ordering;
+
+    let (addr, connections) = start_counting_h1_server_tokio();
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .no_connection_reuse()
+            .build_local()
+            .unwrap();
+        let upstream = format!("http://{addr}");
+
+        for path in ["/probe", "/cached"] {
+            let request = Request::builder()
+                .uri(path)
+                .header(http::header::HOST, "downstream.test")
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            let response = client
+                .forward_local(valid_forward_request(request))
+                .upstream(&upstream)
+                .adaptive_h2c()
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.text().await.unwrap(), "hello aioduct");
+        }
+    });
+
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        3,
+        "one H2 probe, one H1 fallback, and one cached fresh H1 connection are expected"
+    );
 }
 
 #[test]

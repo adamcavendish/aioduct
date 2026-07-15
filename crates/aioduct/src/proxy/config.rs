@@ -1,5 +1,6 @@
 use http::Uri;
 use http::header::{HeaderName, HeaderValue};
+use http::uri::{Authority, Scheme};
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ pub(crate) enum ProxyScheme {
     Http,
     Https,
     Socks4,
+    Socks4a,
     Socks5,
     Socks5h,
 }
@@ -71,52 +73,28 @@ enum ProxyRoutePort {
 impl ProxyRouteEndpoint {
     fn from_config(proxy: &ProxyConfig) -> Option<Self> {
         let authority = proxy.uri.authority()?;
-        let endpoint = endpoint_without_userinfo(authority);
-        let endpoint_authority = endpoint.parse::<http::uri::Authority>().ok();
-        let host = canonical_host(
-            endpoint_authority
-                .as_ref()
-                .map_or_else(|| authority.host(), http::uri::Authority::host),
-        );
-        let port = match endpoint_authority
-            .as_ref()
-            .and_then(|value| value.port_u16())
-        {
-            Some(port) => ProxyRoutePort::Effective(port),
-            None if endpoint_authority
-                .as_ref()
-                .is_none_or(|value| value.as_str() != value.host()) =>
-            {
-                ProxyRoutePort::Invalid(endpoint)
-            }
-            None => ProxyRoutePort::Effective(proxy.default_port()),
+        let raw_host = authority.host();
+        let host = raw_host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(raw_host);
+        let host = host
+            .parse::<IpAddr>()
+            .map(|address| address.to_string())
+            .unwrap_or_else(|_| host.to_ascii_lowercase());
+        let port = match proxy.effective_port() {
+            Ok(port) => ProxyRoutePort::Effective(port),
+            Err(_) => ProxyRoutePort::Invalid(endpoint_without_userinfo(authority).to_owned()),
         };
         Some(Self { host, port })
     }
 }
 
-fn canonical_host(host: &str) -> String {
-    let host = host
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(host);
-    host.parse::<IpAddr>()
-        .map(|address| address.to_string())
-        .unwrap_or_else(|_| host.to_ascii_lowercase())
-}
-
-fn endpoint_without_userinfo(authority: &http::uri::Authority) -> String {
-    authority
-        .as_str()
-        .rsplit_once('@')
-        .map_or_else(|| authority.as_str(), |(_, endpoint)| endpoint)
-        .to_owned()
-}
-
 /// Structural identity for a fully resolved proxy route.
 ///
-/// Hashing accelerates pool lookup, while equality compares the complete route
-/// so a digest collision cannot cross credentials, headers, or proxy hops.
+/// The pool hashes this value for lookup performance, but equality always
+/// compares the complete route so a digest collision cannot cross credentials
+/// or proxy hops.
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub(crate) struct ProxyRouteIdentity(Arc<[ProxyRouteHop]>);
 
@@ -155,7 +133,7 @@ impl std::fmt::Debug for ProxyRouteIdentity {
     }
 }
 
-/// Wrapper that redacts userinfo when debug-printing a URI.
+/// Wrapper that exposes only the proxy endpoint when debug-printing a URI.
 struct ProxyUriDebug<'a>(&'a Uri);
 
 impl std::fmt::Debug for ProxyUriDebug<'_> {
@@ -163,16 +141,15 @@ impl std::fmt::Debug for ProxyUriDebug<'_> {
         let uri = self.0;
         write!(f, "{}://", uri.scheme_str().unwrap_or("unknown"))?;
         if let Some(authority) = uri.authority() {
+            if authority.as_str().contains('@') {
+                write!(f, "<redacted>@")?;
+            }
             let host = authority.host();
             if let Some(port) = authority.port() {
-                write!(f, "<redacted>@{host}:{port}")?;
+                write!(f, "{host}:{port}")?;
             } else {
-                write!(f, "<redacted>@{host}")?;
+                write!(f, "{host}")?;
             }
-        }
-        write!(f, "{}", uri.path())?;
-        if let Some(query) = uri.query() {
-            write!(f, "?{query}")?;
         }
         Ok(())
     }
@@ -187,7 +164,7 @@ pub(crate) struct ProxyAuth {
 impl std::fmt::Debug for ProxyAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProxyAuth")
-            .field("username", &self.username)
+            .field("username", &"[redacted]")
             .field("password", &"[redacted]")
             .finish()
     }
@@ -229,122 +206,104 @@ impl ProxyConfig {
     /// If the URL has no scheme, `http://` is prepended. Returns `None` if
     /// the URL cannot be parsed as any supported proxy scheme.
     pub fn detect_from_url(url: &str) -> Option<Self> {
+        Self::try_detect_from_url(url).ok()
+    }
+
+    pub(crate) fn try_detect_from_url(url: &str) -> Result<Self, Error> {
         if url.is_empty() {
-            return None;
+            return Err(Error::InvalidUrl("proxy URL must not be empty".into()));
         }
-        // Known scheme prefixes
-        if url.starts_with("socks5h://") {
-            return Self::socks5h(url).ok();
-        }
-        if url.starts_with("socks5://") {
-            return Self::socks5(url).ok();
-        }
-        if url.starts_with("socks4://") || url.starts_with("socks4a://") {
-            return Self::socks4(url).ok();
-        }
-        if url.starts_with("https://") {
-            return Self::https(url).ok();
-        }
-        if url.starts_with("http://") {
-            return Self::http(url).ok();
-        }
-        // Bare hostname: try http://
-        if !url.contains("://") {
+        let Some((scheme, _)) = url.split_once("://") else {
             let with_scheme = format!("http://{url}");
-            return Self::http(&with_scheme).ok();
+            return Self::http(&with_scheme);
+        };
+        if scheme.eq_ignore_ascii_case("http") {
+            Self::http(url)
+        } else if scheme.eq_ignore_ascii_case("https") {
+            Self::https(url)
+        } else if scheme.eq_ignore_ascii_case("socks4") || scheme.eq_ignore_ascii_case("socks4a") {
+            Self::socks4(url)
+        } else if scheme.eq_ignore_ascii_case("socks5") {
+            Self::socks5(url)
+        } else if scheme.eq_ignore_ascii_case("socks5h") {
+            Self::socks5h(url)
+        } else {
+            Err(Error::InvalidUrl(format!(
+                "unsupported proxy URL scheme `{scheme}`"
+            )))
         }
-        // Unknown scheme: try each constructor as fallback
-        Self::http(url)
-            .or_else(|_| Self::https(url))
-            .or_else(|_| Self::socks4(url))
-            .or_else(|_| Self::socks5(url))
-            .or_else(|_| Self::socks5h(url))
-            .ok()
     }
 
     /// Create a proxy config from an `http://` URI.
     pub fn http(uri: &str) -> Result<Self, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        if uri.scheme_str() != Some("http") {
-            return Err(Error::InvalidUrl(
-                "proxy URI must use http:// scheme".into(),
-            ));
-        }
-        let auth = extract_uri_auth(&uri);
-        Ok(Self {
+        Self::parse(
             uri,
-            scheme: ProxyScheme::Http,
-            auth,
-            connect_headers: Vec::new(),
-        })
+            &[("http", ProxyScheme::Http)],
+            "proxy URI must use http:// scheme",
+        )
     }
 
     /// Create a proxy config from a `socks5://` URI.
     pub fn socks5(uri: &str) -> Result<Self, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        if uri.scheme_str() != Some("socks5") {
-            return Err(Error::InvalidUrl(
-                "SOCKS5 proxy URI must use socks5:// scheme".into(),
-            ));
-        }
-        let auth = extract_uri_auth(&uri);
-        Ok(Self {
+        Self::parse(
             uri,
-            scheme: ProxyScheme::Socks5,
-            auth,
-            connect_headers: Vec::new(),
-        })
+            &[("socks5", ProxyScheme::Socks5)],
+            "SOCKS5 proxy URI must use socks5:// scheme",
+        )
     }
 
     /// Create a proxy config from a `socks4://` or `socks4a://` URI.
     pub fn socks4(uri: &str) -> Result<Self, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        match uri.scheme_str() {
-            Some("socks4") | Some("socks4a") => {}
-            _ => {
-                return Err(Error::InvalidUrl(
-                    "SOCKS4 proxy URI must use socks4:// or socks4a:// scheme".into(),
-                ));
-            }
-        }
-        let auth = extract_uri_auth(&uri);
-        Ok(Self {
+        Self::parse(
             uri,
-            scheme: ProxyScheme::Socks4,
-            auth,
-            connect_headers: Vec::new(),
-        })
+            &[
+                ("socks4", ProxyScheme::Socks4),
+                ("socks4a", ProxyScheme::Socks4a),
+            ],
+            "SOCKS4 proxy URI must use socks4:// or socks4a:// scheme",
+        )
     }
 
     /// Create a proxy config from a `socks5h://` URI (proxy resolves DNS).
     pub fn socks5h(uri: &str) -> Result<Self, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        if uri.scheme_str() != Some("socks5h") {
-            return Err(Error::InvalidUrl(
-                "SOCKS5h proxy URI must use socks5h:// scheme".into(),
-            ));
-        }
-        let auth = extract_uri_auth(&uri);
-        Ok(Self {
+        Self::parse(
             uri,
-            scheme: ProxyScheme::Socks5h,
-            auth,
-            connect_headers: Vec::new(),
-        })
+            &[("socks5h", ProxyScheme::Socks5h)],
+            "SOCKS5h proxy URI must use socks5h:// scheme",
+        )
     }
 
     /// Create a proxy config from an `https://` URI (TLS connection to proxy).
     pub fn https(uri: &str) -> Result<Self, Error> {
-        let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
-        if uri.scheme_str() != Some("https") {
-            return Err(Error::InvalidUrl(
-                "HTTPS proxy URI must use https:// scheme".into(),
-            ));
-        }
+        Self::parse(
+            uri,
+            &[("https", ProxyScheme::Https)],
+            "HTTPS proxy URI must use https:// scheme",
+        )
+    }
+
+    fn parse(
+        value: &str,
+        accepted_schemes: &[(&str, ProxyScheme)],
+        wrong_scheme: &str,
+    ) -> Result<Self, Error> {
+        let uri: Uri = value
+            .parse::<Uri>()
+            .map_err(|error| Error::InvalidUrl(error.to_string()))?;
+        let raw_scheme = uri
+            .scheme_str()
+            .ok_or_else(|| Error::InvalidUrl(wrong_scheme.to_owned()))?;
+        let (canonical_scheme, scheme) = accepted_schemes
+            .iter()
+            .copied()
+            .find(|(candidate, _)| raw_scheme.eq_ignore_ascii_case(candidate))
+            .ok_or_else(|| Error::InvalidUrl(wrong_scheme.to_owned()))?;
+        validate_proxy_authority(&uri)?;
+        let uri = canonicalize_scheme(uri, canonical_scheme)?;
         let auth = extract_uri_auth(&uri);
         Ok(Self {
             uri,
-            scheme: ProxyScheme::Https,
+            scheme,
             auth,
             connect_headers: Vec::new(),
         })
@@ -380,19 +339,70 @@ impl ProxyConfig {
         match self.scheme {
             ProxyScheme::Http => 80,
             ProxyScheme::Https => 443,
-            ProxyScheme::Socks4 => 1080,
+            ProxyScheme::Socks4 | ProxyScheme::Socks4a => 1080,
             ProxyScheme::Socks5 => 1080,
             ProxyScheme::Socks5h => 1080,
         }
     }
 
+    pub(crate) fn effective_port(&self) -> Result<u16, Error> {
+        let authority = self.authority()?;
+        Ok(explicit_proxy_port(authority)?.unwrap_or_else(|| self.default_port()))
+    }
+
     pub(crate) fn validate_for_use(&self) -> Result<(), Error> {
+        self.effective_port()?;
         if !self.connect_headers.is_empty()
             && !matches!(self.scheme, ProxyScheme::Http | ProxyScheme::Https)
         {
             return Err(Error::Unsupported(
                 "CONNECT headers are only supported by HTTP and HTTPS proxies".into(),
             ));
+        }
+
+        if matches!(self.scheme, ProxyScheme::Http | ProxyScheme::Https) {
+            let mut custom_proxy_authorization = false;
+            for (name, value) in &self.connect_headers {
+                if value.to_str().is_err() {
+                    return Err(Error::InvalidHeader(
+                        "HTTP CONNECT headers must contain textual field values".into(),
+                    ));
+                }
+                if is_reserved_connect_header(name) {
+                    return Err(Error::InvalidHeader(format!(
+                        "HTTP CONNECT header `{name}` is controlled by aioduct"
+                    )));
+                }
+                if name == http::header::PROXY_AUTHORIZATION {
+                    if self.auth.is_some() || custom_proxy_authorization {
+                        return Err(Error::InvalidHeader(
+                            "HTTP CONNECT must have only one Proxy-Authorization source".into(),
+                        ));
+                    }
+                    custom_proxy_authorization = true;
+                }
+            }
+        }
+
+        if let Some(auth) = &self.auth {
+            match self.scheme {
+                ProxyScheme::Socks4 | ProxyScheme::Socks4a
+                    if auth.username.as_bytes().contains(&0) =>
+                {
+                    return Err(Error::Unsupported(
+                        "SOCKS4 user IDs cannot contain NUL bytes".into(),
+                    ));
+                }
+                ProxyScheme::Socks5 | ProxyScheme::Socks5h
+                    if auth.username.len() > u8::MAX as usize
+                        || auth.password.len() > u8::MAX as usize =>
+                {
+                    return Err(Error::Unsupported(
+                        "SOCKS5 usernames and passwords must not exceed 255 bytes".into(),
+                    ));
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -405,4 +415,95 @@ impl ProxyConfig {
             format!("Basic {encoded}")
         })
     }
+}
+
+fn canonicalize_scheme(uri: Uri, canonical_scheme: &str) -> Result<Uri, Error> {
+    if uri.scheme_str() == Some(canonical_scheme) {
+        return Ok(uri);
+    }
+    let mut parts = uri.into_parts();
+    parts.scheme = Some(
+        canonical_scheme
+            .parse::<Scheme>()
+            .map_err(|error| Error::InvalidUrl(error.to_string()))?,
+    );
+    Uri::from_parts(parts).map_err(|error| Error::InvalidUrl(error.to_string()))
+}
+
+fn validate_proxy_authority(uri: &Uri) -> Result<(), Error> {
+    let authority = uri
+        .authority()
+        .ok_or_else(|| Error::InvalidUrl("proxy URI missing authority".into()))?;
+    explicit_proxy_port(authority).map(|_| ())
+}
+
+pub(super) fn explicit_proxy_port(authority: &Authority) -> Result<Option<u16>, Error> {
+    let endpoint = endpoint_without_userinfo(authority);
+    let raw_port = if let Some(bracketed) = endpoint.strip_prefix('[') {
+        let closing = bracketed
+            .find(']')
+            .ok_or_else(|| invalid_proxy_port(endpoint))?;
+        if closing == 0 {
+            return Err(invalid_proxy_port(endpoint));
+        }
+        match &bracketed[closing + 1..] {
+            "" => None,
+            suffix if suffix.starts_with(':') => Some(&suffix[1..]),
+            _ => return Err(invalid_proxy_port(endpoint)),
+        }
+    } else {
+        if endpoint.is_empty() || endpoint.contains('[') || endpoint.contains(']') {
+            return Err(invalid_proxy_port(endpoint));
+        }
+        match endpoint.rsplit_once(':') {
+            Some((host, port)) if !host.is_empty() && !host.contains(':') => Some(port),
+            Some(_) => return Err(invalid_proxy_port(endpoint)),
+            None => None,
+        }
+    };
+
+    let Some(raw_port) = raw_port else {
+        return Ok(None);
+    };
+    if raw_port.is_empty() || !raw_port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid_proxy_port(endpoint));
+    }
+    let port = raw_port
+        .parse::<u16>()
+        .map_err(|_| invalid_proxy_port(endpoint))?;
+    if authority.port_u16() != Some(port) {
+        return Err(invalid_proxy_port(endpoint));
+    }
+    Ok(Some(port))
+}
+
+fn endpoint_without_userinfo(authority: &Authority) -> &str {
+    authority
+        .as_str()
+        .rsplit_once('@')
+        .map_or_else(|| authority.as_str(), |(_, endpoint)| endpoint)
+}
+
+fn invalid_proxy_port(endpoint: &str) -> Error {
+    Error::InvalidUrl(format!(
+        "invalid proxy endpoint port in authority `{endpoint}`"
+    ))
+}
+
+fn is_reserved_connect_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "authorization"
+            | "connection"
+            | "content-length"
+            | "expect"
+            | "host"
+            | "http2-settings"
+            | "keep-alive"
+            | "proxy-connection"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
 }
