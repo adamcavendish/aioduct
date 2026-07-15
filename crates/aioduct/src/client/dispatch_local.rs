@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use super::connection_lifecycle::H2ConnectGuard;
+use super::replay::{ReplayReason, RequestReplayPolicy};
 use super::{BodyReplayability, HttpEngineCore, HttpEngineLocal, extract_headers};
 use crate::body::RequestBodyLocal;
 use crate::clock::Instant;
@@ -117,8 +118,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         };
         let may_h2 = is_https || force_h2c;
 
-        let can_stale_retry =
-            !self.core.no_connection_reuse && body_replayability.can_retry_after_stale_failure();
+        let replay_policy = RequestReplayPolicy::new(request.method(), body_replayability);
+        let can_stale_retry = !self.core.no_connection_reuse
+            && replay_policy.permits(ReplayReason::ProvenUnprocessed);
         let can_use_pooled_connection =
             !self.core.no_connection_reuse && body_replayability.can_start_on_pooled_connection();
         if can_use_pooled_connection && let Some(mut conn) = self.core.pool.checkout(&pool_key) {
