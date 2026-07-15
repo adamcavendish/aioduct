@@ -116,7 +116,7 @@ async fn adaptive_h2c_probe_succeeds_on_h2_server() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .adaptive_h2c()
         .timeout(Duration::from_secs(5))
@@ -135,7 +135,7 @@ async fn adaptive_h2c_probe_succeeds_on_h2_server() {
         .unwrap();
 
     let resp2 = client
-        .forward(incoming2)
+        .forward(super::valid_forward_request(incoming2))
         .upstream(format!("http://{addr}"))
         .adaptive_h2c()
         .timeout(Duration::from_secs(5))
@@ -176,7 +176,7 @@ async fn adaptive_h2c_probe_falls_back_to_h1() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .adaptive_h2c()
         .timeout(Duration::from_secs(5))
@@ -195,7 +195,7 @@ async fn adaptive_h2c_probe_falls_back_to_h1() {
         .unwrap();
 
     let resp2 = client
-        .forward(incoming2)
+        .forward(super::valid_forward_request(incoming2))
         .upstream(format!("http://{addr}"))
         .adaptive_h2c()
         .timeout(Duration::from_secs(5))
@@ -512,7 +512,7 @@ async fn forward_h2c_prior_knowledge_exercises_force_h2c() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .h2c()
         .timeout(Duration::from_secs(5))
@@ -547,7 +547,7 @@ async fn h2c_probe_cache_ttl_forces_re_probe() {
         .unwrap();
 
     let resp = client
-        .forward(incoming1)
+        .forward(super::valid_forward_request(incoming1))
         .upstream(format!("http://{addr}"))
         .adaptive_h2c()
         .timeout(Duration::from_secs(5))
@@ -568,7 +568,7 @@ async fn h2c_probe_cache_ttl_forces_re_probe() {
         .unwrap();
 
     let resp = client
-        .forward(incoming2)
+        .forward(super::valid_forward_request(incoming2))
         .upstream(format!("http://{addr}"))
         .adaptive_h2c()
         .timeout(Duration::from_secs(5))
@@ -880,7 +880,7 @@ async fn pool_hit_non_retryable_streaming_body_uses_fresh_connection() {
         .unwrap();
 
     let resp = client
-        .forward(incoming)
+        .forward(super::valid_forward_request(incoming))
         .upstream(format!("http://{addr}"))
         .timeout(Duration::from_secs(2))
         .send()

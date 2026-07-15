@@ -6,10 +6,13 @@ mod cache;
 mod chunk_download;
 #[path = "compio_integration/client_behavior.rs"]
 mod client_behavior;
+#[cfg(feature = "rustls")]
 #[path = "compio_integration/connect_tunnel.rs"]
 mod connect_tunnel;
 #[path = "compio_integration/forward_local.rs"]
 mod forward_local;
+#[path = "compio_integration/forward_upgrades.rs"]
+mod forward_upgrades;
 #[path = "compio_integration/forwarding.rs"]
 mod forwarding;
 #[path = "compio_integration/proxy_local.rs"]
@@ -40,6 +43,18 @@ use aioduct::{
     CONTENT_DIGEST, HttpEngineLocal, MessageSignatureBase, MessageSignatureComponent,
     MessageSignatureConfig, sha256_content_digest_value,
 };
+
+fn valid_forward_request<B>(mut request: Request<B>) -> Request<B> {
+    if request.version() == http::Version::HTTP_11
+        && !request.headers().contains_key(http::header::HOST)
+    {
+        request.headers_mut().insert(
+            http::header::HOST,
+            http::HeaderValue::from_static("downstream.test"),
+        );
+    }
+    request
+}
 
 async fn hello(_req: Request<hyper::body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
     Ok(Response::new(Full::new(Bytes::from("hello aioduct"))))

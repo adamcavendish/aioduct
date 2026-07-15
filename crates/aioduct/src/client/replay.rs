@@ -334,7 +334,10 @@ impl FinalizedRequestSnapshot {
         snapshot
     }
 
-    pub(crate) fn with_request_head_from<B>(&self, request: &http::Request<B>) -> Self {
+    pub(crate) fn with_request_head_from<B>(&self, request: &http::Request<B>) -> Self
+    where
+        B: http_body::Body,
+    {
         let mut snapshot = self.clone();
         snapshot.head = ReplayableRequestHead::capture(request);
         snapshot

@@ -699,6 +699,7 @@ async fn forwarding_signature_covers_rewritten_upstream_request() {
     let incoming = http::Request::builder()
         .method("GET")
         .uri("/proxy/users?active=1")
+        .header(http::header::HOST, "downstream.test")
         .body(Full::new(Bytes::new()))
         .unwrap();
     let resp = client
@@ -751,6 +752,7 @@ async fn forwarding_async_signing_is_included_in_timeout() {
     let incoming = http::Request::builder()
         .method("GET")
         .uri("/slow-sign")
+        .header(http::header::HOST, "downstream.test")
         .body(Full::new(Bytes::new()))
         .unwrap();
 
@@ -781,6 +783,7 @@ async fn forwarding_stale_retry_preserves_signed_headers() {
         let incoming = http::Request::builder()
             .method("GET")
             .uri(path)
+            .header(http::header::HOST, "downstream.test")
             .body(Full::new(Bytes::new()))
             .unwrap();
         let resp = client

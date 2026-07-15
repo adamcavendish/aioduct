@@ -172,7 +172,6 @@ where
     let counter = ConnectionCounter::new();
     let counter2 = counter.clone();
     let cert_der = cert.cert_der.clone();
-    let use_h2 = alpn.iter().any(|a| *a == b"h2");
     let config = make_server_config(&cert, alpn);
     let acceptor = TlsAcceptor::from(config);
 
@@ -194,6 +193,7 @@ where
                     Ok(s) => s,
                     Err(_) => return,
                 };
+                let use_h2 = tls_stream.get_ref().1.alpn_protocol() == Some(b"h2");
                 let io = crate::TokioIo::new(tls_stream);
                 if use_h2 {
                     let _ = hyper::server::conn::http2::Builder::new(TokioExec)

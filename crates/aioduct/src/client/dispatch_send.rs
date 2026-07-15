@@ -251,7 +251,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     resp.set_tls_info(conn.tls_info.clone());
                     self.core
                         .attach_observer(&mut resp, &req_method, original_uri);
-                    if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
+                    HttpEngineCore::<RequestBodySend>::retain_connect_stream_permit(
+                        &mut resp,
+                        &req_method,
+                        &mut conn,
+                    );
+                    if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp, &req_method) {
                         self.core.checkin_when_ready::<R, _, _>(
                             pool_key,
                             conn,
@@ -444,7 +449,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         resp.set_tls_info(conn.tls_info.clone());
                         self.core
                             .attach_observer(&mut resp, &req_method, original_uri);
-                        if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
+                        HttpEngineCore::<RequestBodySend>::retain_connect_stream_permit(
+                            &mut resp,
+                            &req_method,
+                            &mut conn,
+                        );
+                        if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(
+                            &resp,
+                            &req_method,
+                        ) {
                             self.core.checkin_when_ready::<R, _, _>(
                                 pool_key,
                                 conn,
@@ -722,7 +735,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             resp.set_tls_info(pooled.tls_info.clone());
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
-                            if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
+                            HttpEngineCore::<RequestBodySend>::retain_connect_stream_permit(
+                                &mut resp,
+                                &req_method,
+                                &mut pooled,
+                            );
+                            if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(
+                                &resp,
+                                &req_method,
+                            ) {
                                 self.core.checkin_when_ready::<R, _, _>(
                                     pool_key,
                                     pooled,
@@ -912,7 +933,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             resp.set_tls_info(conn.tls_info.clone());
                             self.core
                                 .attach_observer(&mut resp, &req_method, original_uri);
-                            if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
+                            HttpEngineCore::<RequestBodySend>::retain_connect_stream_permit(
+                                &mut resp,
+                                &req_method,
+                                &mut conn,
+                            );
+                            if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(
+                                &resp,
+                                &req_method,
+                            ) {
                                 self.core.checkin_when_ready::<R, _, _>(
                                     pool_key,
                                     conn,
@@ -1493,8 +1522,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         resp.set_tls_info(pooled.tls_info.clone());
         self.core
             .attach_observer(&mut resp, &req_method, original_uri);
+        HttpEngineCore::<RequestBodySend>::retain_connect_stream_permit(
+            &mut resp,
+            &req_method,
+            &mut pooled,
+        );
         if !self.core.no_connection_reuse
-            && !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp)
+            && !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp, &req_method)
         {
             self.core.checkin_when_ready::<R, _, _>(
                 pool_key,

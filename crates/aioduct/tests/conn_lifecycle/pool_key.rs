@@ -345,7 +345,7 @@ async fn adaptive_h2c_fallback_applies_socket_config() {
         .body(http_body_util::Empty::<bytes::Bytes>::new())
         .unwrap();
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(&url)
         .adaptive_h2c()
         .send()
@@ -385,7 +385,7 @@ async fn adaptive_h2c_fallback_reports_correct_remote_addr() {
         .body(http_body_util::Empty::<bytes::Bytes>::new())
         .unwrap();
     let resp = client
-        .forward(req)
+        .forward(valid_forward_request(req))
         .upstream(&url)
         .adaptive_h2c()
         .send()

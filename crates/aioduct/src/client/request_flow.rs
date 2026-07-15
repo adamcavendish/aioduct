@@ -80,10 +80,20 @@ impl<B> HttpEngineCore<B> {
     ) -> Result<Option<crate::message_signatures::PreparedAutomaticMessageSignature>, Error> {
         if let Some(ref message_signature) = self.message_signature {
             let method = request.method().clone();
-            let request_target = request.uri().clone();
+            let forward_target = request
+                .extensions()
+                .get::<crate::forward::dispatch_plan::ForwardSigningTarget>()
+                .cloned();
+            let signature_target_uri = forward_target
+                .as_ref()
+                .map_or(target_uri, |target| target.target_uri());
+            let request_target = forward_target.as_ref().map_or_else(
+                || request.uri().clone(),
+                |target| target.semantic_request_target().clone(),
+            );
             return Ok(Some(message_signature.prepare_headers(
                 &method,
-                target_uri,
+                signature_target_uri,
                 &request_target,
                 request.headers_mut(),
             )?));

@@ -62,18 +62,38 @@ impl<B: 'static> HttpEngineCore<B> {
             target.apply(request, connection.version());
         }
 
-        if request
+        if let Some(deferred_te) = request
             .extensions()
-            .get::<crate::forward::dispatch_plan::DeferredTeTrailers>()
-            .is_some()
+            .get::<crate::forward::dispatch_plan::DeferredTe>()
+            .copied()
         {
             request.headers_mut().remove(http::header::TE);
             if connection.is_h2_or_h3() {
-                request
-                    .headers_mut()
-                    .insert(http::header::TE, http::HeaderValue::from_static("trailers"));
+                match deferred_te {
+                    crate::forward::dispatch_plan::DeferredTe::Trailers
+                    | crate::forward::dispatch_plan::DeferredTe::TrailersForH2OrH3 => {
+                        request
+                            .headers_mut()
+                            .insert(http::header::TE, http::HeaderValue::from_static("trailers"));
+                    }
+                    crate::forward::dispatch_plan::DeferredTe::InvalidForH2OrH3 => {
+                        return Err(Error::InvalidHeader(
+                            "HTTP/2 and HTTP/3 TE fields may contain only `trailers`".to_owned(),
+                        ));
+                    }
+                }
             } else {
-                crate::forward::restore_h1_te_trailers(request.headers_mut());
+                if deferred_te == crate::forward::dispatch_plan::DeferredTe::TrailersForH2OrH3
+                    && request.headers().contains_key("signature-input")
+                {
+                    return Err(Error::Unsupported(
+                        "a negotiated HTTP/1.1 forward cannot retain a signature generated over an HTTP/2-only TE field"
+                            .to_owned(),
+                    ));
+                }
+                if deferred_te == crate::forward::dispatch_plan::DeferredTe::Trailers {
+                    crate::forward::restore_h1_te_trailers(request.headers_mut());
+                }
             }
         }
         if let Some(framing) = request
@@ -89,6 +109,10 @@ impl<B: 'static> HttpEngineCore<B> {
         {
             trailers.apply(connection.version());
         }
+        crate::forward::validate_final_forward_request_headers(
+            connection.version(),
+            request.headers_mut(),
+        )?;
         Ok(())
     }
 
@@ -123,14 +147,34 @@ impl<B: 'static> HttpEngineCore<B> {
     fn populate_sans(_conn: &mut PooledConnection<B>) {}
 
     /// Returns true if the response indicates the connection should not be reused.
-    pub(super) fn should_skip_checkin(resp: &Response) -> bool {
+    pub(super) fn should_skip_checkin(resp: &Response, method: &http::Method) -> bool {
         if resp.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+            return true;
+        }
+        if *method == http::Method::CONNECT
+            && resp.status().is_success()
+            && resp.version() != http::Version::HTTP_2
+        {
             return true;
         }
         resp.headers()
             .get(http::header::CONNECTION)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.eq_ignore_ascii_case("close"))
+    }
+
+    pub(super) fn retain_connect_stream_permit(
+        response: &mut Response,
+        method: &http::Method,
+        connection: &mut PooledConnection<B>,
+    ) {
+        if *method == http::Method::CONNECT
+            && response.status().is_success()
+            && response.version() == http::Version::HTTP_2
+            && let Some(permit) = connection.take_active_stream_permit()
+        {
+            response.hold_active_stream_permit(permit);
+        }
     }
 
     pub(super) fn checkin_connection(

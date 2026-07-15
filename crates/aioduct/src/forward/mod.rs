@@ -3,13 +3,17 @@
 pub(crate) mod dispatch_plan;
 pub(crate) mod forward_local;
 mod hop_by_hop;
+mod request_target;
+mod scheme;
+mod trailer_policy;
 
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
 use http::Uri;
-use http::header::{HeaderMap, HeaderName, HeaderValue, UPGRADE};
+use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http_body::Body;
 use http_body_util::BodyExt;
 
@@ -22,9 +26,11 @@ use crate::message_signatures::{
 };
 use crate::pool::ProtocolHint;
 use crate::response::Response;
-use crate::runtime::{ConnectorSend, RuntimePoll};
+use crate::runtime::{ConnectorSend, RuntimeCompletion, RuntimePoll};
 
-use dispatch_plan::{ForwardDispatchPlan, ForwardMode, ForwardRewrite, rewrite_for_upstream};
+use dispatch_plan::{
+    ForwardDispatchPlan, ForwardRewrite, capture_downstream_connect_protocol, rewrite_for_upstream,
+};
 
 type RequestHook = Box<dyn FnOnce(&mut http::request::Parts) + Send>;
 type ResponseHook = Box<dyn FnOnce(&mut Response) + Send>;
@@ -38,13 +44,168 @@ pub(crate) struct ForwardResponseRelatedRequest {
 }
 
 pub(crate) fn is_h1_upgrade_request(headers: &HeaderMap) -> bool {
-    headers.contains_key(UPGRADE)
-        && headers.get_all(http::header::CONNECTION).iter().any(|v| {
-            v.to_str().ok().is_some_and(|v| {
-                v.split(',')
-                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
-            })
-        })
+    hop_by_hop::is_h1_upgrade(headers)
+}
+
+pub(crate) fn validate_final_forward_request_headers(
+    version: http::Version,
+    headers: &mut HeaderMap,
+) -> Result<Option<u64>, Error> {
+    hop_by_hop::validate_final_request_headers(version, headers)
+}
+
+pub(crate) fn restore_h1_te_trailers(headers: &mut HeaderMap) {
+    hop_by_hop::restore_h1_te_trailers(headers);
+}
+
+fn project_deferred_headers_for_signature<B>(request: &mut http::Request<B>) {
+    if let Some(deferred_te) = request
+        .extensions()
+        .get::<dispatch_plan::DeferredTe>()
+        .copied()
+    {
+        deferred_te.project_for_signature(request.headers_mut());
+    }
+}
+
+pub(crate) async fn sanitize_forward_response_body<R: RuntimeCompletion>(
+    response: Response,
+    policy: hop_by_hop::ResponseBodyPolicy,
+    read_timeout: Option<Duration>,
+) -> Result<Response, Error> {
+    let eager_validate = policy.eager_validate_before_handoff();
+    let response = response.map_body(|body| SanitizedForwardResponseBody {
+        inner: Some(body.into_boxed()),
+        policy,
+    });
+    if eager_validate {
+        if let Some(duration) = read_timeout {
+            response
+                .map_body(|body| crate::timeout::ReadTimeoutBody::<_, R>::new(body, duration))
+                .into_drained_body()
+                .await
+        } else {
+            response.into_drained_body().await
+        }
+    } else {
+        Ok(response
+            .map_body(|body| crate::response::ResponseBodySend::from_boxed(body.boxed_unsync())))
+    }
+}
+
+pin_project_lite::pin_project! {
+    pub(crate) struct TrailerSanitizedBody<B> {
+        #[pin]
+        inner: B,
+        policy: trailer_policy::TrailerPolicy,
+    }
+}
+
+impl<B> TrailerSanitizedBody<B> {
+    pub(crate) fn new(inner: B, policy: trailer_policy::TrailerPolicy) -> Self {
+        Self { inner, policy }
+    }
+}
+
+impl<B> Body for TrailerSanitizedBody<B>
+where
+    B: Body,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    type Data = B::Data;
+    type Error = Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let mut this = self.project();
+        loop {
+            match this.inner.as_mut().poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => match this.policy.sanitize_frame(frame) {
+                    Ok(Some(frame)) => return Poll::Ready(Some(Ok(frame))),
+                    Ok(None) => {}
+                    Err(error) => return Poll::Ready(Some(Err(error))),
+                },
+                Poll::Ready(Some(Err(error))) => {
+                    return Poll::Ready(Some(Err(Error::Other(error.into()))));
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+pin_project_lite::pin_project! {
+    struct SanitizedForwardResponseBody {
+        #[pin]
+        inner: Option<RequestBodySend>,
+        policy: hop_by_hop::ResponseBodyPolicy,
+    }
+}
+
+impl Body for SanitizedForwardResponseBody {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let mut this = self.project();
+        loop {
+            let Some(inner) = this.inner.as_mut().as_pin_mut() else {
+                return Poll::Ready(None);
+            };
+            match inner.poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => match this.policy.sanitize_frame(frame) {
+                    Ok(Some(frame)) => return Poll::Ready(Some(Ok(frame))),
+                    Ok(None) => continue,
+                    Err(error) => {
+                        this.inner.set(None);
+                        return Poll::Ready(Some(Err(error)));
+                    }
+                },
+                Poll::Ready(Some(Err(error))) => {
+                    this.inner.set(None);
+                    return Poll::Ready(Some(Err(error)));
+                }
+                Poll::Ready(None) => {
+                    this.inner.set(None);
+                    return match this.policy.finish() {
+                        Ok(()) => Poll::Ready(None),
+                        Err(error) => Poll::Ready(Some(Err(error))),
+                    };
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        let Some(inner) = self.inner.as_ref() else {
+            return true;
+        };
+        self.policy.is_end_stream(inner.is_end_stream())
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        let inner = self
+            .inner
+            .as_ref()
+            .map(http_body::Body::size_hint)
+            .unwrap_or_else(|| http_body::SizeHint::with_exact(0));
+        self.policy.size_hint(inner)
+    }
 }
 
 pub(crate) fn reject_response_finalization_for_tunnel_or_upgrade(
@@ -86,14 +247,14 @@ pub(crate) fn prepare_forward_response_related_request(
         return Ok(None);
     }
 
-    let request_target = parts.uri.clone();
-    let target_uri = downstream_target_uri
-        .map(|target_uri| {
-            ensure_downstream_target_matches_request(target_uri, &request_target)?;
-            Ok::<_, Error>(target_uri.clone())
-        })
-        .transpose()?
-        .unwrap_or_else(|| request_target.clone());
+    let inbound_target = request_target::InboundRequestTarget::capture(parts)?;
+    let request_target = semantic_inbound_request_target(parts, &inbound_target)?;
+    let target_uri = if let Some(target_uri) = downstream_target_uri {
+        ensure_downstream_target_matches_request(target_uri, &request_target)?;
+        target_uri.clone()
+    } else {
+        semantic_inbound_target_uri(parts, &inbound_target)?
+    };
 
     if requirements.requires_full_downstream_target_uri && !is_full_uri(&target_uri) {
         return Err(Error::Unsupported(
@@ -110,10 +271,68 @@ pub(crate) fn prepare_forward_response_related_request(
     }))
 }
 
+fn semantic_inbound_request_target(
+    parts: &http::request::Parts,
+    inbound_target: &request_target::InboundRequestTarget,
+) -> Result<Uri, Error> {
+    match inbound_target {
+        request_target::InboundRequestTarget::Asterisk { .. } => Ok(Uri::from_static("*")),
+        request_target::InboundRequestTarget::Authority(authority) => authority
+            .as_str()
+            .parse()
+            .map_err(|error| Error::InvalidUrl(format!("invalid CONNECT request target: {error}"))),
+        request_target::InboundRequestTarget::Absolute { .. }
+            if matches!(parts.version, http::Version::HTTP_2 | http::Version::HTTP_3) =>
+        {
+            parts
+                .uri
+                .path_and_query()
+                .map(http::uri::PathAndQuery::as_str)
+                .unwrap_or("/")
+                .parse()
+                .map_err(|error| {
+                    Error::InvalidUrl(format!("invalid semantic request target: {error}"))
+                })
+        }
+        request_target::InboundRequestTarget::Origin { .. }
+        | request_target::InboundRequestTarget::Absolute { .. } => Ok(parts.uri.clone()),
+    }
+}
+
+fn semantic_inbound_target_uri(
+    parts: &http::request::Parts,
+    inbound_target: &request_target::InboundRequestTarget,
+) -> Result<Uri, Error> {
+    if matches!(
+        inbound_target,
+        request_target::InboundRequestTarget::Asterisk { .. }
+    ) && let (Some(scheme), Some(authority)) = (parts.uri.scheme(), parts.uri.authority())
+    {
+        return format!("{scheme}://{authority}").parse().map_err(|error| {
+            Error::InvalidUrl(format!(
+                "invalid semantic target URI for OPTIONS *: {error}"
+            ))
+        });
+    }
+    Ok(parts.uri.clone())
+}
+
 fn ensure_downstream_target_matches_request(
     downstream_target_uri: &Uri,
     request_target: &Uri,
 ) -> Result<(), Error> {
+    if request_target.path() == "*" {
+        if downstream_target_uri.path_and_query().is_none() {
+            return Ok(());
+        }
+        let path_and_query = downstream_target_uri
+            .path_and_query()
+            .map(http::uri::PathAndQuery::as_str)
+            .unwrap_or_default();
+        return Err(Error::InvalidUrl(format!(
+            "forward: downstream target URI for OPTIONS * must not include a path or query, got `{path_and_query}`"
+        )));
+    }
     let downstream_path_and_query = path_and_query_or_root(downstream_target_uri);
     let request_path_and_query = path_and_query_or_root(request_target);
     if downstream_path_and_query != request_path_and_query {
@@ -132,10 +351,11 @@ fn is_full_uri(uri: &Uri) -> bool {
     uri.scheme().is_some() && uri.authority().is_some()
 }
 
-pub(crate) async fn apply_forward_response_content_digest(
+pub(crate) async fn apply_forward_response_content_digest<R: RuntimeCompletion>(
     resp: Response,
     max_bytes: Option<usize>,
     request_method: &http::Method,
+    read_timeout: Option<Duration>,
 ) -> Result<Response, Error> {
     let Some(max_bytes) = max_bytes else {
         return Ok(resp);
@@ -147,9 +367,14 @@ pub(crate) async fn apply_forward_response_content_digest(
         return Ok(resp);
     }
 
-    let (mut resp, body) = resp
-        .into_buffered_with_limit(max_bytes, "forward response Content-Digest")
-        .await?;
+    let (mut resp, body) = if let Some(duration) = read_timeout {
+        resp.map_body(|body| crate::timeout::ReadTimeoutBody::<_, R>::new(body, duration))
+            .into_buffered_with_limit(max_bytes, "forward response Content-Digest")
+            .await?
+    } else {
+        resp.into_buffered_with_limit(max_bytes, "forward response Content-Digest")
+            .await?
+    };
     crate::digest_fields::insert_sha256_content_digest(resp.headers_mut(), &body).map_err(
         |source| {
             Error::InvalidHeader(format!(
@@ -483,15 +708,15 @@ where
         if self.force_h1_upgrade || is_h1_upgrade_request(&parts.headers) {
             self.forward_headers.push(http::header::CONNECTION);
             self.forward_headers.push(http::header::UPGRADE);
+            if hop_by_hop::is_h2c_upgrade(&parts.headers) {
+                self.forward_headers
+                    .push(HeaderName::from_static("http2-settings"));
+            }
         }
-        if !is_h1_upgrade && !is_h2_extended_connect && self.protocol_hint != ProtocolHint::H2c {
-            parts.version = http::Version::HTTP_11;
-        }
-
         let upstream = self
             .upstream
             .ok_or_else(|| Error::InvalidUrl("forward: no upstream configured".into()))?;
-        let rewritten_uri = rewrite_for_upstream(
+        let rewritten = rewrite_for_upstream(
             &mut parts,
             ForwardRewrite {
                 upstream: &upstream,
@@ -518,7 +743,9 @@ where
 
         let plan = ForwardDispatchPlan::finalize(
             &mut parts,
-            &rewritten_uri,
+            &rewritten.uri,
+            &rewritten.inbound_target,
+            &rewritten.trailer_policy,
             self.protocol_hint,
             self.force_h1_upgrade,
             downstream_h1_upgrade_offer,
@@ -532,8 +759,9 @@ where
             self.preserve_host,
         )?;
         plan.apply(&mut parts, body.is_end_stream())?;
+        validate_forward_content_length(&mut parts.headers, body.size_hint())?;
         let full_uri = plan.full_uri().clone();
-        let forward_mode = plan.mode();
+        let response_header_policy = plan.response_header_policy();
 
         // Convert body to RequestBodySend.
         let connect_timeout = self.connect_timeout;
@@ -543,17 +771,13 @@ where
         let sign_final_request = self.sign_final_request;
 
         let body_replayability = BodyReplayability::for_forwarded_body(&body);
+        let request_trailer_policy = plan.request_trailer_policy();
 
-        let mut boxed_body: RequestBodySend = body
-            .map_frame(|frame| frame)
-            .map_err(|e| {
-                let boxed: Box<dyn std::error::Error + Send + Sync> = e.into();
-                Error::Other(boxed)
-            })
-            .boxed_unsync();
+        let mut boxed_body: RequestBodySend =
+            TrailerSanitizedBody::new(body, request_trailer_policy).boxed_unsync();
         if let Some(duration) = write_timeout {
-            let timeout_body = crate::timeout::WriteTimeoutBody::<_, R>::new(boxed_body, duration);
-            boxed_body = timeout_body.map_err(|e| e).boxed_unsync();
+            boxed_body =
+                crate::timeout::WriteTimeoutBody::<_, R>::new(boxed_body, duration).boxed_unsync();
         }
 
         let mut request = http::Request::from_parts(parts, boxed_body);
@@ -576,17 +800,21 @@ where
         let response_processing_enabled =
             response_signing_enabled || response_content_digest_max_bytes.is_some();
         let response_request_method = request.method().clone();
-        let mut on_response = self.on_response;
-        let on_response_before_signing = if response_processing_enabled {
-            on_response.take()
-        } else {
-            None
-        };
+        let on_response = self.on_response;
         let timeout = self.timeout.or(client.core.timeout);
         // Bound the stack footprint of concurrent broker handlers. The
         // forwarding lifecycle includes dispatch and response finalization,
         // but callers should retain only one pointer per in-flight request.
         let send_fut = Box::pin(async move {
+            project_deferred_headers_for_signature(&mut request);
+            if sign_final_request
+                && let Some(signature) = client
+                    .core
+                    .prepare_final_request_signature(&full_uri, &mut request)?
+            {
+                let signature_headers = signature.sign_send().await?;
+                signature_headers.insert_into(request.headers_mut())?;
+            }
             let mut resp = client
                 .execute_single_with_hint_send(
                     request,
@@ -602,6 +830,15 @@ where
                 )
                 .await?;
 
+            let upstream_response_version = resp.version();
+            let upstream_response_status = resp.status();
+            hop_by_hop::validate_inbound_response_headers(
+                upstream_response_version,
+                &response_request_method,
+                upstream_response_status,
+                resp.headers_mut(),
+            )?;
+
             if response_processing_enabled && resp.status() == http::StatusCode::SWITCHING_PROTOCOLS
             {
                 return Err(Error::Unsupported(
@@ -610,26 +847,40 @@ where
                 ));
             }
 
-            // Strip hop-by-hop from response (skip for upgrade responses).
-            if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS
-                && forward_mode != ForwardMode::ExtendedConnect
-            {
-                let resp_headers = resp.headers_mut();
-                hop_by_hop::strip_hop_by_hop(resp_headers);
+            resp.set_version(response_header_policy.downstream_version());
+
+            let trailer_policy = response_header_policy.sanitize(
+                resp.status(),
+                resp.headers_mut(),
+                Some(upstream_response_version),
+            )?;
+            let mut resp =
+                sanitize_forward_response_body::<R>(resp, trailer_policy, read_timeout).await?;
+
+            if let Some(hook) = on_response {
+                let response_status = resp.status();
+                let upgrade_selection =
+                    response_header_policy.upgrade_selection(response_status, resp.headers())?;
+                resp.run_hook_preserving_dispatch_extensions(hook);
+                resp.set_version(response_header_policy.downstream_version());
+                response_header_policy
+                    .validate_response_hook_status(response_status, resp.status())?;
+                response_header_policy.validate_preserved_upgrade_selection(
+                    resp.status(),
+                    resp.headers(),
+                    upgrade_selection.as_ref(),
+                )?;
+                let trailer_policy =
+                    response_header_policy.sanitize(resp.status(), resp.headers_mut(), None)?;
+                resp =
+                    sanitize_forward_response_body::<R>(resp, trailer_policy, read_timeout).await?;
             }
 
-            if let Some(hook) = on_response_before_signing {
-                hook(&mut resp);
-            }
-
-            if response_processing_enabled {
-                hop_by_hop::strip_hop_by_hop(resp.headers_mut());
-            }
-
-            let mut resp = apply_forward_response_content_digest(
+            let mut resp = apply_forward_response_content_digest::<R>(
                 resp,
                 response_content_digest_max_bytes,
                 &response_request_method,
+                read_timeout,
             )
             .await?;
 
@@ -654,19 +905,16 @@ where
             Ok(resp)
         });
 
-        let mut resp = if let Some(duration) = timeout {
+        let result = if let Some(duration) = timeout {
             crate::timeout::Timeout::WithTimeout {
                 future: send_fut,
                 sleep: R::sleep(duration),
             }
-            .await?
+            .await
         } else {
-            send_fut.await?
+            send_fut.await
         };
-
-        if let Some(hook) = on_response {
-            hook(&mut resp);
-        }
+        let mut resp = result?;
 
         if let Some(duration) = read_timeout {
             resp = resp.apply_read_timeout::<R>(duration);
@@ -674,6 +922,22 @@ where
 
         Ok(resp)
     }
+}
+
+fn validate_forward_content_length(
+    headers: &mut HeaderMap,
+    body_size: http_body::SizeHint,
+) -> Result<(), Error> {
+    let content_length =
+        crate::message_framing::normalize_content_length(headers, "forwarded request")?;
+    if let (Some(content_length), Some(exact)) = (content_length, body_size.exact())
+        && content_length != exact
+    {
+        return Err(Error::InvalidHeader(format!(
+            "forwarded request body length {exact} does not match Content-Length {content_length}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "tokio"))]
@@ -689,6 +953,7 @@ mod tests {
     fn dummy_request(path: &str) -> http::Request<http_body_util::Empty<Bytes>> {
         http::Request::builder()
             .uri(path)
+            .header(http::header::HOST, "downstream.test")
             .body(http_body_util::Empty::new())
             .unwrap()
     }

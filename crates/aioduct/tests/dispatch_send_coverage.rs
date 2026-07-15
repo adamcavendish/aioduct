@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::Response;
+use hyper::{Request, Response};
 
 use aioduct::HttpEngineSend;
 use aioduct::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
@@ -32,3 +32,15 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 
 use aioduct_test_server::h1::{echo, h1_server, h1_server_with};
 use aioduct_test_server::h2::h2_server_with;
+
+fn valid_forward_request<B>(mut request: Request<B>) -> Request<B> {
+    if request.version() == http::Version::HTTP_11
+        && !request.headers().contains_key(http::header::HOST)
+    {
+        request.headers_mut().insert(
+            http::header::HOST,
+            http::HeaderValue::from_static("downstream.test"),
+        );
+    }
+    request
+}

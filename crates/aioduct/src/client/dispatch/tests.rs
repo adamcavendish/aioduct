@@ -646,29 +646,42 @@ fn empty_response(status: u16, headers: &[(&str, &str)]) -> Response {
 #[test]
 fn should_skip_checkin_switching_protocols() {
     let resp = empty_response(101, &[]);
-    assert!(Core::should_skip_checkin(&resp));
+    assert!(Core::should_skip_checkin(&resp, &http::Method::GET));
 }
 
 #[test]
 fn should_skip_checkin_connection_close() {
     let resp = empty_response(200, &[("connection", "close")]);
-    assert!(Core::should_skip_checkin(&resp));
+    assert!(Core::should_skip_checkin(&resp, &http::Method::GET));
 }
 
 #[test]
 fn should_skip_checkin_connection_close_case_insensitive() {
     let resp = empty_response(200, &[("connection", "Close")]);
-    assert!(Core::should_skip_checkin(&resp));
+    assert!(Core::should_skip_checkin(&resp, &http::Method::GET));
 }
 
 #[test]
 fn should_not_skip_checkin_normal_response() {
     let resp = empty_response(200, &[]);
-    assert!(!Core::should_skip_checkin(&resp));
+    assert!(!Core::should_skip_checkin(&resp, &http::Method::GET));
 }
 
 #[test]
 fn should_not_skip_checkin_keepalive() {
     let resp = empty_response(200, &[("connection", "keep-alive")]);
-    assert!(!Core::should_skip_checkin(&resp));
+    assert!(!Core::should_skip_checkin(&resp, &http::Method::GET));
+}
+
+#[test]
+fn should_skip_checkin_successful_connect() {
+    let resp = empty_response(200, &[]);
+    assert!(Core::should_skip_checkin(&resp, &http::Method::CONNECT));
+}
+
+#[test]
+fn should_checkin_successful_h2_connect() {
+    let mut resp = empty_response(200, &[]);
+    resp.set_version(http::Version::HTTP_2);
+    assert!(!Core::should_skip_checkin(&resp, &http::Method::CONNECT));
 }

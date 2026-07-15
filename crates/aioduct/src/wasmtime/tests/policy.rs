@@ -322,8 +322,7 @@ async fn host_injects_secret_header_after_validation() {
         .expect("request should succeed");
     assert_eq!(incoming.resp.status(), http::StatusCode::OK);
     let text = seen.await.expect("server should capture request");
-    assert!(
-        text.to_ascii_lowercase()
-            .contains("authorization: bearer secret")
-    );
+    let text = text.to_ascii_lowercase();
+    assert!(text.contains(&format!("host: {addr}")));
+    assert!(text.contains("authorization: bearer secret"));
 }

@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -57,6 +57,7 @@ pub(crate) struct PooledConnection<B> {
     pub(crate) is_multiplex_clone: bool,
     /// Shared active stream count for H2/H3 multiplex clones.
     active_streams: Option<Arc<AtomicUsize>>,
+    multiplex_retired: Arc<AtomicBool>,
     /// Permit held by an active H2/H3 multiplex clone.
     _active_stream_permit: Option<ActiveStreamPermit>,
     /// Upgrade handle for Local path (!Send) HTTP/1.1 upgrades.
@@ -67,8 +68,15 @@ pub(crate) struct PooledConnection<B> {
     pub(crate) key: Option<super::PoolKey>,
 }
 
-struct ActiveStreamPermit {
+pub(crate) struct ActiveStreamPermit {
     active: Arc<AtomicUsize>,
+    retired: Arc<AtomicBool>,
+}
+
+impl ActiveStreamPermit {
+    pub(crate) fn retire_transport(&self) {
+        self.retired.store(true, Ordering::Release);
+    }
 }
 
 impl Drop for ActiveStreamPermit {
@@ -78,6 +86,31 @@ impl Drop for ActiveStreamPermit {
 }
 
 impl<B> PooledConnection<B> {
+    /// HTTP version selected by this established transport.
+    pub(crate) fn version(&self) -> http::Version {
+        match &self.conn {
+            HttpConnection::H1(_) => http::Version::HTTP_11,
+            HttpConnection::H2(_) => http::Version::HTTP_2,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            HttpConnection::H3(_) => http::Version::HTTP_3,
+        }
+    }
+
+    /// Prevent this multiplexed transport and its idle clones from being reused.
+    pub(crate) fn retire_multiplex_transport(&mut self) {
+        if !self.is_h2_or_h3() {
+            return;
+        }
+        self.multiplex_retired.store(true, Ordering::Release);
+        if let (Some(pool), Some(key)) = (self.pool.upgrade(), self.key.as_ref())
+            && let Ok(mut inner) = pool.lock()
+        {
+            inner.idle.remove(key);
+        }
+        self.pool = Weak::new();
+        self.key = None;
+    }
+
     /// Wrap an HTTP/1.1 connection.
     pub(crate) fn new_h1(sender: hyper::client::conn::http1::SendRequest<B>) -> Self {
         Self {
@@ -90,6 +123,7 @@ impl<B> PooledConnection<B> {
             metrics: Arc::new(ConnectionMetrics::new()),
             is_multiplex_clone: false,
             active_streams: None,
+            multiplex_retired: Arc::new(AtomicBool::new(false)),
             _active_stream_permit: None,
             upgrade_handle_local: None,
             pool: Weak::new(),
@@ -109,6 +143,7 @@ impl<B> PooledConnection<B> {
             metrics: Arc::new(ConnectionMetrics::new()),
             is_multiplex_clone: false,
             active_streams: Some(Arc::new(AtomicUsize::new(0))),
+            multiplex_retired: Arc::new(AtomicBool::new(false)),
             _active_stream_permit: None,
             upgrade_handle_local: None,
             pool: Weak::new(),
@@ -129,6 +164,7 @@ impl<B> PooledConnection<B> {
             metrics: Arc::new(ConnectionMetrics::new()),
             is_multiplex_clone: false,
             active_streams: Some(Arc::new(AtomicUsize::new(0))),
+            multiplex_retired: Arc::new(AtomicBool::new(false)),
             _active_stream_permit: None,
             upgrade_handle_local: None,
             pool: Weak::new(),
@@ -138,6 +174,9 @@ impl<B> PooledConnection<B> {
 
     /// Returns true if the connection is ready to send a request.
     pub(crate) fn is_ready(&self) -> bool {
+        if self.multiplex_retired.load(Ordering::Acquire) {
+            return false;
+        }
         match &self.conn {
             HttpConnection::H1(s) => s.is_ready(),
             HttpConnection::H2(s) => s.is_ready(),
@@ -215,14 +254,22 @@ impl<B> PooledConnection<B> {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 ) {
-                    Ok(_) => return Some(ActiveStreamPermit { active }),
+                    Ok(_) => {
+                        return Some(ActiveStreamPermit {
+                            active,
+                            retired: self.multiplex_retired.clone(),
+                        });
+                    }
                     Err(observed) => current = observed,
                 }
             }
         }
 
         active.fetch_add(1, Ordering::AcqRel);
-        Some(ActiveStreamPermit { active })
+        Some(ActiveStreamPermit {
+            active,
+            retired: self.multiplex_retired.clone(),
+        })
     }
 
     #[cfg(all(test, feature = "tokio"))]
@@ -245,6 +292,10 @@ impl<B> PooledConnection<B> {
         self.metrics
             .bytes_received
             .fetch_add(len, Ordering::Relaxed);
+    }
+
+    pub(crate) fn take_active_stream_permit(&mut self) -> Option<ActiveStreamPermit> {
+        self._active_stream_permit.take()
     }
 
     /// Return cumulative requests served on this transport.
@@ -291,6 +342,9 @@ impl<B: 'static> PooledConnection<B> {
         &self,
         max_active: Option<NonZeroUsize>,
     ) -> Option<Self> {
+        if self.multiplex_retired.load(Ordering::Acquire) {
+            return None;
+        }
         let active_stream_permit = self.acquire_multiplex_permit(max_active)?;
         let conn = match &self.conn {
             HttpConnection::H1(_) => return None,
@@ -308,6 +362,7 @@ impl<B: 'static> PooledConnection<B> {
             metrics: Arc::clone(&self.metrics),
             is_multiplex_clone: true,
             active_streams: self.active_streams.clone(),
+            multiplex_retired: self.multiplex_retired.clone(),
             _active_stream_permit: Some(active_stream_permit),
             upgrade_handle_local: None,
             pool: self.pool.clone(),

@@ -4,10 +4,28 @@ use http::uri::{Parts as UriParts, PathAndQuery, Scheme, Uri};
 use crate::error::Error;
 use crate::pool::ProtocolHint;
 
+use super::hop_by_hop::{HeaderProtocol, ResponseHeaderPolicy};
+use super::request_target::{
+    HostField, InboundRequestTarget, single_host_field, validate_authority,
+    validate_connect_authority,
+};
+use super::trailer_policy::TrailerPolicy;
 use super::{hop_by_hop, is_h1_upgrade_request};
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DeferredTeTrailers;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DeferredTe {
+    Trailers,
+    TrailersForH2OrH3,
+    InvalidForH2OrH3,
+}
+
+impl DeferredTe {
+    pub(crate) fn project_for_signature(self, headers: &mut HeaderMap) {
+        if matches!(self, Self::Trailers | Self::TrailersForH2OrH3) {
+            headers.insert(http::header::TE, HeaderValue::from_static("trailers"));
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeferredForwardFraming {
@@ -186,11 +204,14 @@ pub(crate) struct ForwardDispatchPlan {
     full_uri: Uri,
     request_uri: Uri,
     request_version: http::Version,
-    mode: ForwardMode,
     protocol_hint: ProtocolHint,
+    deferred_te: Option<DeferredTe>,
+    negotiated_framing: bool,
     deferred_target: Option<DeferredForwardTarget>,
     h3_asterisk_authority: Option<ForwardAsteriskAuthority>,
     signing_target: ForwardSigningTarget,
+    response_headers: ResponseHeaderPolicy,
+    request_trailers: TrailerPolicy,
 }
 
 impl ForwardDispatchPlan {
@@ -198,6 +219,8 @@ impl ForwardDispatchPlan {
     pub(crate) fn finalize(
         parts: &mut http::request::Parts,
         rewritten_uri: &Uri,
+        inbound_target: &InboundRequestTarget,
+        rewritten_trailer_policy: &TrailerPolicy,
         requested_hint: ProtocolHint,
         force_h1_upgrade: bool,
         downstream_h1_upgrade_offer: Option<hop_by_hop::H1UpgradeOffer>,
@@ -275,6 +298,7 @@ impl ForwardDispatchPlan {
         } else {
             ForwardMode::Normal
         };
+        let downstream_protocol = header_protocol_for_version(downstream_version)?;
         if mode == ForwardMode::H1Upgrade && downstream_version != http::Version::HTTP_11 {
             return Err(Error::Unsupported(
                 "HTTP/1.1 upgrades require an HTTP/1.1 downstream request".to_owned(),
@@ -425,15 +449,30 @@ impl ForwardDispatchPlan {
             EgressProtocol::Http2 => ProtocolHint::Http2,
             EgressProtocol::Http3 => ProtocolHint::Http3,
         };
-        let wire_authority = forwarded_authority(
-            &mut parts.headers,
-            full_uri
-                .authority()
-                .ok_or_else(|| Error::InvalidUrl("forward: final URI has no authority".into()))?,
-            preserve_host,
-        )?;
-        let target_form = if is_asterisk_target {
-            RequestTargetForm::Asterisk
+        let wire_authority = if let Some(connect_authority) = connect_authority {
+            rewrite_host(&mut parts.headers, &connect_authority)?;
+            connect_authority
+        } else {
+            forwarded_authority(
+                &mut parts.headers,
+                full_uri.authority().ok_or_else(|| {
+                    Error::InvalidUrl("forward: final URI has no authority".into())
+                })?,
+                preserve_host,
+                inbound_target.preserved_authority(),
+            )?
+        };
+        let target_form = if let Some(server_wide_options) = server_wide_options {
+            match (egress, server_wide_options.authority_in_target) {
+                (EgressProtocol::Negotiated | EgressProtocol::Http1, _) => {
+                    RequestTargetForm::Asterisk
+                }
+                (EgressProtocol::Http2 | EgressProtocol::Http3, true) => {
+                    RequestTargetForm::AsteriskAbsolute
+                }
+                (EgressProtocol::Http2, false) => RequestTargetForm::Asterisk,
+                (EgressProtocol::Http3, false) => RequestTargetForm::AsteriskAuthorityOmitted,
+            }
         } else {
             match mode {
                 ForwardMode::ExtendedConnect => RequestTargetForm::Absolute,
@@ -448,8 +487,22 @@ impl ForwardDispatchPlan {
                 ForwardMode::Normal | ForwardMode::H1Upgrade => RequestTargetForm::Origin,
             }
         };
-        let authority_override =
-            matches!(target_form, RequestTargetForm::Absolute).then_some(&wire_authority);
+        if target_form == RequestTargetForm::AsteriskAuthorityOmitted {
+            // TODO(http3-malformed-fields): remove this fail-closed boundary
+            // when upstream h3 can encode :scheme without :authority.
+            return Err(Error::Unsupported(
+                "HTTP/3 forwarding cannot encode authority-free OPTIONS * with upstream h3"
+                    .to_owned(),
+            ));
+        }
+        let authority_override = matches!(
+            target_form,
+            RequestTargetForm::Absolute
+                | RequestTargetForm::Authority
+                | RequestTargetForm::AsteriskAuthorityOmitted
+                | RequestTargetForm::AsteriskAbsolute
+        )
+        .then_some(&wire_authority);
         let final_request_uri = request_uri(&full_uri, target_form, authority_override)?;
         let h3_asterisk_authority = (egress == EgressProtocol::Http3)
             .then_some(server_wide_options)
@@ -486,8 +539,26 @@ impl ForwardDispatchPlan {
             })
         });
         let deferred_target = deferred_target.transpose()?;
-        let signing_target = if parts.method == http::Method::CONNECT {
-            full_uri.clone()
+        let semantic_request_target = match target_form {
+            RequestTargetForm::Origin => final_request_uri.clone(),
+            RequestTargetForm::Absolute => request_uri(&full_uri, RequestTargetForm::Origin, None)?,
+            RequestTargetForm::Authority => request_uri(
+                &full_uri,
+                RequestTargetForm::Authority,
+                Some(&wire_authority),
+            )?,
+            RequestTargetForm::Asterisk
+            | RequestTargetForm::AsteriskAuthorityOmitted
+            | RequestTargetForm::AsteriskAbsolute => Uri::from_static("*"),
+        };
+        let signing_target = if matches!(
+            target_form,
+            RequestTargetForm::Authority
+                | RequestTargetForm::Asterisk
+                | RequestTargetForm::AsteriskAuthorityOmitted
+                | RequestTargetForm::AsteriskAbsolute
+        ) {
+            pathless_absolute_uri(&full_uri, Some(&wire_authority))?
         } else {
             request_uri(
                 &full_uri,
@@ -504,14 +575,48 @@ impl ForwardDispatchPlan {
             EgressProtocol::Http2 => http::Version::HTTP_2,
             EgressProtocol::Http3 => http::Version::HTTP_3,
         };
+        let request_header_protocol = header_protocol_for_egress(egress);
+        let deferred_te = (request_header_protocol == HeaderProtocol::Negotiated)
+            .then(|| hop_by_hop::deferred_te(&parts.headers, downstream_accepts_trailers))
+            .flatten();
+        let final_trailer_policy = hop_by_hop::sanitize_request(
+            &mut parts.headers,
+            request_header_protocol,
+            mode == ForwardMode::H1Upgrade,
+            downstream_accepts_trailers,
+        )?;
+        // Connection-nominated fields are removed by sanitization. Host is
+        // generated control data for the selected wire authority, so restore
+        // its canonical value only after that removal is complete.
+        rewrite_host(&mut parts.headers, &wire_authority)?;
+        let mut request_trailers = rewritten_trailer_policy.clone();
+        request_trailers.merge(final_trailer_policy);
+        match egress {
+            EgressProtocol::Negotiated => request_trailers.defer_to_connection(&parts.headers),
+            EgressProtocol::Http1 => request_trailers.restrict_to_declaration(&parts.headers),
+            EgressProtocol::Http2 | EgressProtocol::Http3 => {}
+        }
+
         Ok(Self {
             full_uri,
             request_uri: final_request_uri,
             request_version,
-            mode,
             protocol_hint,
+            deferred_te,
+            negotiated_framing: egress == EgressProtocol::Negotiated,
             deferred_target,
-            signing_target: ForwardSigningTarget(signing_target),
+            h3_asterisk_authority,
+            signing_target: ForwardSigningTarget {
+                target_uri: signing_target,
+                semantic_request_target,
+            },
+            response_headers: ResponseHeaderPolicy::new(
+                downstream_protocol,
+                downstream_method.clone(),
+                downstream_accepts_trailers,
+                h1_upgrade_offer,
+            ),
+            request_trailers,
         })
     }
 
@@ -523,8 +628,8 @@ impl ForwardDispatchPlan {
         self.protocol_hint
     }
 
-    pub(crate) fn mode(&self) -> ForwardMode {
-        self.mode
+    pub(crate) fn response_header_policy(&self) -> ResponseHeaderPolicy {
+        self.response_headers.clone()
     }
 
     pub(crate) fn request_trailer_policy(&self) -> TrailerPolicy {
@@ -539,6 +644,9 @@ impl ForwardDispatchPlan {
         parts.uri = self.request_uri.clone();
         parts.version = self.request_version;
         parts.extensions.insert(self.protocol_hint);
+        if let Some(deferred_te) = self.deferred_te {
+            parts.extensions.insert(deferred_te);
+        }
         if let Some(target) = &self.deferred_target {
             parts.extensions.insert(target.clone());
         }
@@ -562,6 +670,47 @@ impl ForwardDispatchPlan {
         }
         parts.extensions.insert(self.signing_target.clone());
         Ok(())
+    }
+}
+
+fn apply_http11_request_framing(
+    headers: &mut HeaderMap,
+    has_body: bool,
+    has_trailer_declaration: bool,
+) -> Result<(), Error> {
+    headers.remove(http::header::TRANSFER_ENCODING);
+    if !has_body {
+        headers.remove(http::header::TRAILER);
+        return Ok(());
+    }
+    if has_trailer_declaration || !headers.contains_key(http::header::CONTENT_LENGTH) {
+        headers.remove(http::header::CONTENT_LENGTH);
+        headers.insert(
+            http::header::TRANSFER_ENCODING,
+            HeaderValue::from_static("chunked"),
+        );
+    }
+    Ok(())
+}
+
+fn header_protocol_for_egress(egress: EgressProtocol) -> HeaderProtocol {
+    match egress {
+        EgressProtocol::Negotiated => HeaderProtocol::Negotiated,
+        EgressProtocol::Http1 => HeaderProtocol::Http11,
+        EgressProtocol::Http2 => HeaderProtocol::Http2,
+        EgressProtocol::Http3 => HeaderProtocol::Http3,
+    }
+}
+
+fn header_protocol_for_version(version: http::Version) -> Result<HeaderProtocol, Error> {
+    match version {
+        http::Version::HTTP_10 => Ok(HeaderProtocol::Http10),
+        http::Version::HTTP_11 => Ok(HeaderProtocol::Http11),
+        http::Version::HTTP_2 => Ok(HeaderProtocol::Http2),
+        http::Version::HTTP_3 => Ok(HeaderProtocol::Http3),
+        _ => Err(Error::Unsupported(format!(
+            "forwarding downstream HTTP version {version:?} is not supported"
+        ))),
     }
 }
 
@@ -724,20 +873,48 @@ pub(crate) struct ForwardRewrite<'a> {
     pub(crate) remove_headers: &'a [HeaderName],
 }
 
+pub(crate) struct ForwardRewriteResult {
+    pub(crate) uri: Uri,
+    pub(crate) inbound_target: InboundRequestTarget,
+    pub(crate) trailer_policy: TrailerPolicy,
+}
+
 pub(crate) fn rewrite_for_upstream(
     parts: &mut http::request::Parts,
     rewrite: ForwardRewrite<'_>,
-) -> Result<Uri, Error> {
-    let forwarded_values: Vec<(HeaderName, HeaderValue)> = rewrite
-        .forward_headers
-        .iter()
-        .filter_map(|name| {
+) -> Result<ForwardRewriteResult, Error> {
+    hop_by_hop::validate_inbound_request_headers(parts.version, &mut parts.headers)?;
+    let inbound_target = InboundRequestTarget::capture(parts)?;
+    let trailer_policy = TrailerPolicy::capture_request_for_version(&parts.headers, parts.version);
+    let preserve_upgrade = is_h1_upgrade_request(&parts.headers);
+    let preserve_h2c_settings = preserve_upgrade && hop_by_hop::is_h2c_upgrade(&parts.headers);
+    let mut preserved_names = rewrite.forward_headers.to_vec();
+    if !preserved_names.contains(&http::header::TE) {
+        preserved_names.push(http::header::TE);
+    }
+    let mut forwarded_values = Vec::new();
+    let mut visited_names = Vec::new();
+    for name in preserved_names {
+        if visited_names.contains(&name) {
+            continue;
+        }
+        visited_names.push(name.clone());
+        let connection_nominated = trailer_policy.connection_names().contains(&name);
+        let controlled_exception = name == http::header::TE
+            || (preserve_upgrade && name == http::header::UPGRADE)
+            || (preserve_h2c_settings && name == "http2-settings");
+        if connection_nominated && !controlled_exception {
+            continue;
+        }
+        forwarded_values.extend(
             parts
                 .headers
-                .get(name)
-                .map(|value| (name.clone(), value.clone()))
-        })
-        .collect();
+                .get_all(&name)
+                .iter()
+                .cloned()
+                .map(|value| (name.clone(), value)),
+        );
+    }
 
     hop_by_hop::strip_hop_by_hop_with_policy(&mut parts.headers, &trailer_policy);
 
@@ -810,7 +987,7 @@ pub(crate) fn rewrite_for_upstream(
         parts.headers.remove(name);
     }
     for (name, value) in forwarded_values {
-        parts.headers.insert(name, value);
+        parts.headers.append(name, value);
     }
     for (name, value) in rewrite.extra_headers {
         parts.headers.insert(name, value.clone());
@@ -828,7 +1005,11 @@ pub(crate) fn rewrite_for_upstream(
         Some(false) => Uri::from_static("*"),
         None => full_uri.clone(),
     };
-    Ok(full_uri)
+    Ok(ForwardRewriteResult {
+        uri: full_uri,
+        inbound_target,
+        trailer_policy,
+    })
 }
 
 fn rewrite_host(headers: &mut HeaderMap, authority: &http::uri::Authority) -> Result<(), Error> {
@@ -845,27 +1026,27 @@ fn forwarded_authority(
     headers: &mut HeaderMap,
     fallback: &http::uri::Authority,
     require_host: bool,
+    preserved_authority: Option<&http::uri::Authority>,
 ) -> Result<http::uri::Authority, Error> {
-    let mut hosts = headers.get_all(HOST).iter();
-    let Some(host) = hosts.next() else {
-        if require_host {
-            return Err(Error::InvalidHeader(
-                "preserve_host requires a Host field".to_owned(),
-            ));
+    match single_host_field(headers)? {
+        HostField::Authority(host) => Ok(host),
+        HostField::Missing if require_host => {
+            let authority = preserved_authority.ok_or_else(|| {
+                Error::InvalidHeader(
+                    "preserve_host requires an inbound authority or Host field".to_owned(),
+                )
+            })?;
+            rewrite_host(headers, authority)?;
+            Ok(authority.clone())
         }
-        rewrite_host(headers, fallback)?;
-        return Ok(fallback.clone());
-    };
-    let host = host
-        .to_str()
-        .map_err(|error| Error::InvalidHeader(format!("invalid forwarded Host field: {error}")))?;
-    if hosts.next().is_some() {
-        return Err(Error::InvalidHeader(
-            "forwarding requires at most one Host field".to_owned(),
-        ));
+        HostField::Empty if require_host => Err(Error::InvalidHeader(
+            "preserve_host cannot use an empty Host field as an upstream authority".to_owned(),
+        )),
+        HostField::Missing | HostField::Empty => {
+            rewrite_host(headers, fallback)?;
+            Ok(fallback.clone())
+        }
     }
-    host.parse()
-        .map_err(|error| Error::InvalidHeader(format!("invalid forwarded Host field: {error}")))
 }
 
 fn request_uri(
@@ -911,192 +1092,4 @@ fn request_uri(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parts(method: http::Method, uri: &str, version: http::Version) -> http::request::Parts {
-        let (parts, ()) = http::Request::builder()
-            .method(method)
-            .uri(uri)
-            .version(version)
-            .body(())
-            .unwrap()
-            .into_parts();
-        parts
-    }
-
-    fn finalize(
-        parts: &mut http::request::Parts,
-        hint: ProtocolHint,
-        version_changed: bool,
-    ) -> Result<ForwardDispatchPlan, Error> {
-        let rewritten = "https://example.test/base?q=1".parse().unwrap();
-        let downstream_version = parts.version;
-        let plan = ForwardDispatchPlan::finalize(
-            parts,
-            &rewritten,
-            hint,
-            false,
-            version_changed,
-            true,
-            true,
-            downstream_version,
-            false,
-        )?;
-        plan.apply(parts);
-        Ok(plan)
-    }
-
-    #[test]
-    fn ingress_versions_canonicalize_for_negotiated_egress() {
-        for version in [
-            http::Version::HTTP_10,
-            http::Version::HTTP_11,
-            http::Version::HTTP_2,
-            http::Version::HTTP_3,
-        ] {
-            let mut parts = parts(http::Method::GET, "https://example.test/base", version);
-            let plan = finalize(&mut parts, ProtocolHint::Auto, false).unwrap();
-            assert_eq!(plan.mode, ForwardMode::Normal);
-            assert_eq!(
-                egress_for_hint(plan.protocol_hint),
-                EgressProtocol::Negotiated
-            );
-            assert_eq!(parts.version, http::Version::HTTP_11);
-            assert_eq!(parts.uri, "/base");
-        }
-    }
-
-    #[test]
-    fn explicit_hook_version_selects_exact_egress() {
-        for (version, egress, hint) in [
-            (
-                http::Version::HTTP_11,
-                EgressProtocol::Http1,
-                ProtocolHint::Http1,
-            ),
-            (
-                http::Version::HTTP_2,
-                EgressProtocol::Http2,
-                ProtocolHint::Http2,
-            ),
-            (
-                http::Version::HTTP_3,
-                EgressProtocol::Http3,
-                ProtocolHint::Http3,
-            ),
-        ] {
-            let mut parts = parts(http::Method::GET, "https://example.test/base", version);
-            let plan = finalize(&mut parts, ProtocolHint::Auto, true).unwrap();
-            assert_eq!(egress_for_hint(plan.protocol_hint), egress);
-            assert_eq!(plan.protocol_hint, hint);
-        }
-    }
-
-    #[test]
-    fn upgrade_and_extended_connect_require_exact_protocols() {
-        let mut upgrade = parts(
-            http::Method::GET,
-            "https://example.test/base",
-            http::Version::HTTP_11,
-        );
-        upgrade.headers.insert(
-            http::header::CONNECTION,
-            HeaderValue::from_static("upgrade"),
-        );
-        upgrade
-            .headers
-            .insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
-        let upgrade_plan = finalize(&mut upgrade, ProtocolHint::Auto, false).unwrap();
-        assert_eq!(upgrade_plan.mode, ForwardMode::H1Upgrade);
-        assert_eq!(
-            egress_for_hint(upgrade_plan.protocol_hint),
-            EgressProtocol::Http1
-        );
-
-        let mut extended = parts(
-            http::Method::CONNECT,
-            "https://example.test/tunnel",
-            http::Version::HTTP_2,
-        );
-        extended
-            .extensions
-            .insert(crate::Protocol::from_static("websocket"));
-        let extended_plan = finalize(&mut extended, ProtocolHint::Auto, false).unwrap();
-        assert_eq!(extended_plan.mode, ForwardMode::ExtendedConnect);
-        assert_eq!(
-            egress_for_hint(extended_plan.protocol_hint),
-            EgressProtocol::Http2
-        );
-        assert_eq!(extended.uri, "https://example.test/tunnel");
-    }
-
-    #[test]
-    fn ordinary_connect_uses_authority_form() {
-        let mut connect = parts(
-            http::Method::CONNECT,
-            "https://example.test/",
-            http::Version::HTTP_11,
-        );
-        let plan = finalize(&mut connect, ProtocolHint::Auto, false).unwrap();
-        assert_eq!(connect.uri, "example.test");
-        assert_eq!(plan.protocol_hint(), ProtocolHint::Http1);
-        assert_eq!(connect.version, http::Version::HTTP_11);
-    }
-
-    #[test]
-    fn invalid_protocol_combinations_fail() {
-        let mut h2_upgrade = parts(
-            http::Method::GET,
-            "https://example.test/base",
-            http::Version::HTTP_11,
-        );
-        h2_upgrade.headers.insert(
-            http::header::CONNECTION,
-            HeaderValue::from_static("upgrade"),
-        );
-        h2_upgrade
-            .headers
-            .insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
-        assert!(finalize(&mut h2_upgrade, ProtocolHint::Http2, false).is_err());
-
-        let mut invalid_extension = parts(
-            http::Method::GET,
-            "https://example.test/base",
-            http::Version::HTTP_2,
-        );
-        invalid_extension
-            .extensions
-            .insert(crate::Protocol::from_static("websocket"));
-        assert!(finalize(&mut invalid_extension, ProtocolHint::Auto, false).is_err());
-    }
-
-    #[test]
-    fn http10_upgrade_is_rejected() {
-        let mut upgrade = parts(
-            http::Method::GET,
-            "https://example.test/base",
-            http::Version::HTTP_10,
-        );
-        upgrade.headers.insert(
-            http::header::CONNECTION,
-            HeaderValue::from_static("upgrade"),
-        );
-        upgrade
-            .headers
-            .insert(http::header::UPGRADE, HeaderValue::from_static("websocket"));
-
-        assert!(finalize(&mut upgrade, ProtocolHint::Auto, false).is_err());
-    }
-
-    #[test]
-    fn options_asterisk_uses_h1_when_negotiated_and_rejects_tls_h2() {
-        let mut negotiated = parts(http::Method::OPTIONS, "*", http::Version::HTTP_11);
-        let plan = finalize(&mut negotiated, ProtocolHint::Auto, false).unwrap();
-        assert_eq!(plan.protocol_hint(), ProtocolHint::Http1);
-        assert_eq!(negotiated.uri, "*");
-
-        let mut exact_h2 = parts(http::Method::OPTIONS, "*", http::Version::HTTP_11);
-        assert!(finalize(&mut exact_h2, ProtocolHint::Http2, false).is_err());
-    }
-}
+mod tests;

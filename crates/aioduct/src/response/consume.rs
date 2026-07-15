@@ -23,7 +23,8 @@ impl Response {
 
     /// Perform an HTTP upgrade (e.g., WebSocket) on this response.
     pub async fn upgrade(mut self) -> Result<crate::upgrade::UpgradedSend, crate::error::Error> {
-        crate::upgrade::on_upgrade(&mut self.inner).await
+        let permit = self.take_upgrade_stream_permit();
+        crate::upgrade::on_upgrade(&mut self.inner, permit).await
     }
 }
 
