@@ -1282,6 +1282,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let (parts, body) = request.into_parts();
         let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
         let request = http::Request::from_parts(parts, http_body_util::BodyExt::boxed_unsync(body));
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        let fut = HttpEngineCore::send_on_connection_send::<R>(conn, request, original_uri);
+        #[cfg(not(all(feature = "http3", feature = "rustls")))]
         let fut = HttpEngineCore::send_on_connection(conn, request, original_uri);
         match first_byte_timeout {
             Some(duration) => {
@@ -1309,6 +1312,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let (parts, body) = request.into_parts();
         let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
         let request = http::Request::from_parts(parts, http_body_util::BodyExt::boxed_unsync(body));
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        let future =
+            HttpEngineCore::try_send_on_pooled_connection_send::<R>(conn, request, original_uri);
+        #[cfg(not(all(feature = "http3", feature = "rustls")))]
         let future = HttpEngineCore::try_send_on_pooled_connection(conn, request, original_uri);
         match first_byte_timeout {
             Some(duration) => {
