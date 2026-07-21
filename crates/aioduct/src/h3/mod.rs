@@ -14,7 +14,9 @@ use crate::happy_eyeballs::{HAPPY_EYEBALLS_DELAY, interleave_addrs};
 mod quinn_adapter;
 mod request;
 
-pub(crate) use request::{H3ReplayEvidence, replay_evidence, send_on_h3};
+pub(crate) use request::{
+    H3ReplayEvidence, connection_is_unusable, is_endpoint_failure, replay_evidence, send_on_h3,
+};
 pub(crate) type H3SendRequest = h3::client::SendRequest<quinn_adapter::OpenStreams, bytes::Bytes>;
 
 pub(crate) struct H3Connection {

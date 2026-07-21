@@ -151,6 +151,11 @@ impl<B> PooledConnection<B> {
         matches!(&self.conn, HttpConnection::H1(_))
     }
 
+    #[cfg(all(feature = "http3", feature = "rustls"))]
+    pub(crate) fn is_h3(&self) -> bool {
+        matches!(&self.conn, HttpConnection::H3(_))
+    }
+
     /// Whether the transport can return an untouched request when dispatch is
     /// rejected before serialization.
     pub(crate) fn supports_unsent_request_recovery(&self) -> bool {

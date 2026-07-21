@@ -82,6 +82,44 @@ impl H3DispatchError {
             _ => H3ReplayEvidence::Ambiguous,
         }
     }
+
+    fn is_endpoint_failure(&self) -> bool {
+        match &self.source {
+            h3::error::StreamError::ConnectionError(error) => !error.is_h3_no_error(),
+            h3::error::StreamError::Undefined(source) => {
+                matches!(
+                    source.downcast_ref::<quinn::WriteError>(),
+                    Some(quinn::WriteError::ConnectionLost(_))
+                ) || matches!(
+                    source.downcast_ref::<quinn::ReadError>(),
+                    Some(quinn::ReadError::ConnectionLost(_))
+                )
+            }
+            h3::error::StreamError::StreamError { .. }
+            | h3::error::StreamError::RemoteTerminate { .. }
+            | h3::error::StreamError::HeaderTooBig { .. }
+            | h3::error::StreamError::RemoteClosing => false,
+            _ => false,
+        }
+    }
+
+    fn connection_is_unusable(&self) -> bool {
+        match &self.source {
+            h3::error::StreamError::ConnectionError(_) | h3::error::StreamError::RemoteClosing => {
+                true
+            }
+            h3::error::StreamError::Undefined(source) => {
+                matches!(
+                    source.downcast_ref::<quinn::WriteError>(),
+                    Some(quinn::WriteError::ConnectionLost(_))
+                ) || matches!(
+                    source.downcast_ref::<quinn::ReadError>(),
+                    Some(quinn::ReadError::ConnectionLost(_))
+                )
+            }
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for H3DispatchError {
@@ -503,6 +541,28 @@ pub(crate) fn replay_evidence(error: &Error) -> Option<H3ReplayEvidence> {
     None
 }
 
+pub(crate) fn is_endpoint_failure(error: &Error) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = source {
+        if let Some(error) = error.downcast_ref::<H3DispatchError>() {
+            return error.is_endpoint_failure();
+        }
+        source = error.source();
+    }
+    false
+}
+
+pub(crate) fn connection_is_unusable(error: &Error) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = source {
+        if let Some(error) = error.downcast_ref::<H3DispatchError>() {
+            return error.connection_is_unusable();
+        }
+        source = error.source();
+    }
+    false
+}
+
 fn h3_error(operation: H3Operation, error: h3::error::StreamError) -> Error {
     Error::Other(Box::new(H3DispatchError {
         operation,
@@ -574,6 +634,8 @@ mod tests {
                 source: h3::error::StreamError::RemoteClosing,
             };
             assert_eq!(error.replay_evidence(), H3ReplayEvidence::Ambiguous);
+            assert!(error.connection_is_unusable());
+            assert!(!error.is_endpoint_failure());
         }
     }
 
@@ -599,5 +661,35 @@ mod tests {
             )),
         };
         assert_eq!(error.replay_evidence(), H3ReplayEvidence::VersionFallback);
+        assert!(error.is_endpoint_failure());
+    }
+
+    #[test]
+    fn request_scoped_failures_do_not_poison_the_endpoint() {
+        for source in [
+            h3::error::StreamError::RemoteClosing,
+            h3::error::StreamError::RemoteTerminate {
+                code: h3::error::Code::H3_REQUEST_REJECTED,
+            },
+        ] {
+            let error = H3DispatchError {
+                operation: H3Operation::ReceiveResponse,
+                source,
+            };
+            assert!(!error.is_endpoint_failure());
+            assert_eq!(
+                error.connection_is_unusable(),
+                matches!(error.source, h3::error::StreamError::RemoteClosing)
+            );
+        }
+    }
+
+    #[test]
+    fn connection_scoped_failure_poisons_the_endpoint() {
+        let error = H3DispatchError {
+            operation: H3Operation::ReceiveResponse,
+            source: h3::error::StreamError::ConnectionError(h3::error::ConnectionError::Timeout),
+        };
+        assert!(error.is_endpoint_failure());
     }
 }

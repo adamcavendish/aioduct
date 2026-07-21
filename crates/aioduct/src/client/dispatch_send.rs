@@ -17,6 +17,21 @@ use crate::runtime::{ConnectorSend, RuntimePoll, SocketConfig};
 use super::extract_headers;
 use super::request_replay::{ReplayableRequestHead, replay_request_send};
 
+fn claim_dispatch_replay(
+    budget: &mut StaleReplayBudget,
+    policy: RequestReplayPolicy,
+    reason: ReplayReason,
+    allow_h3_version_fallback: bool,
+) -> bool {
+    #[cfg(all(feature = "http3", feature = "rustls"))]
+    if reason == ReplayReason::VersionFallback && !allow_h3_version_fallback {
+        return false;
+    }
+    #[cfg(not(all(feature = "http3", feature = "rustls")))]
+    let _ = allow_h3_version_fallback;
+    budget.claim(policy, reason)
+}
+
 // ── Send path (RuntimePoll + ConnectorSend) ──────────────────────────────────
 
 impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
@@ -120,15 +135,38 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .extensions()
             .get::<FreshConnectionRequired>()
             .is_some();
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        let h3_dispatch_selected = is_https
+            && !through_proxy
+            && self.core.h3_endpoint.is_some()
+            && (self.core.prefer_h3 || self.core.alt_svc_cache.lookup_h3(authority).is_some());
+        #[cfg(not(all(feature = "http3", feature = "rustls")))]
+        let h3_dispatch_selected = false;
         let replay_policy = RequestReplayPolicy::new(request.method(), body_replayability);
         let mut stale_replay_budget = StaleReplayBudget::default();
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        let allow_h3_version_fallback = !self.core.prefer_h3;
+        #[cfg(not(all(feature = "http3", feature = "rustls")))]
+        let allow_h3_version_fallback = false;
         let can_stale_retry = !self.core.no_connection_reuse
             && replay_policy.permits(ReplayReason::ProvenUnprocessed);
         let can_use_pooled_connection =
             !self.core.no_connection_reuse && !fresh_connection_required;
 
-        if can_use_pooled_connection
-            && let Some(mut conn) = self.core.pool.checkout(&pool_key)
+        let pooled_connection = if can_use_pooled_connection {
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            if h3_dispatch_selected {
+                self.core.pool.checkout_h3(&pool_key)
+            } else {
+                self.core.pool.checkout(&pool_key)
+            }
+            #[cfg(not(all(feature = "http3", feature = "rustls")))]
+            self.core.pool.checkout(&pool_key)
+        } else {
+            None
+        };
+
+        if let Some(mut conn) = pooled_connection
             && body_replayability
                 .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
         {
@@ -223,7 +261,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     if saved_request.is_some()
                         && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
                             .is_some_and(|reason| {
-                                stale_replay_budget.claim(replay_policy, reason)
+                                claim_dispatch_replay(
+                                    &mut stale_replay_budget,
+                                    replay_policy,
+                                    reason,
+                                    allow_h3_version_fallback,
+                                )
                             }) =>
                 {
                     #[cfg(feature = "tracing")]
@@ -232,6 +275,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         error = %e,
                         "connection.pool.stale — retrying on fresh connection"
                     );
+                    #[cfg(all(feature = "http3", feature = "rustls"))]
+                    if HttpEngineCore::<RequestBodySend>::h3_failure_invalidates_alt_svc(&conn, &e)
+                    {
+                        self.core.alt_svc_cache.suppress_h3(authority);
+                    }
                     if conn.is_h2_or_h3() {
                         self.core.pool.evict(&pool_key);
                     }
@@ -269,9 +317,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 }
                 Err(error) => {
                     let e = error.into_error();
-                    if conn.is_h2_or_h3()
-                        && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
-                            .is_some()
+                    #[cfg(all(feature = "http3", feature = "rustls"))]
+                    if HttpEngineCore::<RequestBodySend>::h3_failure_invalidates_alt_svc(&conn, &e)
+                    {
+                        self.core.alt_svc_cache.suppress_h3(authority);
+                    }
+                    if HttpEngineCore::<RequestBodySend>::should_evict_after_send_failure(&conn, &e)
                     {
                         self.core.pool.evict(&pool_key);
                     }
@@ -294,6 +345,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         if force_addr.is_none()
             && self.core.connection_coalescing
             && is_https
+            && !h3_dispatch_selected
             && can_use_pooled_connection
         {
             let port = authority.port_u16().unwrap_or(443);
@@ -404,7 +456,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 &conn, &e,
                             )
                             .is_some_and(|reason| {
-                                stale_replay_budget.claim(replay_policy, reason)
+                                claim_dispatch_replay(
+                                    &mut stale_replay_budget,
+                                    replay_policy,
+                                    reason,
+                                    allow_h3_version_fallback,
+                                )
                             }) =>
                     {
                         #[cfg(feature = "tracing")]
@@ -413,6 +470,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             error = %e,
                             "connection.pool.coalesced.stale — retrying on fresh connection"
                         );
+                        #[cfg(all(feature = "http3", feature = "rustls"))]
+                        if HttpEngineCore::<RequestBodySend>::h3_failure_invalidates_alt_svc(
+                            &conn, &e,
+                        ) {
+                            self.core.alt_svc_cache.suppress_h3(authority);
+                        }
                         if conn.is_h2_or_h3() {
                             let evict_key = conn.key.as_ref().unwrap_or(&pool_key);
                             self.core.pool.evict(evict_key);
@@ -452,10 +515,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     }
                     Err(error) => {
                         let e = error.into_error();
-                        if conn.is_h2_or_h3()
-                            && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
-                                .is_some()
-                        {
+                        #[cfg(all(feature = "http3", feature = "rustls"))]
+                        if HttpEngineCore::<RequestBodySend>::h3_failure_invalidates_alt_svc(
+                            &conn, &e,
+                        ) {
+                            self.core.alt_svc_cache.suppress_h3(authority);
+                        }
+                        if HttpEngineCore::<RequestBodySend>::should_evict_after_send_failure(
+                            &conn, &e,
+                        ) {
                             let evict_key = conn.key.as_ref().unwrap_or(&pool_key);
                             self.core.pool.evict(evict_key);
                         }
@@ -474,18 +542,28 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         }
 
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        let mut pool_miss_recorded = false;
+        #[cfg(not(all(feature = "http3", feature = "rustls")))]
+        let pool_miss_recorded = false;
+
         // When a proxy is configured, never attempt a direct HTTP/3 connection;
         // proxied requests must stay on the configured proxy path (HTTP CONNECT
         // or SOCKS tunnel).  HTTP/3 proxy tunneling (CONNECT-UDP) is not yet
         // supported.
         #[cfg(all(feature = "http3", feature = "rustls"))]
-        if is_https
-            && !through_proxy
-            && let Some(endpoint) = &self.core.h3_endpoint
-        {
-            let use_h3 =
-                self.core.prefer_h3 || self.core.alt_svc_cache.lookup_h3(authority).is_some();
-            if use_h3 {
+        'h3_dispatch: {
+            if is_https
+                && !through_proxy
+                && let Some(endpoint) = &self.core.h3_endpoint
+            {
+                let alt_svc = self.core.alt_svc_cache.lookup_h3(authority);
+                let used_alt_svc = alt_svc.is_some();
+                let opportunistic_h3 = !self.core.prefer_h3 && used_alt_svc;
+                let use_h3 = self.core.prefer_h3 || used_alt_svc;
+                if !use_h3 {
+                    break 'h3_dispatch;
+                }
                 self.core.notify(
                     request.method(),
                     original_uri,
@@ -496,21 +574,31 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 );
 
                 self.core.pool.record_checkout_miss();
+                pool_miss_recorded = true;
 
                 let default_port = 443u16;
-                let (h3_host, h3_port) = self
-                    .core
-                    .alt_svc_cache
-                    .lookup_h3(authority)
-                    .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
+                let (h3_host, h3_port) =
+                    alt_svc.unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
                 let connect_host = h3_host.as_deref().unwrap_or(authority.host());
                 let dns_start = Instant::now();
-                let addrs = if let Some(addr) = force_addr {
-                    vec![addr]
-                } else {
-                    self.core
+                let addrs = match force_addr {
+                    Some(addr) => vec![addr],
+                    None => match self
+                        .core
                         .resolve_all_authority_raw(connect_host, h3_port)
-                        .await?
+                        .await
+                    {
+                        Ok(addrs) => addrs,
+                        Err(error) => {
+                            if used_alt_svc {
+                                self.core.alt_svc_cache.suppress_h3(authority);
+                            }
+                            if opportunistic_h3 {
+                                break 'h3_dispatch;
+                            }
+                            return Err(error);
+                        }
+                    },
                 };
                 self.core.notify(
                     request.method(),
@@ -557,9 +645,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             .await
                         }
                     };
-                    let (mut pooled, addr) =
-                        crate::timeout::connect_timeout::<R, _, _>(h3_connect_fut, connect_timeout)
-                            .await?;
+                    let (mut pooled, addr) = match crate::timeout::connect_timeout::<R, _, _>(
+                        h3_connect_fut,
+                        connect_timeout,
+                    )
+                    .await
+                    {
+                        Ok(connected) => connected,
+                        Err(error) => {
+                            if used_alt_svc {
+                                self.core.alt_svc_cache.suppress_h3(authority);
+                            }
+                            if opportunistic_h3 {
+                                break 'h3_dispatch;
+                            }
+                            return Err(error);
+                        }
+                    };
                     self.core.notify(
                         request.method(),
                         original_uri,
@@ -630,8 +732,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             if HttpEngineCore::<RequestBodySend>::stale_replay_reason(
                                 &pooled, &error,
                             ) == Some(ReplayReason::ProvenUnprocessed)
-                                && stale_replay_budget
-                                    .claim(replay_policy, ReplayReason::ProvenUnprocessed) =>
+                                && claim_dispatch_replay(
+                                    &mut stale_replay_budget,
+                                    replay_policy,
+                                    ReplayReason::ProvenUnprocessed,
+                                    opportunistic_h3,
+                                ) =>
                         {
                             self.core.fire_connection_metrics(&pooled, true);
                             self.core.notify(
@@ -654,7 +760,45 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             }
                             use_0rtt = false;
                         }
+                        Err(error)
+                            if opportunistic_h3
+                                && crate::h3_transport::replay_evidence(&error)
+                                    == Some(
+                                        crate::h3_transport::H3ReplayEvidence::VersionFallback,
+                                    )
+                                && claim_dispatch_replay(
+                                    &mut stale_replay_budget,
+                                    replay_policy,
+                                    ReplayReason::VersionFallback,
+                                    true,
+                                ) =>
+                        {
+                            self.core.alt_svc_cache.suppress_h3(authority);
+                            self.core.fire_connection_metrics(&pooled, true);
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::Failed {
+                                    error: error.to_string(),
+                                    retry: RetryKind::StaleConnection,
+                                    elapsed: request_start.elapsed(),
+                                },
+                            );
+                            request = replay_request_send(saved_request.clone(), &replay_body);
+                            if sign_stale_retries
+                                && let Some(signature) = self
+                                    .core
+                                    .prepare_final_request_signature(original_uri, &mut request)?
+                            {
+                                let signature_headers = signature.sign_send().await?;
+                                signature_headers.insert_into(request.headers_mut())?;
+                            }
+                            break 'h3_dispatch;
+                        }
                         Err(error) => {
+                            if used_alt_svc && crate::h3_transport::is_endpoint_failure(&error) {
+                                self.core.alt_svc_cache.suppress_h3(authority);
+                            }
                             self.core.notify(
                                 &req_method,
                                 original_uri,
@@ -671,14 +815,16 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         }
 
-        self.core.notify(
-            request.method(),
-            original_uri,
-            RequestPhase::PoolCheckoutComplete {
-                outcome: observer::PoolOutcome::Miss,
-                blocked_duration: pool_checkout_start.elapsed(),
-            },
-        );
+        if !pool_miss_recorded {
+            self.core.notify(
+                request.method(),
+                original_uri,
+                RequestPhase::PoolCheckoutComplete {
+                    outcome: observer::PoolOutcome::Miss,
+                    blocked_duration: pool_checkout_start.elapsed(),
+                },
+            );
+        }
 
         // H2/H3 multiplexing: if another task is already establishing an H2
         // connection for this key, wait briefly and retry checkout instead of
@@ -788,7 +934,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                     &conn, &e,
                                 )
                                 .is_some_and(|reason| {
-                                    stale_replay_budget.claim(replay_policy, reason)
+                                    claim_dispatch_replay(
+                                        &mut stale_replay_budget,
+                                        replay_policy,
+                                        reason,
+                                        allow_h3_version_fallback,
+                                    )
                                 }) =>
                         {
                             #[cfg(feature = "tracing")]
@@ -797,6 +948,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 error = %e,
                                 "connection.pool.stale (h2 wait path) — retrying on fresh connection"
                             );
+                            #[cfg(all(feature = "http3", feature = "rustls"))]
+                            if HttpEngineCore::<RequestBodySend>::h3_failure_invalidates_alt_svc(
+                                &conn, &e,
+                            ) {
+                                self.core.alt_svc_cache.suppress_h3(authority);
+                            }
                             if conn.is_h2_or_h3() {
                                 self.core.pool.evict(&pool_key);
                             }
@@ -835,10 +992,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         }
                         Err(error) => {
                             let e = error.into_error();
-                            if conn.is_h2_or_h3()
-                                && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
-                                    .is_some()
-                            {
+                            #[cfg(all(feature = "http3", feature = "rustls"))]
+                            if HttpEngineCore::<RequestBodySend>::h3_failure_invalidates_alt_svc(
+                                &conn, &e,
+                            ) {
+                                self.core.alt_svc_cache.suppress_h3(authority);
+                            }
+                            if HttpEngineCore::<RequestBodySend>::should_evict_after_send_failure(
+                                &conn, &e,
+                            ) {
                                 self.core.pool.evict(&pool_key);
                             }
                             self.core.notify(
@@ -883,7 +1045,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .try_reserve_active(&pool_key)
             .map_err(Error::from)?;
 
-        self.core.pool.record_checkout_miss();
+        if !pool_miss_recorded {
+            self.core.pool.record_checkout_miss();
+        }
 
         // Through proxies, AdaptiveH2c was already resolved to Auto above
         // (before pool-key construction). proxy_force_h2c is just force_h2c.

@@ -581,6 +581,10 @@ pub(crate) enum ReplayReason {
     AmbiguousTransportFailure,
     /// The transport proved that the peer did not process the request.
     ProvenUnprocessed,
+    /// HTTP/3 instructed the client to use an earlier HTTP version. Normal
+    /// method and body replay safety still applies.
+    #[cfg(all(feature = "http3", feature = "rustls"))]
+    VersionFallback,
     /// The transport returned the exact request before serialization began.
     ExactRequestRecovered,
 }
@@ -640,6 +644,8 @@ impl RequestReplayPolicy {
             ReplayReason::Configured { method_authorized } => method_authorized,
             ReplayReason::AmbiguousTransportFailure => self.method_is_idempotent,
             ReplayReason::ProvenUnprocessed => true,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            ReplayReason::VersionFallback => self.method_is_idempotent,
             ReplayReason::ExactRequestRecovered => true,
         }
     }
@@ -851,6 +857,27 @@ mod tests {
         assert!(
             !RequestReplayPolicy::new(&Method::POST, BodyReplayability::OneShot)
                 .permits(ReplayReason::ProvenUnprocessed)
+        );
+    }
+
+    #[cfg(all(feature = "http3", feature = "rustls"))]
+    #[test]
+    fn version_fallback_requires_idempotent_reproducible_request() {
+        assert!(
+            RequestReplayPolicy::new(&Method::GET, BodyReplayability::Empty)
+                .permits(ReplayReason::VersionFallback)
+        );
+        assert!(
+            RequestReplayPolicy::new(&Method::PUT, BodyReplayability::Replayable)
+                .permits(ReplayReason::VersionFallback)
+        );
+        assert!(
+            !RequestReplayPolicy::new(&Method::POST, BodyReplayability::Replayable)
+                .permits(ReplayReason::VersionFallback)
+        );
+        assert!(
+            !RequestReplayPolicy::new(&Method::GET, BodyReplayability::OneShot)
+                .permits(ReplayReason::VersionFallback)
         );
     }
 
