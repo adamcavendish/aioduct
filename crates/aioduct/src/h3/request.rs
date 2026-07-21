@@ -9,11 +9,14 @@ use crate::response::Response;
 type H3SendStream = h3::client::RequestStream<h3_quinn::SendStream<Bytes>, Bytes>;
 type H3RecvStream = h3::client::RequestStream<h3_quinn::RecvStream, Bytes>;
 
-pub(crate) async fn send_on_h3(
+pub(crate) async fn send_on_h3<B>(
     send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
-    request: Request<RequestBodySend>,
+    request: Request<B>,
     url: Uri,
-) -> Result<Response, Error> {
+) -> Result<Response, Error>
+where
+    B: http_body::Body<Data = Bytes, Error = Error>,
+{
     let (parts, body) = request.into_parts();
     let request = Request::from_parts(parts, ());
     let stream = send_request.send_request(request).await.map_err(h3_error)?;
@@ -25,7 +28,10 @@ pub(crate) async fn send_on_h3(
     response_from_stream(response, recv, url)
 }
 
-async fn upload_body(stream: &mut H3SendStream, body: RequestBodySend) -> Result<(), Error> {
+async fn upload_body<B>(stream: &mut H3SendStream, body: B) -> Result<(), Error>
+where
+    B: http_body::Body<Data = Bytes, Error = Error>,
+{
     let mut body = std::pin::pin!(body);
     while let Some(frame) = body.as_mut().frame().await {
         let frame = frame?;
