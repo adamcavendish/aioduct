@@ -11,14 +11,16 @@ use std::task::{Context, Poll};
 
 use crate::happy_eyeballs::{HAPPY_EYEBALLS_DELAY, interleave_addrs};
 
+mod quinn_adapter;
 mod request;
 
 pub(crate) use request::send_on_h3;
+pub(crate) type H3SendRequest = h3::client::SendRequest<quinn_adapter::OpenStreams, bytes::Bytes>;
 
 pub(crate) async fn connect_h3<R: RuntimePoll>(
     quinn_conn: quinn::Connection,
 ) -> Result<PooledConnection<RequestBodySend>, Error> {
-    let h3_conn = h3_quinn::Connection::new(quinn_conn);
+    let h3_conn = quinn_adapter::Connection::new(quinn_conn);
     let (mut driver, send_request) = h3::client::new(h3_conn)
         .await
         .map_err(|e| Error::Other(Box::new(e)))?;

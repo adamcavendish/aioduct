@@ -10,8 +10,8 @@ use crate::error::{Error, UnsupportedCapability};
 use crate::response::Response;
 use crate::runtime::RuntimePoll;
 
-type H3SendStream = h3::client::RequestStream<h3_quinn::SendStream<Bytes>, Bytes>;
-type H3RecvStream = h3::client::RequestStream<h3_quinn::RecvStream, Bytes>;
+type H3SendStream = h3::client::RequestStream<super::quinn_adapter::SendStream<Bytes>, Bytes>;
+type H3RecvStream = h3::client::RequestStream<super::quinn_adapter::RecvStream, Bytes>;
 
 #[derive(Debug)]
 enum UploadFrameError {
@@ -71,7 +71,7 @@ enum UploadProgress {
 }
 
 pub(crate) async fn send_on_h3<R>(
-    send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
+    send_request: &mut super::H3SendRequest,
     request: Request<RequestBodySend>,
     url: Uri,
 ) -> Result<Response, Error>

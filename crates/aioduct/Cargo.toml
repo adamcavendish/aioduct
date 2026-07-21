@@ -26,10 +26,10 @@ hickory-dns = ["dep:hickory-resolver", "tokio"]
 doh = ["hickory-dns", "hickory-resolver/https-ring", "hickory-resolver/webpki-roots"]
 dot = ["hickory-dns", "hickory-resolver/tls-ring", "hickory-resolver/webpki-roots"]
 blocking = []
-tokio = ["dep:tokio"]
+tokio = ["dep:tokio", "quinn?/runtime-tokio"]
 smol = ["dep:smol", "dep:async-io", "dep:futures-io"]
 compio = ["dep:compio-runtime", "dep:compio-driver", "dep:compio-net", "dep:compio-io", "dep:async-io", "dep:futures-io"]
-http3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:futures-util"]
+http3 = ["dep:h3", "dep:quinn", "dep:futures-util"]
 gzip = ["dep:flate2"]
 brotli = ["dep:brotli"]
 zstd = ["dep:zstd"]
@@ -69,7 +69,6 @@ futures-io = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 h2.workspace = true
 h3 = { workspace = true, optional = true }
-h3-quinn = { workspace = true, optional = true }
 hickory-resolver = { workspace = true, optional = true }
 x509-parser = { workspace = true, optional = true }
 http.workspace = true
@@ -127,6 +126,7 @@ async-io.workspace = true
 flate2.workspace = true
 futures-io.workspace = true
 futures-util.workspace = true
+h3-quinn.workspace = true
 hyper = { workspace = true, features = ["server"] }
 paste.workspace = true
 quinn = { workspace = true, features = ["runtime-tokio"] }
