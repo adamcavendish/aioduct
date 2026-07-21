@@ -1,5 +1,7 @@
 #![cfg(feature = "tokio")]
 
+#[path = "forwarding/early_response.rs"]
+mod early_response;
 #[path = "forwarding/multipart.rs"]
 mod multipart;
 #[path = "forwarding/response_finalization.rs"]
