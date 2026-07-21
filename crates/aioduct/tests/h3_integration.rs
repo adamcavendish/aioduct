@@ -10,6 +10,8 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 
 use aioduct_test_server::tls::install_crypto_provider;
 
+#[path = "h3_integration/request_frames.rs"]
+mod request_frames;
 #[path = "h3_integration/request_streaming.rs"]
 mod request_streaming;
 

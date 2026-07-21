@@ -1,6 +1,25 @@
 use http::Uri;
 use std::net::SocketAddr;
 
+#[cfg(feature = "http3")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UnsupportedCapability {
+    Http3RequestTrailers,
+}
+
+#[cfg(feature = "http3")]
+impl UnsupportedCapability {
+    pub(crate) fn into_error(self) -> Error {
+        Error::Unsupported(self.message().to_owned())
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Http3RequestTrailers => "HTTP/3 request trailers are not supported by aioduct",
+        }
+    }
+}
+
 /// Boxed error type for dynamic dispatch.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
