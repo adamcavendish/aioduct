@@ -351,9 +351,9 @@ impl<B: 'static> HttpEngineCore<B> {
                 Ok(Response::new(resp, url))
             }
             #[cfg(all(feature = "http3", feature = "rustls"))]
-            HttpConnection::H3(sender) => {
-                crate::h3_transport::send_on_h3(sender, request, url).await
-            }
+            HttpConnection::H3(_) => Err(Error::Unsupported(
+                "HTTP/3 dispatch requires a Send runtime".to_owned(),
+            )),
         };
 
         if let Ok(ref resp) = result
@@ -439,6 +439,72 @@ impl<B: 'static> HttpEngineCore<B> {
             conn.record_bytes_received(len);
         }
         response
+    }
+}
+
+#[cfg(all(feature = "http3", feature = "rustls"))]
+impl HttpEngineCore<crate::body::RequestBodySend> {
+    pub(super) async fn send_on_connection_send<R>(
+        conn: &mut PooledConnection<crate::body::RequestBodySend>,
+        request: http::Request<crate::body::RequestBodySend>,
+        url: Uri,
+    ) -> Result<Response, Error>
+    where
+        R: crate::runtime::RuntimePoll,
+    {
+        if !matches!(conn.conn, HttpConnection::H3(_)) {
+            return Self::send_on_connection(conn, request, url).await;
+        }
+
+        #[cfg(feature = "tracing")]
+        tracing::trace!(
+            protocol = "h3",
+            host = url.host().unwrap_or(""),
+            "http.send.start"
+        );
+
+        let body_size = request
+            .headers()
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .or_else(|| http_body::Body::size_hint(request.body()).exact())
+            .unwrap_or(0);
+        conn.record_request(body_size);
+
+        let HttpConnection::H3(sender) = &mut conn.conn else {
+            unreachable!("HTTP/3 connection changed during dispatch")
+        };
+        let result = crate::h3_transport::send_on_h3::<R>(sender, request, url).await;
+
+        if let Ok(ref response) = result
+            && let Some(length) = response.content_length()
+        {
+            conn.record_bytes_received(length);
+        }
+
+        #[cfg(feature = "tracing")]
+        if let Ok(ref response) = result {
+            tracing::trace!(status = response.status().as_u16(), "http.send.done");
+        }
+
+        result
+    }
+
+    pub(super) async fn try_send_on_pooled_connection_send<R>(
+        conn: &mut PooledConnection<crate::body::RequestBodySend>,
+        request: http::Request<crate::body::RequestBodySend>,
+        url: Uri,
+    ) -> Result<Response, PooledSendError<crate::body::RequestBodySend>>
+    where
+        R: crate::runtime::RuntimePoll,
+    {
+        if matches!(conn.conn, HttpConnection::H3(_)) {
+            return Self::send_on_connection_send::<R>(conn, request, url)
+                .await
+                .map_err(PooledSendError::Failed);
+        }
+        Self::try_send_on_pooled_connection(conn, request, url).await
     }
 }
 

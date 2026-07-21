@@ -1,10 +1,14 @@
 use bytes::{Buf, Bytes};
 use http::{Request, Uri};
 use http_body_util::BodyExt as _;
+use std::future::Future as _;
+use std::pin::Pin;
+use std::task::Poll;
 
 use crate::body::RequestBodySend;
 use crate::error::{Error, UnsupportedCapability};
 use crate::response::Response;
+use crate::runtime::RuntimePoll;
 
 type H3SendStream = h3::client::RequestStream<h3_quinn::SendStream<Bytes>, Bytes>;
 type H3RecvStream = h3::client::RequestStream<h3_quinn::RecvStream, Bytes>;
@@ -24,23 +28,152 @@ impl std::fmt::Display for UploadFrameError {
 
 impl std::error::Error for UploadFrameError {}
 
-pub(crate) async fn send_on_h3<B>(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UploadControl {
+    Cancel,
+    Detach,
+}
+
+struct UploadControlGuard {
+    sender: Option<futures_channel::oneshot::Sender<UploadControl>>,
+}
+
+impl UploadControlGuard {
+    fn new(sender: futures_channel::oneshot::Sender<UploadControl>) -> Self {
+        Self {
+            sender: Some(sender),
+        }
+    }
+
+    fn detach(&mut self) {
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(UploadControl::Detach);
+        }
+    }
+}
+
+impl Drop for UploadControlGuard {
+    fn drop(&mut self) {
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(UploadControl::Cancel);
+        }
+    }
+}
+
+enum RequestProgress {
+    Response(Result<http::Response<()>, h3::error::StreamError>),
+    Upload(Result<(), Error>),
+}
+
+enum UploadProgress {
+    Complete(Result<(), Error>),
+    Control(UploadControl),
+}
+
+pub(crate) async fn send_on_h3<R>(
     send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
-    request: Request<B>,
+    request: Request<RequestBodySend>,
     url: Uri,
 ) -> Result<Response, Error>
 where
-    B: http_body::Body<Data = Bytes, Error = Error>,
+    R: RuntimePoll,
 {
     let (parts, body) = request.into_parts();
     let request = Request::from_parts(parts, ());
     let stream = send_request.send_request(request).await.map_err(h3_error)?;
-    let (mut send, mut recv) = stream.split();
+    let (send, mut recv) = stream.split();
 
-    upload_body(&mut send, body).await?;
-    let response = recv.recv_response().await.map_err(h3_error)?;
+    let (control_sender, control_receiver) = futures_channel::oneshot::channel();
+    let (result_sender, mut result_receiver) = futures_channel::oneshot::channel();
+    R::spawn_send(supervise_upload(
+        send,
+        body,
+        control_receiver,
+        result_sender,
+    ));
 
-    response_from_stream(response, recv, url)
+    let mut receive_response = Box::pin(recv.recv_response());
+    let progress = futures_util::future::poll_fn(|context| {
+        match Pin::new(&mut result_receiver).poll(context) {
+            Poll::Ready(Ok(result)) => return Poll::Ready(RequestProgress::Upload(result)),
+            Poll::Ready(Err(_)) => {
+                return Poll::Ready(RequestProgress::Upload(Err(Error::Other(Box::new(
+                    std::io::Error::other("HTTP/3 upload supervision ended without a result"),
+                )))));
+            }
+            Poll::Pending => {}
+        }
+        if let Poll::Ready(response) = receive_response.as_mut().poll(context) {
+            return Poll::Ready(RequestProgress::Response(response));
+        }
+        Poll::Pending
+    })
+    .await;
+    match progress {
+        RequestProgress::Response(response) => {
+            drop(receive_response);
+            response_from_stream(
+                response.map_err(h3_error)?,
+                recv,
+                url,
+                Some(UploadControlGuard::new(control_sender)),
+            )
+        }
+        RequestProgress::Upload(Ok(())) => {
+            drop(control_sender);
+            // Keep polling the same response future. The upstream h3-quinn
+            // receive stream is not cancellation-safe while a read is pending.
+            let response = receive_response.as_mut().await.map_err(h3_error)?;
+            drop(receive_response);
+            response_from_stream(response, recv, url, None)
+        }
+        RequestProgress::Upload(Err(error)) => {
+            drop(control_sender);
+            drop(receive_response);
+            Err(error)
+        }
+    }
+}
+
+async fn supervise_upload(
+    mut stream: H3SendStream,
+    body: RequestBodySend,
+    mut control: futures_channel::oneshot::Receiver<UploadControl>,
+    result: futures_channel::oneshot::Sender<Result<(), Error>>,
+) {
+    let mut upload = Box::pin(upload_body(&mut stream, body));
+    let progress = futures_util::future::poll_fn(|context| {
+        if let Poll::Ready(result) = upload.as_mut().poll(context) {
+            return Poll::Ready(UploadProgress::Complete(result));
+        }
+        match Pin::new(&mut control).poll(context) {
+            Poll::Ready(Ok(control)) => Poll::Ready(UploadProgress::Control(control)),
+            Poll::Ready(Err(_)) => Poll::Ready(UploadProgress::Control(UploadControl::Cancel)),
+            Poll::Pending => Poll::Pending,
+        }
+    })
+    .await;
+
+    match progress {
+        UploadProgress::Complete(upload_result) => {
+            drop(upload);
+            if upload_result.is_err() {
+                stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+            }
+            let _ = result.send(upload_result);
+        }
+        UploadProgress::Control(UploadControl::Cancel) => {
+            drop(upload);
+            stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+        }
+        UploadProgress::Control(UploadControl::Detach) => {
+            let upload_result = upload.await;
+            if upload_result.is_err() {
+                stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+            }
+            let _ = result.send(upload_result);
+        }
+    }
 }
 
 async fn upload_body<B>(stream: &mut H3SendStream, body: B) -> Result<(), Error>
@@ -70,6 +203,7 @@ where
                 return Err(UnsupportedCapability::Http3RequestTrailers.into_error());
             }
         }
+        yield_once().await;
     }
 
     if let Err(error) = stream.finish().await
@@ -80,14 +214,30 @@ where
     Ok(())
 }
 
+async fn yield_once() {
+    let mut yielded = false;
+    futures_util::future::poll_fn(move |context| {
+        if yielded {
+            Poll::Ready(())
+        } else {
+            yielded = true;
+            context.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await;
+}
+
 fn response_from_stream(
     response: http::Response<()>,
     stream: H3RecvStream,
     url: Uri,
+    upload_control: Option<UploadControlGuard>,
 ) -> Result<Response, Error> {
     let (parts, ()) = response.into_parts();
-    let body_stream =
-        futures_util::stream::unfold((stream, false), |(mut stream, data_done)| async move {
+    let body_stream = futures_util::stream::unfold(
+        (stream, false, upload_control),
+        |(mut stream, data_done, mut upload_control)| async move {
             if data_done {
                 return None;
             }
@@ -97,7 +247,7 @@ fn response_from_stream(
                     let bytes = buf.copy_to_bytes(remaining);
                     Some((
                         Ok::<_, Error>(hyper::body::Frame::data(bytes)),
-                        (stream, false),
+                        (stream, false, upload_control),
                     ))
                 }
                 Ok(None) => match stream.recv_trailers().await {
@@ -108,14 +258,20 @@ fn response_from_stream(
                         Err(Error::Unsupported(
                             "HTTP/3 response trailers are not supported by aioduct".to_owned(),
                         )),
-                        (stream, true),
+                        (stream, true, upload_control),
                     )),
-                    Ok(None) => None,
-                    Err(error) => Some((Err(h3_error(error)), (stream, true))),
+                    Ok(None) => {
+                        if let Some(control) = upload_control.as_mut() {
+                            control.detach();
+                        }
+                        None
+                    }
+                    Err(error) => Some((Err(h3_error(error)), (stream, true, upload_control))),
                 },
-                Err(error) => Some((Err(h3_error(error)), (stream, true))),
+                Err(error) => Some((Err(h3_error(error)), (stream, true, upload_control))),
             }
-        });
+        },
+    );
 
     let body: RequestBodySend = http_body_util::StreamBody::new(body_stream).boxed_unsync();
     Ok(Response::from_boxed(
