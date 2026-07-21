@@ -2,8 +2,6 @@ use crate::clock::Instant;
 
 use http::Uri;
 
-#[cfg(all(feature = "http3", feature = "rustls"))]
-use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::pool::{HttpConnection, PoolKey, PooledConnection};
@@ -354,13 +352,6 @@ impl<B: 'static> HttpEngineCore<B> {
             }
             #[cfg(all(feature = "http3", feature = "rustls"))]
             HttpConnection::H3(sender) => {
-                use http_body_util::BodyExt as _;
-                let (parts, body) = request.into_parts();
-                let collected = body.collect().await?;
-                let boxed: RequestBodySend = http_body_util::Full::new(collected.to_bytes())
-                    .map_err(|never| match never {})
-                    .boxed_unsync();
-                let request = http::Request::from_parts(parts, boxed);
                 crate::h3_transport::send_on_h3(sender, request, url).await
             }
         };

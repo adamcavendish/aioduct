@@ -10,6 +10,9 @@ use aioduct::runtime::tokio_rt::TcpConnector;
 
 use aioduct_test_server::tls::install_crypto_provider;
 
+#[path = "h3_integration/request_streaming.rs"]
+mod request_streaming;
+
 #[tokio::test]
 async fn h3_basic_get() {
     let (addr, _cert, _counter) = aioduct_test_server::h3::h3_server().await;

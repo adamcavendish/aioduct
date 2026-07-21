@@ -7,6 +7,8 @@ use rustls::pki_types::CertificateDer;
 use crate::ConnectionCounter;
 use crate::tls::{crypto_provider, generate_self_signed, install_crypto_provider};
 
+pub type H3RequestStream = h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
+
 pub type H3Handler =
     dyn Fn(http::Request<()>, Bytes) -> (http::StatusCode, Bytes) + Send + Sync + 'static;
 
@@ -94,6 +96,75 @@ pub async fn h3_server_with(
                             let _ = stream.send_data(resp_body).await;
                         }
                         let _ = stream.finish().await;
+                    });
+                }
+            });
+        }
+    });
+
+    (addr, cert_der, counter)
+}
+
+pub async fn h3_server_streaming<H, F>(
+    handler: H,
+) -> (SocketAddr, CertificateDer<'static>, ConnectionCounter)
+where
+    H: Fn(http::Request<()>, H3RequestStream) -> F + Send + Sync + Clone + 'static,
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    install_crypto_provider();
+
+    let cert = generate_self_signed(&["localhost"]);
+    let cert_der = cert.cert_der.clone();
+
+    let mut server_tls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.cert_der], cert.key_der)
+        .unwrap();
+    server_tls_config.alpn_protocols = vec![b"h3".to_vec()];
+    server_tls_config.max_early_data_size = 0;
+
+    let server_config = h3_quinn::quinn::ServerConfig::with_crypto(Arc::new(
+        h3_quinn::quinn::crypto::rustls::QuicServerConfig::try_from(server_tls_config).unwrap(),
+    ));
+    let endpoint =
+        h3_quinn::quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = endpoint.local_addr().unwrap();
+
+    let counter = ConnectionCounter::new();
+    let counter2 = counter.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            let handler = handler.clone();
+            counter2.inc_connections();
+            let counter3 = counter2.clone();
+            tokio::spawn(async move {
+                let connection = match incoming.await {
+                    Ok(connection) => connection,
+                    Err(_) => return,
+                };
+                let mut connection = match h3::server::Connection::new(h3_quinn::Connection::new(
+                    connection,
+                ))
+                .await
+                {
+                    Ok(connection) => connection,
+                    Err(_) => return,
+                };
+
+                loop {
+                    let resolver = match connection.accept().await {
+                        Ok(Some(resolver)) => resolver,
+                        Ok(None) | Err(_) => break,
+                    };
+                    let handler = handler.clone();
+                    counter3.inc_requests();
+                    tokio::spawn(async move {
+                        if let Ok((request, stream)) = resolver.resolve_request().await {
+                            handler(request, stream).await;
+                        }
                     });
                 }
             });
