@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 
 use http::uri::Authority;
 
+const H3_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone)]
 pub(crate) struct AltSvcEntry {
     pub protocol: String,
@@ -26,27 +28,42 @@ impl AltSvcEntry {
 #[derive(Clone)]
 pub(crate) struct AltSvcCache {
     inner: Arc<Mutex<HashMap<Authority, Vec<AltSvcEntry>>>>,
+    suppressed_h3_until: Arc<Mutex<HashMap<Authority, Instant>>>,
 }
 
 impl AltSvcCache {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            suppressed_h3_until: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn insert(&self, authority: Authority, entries: Vec<AltSvcEntry>) {
-        let Ok(mut map) = self.inner.lock() else {
-            return;
-        };
         if entries.is_empty() {
-            map.remove(&authority);
-        } else {
+            if let Ok(mut suppressed) = self.suppressed_h3_until.lock() {
+                suppressed.remove(&authority);
+            }
+            if let Ok(mut map) = self.inner.lock() {
+                map.remove(&authority);
+            }
+            return;
+        }
+        if let Ok(mut map) = self.inner.lock() {
             map.insert(authority, entries);
         }
     }
 
     pub fn lookup_h3(&self, authority: &Authority) -> Option<(Option<String>, u16)> {
+        let mut suppressed = self.suppressed_h3_until.lock().ok()?;
+        if let Some(retry_at) = suppressed.get(authority) {
+            if *retry_at > Instant::now() {
+                return None;
+            }
+            suppressed.remove(authority);
+        }
+        drop(suppressed);
+
         let mut map = self.inner.lock().ok()?;
         let entries = map.get_mut(authority)?;
         entries.retain(|e| !e.is_expired());
@@ -58,6 +75,22 @@ impl AltSvcCache {
             .iter()
             .find(|e| e.supports_h3())
             .map(|e| (e.host.clone(), e.port))
+    }
+
+    pub fn suppress_h3(&self, authority: &Authority) {
+        if let Ok(mut suppressed) = self.suppressed_h3_until.lock() {
+            suppressed.insert(authority.clone(), Instant::now() + H3_FAILURE_BACKOFF);
+        }
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
+        let Some(entries) = map.get_mut(authority) else {
+            return;
+        };
+        entries.retain(|entry| !entry.supports_h3());
+        if entries.is_empty() {
+            map.remove(authority);
+        }
     }
 }
 
@@ -231,6 +264,67 @@ mod tests {
         cache.insert(authority.clone(), Vec::new());
 
         assert!(cache.lookup_h3(&authority).is_none());
+    }
+
+    #[test]
+    fn test_cache_suppress_h3_preserves_other_protocols() {
+        let cache = AltSvcCache::new();
+        let authority: Authority = "example.com:443".parse().unwrap();
+        let entry = |protocol: &str| AltSvcEntry {
+            protocol: protocol.to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(3600),
+            recorded_at: Instant::now(),
+        };
+        cache.insert(authority.clone(), vec![entry("h3"), entry("h2")]);
+
+        cache.suppress_h3(&authority);
+
+        assert!(cache.lookup_h3(&authority).is_none());
+        assert_eq!(cache.inner.lock().unwrap()[&authority].len(), 1);
+        assert_eq!(cache.inner.lock().unwrap()[&authority][0].protocol, "h2");
+    }
+
+    #[test]
+    fn test_cache_suppression_ignores_repeated_h3_advertisement() {
+        let cache = AltSvcCache::new();
+        let authority: Authority = "example.com:443".parse().unwrap();
+        let entry = || AltSvcEntry {
+            protocol: "h3".to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(3600),
+            recorded_at: Instant::now(),
+        };
+        cache.insert(authority.clone(), vec![entry()]);
+        cache.suppress_h3(&authority);
+        cache.insert(authority.clone(), vec![entry()]);
+
+        assert!(cache.lookup_h3(&authority).is_none());
+    }
+
+    #[test]
+    fn test_cache_suppression_expires() {
+        let cache = AltSvcCache::new();
+        let authority: Authority = "example.com:443".parse().unwrap();
+        let entry = AltSvcEntry {
+            protocol: "h3".to_owned(),
+            host: None,
+            port: 443,
+            max_age: Duration::from_secs(3600),
+            recorded_at: Instant::now(),
+        };
+        cache.insert(authority.clone(), vec![entry.clone()]);
+        cache.suppress_h3(&authority);
+        cache.insert(authority.clone(), vec![entry]);
+        cache
+            .suppressed_h3_until
+            .lock()
+            .unwrap()
+            .insert(authority.clone(), Instant::now() - Duration::from_secs(1));
+
+        assert_eq!(cache.lookup_h3(&authority), Some((None, 443)));
     }
 
     #[test]

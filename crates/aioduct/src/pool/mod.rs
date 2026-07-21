@@ -463,6 +463,21 @@ impl<B: 'static> ConnectionPool<B> {
     /// Uses LIFO ordering (most recently returned first) and checks readiness
     /// on each candidate, trying all pooled connections before giving up.
     pub(crate) fn checkout(&self, key: &PoolKey) -> Option<PooledConnection<B>> {
+        self.checkout_matching(key, |_| true)
+    }
+
+    /// Retrieve only a pooled HTTP/3 connection while preserving other
+    /// transports stored under the origin's automatic protocol key.
+    #[cfg(all(feature = "http3", feature = "rustls"))]
+    pub(crate) fn checkout_h3(&self, key: &PoolKey) -> Option<PooledConnection<B>> {
+        self.checkout_matching(key, |connection| connection.is_h3())
+    }
+
+    fn checkout_matching(
+        &self,
+        key: &PoolKey,
+        matches: impl Fn(&PooledConnection<B>) -> bool,
+    ) -> Option<PooledConnection<B>> {
         let pool_weak = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().ok()?;
 
@@ -498,6 +513,10 @@ impl<B: 'static> ConnectionPool<B> {
                     self.counters
                         .max_lifetime_evictions
                         .fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                if !matches(&entry.connection) {
+                    retained_unavailable.push(entry);
                     continue;
                 }
                 if entry.connection.is_ready() {

@@ -306,17 +306,34 @@ impl<B: 'static> HttpEngineCore<B> {
                 Some(crate::h3_transport::H3ReplayEvidence::ProvenUnprocessed) => {
                     Some(ReplayReason::ProvenUnprocessed)
                 }
-                // Version fallback is handled by the Alt-Svc dispatch policy.
+                Some(crate::h3_transport::H3ReplayEvidence::VersionFallback) => {
+                    Some(ReplayReason::VersionFallback)
+                }
                 // RemoteClosing remains ambiguous until upstream h3 exposes a
                 // validated GOAWAY/request-stream boundary.
-                Some(
-                    crate::h3_transport::H3ReplayEvidence::VersionFallback
-                    | crate::h3_transport::H3ReplayEvidence::Ambiguous,
-                )
-                | None => None,
+                Some(crate::h3_transport::H3ReplayEvidence::Ambiguous) | None => None,
             };
         }
         Self::is_stale_connection_error(err).then_some(ReplayReason::AmbiguousTransportFailure)
+    }
+
+    pub(super) fn should_evict_after_send_failure(conn: &PooledConnection<B>, err: &Error) -> bool {
+        if !conn.is_h2_or_h3() {
+            return false;
+        }
+        if Self::stale_replay_reason(conn, err).is_some() {
+            return true;
+        }
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        if matches!(conn.conn, HttpConnection::H3(_)) {
+            return crate::h3_transport::connection_is_unusable(err);
+        }
+        false
+    }
+
+    #[cfg(all(feature = "http3", feature = "rustls"))]
+    pub(super) fn h3_failure_invalidates_alt_svc(conn: &PooledConnection<B>, err: &Error) -> bool {
+        matches!(conn.conn, HttpConnection::H3(_)) && crate::h3_transport::is_endpoint_failure(err)
     }
 
     #[cfg(test)]
