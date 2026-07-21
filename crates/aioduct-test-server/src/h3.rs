@@ -112,6 +112,40 @@ where
     H: Fn(http::Request<()>, H3RequestStream) -> F + Send + Sync + Clone + 'static,
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    h3_server_streaming_with_transport_config(
+        move |request, stream, _connection| handler(request, stream),
+        None,
+    )
+    .await
+}
+
+pub async fn h3_server_streaming_with_transport<H, F>(
+    transport: Arc<h3_quinn::quinn::TransportConfig>,
+    handler: H,
+) -> (SocketAddr, CertificateDer<'static>, ConnectionCounter)
+where
+    H: Fn(http::Request<()>, H3RequestStream, h3_quinn::quinn::Connection) -> F
+        + Send
+        + Sync
+        + Clone
+        + 'static,
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    h3_server_streaming_with_transport_config(handler, Some(transport)).await
+}
+
+async fn h3_server_streaming_with_transport_config<H, F>(
+    handler: H,
+    transport: Option<Arc<h3_quinn::quinn::TransportConfig>>,
+) -> (SocketAddr, CertificateDer<'static>, ConnectionCounter)
+where
+    H: Fn(http::Request<()>, H3RequestStream, h3_quinn::quinn::Connection) -> F
+        + Send
+        + Sync
+        + Clone
+        + 'static,
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
     install_crypto_provider();
 
     let cert = generate_self_signed(&["localhost"]);
@@ -126,9 +160,12 @@ where
     server_tls_config.alpn_protocols = vec![b"h3".to_vec()];
     server_tls_config.max_early_data_size = 0;
 
-    let server_config = h3_quinn::quinn::ServerConfig::with_crypto(Arc::new(
+    let mut server_config = h3_quinn::quinn::ServerConfig::with_crypto(Arc::new(
         h3_quinn::quinn::crypto::rustls::QuicServerConfig::try_from(server_tls_config).unwrap(),
     ));
+    if let Some(transport) = transport {
+        server_config.transport_config(transport);
+    }
     let endpoint =
         h3_quinn::quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
     let addr = endpoint.local_addr().unwrap();
@@ -141,18 +178,18 @@ where
             counter2.inc_connections();
             let counter3 = counter2.clone();
             tokio::spawn(async move {
-                let connection = match incoming.await {
+                let quinn_connection = match incoming.await {
                     Ok(connection) => connection,
                     Err(_) => return,
                 };
-                let mut connection = match h3::server::Connection::new(h3_quinn::Connection::new(
-                    connection,
-                ))
-                .await
-                {
-                    Ok(connection) => connection,
-                    Err(_) => return,
-                };
+                let connection_control = quinn_connection.clone();
+                let mut connection =
+                    match h3::server::Connection::new(h3_quinn::Connection::new(quinn_connection))
+                        .await
+                    {
+                        Ok(connection) => connection,
+                        Err(_) => return,
+                    };
 
                 loop {
                     let resolver = match connection.accept().await {
@@ -160,10 +197,11 @@ where
                         Ok(None) | Err(_) => break,
                     };
                     let handler = handler.clone();
+                    let connection_control = connection_control.clone();
                     counter3.inc_requests();
                     tokio::spawn(async move {
                         if let Ok((request, stream)) = resolver.resolve_request().await {
-                            handler(request, stream).await;
+                            handler(request, stream, connection_control).await;
                         }
                     });
                 }

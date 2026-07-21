@@ -37,7 +37,7 @@ pub(crate) enum HttpConnection<B> {
     H2(hyper::client::conn::http2::SendRequest<B>),
     /// An HTTP/3 connection.
     #[cfg(all(feature = "http3", feature = "rustls"))]
-    H3(crate::h3_transport::H3SendRequest),
+    H3(crate::h3_transport::H3Connection),
 }
 
 /// A pooled HTTP connection wrapper.
@@ -118,7 +118,7 @@ impl<B> PooledConnection<B> {
 
     /// Wrap an HTTP/3 connection.
     #[cfg(all(feature = "http3", feature = "rustls"))]
-    pub(crate) fn new_h3(sender: crate::h3_transport::H3SendRequest) -> Self {
+    pub(crate) fn new_h3(sender: crate::h3_transport::H3Connection) -> Self {
         Self {
             conn: HttpConnection::H3(sender),
             remote_addr: None,
@@ -142,10 +142,7 @@ impl<B> PooledConnection<B> {
             HttpConnection::H1(s) => s.is_ready(),
             HttpConnection::H2(s) => s.is_ready(),
             #[cfg(all(feature = "http3", feature = "rustls"))]
-            HttpConnection::H3(s) => {
-                use h3::ConnectionState as _;
-                !s.is_closing() && s.get_conn_error().is_none()
-            }
+            HttpConnection::H3(s) => s.is_ready(),
         }
     }
 

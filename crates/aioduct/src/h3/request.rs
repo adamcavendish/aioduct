@@ -4,6 +4,7 @@ use http_body_util::BodyExt as _;
 use std::future::Future as _;
 use std::pin::Pin;
 use std::task::Poll;
+use std::time::Duration;
 
 use crate::body::RequestBodySend;
 use crate::error::{Error, UnsupportedCapability};
@@ -68,26 +69,42 @@ enum RequestProgress {
 enum UploadProgress {
     Complete(Result<(), Error>),
     Control(UploadControl),
+    PeerStopped(Result<Option<quinn::VarInt>, quinn::StoppedError>),
 }
 
 pub(crate) async fn send_on_h3<R>(
-    send_request: &mut super::H3SendRequest,
+    connection: &mut super::H3Connection,
     request: Request<RequestBodySend>,
     url: Uri,
+    write_timeout: Option<Duration>,
 ) -> Result<Response, Error>
 where
     R: RuntimePoll,
 {
     let (parts, body) = request.into_parts();
     let request = Request::from_parts(parts, ());
-    let stream = send_request.send_request(request).await.map_err(h3_error)?;
+    let mut stream = connection
+        .send_request()
+        .send_request(request)
+        .await
+        .map_err(h3_error)?;
+    let stream_id = stream.id();
+    let Some(request_stream) = connection.take_request_stream(stream_id) else {
+        stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+        stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
+        return Err(Error::Other(
+            "HTTP/3 request stream transport state was unavailable".into(),
+        ));
+    };
     let (send, mut recv) = stream.split();
 
     let (control_sender, control_receiver) = futures_channel::oneshot::channel();
     let (result_sender, mut result_receiver) = futures_channel::oneshot::channel();
-    R::spawn_send(supervise_upload(
+    R::spawn_send(supervise_upload::<R>(
         send,
         body,
+        request_stream,
+        write_timeout,
         control_receiver,
         result_sender,
     ));
@@ -121,8 +138,8 @@ where
         }
         RequestProgress::Upload(Ok(())) => {
             drop(control_sender);
-            // Keep polling the same response future. The upstream h3-quinn
-            // receive stream is not cancellation-safe while a read is pending.
+            // Keep polling the same response future. Restarting a pending read
+            // can lose the wakeup that delivers the response headers.
             let response = receive_response.as_mut().await.map_err(h3_error)?;
             drop(receive_response);
             response_from_stream(response, recv, url, None)
@@ -135,24 +152,47 @@ where
     }
 }
 
-async fn supervise_upload(
+async fn supervise_upload<R: RuntimePoll>(
     mut stream: H3SendStream,
     body: RequestBodySend,
+    request_stream: super::quinn_adapter::RequestStreamState,
+    write_timeout: Option<Duration>,
     mut control: futures_channel::oneshot::Receiver<UploadControl>,
     result: futures_channel::oneshot::Sender<Result<(), Error>>,
 ) {
-    let mut upload = Box::pin(upload_body(&mut stream, body));
-    let progress = futures_util::future::poll_fn(|context| {
-        if let Poll::Ready(result) = upload.as_mut().poll(context) {
-            return Poll::Ready(UploadProgress::Complete(result));
+    let write_progress = request_stream.write_progress();
+    let mut peer_stopped = Box::pin(request_stream);
+    let mut upload = Box::pin(upload_body::<R, _>(
+        &mut stream,
+        body,
+        &write_progress,
+        write_timeout,
+    ));
+    let mut detached = false;
+    let progress = loop {
+        let progress = futures_util::future::poll_fn(|context| {
+            if let Poll::Ready(result) = upload.as_mut().poll(context) {
+                return Poll::Ready(UploadProgress::Complete(result));
+            }
+            if let Poll::Ready(stopped) = peer_stopped.as_mut().poll(context) {
+                return Poll::Ready(UploadProgress::PeerStopped(stopped));
+            }
+            if detached {
+                return Poll::Pending;
+            }
+            match Pin::new(&mut control).poll(context) {
+                Poll::Ready(Ok(control)) => Poll::Ready(UploadProgress::Control(control)),
+                Poll::Ready(Err(_)) => Poll::Ready(UploadProgress::Control(UploadControl::Cancel)),
+                Poll::Pending => Poll::Pending,
+            }
+        })
+        .await;
+        if matches!(progress, UploadProgress::Control(UploadControl::Detach)) {
+            detached = true;
+            continue;
         }
-        match Pin::new(&mut control).poll(context) {
-            Poll::Ready(Ok(control)) => Poll::Ready(UploadProgress::Control(control)),
-            Poll::Ready(Err(_)) => Poll::Ready(UploadProgress::Control(UploadControl::Cancel)),
-            Poll::Pending => Poll::Pending,
-        }
-    })
-    .await;
+        break progress;
+    };
 
     match progress {
         UploadProgress::Complete(upload_result) => {
@@ -167,17 +207,39 @@ async fn supervise_upload(
             stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
         }
         UploadProgress::Control(UploadControl::Detach) => {
-            let upload_result = upload.await;
-            if upload_result.is_err() {
-                stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
-            }
-            let _ = result.send(upload_result);
+            unreachable!("detach control is consumed by the supervision loop")
+        }
+        UploadProgress::PeerStopped(stopped) => {
+            drop(upload);
+            let stopped = match stopped {
+                Ok(Some(code)) => {
+                    let code = h3::error::Code::from(code.into_inner());
+                    stream.stop_stream(code);
+                    if code == h3::error::Code::H3_NO_ERROR {
+                        Ok(())
+                    } else {
+                        Err(h3_error(h3::error::StreamError::RemoteTerminate { code }))
+                    }
+                }
+                Ok(None) => Ok(()),
+                Err(error) => {
+                    stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
+                    Err(h3_stopped_error(error))
+                }
+            };
+            let _ = result.send(stopped);
         }
     }
 }
 
-async fn upload_body<B>(stream: &mut H3SendStream, body: B) -> Result<(), Error>
+async fn upload_body<R, B>(
+    stream: &mut H3SendStream,
+    body: B,
+    write_progress: &super::quinn_adapter::WriteProgress,
+    write_timeout: Option<Duration>,
+) -> Result<(), Error>
 where
+    R: RuntimePoll,
     B: http_body::Body<Data = Bytes, Error = Error>,
 {
     let mut body = std::pin::pin!(body);
@@ -187,13 +249,9 @@ where
         let frame = frame?;
         match frame.into_data() {
             Ok(data) => {
-                if !data.is_empty()
-                    && let Err(error) = stream.send_data(data).await
-                {
-                    if is_h3_no_error_stop_sending(&error) {
-                        return Ok(());
-                    }
-                    return Err(h3_error(error));
+                if !data.is_empty() {
+                    transport_write::<R, _>(write_progress, write_timeout, stream.send_data(data))
+                        .await?;
                 }
             }
             Err(frame) => {
@@ -206,12 +264,52 @@ where
         yield_once().await;
     }
 
-    if let Err(error) = stream.finish().await
-        && !is_h3_no_error_stop_sending(&error)
-    {
-        return Err(h3_error(error));
-    }
+    transport_write::<R, _>(write_progress, write_timeout, stream.finish()).await?;
     Ok(())
+}
+
+async fn transport_write<R, F>(
+    write_progress: &super::quinn_adapter::WriteProgress,
+    write_timeout: Option<Duration>,
+    future: F,
+) -> Result<(), Error>
+where
+    R: RuntimePoll,
+    F: std::future::Future<Output = Result<(), h3::error::StreamError>>,
+{
+    let mut future = std::pin::pin!(future);
+    let result = if let Some(duration) = write_timeout {
+        let mut observed_progress = write_progress.load();
+        let mut sleep = Box::pin(R::sleep(duration));
+        match futures_util::future::poll_fn(|context| {
+            if let Poll::Ready(result) = future.as_mut().poll(context) {
+                return Poll::Ready(Ok(result));
+            }
+
+            let current_progress = write_progress.load();
+            if current_progress != observed_progress {
+                observed_progress = current_progress;
+                sleep = Box::pin(R::sleep(duration));
+            }
+            if sleep.as_mut().poll(context).is_ready() {
+                return Poll::Ready(Err(Error::WriteTimeout));
+            }
+            Poll::Pending
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => return Err(error),
+        }
+    } else {
+        future.await
+    };
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if is_h3_no_error_stop_sending(&error) => Ok(()),
+        Err(error) => Err(h3_error(error)),
+    }
 }
 
 async fn yield_once() {
@@ -292,6 +390,12 @@ fn is_h3_no_error_stop_sending(error: &h3::error::StreamError) -> bool {
 
 fn h3_error(error: h3::error::StreamError) -> Error {
     Error::Other(Box::new(error))
+}
+
+fn h3_stopped_error(error: quinn::StoppedError) -> Error {
+    h3_error(h3::error::StreamError::Undefined(Box::new(
+        quinn::WriteError::from(error),
+    )))
 }
 
 fn upload_frame_error(error: UploadFrameError) -> Error {
