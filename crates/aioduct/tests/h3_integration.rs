@@ -16,6 +16,8 @@ mod early_response;
 mod request_frames;
 #[path = "h3_integration/request_streaming.rs"]
 mod request_streaming;
+#[path = "h3_integration/retry_evidence.rs"]
+mod retry_evidence;
 #[path = "h3_integration/transport_progress.rs"]
 mod transport_progress;
 
