@@ -1,13 +1,8 @@
 use std::sync::Arc;
 
-use bytes::{Buf, Bytes};
-use http::{Request, Uri};
-use http_body_util::BodyExt;
-
 use crate::body::RequestBodySend;
 use crate::error::Error;
 use crate::pool::PooledConnection;
-use crate::response::Response;
 use crate::runtime::RuntimePoll;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -15,6 +10,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use crate::happy_eyeballs::{HAPPY_EYEBALLS_DELAY, interleave_addrs};
+
+mod request;
+
+pub(crate) use request::send_on_h3;
 
 pub(crate) async fn connect_h3<R: RuntimePoll>(
     quinn_conn: quinn::Connection,
@@ -308,82 +307,6 @@ impl std::future::Future for SelectQuicConnect0rtt {
     }
 }
 
-pub(crate) async fn send_on_h3(
-    send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
-    request: Request<RequestBodySend>,
-    url: Uri,
-) -> Result<Response, Error> {
-    let (parts, body) = request.into_parts();
-    let head_req = Request::from_parts(parts, ());
-
-    let mut stream = send_request
-        .send_request(head_req)
-        .await
-        .map_err(|e| Error::Other(Box::new(e)))?;
-
-    let mut request_body_stopped = false;
-    let mut body = std::pin::pin!(body);
-    loop {
-        match body.as_mut().frame().await {
-            Some(Ok(frame)) => {
-                if let Ok(data) = frame.into_data()
-                    && !data.is_empty()
-                    && let Err(err) = stream.send_data(data).await
-                {
-                    if is_h3_no_error_stop_sending(&err) {
-                        request_body_stopped = true;
-                        break;
-                    } else {
-                        return Err(Error::Other(Box::new(err)));
-                    }
-                }
-            }
-            Some(Err(e)) => return Err(e),
-            None => break,
-        }
-    }
-
-    if !request_body_stopped
-        && let Err(err) = stream.finish().await
-        && !is_h3_no_error_stop_sending(&err)
-    {
-        return Err(Error::Other(Box::new(err)));
-    }
-
-    let resp = stream
-        .recv_response()
-        .await
-        .map_err(|e| Error::Other(Box::new(e)))?;
-
-    let (resp_parts, _) = resp.into_parts();
-
-    let body_stream =
-        futures_util::stream::unfold((stream, false), |(mut s, data_done)| async move {
-            if data_done {
-                return None;
-            }
-            match s.recv_data().await {
-                Ok(Some(buf)) => {
-                    let bytes = Bytes::copy_from_slice(buf.chunk());
-                    Some((Ok::<_, Error>(hyper::body::Frame::data(bytes)), (s, false)))
-                }
-                Ok(None) => match s.recv_trailers().await {
-                    Ok(Some(trailers)) => {
-                        Some((Ok(hyper::body::Frame::trailers(trailers)), (s, true)))
-                    }
-                    Ok(None) => None,
-                    Err(e) => Some((Err(Error::Other(Box::new(e))), (s, true))),
-                },
-                Err(e) => Some((Err(Error::Other(Box::new(e))), (s, true))),
-            }
-        });
-
-    let hyper_body: RequestBodySend = http_body_util::StreamBody::new(body_stream).boxed_unsync();
-    let http_resp = http::Response::from_parts(resp_parts, hyper_body);
-
-    Ok(Response::from_boxed(http_resp, url))
-}
-
 fn ensure_h3_alpn(config: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig> {
     if config.alpn_protocols.iter().any(|p| p == b"h3") {
         return config;
@@ -391,16 +314,6 @@ fn ensure_h3_alpn(config: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig
     let mut config = (*config).clone();
     config.alpn_protocols.insert(0, b"h3".to_vec());
     Arc::new(config)
-}
-
-fn is_h3_no_error_stop_sending(error: &h3::error::StreamError) -> bool {
-    matches!(
-        error,
-        h3::error::StreamError::RemoteTerminate {
-            code: h3::error::Code::H3_NO_ERROR,
-            ..
-        }
-    )
 }
 
 fn h3_bind_addr(local_address: Option<IpAddr>) -> SocketAddr {
