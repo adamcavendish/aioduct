@@ -448,6 +448,7 @@ impl HttpEngineCore<crate::body::RequestBodySend> {
         conn: &mut PooledConnection<crate::body::RequestBodySend>,
         request: http::Request<crate::body::RequestBodySend>,
         url: Uri,
+        write_timeout: Option<std::time::Duration>,
     ) -> Result<Response, Error>
     where
         R: crate::runtime::RuntimePoll,
@@ -475,7 +476,8 @@ impl HttpEngineCore<crate::body::RequestBodySend> {
         let HttpConnection::H3(sender) = &mut conn.conn else {
             unreachable!("HTTP/3 connection changed during dispatch")
         };
-        let result = crate::h3_transport::send_on_h3::<R>(sender, request, url).await;
+        let result =
+            crate::h3_transport::send_on_h3::<R>(sender, request, url, write_timeout).await;
 
         if let Ok(ref response) = result
             && let Some(length) = response.content_length()
@@ -495,12 +497,13 @@ impl HttpEngineCore<crate::body::RequestBodySend> {
         conn: &mut PooledConnection<crate::body::RequestBodySend>,
         request: http::Request<crate::body::RequestBodySend>,
         url: Uri,
+        write_timeout: Option<std::time::Duration>,
     ) -> Result<Response, PooledSendError<crate::body::RequestBodySend>>
     where
         R: crate::runtime::RuntimePoll,
     {
         if matches!(conn.conn, HttpConnection::H3(_)) {
-            return Self::send_on_connection_send::<R>(conn, request, url)
+            return Self::send_on_connection_send::<R>(conn, request, url, write_timeout)
                 .await
                 .map_err(PooledSendError::Failed);
         }

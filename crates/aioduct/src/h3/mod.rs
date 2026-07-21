@@ -17,10 +17,53 @@ mod request;
 pub(crate) use request::send_on_h3;
 pub(crate) type H3SendRequest = h3::client::SendRequest<quinn_adapter::OpenStreams, bytes::Bytes>;
 
+pub(crate) struct H3Connection {
+    send_request: H3SendRequest,
+    request_streams: quinn_adapter::RequestStreamRegistry,
+}
+
+impl H3Connection {
+    fn new(
+        send_request: H3SendRequest,
+        request_streams: quinn_adapter::RequestStreamRegistry,
+    ) -> Self {
+        Self {
+            send_request,
+            request_streams,
+        }
+    }
+
+    fn send_request(&mut self) -> &mut H3SendRequest {
+        &mut self.send_request
+    }
+
+    fn take_request_stream(
+        &self,
+        id: h3::quic::StreamId,
+    ) -> Option<quinn_adapter::RequestStreamState> {
+        self.request_streams.take(id)
+    }
+
+    pub(crate) fn is_ready(&self) -> bool {
+        use h3::ConnectionState as _;
+        !self.send_request.is_closing() && self.send_request.get_conn_error().is_none()
+    }
+}
+
+impl Clone for H3Connection {
+    fn clone(&self) -> Self {
+        Self {
+            send_request: self.send_request.clone(),
+            request_streams: self.request_streams.clone(),
+        }
+    }
+}
+
 pub(crate) async fn connect_h3<R: RuntimePoll>(
     quinn_conn: quinn::Connection,
 ) -> Result<PooledConnection<RequestBodySend>, Error> {
     let h3_conn = quinn_adapter::Connection::new(quinn_conn);
+    let request_streams = h3_conn.request_streams();
     let (mut driver, send_request) = h3::client::new(h3_conn)
         .await
         .map_err(|e| Error::Other(Box::new(e)))?;
@@ -29,7 +72,10 @@ pub(crate) async fn connect_h3<R: RuntimePoll>(
         let _ = futures_util::future::poll_fn(|cx| driver.poll_close(cx)).await;
     });
 
-    Ok(PooledConnection::new_h3(send_request))
+    Ok(PooledConnection::new_h3(H3Connection::new(
+        send_request,
+        request_streams,
+    )))
 }
 
 pub(crate) async fn connect_h3_addrs<R: RuntimePoll>(

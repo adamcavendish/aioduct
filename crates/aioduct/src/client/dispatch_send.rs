@@ -28,7 +28,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         protocol: ProtocolHint,
         replay_body: Option<Bytes>,
         connect_timeout: Option<Duration>,
-        _write_timeout: Option<Duration>,
+        write_timeout: Option<Duration>,
         first_byte_timeout: Option<Duration>,
         force_addr: Option<std::net::SocketAddr>,
         sign_stale_retries: bool,
@@ -165,6 +165,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 &mut conn,
                 request,
                 original_uri.clone(),
+                write_timeout,
                 first_byte_timeout,
             )
             .await
@@ -340,6 +341,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     &mut conn,
                     request,
                     original_uri.clone(),
+                    write_timeout,
                     first_byte_timeout,
                 )
                 .await
@@ -579,6 +581,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     &mut pooled,
                     request,
                     original_uri.clone(),
+                    write_timeout,
                     first_byte_timeout,
                 )
                 .await?;
@@ -672,6 +675,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         &mut conn,
                         request,
                         original_uri.clone(),
+                        write_timeout,
                         first_byte_timeout,
                     )
                     .await;
@@ -1234,6 +1238,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             &mut pooled,
             request,
             original_uri.clone(),
+            write_timeout,
             first_byte_timeout,
         )
         .await?;
@@ -1277,13 +1282,21 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         conn: &mut PooledConnection<RequestBodySend>,
         request: http::Request<RequestBodySend>,
         original_uri: Uri,
+        write_timeout: Option<Duration>,
         first_byte_timeout: Option<Duration>,
     ) -> Result<Response, Error> {
         let (parts, body) = request.into_parts();
         let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
         let request = http::Request::from_parts(parts, http_body_util::BodyExt::boxed_unsync(body));
+        #[cfg(not(all(feature = "http3", feature = "rustls")))]
+        let _ = write_timeout;
         #[cfg(all(feature = "http3", feature = "rustls"))]
-        let fut = HttpEngineCore::send_on_connection_send::<R>(conn, request, original_uri);
+        let fut = HttpEngineCore::send_on_connection_send::<R>(
+            conn,
+            request,
+            original_uri,
+            write_timeout,
+        );
         #[cfg(not(all(feature = "http3", feature = "rustls")))]
         let fut = HttpEngineCore::send_on_connection(conn, request, original_uri);
         match first_byte_timeout {
@@ -1307,14 +1320,21 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         conn: &mut PooledConnection<RequestBodySend>,
         request: http::Request<RequestBodySend>,
         original_uri: Uri,
+        write_timeout: Option<Duration>,
         first_byte_timeout: Option<Duration>,
     ) -> Result<Response, PooledSendError<RequestBodySend>> {
         let (parts, body) = request.into_parts();
         let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
         let request = http::Request::from_parts(parts, http_body_util::BodyExt::boxed_unsync(body));
+        #[cfg(not(all(feature = "http3", feature = "rustls")))]
+        let _ = write_timeout;
         #[cfg(all(feature = "http3", feature = "rustls"))]
-        let future =
-            HttpEngineCore::try_send_on_pooled_connection_send::<R>(conn, request, original_uri);
+        let future = HttpEngineCore::try_send_on_pooled_connection_send::<R>(
+            conn,
+            request,
+            original_uri,
+            write_timeout,
+        );
         #[cfg(not(all(feature = "http3", feature = "rustls")))]
         let future = HttpEngineCore::try_send_on_pooled_connection(conn, request, original_uri);
         match first_byte_timeout {

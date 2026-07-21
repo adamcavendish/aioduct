@@ -296,9 +296,12 @@ async fn h3_no_error_stop_sending_preserves_early_response() {
         .send()
         .await
         .unwrap();
-    release_tx
-        .send(Bytes::from_static(b"ignored after peer stop"))
-        .unwrap();
+    assert_eq!(
+        release_tx
+            .send(Bytes::from_static(b"ignored after peer stop"))
+            .unwrap_err(),
+        Bytes::from_static(b"ignored after peer stop")
+    );
 
     assert_eq!(response.status(), http::StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(response.text().await.unwrap(), "upload rejected");

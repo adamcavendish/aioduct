@@ -3,9 +3,11 @@
 //! Portions are derived from `h3-quinn` 0.0.10. See the repository's
 //! `THIRD_PARTY_LICENSES.md` for the applicable notice.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use bytes::{Buf, Bytes};
@@ -16,9 +18,107 @@ use h3::quic::{self, ConnectionErrorIncoming, StreamErrorIncoming, StreamId, Wri
 use quinn::{AcceptBi, AcceptUni, OpenBi, OpenUni, ReadError, VarInt};
 
 type BoxStreamSync<'a, T> = Pin<Box<dyn Stream<Item = T> + Send + Sync + 'a>>;
+type StopFuture = Pin<
+    Box<dyn Future<Output = Result<Option<VarInt>, quinn::StoppedError>> + Send + Sync + 'static>,
+>;
+
+struct RequestStreamEntry {
+    stopped: StopFuture,
+    write_progress: WriteProgress,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct RequestStreamRegistry {
+    entries: Arc<Mutex<HashMap<u64, RequestStreamEntry>>>,
+}
+
+impl RequestStreamRegistry {
+    fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<u64, RequestStreamEntry>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn register(&self, stream: &quinn::SendStream) -> (RequestStreamRegistration, WriteProgress) {
+        let id: u64 = stream.id().into();
+        let write_progress = WriteProgress::default();
+        let previous = self.entries().insert(
+            id,
+            RequestStreamEntry {
+                stopped: Box::pin(stream.stopped()),
+                write_progress: write_progress.clone(),
+            },
+        );
+        debug_assert!(previous.is_none(), "duplicate HTTP/3 request stream id");
+        (
+            RequestStreamRegistration {
+                id,
+                registry: self.clone(),
+            },
+            write_progress,
+        )
+    }
+
+    pub(super) fn take(&self, id: StreamId) -> Option<RequestStreamState> {
+        self.entries()
+            .remove(&id.into_inner())
+            .map(|entry| RequestStreamState {
+                stopped: entry.stopped,
+                write_progress: entry.write_progress,
+            })
+    }
+
+    fn remove(&self, id: u64) {
+        self.entries().remove(&id);
+    }
+}
+
+struct RequestStreamRegistration {
+    id: u64,
+    registry: RequestStreamRegistry,
+}
+
+impl Drop for RequestStreamRegistration {
+    fn drop(&mut self) {
+        self.registry.remove(self.id);
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct WriteProgress(Arc<AtomicU64>);
+
+impl WriteProgress {
+    fn record(&self, written: usize) {
+        self.0.fetch_add(written as u64, Ordering::Release);
+    }
+
+    pub(super) fn load(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+pub(super) struct RequestStreamState {
+    stopped: StopFuture,
+    write_progress: WriteProgress,
+}
+
+impl RequestStreamState {
+    pub(super) fn write_progress(&self) -> WriteProgress {
+        self.write_progress.clone()
+    }
+}
+
+impl Future for RequestStreamState {
+    type Output = Result<Option<VarInt>, quinn::StoppedError>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.stopped.as_mut().poll(context)
+    }
+}
 
 pub(crate) struct Connection {
     connection: quinn::Connection,
+    request_streams: RequestStreamRegistry,
     incoming_bidi: BoxStreamSync<'static, <AcceptBi<'static> as Future>::Output>,
     opening_bidi: Option<BoxStreamSync<'static, <OpenBi<'static> as Future>::Output>>,
     incoming_uni: BoxStreamSync<'static, <AcceptUni<'static> as Future>::Output>,
@@ -29,6 +129,7 @@ impl Connection {
     pub(crate) fn new(connection: quinn::Connection) -> Self {
         Self {
             connection: connection.clone(),
+            request_streams: RequestStreamRegistry::default(),
             incoming_bidi: Box::pin(stream::unfold(connection.clone(), |connection| async {
                 Some((connection.accept_bi().await, connection))
             })),
@@ -38,6 +139,10 @@ impl Connection {
             })),
             opening_uni: None,
         }
+    }
+
+    pub(super) fn request_streams(&self) -> RequestStreamRegistry {
+        self.request_streams.clone()
     }
 }
 
@@ -77,6 +182,7 @@ impl<B: Buf> quic::Connection<B> for Connection {
     fn opener(&self) -> Self::OpenStreams {
         OpenStreams {
             connection: self.connection.clone(),
+            request_streams: self.request_streams.clone(),
             opening_bidi: None,
             opening_uni: None,
         }
@@ -91,7 +197,12 @@ impl<B: Buf> quic::OpenStreams<B> for Connection {
         &mut self,
         context: &mut Context<'_>,
     ) -> Poll<Result<Self::BidiStream, StreamErrorIncoming>> {
-        poll_open_bidi(&self.connection, &mut self.opening_bidi, context)
+        poll_open_bidi(
+            &self.connection,
+            &self.request_streams,
+            &mut self.opening_bidi,
+            context,
+        )
     }
 
     fn poll_open_send(
@@ -108,6 +219,7 @@ impl<B: Buf> quic::OpenStreams<B> for Connection {
 
 pub(crate) struct OpenStreams {
     connection: quinn::Connection,
+    request_streams: RequestStreamRegistry,
     opening_bidi: Option<BoxStreamSync<'static, <OpenBi<'static> as Future>::Output>>,
     opening_uni: Option<BoxStreamSync<'static, <OpenUni<'static> as Future>::Output>>,
 }
@@ -120,7 +232,12 @@ impl<B: Buf> quic::OpenStreams<B> for OpenStreams {
         &mut self,
         context: &mut Context<'_>,
     ) -> Poll<Result<Self::BidiStream, StreamErrorIncoming>> {
-        poll_open_bidi(&self.connection, &mut self.opening_bidi, context)
+        poll_open_bidi(
+            &self.connection,
+            &self.request_streams,
+            &mut self.opening_bidi,
+            context,
+        )
     }
 
     fn poll_open_send(
@@ -139,6 +256,7 @@ impl Clone for OpenStreams {
     fn clone(&self) -> Self {
         Self {
             connection: self.connection.clone(),
+            request_streams: self.request_streams.clone(),
             opening_bidi: None,
             opening_uni: None,
         }
@@ -147,6 +265,7 @@ impl Clone for OpenStreams {
 
 fn poll_open_bidi<B: Buf>(
     connection: &quinn::Connection,
+    request_streams: &RequestStreamRegistry,
     opening: &mut Option<BoxStreamSync<'static, <OpenBi<'static> as Future>::Output>>,
     context: &mut Context<'_>,
 ) -> Poll<Result<BidiStream<B>, StreamErrorIncoming>> {
@@ -166,7 +285,7 @@ fn poll_open_bidi<B: Buf>(
         connection_error: convert_connection_error(error),
     })?;
     Poll::Ready(Ok(BidiStream {
-        send: SendStream::new(send, true),
+        send: SendStream::new_request(send, request_streams),
         recv: RecvStream::new(recv, true),
     }))
 }
@@ -326,8 +445,10 @@ impl quic::RecvStream for RecvStream {
 pub(crate) struct SendStream<B: Buf> {
     stream: quinn::SendStream,
     writing: Option<WriteBuf<B>>,
+    write_progress: Option<WriteProgress>,
     cancel_on_drop: bool,
     closed: bool,
+    _registration: Option<RequestStreamRegistration>,
 }
 
 impl<B: Buf> SendStream<B> {
@@ -335,8 +456,28 @@ impl<B: Buf> SendStream<B> {
         Self {
             stream,
             writing: None,
+            write_progress: None,
             cancel_on_drop,
             closed: false,
+            _registration: None,
+        }
+    }
+
+    fn new_request(stream: quinn::SendStream, registry: &RequestStreamRegistry) -> Self {
+        let (registration, write_progress) = registry.register(&stream);
+        Self {
+            stream,
+            writing: None,
+            write_progress: Some(write_progress),
+            cancel_on_drop: true,
+            closed: false,
+            _registration: Some(registration),
+        }
+    }
+
+    fn record_write(&self, written: usize) {
+        if let Some(progress) = &self.write_progress {
+            progress.record(written);
         }
     }
 }
@@ -353,6 +494,7 @@ impl<B: Buf> Drop for SendStream<B> {
 
 impl<B: Buf> quic::SendStream<B> for SendStream<B> {
     fn poll_ready(&mut self, context: &mut Context<'_>) -> Poll<Result<(), StreamErrorIncoming>> {
+        let write_progress = self.write_progress.clone();
         if let Some(data) = self.writing.as_mut() {
             while data.has_remaining() {
                 let written = ready!(Pin::new(&mut self.stream).poll_write(context, data.chunk()))
@@ -361,6 +503,9 @@ impl<B: Buf> quic::SendStream<B> for SendStream<B> {
                     return Poll::Ready(Err(write_zero()));
                 }
                 data.advance(written);
+                if let Some(progress) = &write_progress {
+                    progress.record(written);
+                }
             }
         }
         self.writing = None;
@@ -421,6 +566,7 @@ impl<B: Buf> quic::SendStreamUnframed<B> for SendStream<B> {
             Ok(0) if buffer.has_remaining() => Poll::Ready(Err(write_zero())),
             Ok(written) => {
                 buffer.advance(written);
+                self.record_write(written);
                 Poll::Ready(Ok(written))
             }
             Err(error) => Poll::Ready(Err(convert_write_error(error))),
