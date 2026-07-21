@@ -30,6 +30,77 @@ impl std::fmt::Display for UploadFrameError {
 impl std::error::Error for UploadFrameError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum H3ReplayEvidence {
+    ProvenUnprocessed,
+    VersionFallback,
+    Ambiguous,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum H3Operation {
+    OpenRequest,
+    SendData,
+    FinishUpload,
+    ReceiveResponse,
+    ReceiveData,
+    ReceiveTrailers,
+}
+
+impl std::fmt::Display for H3Operation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::OpenRequest => "open request stream",
+            Self::SendData => "send request data",
+            Self::FinishUpload => "finish request upload",
+            Self::ReceiveResponse => "receive response headers",
+            Self::ReceiveData => "receive response data",
+            Self::ReceiveTrailers => "receive response trailers",
+        })
+    }
+}
+
+#[derive(Debug)]
+struct H3DispatchError {
+    operation: H3Operation,
+    source: h3::error::StreamError,
+}
+
+impl H3DispatchError {
+    fn replay_evidence(&self) -> H3ReplayEvidence {
+        if is_version_fallback(&self.source) {
+            return H3ReplayEvidence::VersionFallback;
+        }
+        match &self.source {
+            h3::error::StreamError::RemoteTerminate { code, .. }
+                if *code == h3::error::Code::H3_REQUEST_REJECTED =>
+            {
+                H3ReplayEvidence::ProvenUnprocessed
+            }
+            // TODO(http3-goaway-replay): upstream h3 does not expose the
+            // validated GOAWAY stream-id boundary. Treat RemoteClosing as
+            // ambiguous rather than risking a duplicate request.
+            _ => H3ReplayEvidence::Ambiguous,
+        }
+    }
+}
+
+impl std::fmt::Display for H3DispatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "HTTP/3 {} failed: {}",
+            self.operation, self.source
+        )
+    }
+}
+
+impl std::error::Error for H3DispatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UploadControl {
     Cancel,
     Detach,
@@ -87,7 +158,7 @@ where
         .send_request()
         .send_request(request)
         .await
-        .map_err(h3_error)?;
+        .map_err(|error| h3_error(H3Operation::OpenRequest, error))?;
     let stream_id = stream.id();
     let Some(request_stream) = connection.take_request_stream(stream_id) else {
         stream.stop_stream(h3::error::Code::H3_REQUEST_CANCELLED);
@@ -130,7 +201,7 @@ where
         RequestProgress::Response(response) => {
             drop(receive_response);
             response_from_stream(
-                response.map_err(h3_error)?,
+                response.map_err(|error| h3_error(H3Operation::ReceiveResponse, error))?,
                 recv,
                 url,
                 Some(UploadControlGuard::new(control_sender)),
@@ -140,7 +211,10 @@ where
             drop(control_sender);
             // Keep polling the same response future. Restarting a pending read
             // can lose the wakeup that delivers the response headers.
-            let response = receive_response.as_mut().await.map_err(h3_error)?;
+            let response = receive_response
+                .as_mut()
+                .await
+                .map_err(|error| h3_error(H3Operation::ReceiveResponse, error))?;
             drop(receive_response);
             response_from_stream(response, recv, url, None)
         }
@@ -218,7 +292,10 @@ async fn supervise_upload<R: RuntimePoll>(
                     if code == h3::error::Code::H3_NO_ERROR {
                         Ok(())
                     } else {
-                        Err(h3_error(h3::error::StreamError::RemoteTerminate { code }))
+                        Err(h3_error(
+                            H3Operation::SendData,
+                            h3::error::StreamError::RemoteTerminate { code },
+                        ))
                     }
                 }
                 Ok(None) => Ok(()),
@@ -250,8 +327,13 @@ where
         match frame.into_data() {
             Ok(data) => {
                 if !data.is_empty() {
-                    transport_write::<R, _>(write_progress, write_timeout, stream.send_data(data))
-                        .await?;
+                    transport_write::<R, _>(
+                        H3Operation::SendData,
+                        write_progress,
+                        write_timeout,
+                        stream.send_data(data),
+                    )
+                    .await?;
                 }
             }
             Err(frame) => {
@@ -264,11 +346,18 @@ where
         yield_once().await;
     }
 
-    transport_write::<R, _>(write_progress, write_timeout, stream.finish()).await?;
+    transport_write::<R, _>(
+        H3Operation::FinishUpload,
+        write_progress,
+        write_timeout,
+        stream.finish(),
+    )
+    .await?;
     Ok(())
 }
 
 async fn transport_write<R, F>(
+    operation: H3Operation,
     write_progress: &super::quinn_adapter::WriteProgress,
     write_timeout: Option<Duration>,
     future: F,
@@ -308,7 +397,7 @@ where
     match result {
         Ok(()) => Ok(()),
         Err(error) if is_h3_no_error_stop_sending(&error) => Ok(()),
-        Err(error) => Err(h3_error(error)),
+        Err(error) => Err(h3_error(operation, error)),
     }
 }
 
@@ -364,9 +453,15 @@ fn response_from_stream(
                         }
                         None
                     }
-                    Err(error) => Some((Err(h3_error(error)), (stream, true, upload_control))),
+                    Err(error) => Some((
+                        Err(h3_error(H3Operation::ReceiveTrailers, error)),
+                        (stream, true, upload_control),
+                    )),
                 },
-                Err(error) => Some((Err(h3_error(error)), (stream, true, upload_control))),
+                Err(error) => Some((
+                    Err(h3_error(H3Operation::ReceiveData, error)),
+                    (stream, true, upload_control),
+                )),
             }
         },
     );
@@ -388,14 +483,38 @@ fn is_h3_no_error_stop_sending(error: &h3::error::StreamError) -> bool {
     )
 }
 
-fn h3_error(error: h3::error::StreamError) -> Error {
-    Error::Other(Box::new(error))
+fn is_version_fallback(error: &h3::error::StreamError) -> bool {
+    matches!(
+        error,
+        h3::error::StreamError::ConnectionError(h3::error::ConnectionError::Remote(
+            h3::quic::ConnectionErrorIncoming::ApplicationClose { error_code }
+        )) if *error_code == h3::error::Code::H3_VERSION_FALLBACK.value()
+    )
+}
+
+pub(crate) fn replay_evidence(error: &Error) -> Option<H3ReplayEvidence> {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = source {
+        if let Some(error) = error.downcast_ref::<H3DispatchError>() {
+            return Some(error.replay_evidence());
+        }
+        source = error.source();
+    }
+    None
+}
+
+fn h3_error(operation: H3Operation, error: h3::error::StreamError) -> Error {
+    Error::Other(Box::new(H3DispatchError {
+        operation,
+        source: error,
+    }))
 }
 
 fn h3_stopped_error(error: quinn::StoppedError) -> Error {
-    h3_error(h3::error::StreamError::Undefined(Box::new(
-        quinn::WriteError::from(error),
-    )))
+    h3_error(
+        H3Operation::SendData,
+        h3::error::StreamError::Undefined(Box::new(quinn::WriteError::from(error))),
+    )
 }
 
 fn upload_frame_error(error: UploadFrameError) -> Error {
@@ -421,11 +540,21 @@ mod tests {
 
     #[test]
     fn helper_errors_preserve_their_sources() {
-        let error = h3_error(h3::error::StreamError::RemoteClosing);
+        let error = h3_error(
+            H3Operation::ReceiveResponse,
+            h3::error::StreamError::RemoteClosing,
+        );
         let Error::Other(source) = error else {
             panic!("h3 errors must retain their concrete source");
         };
-        assert!(source.downcast_ref::<h3::error::StreamError>().is_some());
+        let dispatch = source
+            .downcast_ref::<H3DispatchError>()
+            .expect("h3 errors must retain dispatch context");
+        assert_eq!(dispatch.operation, H3Operation::ReceiveResponse);
+        assert!(matches!(
+            &dispatch.source,
+            h3::error::StreamError::RemoteClosing
+        ));
 
         let error = upload_frame_error(UploadFrameError::UnsupportedFrame);
         let Error::Other(source) = error else {
@@ -435,5 +564,40 @@ mod tests {
             source.to_string(),
             "HTTP/3 request body emitted an unsupported frame"
         );
+    }
+
+    #[test]
+    fn goaway_is_ambiguous_without_a_validated_stream_boundary() {
+        for operation in [H3Operation::OpenRequest, H3Operation::ReceiveResponse] {
+            let error = H3DispatchError {
+                operation,
+                source: h3::error::StreamError::RemoteClosing,
+            };
+            assert_eq!(error.replay_evidence(), H3ReplayEvidence::Ambiguous);
+        }
+    }
+
+    #[test]
+    fn request_rejected_is_proven_unprocessed() {
+        let error = H3DispatchError {
+            operation: H3Operation::ReceiveResponse,
+            source: h3::error::StreamError::RemoteTerminate {
+                code: h3::error::Code::H3_REQUEST_REJECTED,
+            },
+        };
+        assert_eq!(error.replay_evidence(), H3ReplayEvidence::ProvenUnprocessed);
+    }
+
+    #[test]
+    fn version_fallback_is_distinct_replay_evidence() {
+        let error = H3DispatchError {
+            operation: H3Operation::ReceiveResponse,
+            source: h3::error::StreamError::ConnectionError(h3::error::ConnectionError::Remote(
+                h3::quic::ConnectionErrorIncoming::ApplicationClose {
+                    error_code: h3::error::Code::H3_VERSION_FALLBACK.value(),
+                },
+            )),
+        };
+        assert_eq!(error.replay_evidence(), H3ReplayEvidence::VersionFallback);
     }
 }

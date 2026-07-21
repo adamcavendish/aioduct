@@ -300,6 +300,22 @@ impl<B: 'static> HttpEngineCore<B> {
         if matches!(conn.conn, HttpConnection::H2(_)) && h2_proves_request_was_unprocessed(err) {
             return Some(ReplayReason::ProvenUnprocessed);
         }
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        if matches!(conn.conn, HttpConnection::H3(_)) {
+            return match crate::h3_transport::replay_evidence(err) {
+                Some(crate::h3_transport::H3ReplayEvidence::ProvenUnprocessed) => {
+                    Some(ReplayReason::ProvenUnprocessed)
+                }
+                // Version fallback is handled by the Alt-Svc dispatch policy.
+                // RemoteClosing remains ambiguous until upstream h3 exposes a
+                // validated GOAWAY/request-stream boundary.
+                Some(
+                    crate::h3_transport::H3ReplayEvidence::VersionFallback
+                    | crate::h3_transport::H3ReplayEvidence::Ambiguous,
+                )
+                | None => None,
+            };
+        }
         Self::is_stale_connection_error(err).then_some(ReplayReason::AmbiguousTransportFailure)
     }
 

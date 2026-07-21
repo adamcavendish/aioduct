@@ -5,7 +5,7 @@ use http::Uri;
 use std::time::Duration;
 
 use super::connection_lifecycle::{H2ConnectGuard, PooledSendError};
-use super::replay::{ReplayReason, RequestReplayPolicy};
+use super::replay::{ReplayReason, RequestReplayPolicy, StaleReplayBudget};
 use super::{BodyReplayability, FreshConnectionRequired, HttpEngineCore, HttpEngineSend};
 use crate::body::RequestBodySend;
 use crate::error::Error;
@@ -121,6 +121,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .get::<FreshConnectionRequired>()
             .is_some();
         let replay_policy = RequestReplayPolicy::new(request.method(), body_replayability);
+        let mut stale_replay_budget = StaleReplayBudget::default();
         let can_stale_retry = !self.core.no_connection_reuse
             && replay_policy.permits(ReplayReason::ProvenUnprocessed);
         let can_use_pooled_connection =
@@ -221,7 +222,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 Err(PooledSendError::Failed(e))
                     if saved_request.is_some()
                         && HttpEngineCore::<RequestBodySend>::stale_replay_reason(&conn, &e)
-                            .is_some_and(|reason| replay_policy.permits(reason)) =>
+                            .is_some_and(|reason| {
+                                stale_replay_budget.claim(replay_policy, reason)
+                            }) =>
                 {
                     #[cfg(feature = "tracing")]
                     tracing::debug!(
@@ -400,7 +403,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             && HttpEngineCore::<RequestBodySend>::stale_replay_reason(
                                 &conn, &e,
                             )
-                            .is_some_and(|reason| replay_policy.permits(reason)) =>
+                            .is_some_and(|reason| {
+                                stale_replay_budget.claim(replay_policy, reason)
+                            }) =>
                     {
                         #[cfg(feature = "tracing")]
                         tracing::debug!(
@@ -490,11 +495,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     },
                 );
 
-                let mut active_reservation = self
-                    .core
-                    .pool
-                    .try_reserve_active(&pool_key)
-                    .map_err(Error::from)?;
                 self.core.pool.record_checkout_miss();
 
                 let default_port = 443u16;
@@ -526,95 +526,148 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     request.method(),
                     &http::Method::GET | &http::Method::HEAD | &http::Method::OPTIONS
                 );
-                let use_0rtt = self.core.h3_zero_rtt && is_idempotent;
+                let mut use_0rtt = self.core.h3_zero_rtt && is_idempotent;
+                let saved_request = ReplayableRequestHead::capture(&request);
 
-                let tcp_start = Instant::now();
-                let h3_connect_fut = async {
-                    if use_0rtt {
-                        let (pooled, addr, _used_0rtt) =
-                            crate::h3_transport::connect_h3_addrs_0rtt::<R>(
+                loop {
+                    let mut active_reservation = self
+                        .core
+                        .pool
+                        .try_reserve_active(&pool_key)
+                        .map_err(Error::from)?;
+                    let tcp_start = Instant::now();
+                    let h3_connect_fut = async {
+                        if use_0rtt {
+                            let (pooled, addr, _used_0rtt) =
+                                crate::h3_transport::connect_h3_addrs_0rtt::<R>(
+                                    endpoint,
+                                    &addrs,
+                                    &sni_host,
+                                    self.core.local_address,
+                                )
+                                .await?;
+                            Ok((pooled, addr))
+                        } else {
+                            crate::h3_transport::connect_h3_addrs::<R>(
                                 endpoint,
                                 &addrs,
                                 &sni_host,
                                 self.core.local_address,
                             )
+                            .await
+                        }
+                    };
+                    let (mut pooled, addr) =
+                        crate::timeout::connect_timeout::<R, _, _>(h3_connect_fut, connect_timeout)
                             .await?;
-                        Ok((pooled, addr))
-                    } else {
-                        crate::h3_transport::connect_h3_addrs::<R>(
-                            endpoint,
-                            &addrs,
-                            &sni_host,
-                            self.core.local_address,
-                        )
-                        .await
-                    }
-                };
-                let (mut pooled, addr) =
-                    crate::timeout::connect_timeout::<R, _, _>(h3_connect_fut, connect_timeout)
-                        .await?;
-                self.core.notify(
-                    request.method(),
-                    original_uri,
-                    RequestPhase::TcpConnected {
-                        remote_addr: addr,
-                        duration: tcp_start.elapsed(),
-                        protocol: observer::NegotiatedProtocol::Http3,
-                    },
-                );
-
-                pooled.remote_addr = Some(addr);
-                self.core
-                    .pool
-                    .attach_active_reservation(&mut pooled, &mut active_reservation);
-                let req_method = request.method().clone();
-                let transfer_start = Instant::now();
-                self.core.notify(
-                    &req_method,
-                    original_uri,
-                    RequestPhase::RequestSent {
-                        duration: transfer_start.duration_since(pool_checkout_start),
-                        headers: extract_headers(request.headers()),
-                    },
-                );
-                let mut resp = Self::send_on_connection_with_first_byte_timeout(
-                    &mut pooled,
-                    request,
-                    original_uri.clone(),
-                    write_timeout,
-                    first_byte_timeout,
-                )
-                .await?;
-                let transfer = transfer_start.elapsed();
-                self.core.notify(
-                    &req_method,
-                    original_uri,
-                    RequestPhase::ResponseStarted {
-                        waiting_duration: transfer,
-                    },
-                );
-                self.core.notify(
-                    &req_method,
-                    original_uri,
-                    RequestPhase::ResponseComplete {
-                        status: resp.status(),
-                        protocol: observer::NegotiatedProtocol::Http3,
-                        total_duration: request_start.elapsed(),
-                    },
-                );
-                resp.set_remote_addr(pooled.remote_addr);
-                resp.set_tls_info(pooled.tls_info.clone());
-                self.core
-                    .attach_observer(&mut resp, &req_method, original_uri);
-                if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
-                    self.core.checkin_when_ready::<R, _, _>(
-                        pool_key,
-                        pooled,
-                        R::spawn_send,
-                        R::sleep(self.core.pool.idle_timeout()),
+                    self.core.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::TcpConnected {
+                            remote_addr: addr,
+                            duration: tcp_start.elapsed(),
+                            protocol: observer::NegotiatedProtocol::Http3,
+                        },
                     );
+
+                    pooled.remote_addr = Some(addr);
+                    self.core
+                        .pool
+                        .attach_active_reservation(&mut pooled, &mut active_reservation);
+                    let req_method = request.method().clone();
+                    let transfer_start = Instant::now();
+                    self.core.notify(
+                        &req_method,
+                        original_uri,
+                        RequestPhase::RequestSent {
+                            duration: transfer_start.duration_since(pool_checkout_start),
+                            headers: extract_headers(request.headers()),
+                        },
+                    );
+                    let result = Self::send_on_connection_with_first_byte_timeout(
+                        &mut pooled,
+                        request,
+                        original_uri.clone(),
+                        write_timeout,
+                        first_byte_timeout,
+                    )
+                    .await;
+
+                    match result {
+                        Ok(mut resp) => {
+                            let transfer = transfer_start.elapsed();
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::ResponseStarted {
+                                    waiting_duration: transfer,
+                                },
+                            );
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::ResponseComplete {
+                                    status: resp.status(),
+                                    protocol: observer::NegotiatedProtocol::Http3,
+                                    total_duration: request_start.elapsed(),
+                                },
+                            );
+                            resp.set_remote_addr(pooled.remote_addr);
+                            resp.set_tls_info(pooled.tls_info.clone());
+                            self.core
+                                .attach_observer(&mut resp, &req_method, original_uri);
+                            if !HttpEngineCore::<RequestBodySend>::should_skip_checkin(&resp) {
+                                self.core.checkin_when_ready::<R, _, _>(
+                                    pool_key,
+                                    pooled,
+                                    R::spawn_send,
+                                    R::sleep(self.core.pool.idle_timeout()),
+                                );
+                            }
+                            return Ok(resp);
+                        }
+                        Err(error)
+                            if HttpEngineCore::<RequestBodySend>::stale_replay_reason(
+                                &pooled, &error,
+                            ) == Some(ReplayReason::ProvenUnprocessed)
+                                && stale_replay_budget
+                                    .claim(replay_policy, ReplayReason::ProvenUnprocessed) =>
+                        {
+                            self.core.fire_connection_metrics(&pooled, true);
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::Failed {
+                                    error: error.to_string(),
+                                    retry: RetryKind::StaleConnection,
+                                    elapsed: request_start.elapsed(),
+                                },
+                            );
+                            request = replay_request_send(saved_request.clone(), &replay_body);
+                            if sign_stale_retries
+                                && let Some(signature) = self
+                                    .core
+                                    .prepare_final_request_signature(original_uri, &mut request)?
+                            {
+                                let signature_headers = signature.sign_send().await?;
+                                signature_headers.insert_into(request.headers_mut())?;
+                            }
+                            use_0rtt = false;
+                        }
+                        Err(error) => {
+                            self.core.notify(
+                                &req_method,
+                                original_uri,
+                                RequestPhase::Failed {
+                                    error: error.to_string(),
+                                    retry: RetryKind::None,
+                                    elapsed: request_start.elapsed(),
+                                },
+                            );
+                            return Err(error);
+                        }
+                    }
                 }
-                return Ok(resp);
             }
         }
 
@@ -734,7 +787,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 && HttpEngineCore::<RequestBodySend>::stale_replay_reason(
                                     &conn, &e,
                                 )
-                                .is_some_and(|reason| replay_policy.permits(reason)) =>
+                                .is_some_and(|reason| {
+                                    stale_replay_budget.claim(replay_policy, reason)
+                                }) =>
                         {
                             #[cfg(feature = "tracing")]
                             tracing::debug!(

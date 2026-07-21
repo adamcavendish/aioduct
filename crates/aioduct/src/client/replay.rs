@@ -601,6 +601,25 @@ pub(crate) struct RequestReplayPolicy {
     method_is_idempotent: bool,
 }
 
+/// Single-use budget for transport-triggered request replay.
+///
+/// Dispatch has several pooled and fresh-connection branches. Claiming one
+/// shared budget keeps all of them subject to the same one-replay invariant.
+#[derive(Debug, Default)]
+pub(crate) struct StaleReplayBudget {
+    claimed: bool,
+}
+
+impl StaleReplayBudget {
+    pub(crate) fn claim(&mut self, policy: RequestReplayPolicy, reason: ReplayReason) -> bool {
+        if self.claimed || !policy.permits(reason) {
+            return false;
+        }
+        self.claimed = true;
+        true
+    }
+}
+
 impl RequestReplayPolicy {
     pub(crate) fn new(method: &Method, body: BodyReplayability) -> Self {
         Self {
@@ -842,6 +861,29 @@ mod tests {
                 .permits(ReplayReason::ExactRequestRecovered)
         );
     }
+
+    #[test]
+    fn stale_replay_budget_allows_only_one_transport_replay() {
+        let policy = RequestReplayPolicy::new(&Method::POST, BodyReplayability::Replayable);
+        let mut budget = StaleReplayBudget::default();
+
+        assert!(budget.claim(policy, ReplayReason::ProvenUnprocessed));
+        assert!(!budget.claim(policy, ReplayReason::ProvenUnprocessed));
+    }
+
+    #[test]
+    fn stale_replay_budget_does_not_claim_for_an_unsafe_request() {
+        let policy = RequestReplayPolicy::new(&Method::POST, BodyReplayability::OneShot);
+        let mut budget = StaleReplayBudget::default();
+
+        assert!(!budget.claim(policy, ReplayReason::ProvenUnprocessed));
+        assert!(!budget.claim(policy, ReplayReason::AmbiguousTransportFailure));
+        assert!(budget.claim(
+            RequestReplayPolicy::new(&Method::POST, BodyReplayability::Replayable),
+            ReplayReason::ProvenUnprocessed,
+        ));
+    }
+
     #[test]
     fn one_shot_request_keeps_an_already_acquired_fresh_connection() {
         assert!(BodyReplayability::Empty.can_replace_fresh_connection());
