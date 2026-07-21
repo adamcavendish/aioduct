@@ -88,13 +88,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
     }
 
     #[cfg(all(feature = "http3", feature = "rustls"))]
-    /// Enable HTTP/3 0-RTT (early data) for repeat connections.
+    /// Request HTTP/3 0-RTT (early data) for repeat connections.
     ///
-    /// When enabled, idempotent requests (GET, HEAD, OPTIONS) may be sent
-    /// before the TLS handshake completes on reconnection to a previously-visited
-    /// server. Non-idempotent requests always wait for the full handshake.
-    ///
-    /// Opt-in because 0-RTT data is replayable by a network attacker.
+    /// HTTP/3 0-RTT is not currently supported. Setting `enable` to `true`
+    /// causes [`build`](Self::build) to return
+    /// [`Error::Unsupported`](crate::error::Error::Unsupported). Aioduct must
+    /// retain and validate the peer's HTTP/3 settings before it can safely send
+    /// early data, and the upstream `h3` API does not currently expose the
+    /// required rejection handling.
     pub fn h3_zero_rtt(mut self, enable: bool) -> Self {
         self.h3_zero_rtt = enable;
         self
@@ -113,12 +114,9 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 })?
                 .config()
                 .clone();
-            let endpoint = crate::h3_transport::build_quinn_endpoint(
-                tls_config,
-                self.local_address,
-                self.h3_zero_rtt,
-            )
-            .map_err(|e| crate::error::Error::Other(Box::new(e)))?;
+            let endpoint =
+                crate::h3_transport::build_quinn_endpoint(tls_config, self.local_address)
+                    .map_err(|e| crate::error::Error::Other(Box::new(e)))?;
             self.h3_endpoint = Some(endpoint);
         }
         Ok(self)
@@ -146,6 +144,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
         let mut this = self;
         if let Some(error) = this.builder_error.take() {
             return Err(error.into_error());
+        }
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        if this.h3_zero_rtt {
+            return Err(crate::error::Error::Unsupported(
+                "HTTP/3 0-RTT is not supported: peer settings and early-data rejection cannot yet be validated"
+                    .to_owned(),
+            ));
         }
         let self_ = this;
 
@@ -323,8 +328,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 h3_endpoint: self_.h3_endpoint,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
                 prefer_h3: self_.prefer_h3,
-                #[cfg(all(feature = "http3", feature = "rustls"))]
-                h3_zero_rtt: self_.h3_zero_rtt,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
                 alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             },

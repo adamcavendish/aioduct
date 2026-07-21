@@ -128,8 +128,6 @@ pub struct HttpEngineCore<B> {
     #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) prefer_h3: bool,
     #[cfg(all(feature = "http3", feature = "rustls"))]
-    pub(crate) h3_zero_rtt: bool,
-    #[cfg(all(feature = "http3", feature = "rustls"))]
     pub(crate) alt_svc_cache: crate::alt_svc::AltSvcCache,
 }
 
@@ -183,8 +181,6 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
             h3_endpoint: self.h3_endpoint.clone(),
             #[cfg(all(feature = "http3", feature = "rustls"))]
             prefer_h3: self.prefer_h3,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            h3_zero_rtt: self.h3_zero_rtt,
             #[cfg(all(feature = "http3", feature = "rustls"))]
             alt_svc_cache: self.alt_svc_cache.clone(),
         }
