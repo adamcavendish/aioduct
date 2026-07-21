@@ -238,8 +238,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
                 #[cfg(all(feature = "http3", feature = "rustls"))]
                 prefer_h3: false,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
-                h3_zero_rtt: false,
-                #[cfg(all(feature = "http3", feature = "rustls"))]
                 alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             },
             connector: self.connector,

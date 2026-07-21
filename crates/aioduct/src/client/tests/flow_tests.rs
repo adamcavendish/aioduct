@@ -73,16 +73,37 @@ async fn builder_http3_enable_sets_prefer_and_endpoint() {
 
 #[cfg(all(feature = "http3", feature = "rustls", feature = "tokio"))]
 #[tokio::test]
-async fn builder_http3_0rtt_sets_flag() {
+async fn builder_http3_0rtt_fails_closed_for_any_setter_order() {
     install_crypto();
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+    let after_http3 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(crate::tls::RustlsConnector::with_webpki_roots())
         .http3(true)
         .unwrap()
         .h3_zero_rtt(true)
-        .build()
-        .unwrap();
-    assert!(client.core.h3_zero_rtt);
+        .build();
+    let after_http3 = match after_http3 {
+        Err(error) => error,
+        Ok(_) => panic!("enabling HTTP/3 0-RTT must fail closed"),
+    };
+    assert!(
+        matches!(&after_http3, crate::error::Error::Unsupported(message) if message.contains("0-RTT")),
+        "unexpected error: {after_http3:?}"
+    );
+
+    let before_http3 = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(crate::tls::RustlsConnector::with_webpki_roots())
+        .h3_zero_rtt(true)
+        .http3(true)
+        .unwrap()
+        .build();
+    let before_http3 = match before_http3 {
+        Err(error) => error,
+        Ok(_) => panic!("enabling HTTP/3 0-RTT must fail closed"),
+    };
+    assert!(
+        matches!(&before_http3, crate::error::Error::Unsupported(message) if message.contains("0-RTT")),
+        "unexpected error: {before_http3:?}"
+    );
 }
 
 #[cfg(all(feature = "http3", feature = "rustls", feature = "tokio"))]
@@ -129,18 +150,17 @@ async fn builder_http3_without_tls_returns_error() {
 
 #[cfg(all(feature = "http3", feature = "rustls", feature = "tokio"))]
 #[tokio::test]
-async fn builder_h3_zero_rtt_default_false() {
+async fn builder_h3_zero_rtt_can_be_disabled_before_build() {
     install_crypto();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(crate::tls::RustlsConnector::with_webpki_roots())
         .http3(true)
         .unwrap()
+        .h3_zero_rtt(true)
+        .h3_zero_rtt(false)
         .build()
         .unwrap();
-    assert!(
-        !client.core.h3_zero_rtt,
-        "h3_zero_rtt should default to false"
-    );
+    assert!(client.core.h3_endpoint.is_some());
 }
 
 // ── process_redirect tests ──────────────────────────────────────────

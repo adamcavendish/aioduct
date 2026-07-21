@@ -93,20 +93,6 @@ pub(crate) async fn connect_h3_addrs<R: RuntimePoll>(
     Ok((pooled, addr))
 }
 
-pub(crate) async fn connect_h3_addrs_0rtt<R: RuntimePoll>(
-    endpoint: &quinn::Endpoint,
-    addrs: &[SocketAddr],
-    server_name: &str,
-    local_address: Option<IpAddr>,
-) -> Result<(PooledConnection<RequestBodySend>, SocketAddr, bool), Error> {
-    let addrs = h3_candidate_addrs(endpoint, addrs, local_address)?;
-
-    let (quinn_conn, addr, used_0rtt) =
-        race_quic_connect_0rtt::<R>(endpoint, &addrs, server_name).await?;
-    let pooled = connect_h3::<R>(quinn_conn).await?;
-    Ok((pooled, addr, used_0rtt))
-}
-
 fn h3_candidate_addrs(
     endpoint: &quinn::Endpoint,
     addrs: &[SocketAddr],
@@ -240,123 +226,6 @@ impl std::future::Future for SelectQuicConnect {
     }
 }
 
-// ── Happy Eyeballs for QUIC 0-RTT ─────────────────────────────────────────
-
-enum H3ConnectResult0rtt {
-    Connected(quinn::Connection, SocketAddr, bool),
-    Failed(Error),
-    DeadlineReached,
-}
-
-async fn race_quic_connect_0rtt<R: RuntimePoll>(
-    endpoint: &quinn::Endpoint,
-    addrs: &[SocketAddr],
-    server_name: &str,
-) -> Result<(quinn::Connection, SocketAddr, bool), Error> {
-    if addrs.len() == 1 {
-        return quic_connect_one_0rtt(endpoint, addrs[0], server_name).await;
-    }
-
-    let mut last_err = Error::Other("failed to establish HTTP/3 connection".into());
-    for (i, &addr) in addrs.iter().enumerate() {
-        let is_last = i == addrs.len() - 1;
-        if is_last {
-            match quic_connect_one_0rtt(endpoint, addr, server_name).await {
-                Ok(result) => return Ok(result),
-                Err(e) => last_err = e,
-            }
-        } else {
-            match quic_connect_0rtt_with_deadline::<R>(endpoint, addr, server_name).await {
-                H3ConnectResult0rtt::Connected(conn, addr, used_0rtt) => {
-                    return Ok((conn, addr, used_0rtt));
-                }
-                H3ConnectResult0rtt::Failed(e) => last_err = e,
-                H3ConnectResult0rtt::DeadlineReached => {}
-            }
-        }
-    }
-    Err(last_err)
-}
-
-async fn quic_connect_one_0rtt(
-    endpoint: &quinn::Endpoint,
-    addr: SocketAddr,
-    server_name: &str,
-) -> Result<(quinn::Connection, SocketAddr, bool), Error> {
-    let connecting = endpoint
-        .connect(addr, server_name)
-        .map_err(|e| Error::Other(Box::new(e)))?;
-    match connecting.into_0rtt() {
-        Ok((conn, _zero_rtt_accepted)) => Ok((conn, addr, true)),
-        Err(connecting) => {
-            let conn = connecting.await.map_err(|e| Error::Other(Box::new(e)))?;
-            Ok((conn, addr, false))
-        }
-    }
-}
-
-async fn quic_connect_0rtt_with_deadline<R: RuntimePoll>(
-    endpoint: &quinn::Endpoint,
-    addr: SocketAddr,
-    server_name: &str,
-) -> H3ConnectResult0rtt {
-    let connecting = match endpoint.connect(addr, server_name) {
-        Ok(c) => c,
-        Err(e) => return H3ConnectResult0rtt::Failed(Error::Other(Box::new(e))),
-    };
-    SelectQuicConnect0rtt {
-        connect: Box::pin(async move {
-            match connecting.into_0rtt() {
-                Ok((conn, _zero_rtt_accepted)) => Ok((conn, true)),
-                Err(connecting) => {
-                    let conn = connecting.await.map_err(|e| Error::Other(Box::new(e)))?;
-                    Ok((conn, false))
-                }
-            }
-        }),
-        sleep: Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY)),
-        addr,
-        done: false,
-    }
-    .await
-}
-
-#[allow(clippy::type_complexity)]
-struct SelectQuicConnect0rtt {
-    connect:
-        Pin<Box<dyn std::future::Future<Output = Result<(quinn::Connection, bool), Error>> + Send>>,
-    sleep: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-    addr: SocketAddr,
-    done: bool,
-}
-
-impl std::future::Future for SelectQuicConnect0rtt {
-    type Output = H3ConnectResult0rtt;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-
-        if this.done {
-            return Poll::Pending;
-        }
-
-        if let Poll::Ready(result) = this.connect.as_mut().poll(cx) {
-            this.done = true;
-            return Poll::Ready(match result {
-                Ok((conn, used_0rtt)) => H3ConnectResult0rtt::Connected(conn, this.addr, used_0rtt),
-                Err(e) => H3ConnectResult0rtt::Failed(e),
-            });
-        }
-
-        if let Poll::Ready(()) = this.sleep.as_mut().poll(cx) {
-            this.done = true;
-            return Poll::Ready(H3ConnectResult0rtt::DeadlineReached);
-        }
-
-        Poll::Pending
-    }
-}
-
 fn ensure_h3_alpn(config: Arc<rustls::ClientConfig>) -> Arc<rustls::ClientConfig> {
     if config.alpn_protocols.iter().any(|p| p == b"h3") {
         return config;
@@ -380,19 +249,11 @@ fn h3_ipv4_bind_addr() -> SocketAddr {
 pub(crate) fn build_quinn_endpoint(
     tls_config: Arc<rustls::ClientConfig>,
     local_address: Option<std::net::IpAddr>,
-    enable_0rtt: bool,
 ) -> Result<quinn::Endpoint, Error> {
     let mut transport_config = quinn::TransportConfig::default();
     transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
 
     let tls_config = ensure_h3_alpn(tls_config);
-    let tls_config = if enable_0rtt {
-        let mut config = (*tls_config).clone();
-        config.enable_early_data = true;
-        Arc::new(config)
-    } else {
-        tls_config
-    };
     let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
         .map_err(|e| Error::Tls(Box::new(e)))?;
 
@@ -572,7 +433,7 @@ mod tests {
     #[tokio::test]
     async fn build_quinn_endpoint_succeeds_with_defaults() {
         let config = make_rustls_config(&[b"h3"]);
-        let result = build_quinn_endpoint(config, None, false);
+        let result = build_quinn_endpoint(config, None);
         assert!(
             result.is_ok(),
             "build_quinn_endpoint failed: {:?}",
@@ -585,7 +446,7 @@ mod tests {
     async fn build_quinn_endpoint_with_ipv4_local_address() {
         let config = make_rustls_config(&[b"h3"]);
         let local = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let result = build_quinn_endpoint(config, Some(local), false);
+        let result = build_quinn_endpoint(config, Some(local));
         assert!(
             result.is_ok(),
             "build_quinn_endpoint failed: {:?}",
@@ -597,22 +458,10 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
-    async fn build_quinn_endpoint_with_0rtt_enabled() {
-        let config = make_rustls_config(&[b"h3"]);
-        let result = build_quinn_endpoint(config, None, true);
-        assert!(
-            result.is_ok(),
-            "build_quinn_endpoint failed: {:?}",
-            result.err()
-        );
-    }
-
-    #[cfg(feature = "tokio")]
-    #[tokio::test]
     async fn build_quinn_endpoint_adds_h3_alpn_if_missing() {
         // Pass a config without h3 ALPN; build_quinn_endpoint should add it
         let config = make_rustls_config(&[b"h2"]);
-        let result = build_quinn_endpoint(config, None, false);
+        let result = build_quinn_endpoint(config, None);
         assert!(
             result.is_ok(),
             "build_quinn_endpoint failed: {:?}",
@@ -673,30 +522,6 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
 
         let mut select = SelectQuicConnect {
-            connect: Box::pin(async { Err(Error::Timeout) }),
-            sleep: Box::pin(async {}),
-            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443),
-            done: true,
-        };
-
-        let pin = unsafe { Pin::new_unchecked(&mut select) };
-        assert!(matches!(pin.poll(&mut cx), Poll::Pending));
-    }
-
-    #[test]
-    fn select_quic_connect_0rtt_done_returns_pending() {
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-        fn noop(_: *const ()) {}
-        fn clone_fn(p: *const ()) -> RawWaker {
-            RawWaker::new(p, &VTABLE)
-        }
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, noop, noop, noop);
-        let raw = RawWaker::new(std::ptr::null(), &VTABLE);
-        let waker = unsafe { Waker::from_raw(raw) };
-        let mut cx = Context::from_waker(&waker);
-
-        let mut select = SelectQuicConnect0rtt {
             connect: Box::pin(async { Err(Error::Timeout) }),
             sleep: Box::pin(async {}),
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443),

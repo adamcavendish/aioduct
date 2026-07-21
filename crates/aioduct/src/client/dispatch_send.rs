@@ -610,11 +610,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 );
                 let sni_host = authority.host().to_owned();
 
-                let is_idempotent = matches!(
-                    request.method(),
-                    &http::Method::GET | &http::Method::HEAD | &http::Method::OPTIONS
-                );
-                let mut use_0rtt = self.core.h3_zero_rtt && is_idempotent;
                 let saved_request = ReplayableRequestHead::capture(&request);
 
                 loop {
@@ -624,27 +619,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .try_reserve_active(&pool_key)
                         .map_err(Error::from)?;
                     let tcp_start = Instant::now();
-                    let h3_connect_fut = async {
-                        if use_0rtt {
-                            let (pooled, addr, _used_0rtt) =
-                                crate::h3_transport::connect_h3_addrs_0rtt::<R>(
-                                    endpoint,
-                                    &addrs,
-                                    &sni_host,
-                                    self.core.local_address,
-                                )
-                                .await?;
-                            Ok((pooled, addr))
-                        } else {
-                            crate::h3_transport::connect_h3_addrs::<R>(
-                                endpoint,
-                                &addrs,
-                                &sni_host,
-                                self.core.local_address,
-                            )
-                            .await
-                        }
-                    };
+                    let h3_connect_fut = crate::h3_transport::connect_h3_addrs::<R>(
+                        endpoint,
+                        &addrs,
+                        &sni_host,
+                        self.core.local_address,
+                    );
                     let (mut pooled, addr) = match crate::timeout::connect_timeout::<R, _, _>(
                         h3_connect_fut,
                         connect_timeout,
@@ -758,7 +738,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 let signature_headers = signature.sign_send().await?;
                                 signature_headers.insert_into(request.headers_mut())?;
                             }
-                            use_0rtt = false;
                         }
                         Err(error)
                             if opportunistic_h3

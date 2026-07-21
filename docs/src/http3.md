@@ -96,28 +96,28 @@ When HTTP/3 is **not** enabled (default), the client uses TCP with HTTP/1.1 or H
 
 ## 0-RTT (Early Data)
 
-For repeat connections to servers that support session tickets, aioduct can send the first request immediately without waiting for a full QUIC handshake:
+Aioduct does not currently send HTTP/3 requests as 0-RTT early data. The
+`h3_zero_rtt` setter remains available for compatibility, but enabling it fails
+client construction with `Error::Unsupported`:
 
 ```rust,no_run
 use aioduct::TokioClient;
 
-let client = TokioClient::builder()
+let result = TokioClient::builder()
     .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
     .http3(true)?
     .h3_zero_rtt(true)
-    .build()?;
+    .build();
+
+assert!(matches!(result, Err(aioduct::Error::Unsupported(_))));
+# Ok::<(), aioduct::Error>(())
 ```
 
-### Safety
-
-0-RTT is only used for **idempotent methods** (GET, HEAD, OPTIONS) because early data can be replayed by an attacker. POST, PUT, DELETE, and PATCH always wait for the full handshake.
-
-If the server rejects 0-RTT, the client transparently falls back to a full handshake with no user intervention required.
-
-### When to Enable
-
-- **Enable** for latency-sensitive read-heavy workloads (API polling, CDN fetches) where the server is known to support session tickets.
-- **Leave disabled** (default) if your application has strict non-replay requirements or the server doesn't benefit from it.
+This fails closed because a correct implementation must validate remembered
+peer SETTINGS and handle early-data rejection without weakening the request
+replay policy. Those guarantees are not available through the released
+upstream `h3` API, and aioduct does not maintain an `h3` fork. Leave 0-RTT
+disabled, which is the default.
 
 ## Limitations
 
