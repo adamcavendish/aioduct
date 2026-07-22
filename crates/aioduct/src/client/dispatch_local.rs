@@ -59,21 +59,26 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             .notify(request.method(), original_uri, RequestPhase::Started);
         let pool_checkout_start = Instant::now();
 
-        let authority_for_probe = original_uri
-            .authority()
-            .ok_or_else(|| Error::InvalidUrl("missing authority".into()))?;
-        let cached_h2c = if protocol_hint == crate::pool::ProtocolHint::AdaptiveH2c {
-            self.core.h2c_probe_cache.lookup(authority_for_probe)
-        } else {
-            None
-        };
-        let proxy_dispatch_route = crate::proxy::ProxyDispatchRoute::resolve(
+        let mut proxy_dispatch_route = crate::proxy::ProxyDispatchRoute::resolve(
             original_uri,
             self.core.proxy_chain.as_ref(),
             self.core.proxy.as_ref(),
             protocol_hint,
-            cached_h2c,
+            None,
         )?;
+        let h2c_probe_key = if protocol_hint == crate::pool::ProtocolHint::AdaptiveH2c {
+            let destination = proxy_dispatch_route.destination();
+            let key = crate::h2c_probe::H2cProbeKey::new(
+                destination.scheme().clone(),
+                destination.authority(),
+                proxy_dispatch_route.pool_identity(),
+                force_addr,
+            );
+            proxy_dispatch_route.apply_adaptive_h2c_cache(self.core.h2c_probe_cache.lookup(&key));
+            Some(key)
+        } else {
+            None
+        };
         let destination = proxy_dispatch_route.destination();
         let scheme = destination.scheme();
         let authority = destination.authority();
@@ -107,6 +112,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             },
             proxy_dispatch_route.pool_identity(),
         );
+        pool_key.forced_addr = force_addr;
         let may_h2 = !force_h1 && (is_https || force_h2c);
 
         let fresh_connection_required = request
@@ -613,13 +619,17 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     };
                     match h2c_ok {
                         Some(c) => {
-                            self.core.h2c_probe_cache.record_h2c(authority.clone());
+                            if let Some(key) = h2c_probe_key.clone() {
+                                self.core.h2c_probe_cache.record_h2c(key);
+                            }
                             let mut c = c;
                             c.remote_addr = Some(addr);
                             c
                         }
                         None => {
-                            self.core.h2c_probe_cache.record_h1_only(authority.clone());
+                            if let Some(key) = h2c_probe_key.clone() {
+                                self.core.h2c_probe_cache.record_h1_only(key);
+                            }
                             let (stream2, fallback_addr) = if addrs.len() > 1 {
                                 let (s, a) = crate::happy_eyeballs::connect_happy_eyeballs_local::<
                                     R,

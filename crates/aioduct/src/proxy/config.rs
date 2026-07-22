@@ -1,9 +1,11 @@
 use http::Uri;
 use http::header::{HeaderName, HeaderValue};
+use std::net::IpAddr;
+use std::sync::Arc;
 
 use crate::error::Error;
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum ProxyScheme {
     Http,
     Https,
@@ -41,23 +43,115 @@ impl std::fmt::Debug for ProxyConfig {
 }
 
 impl ProxyConfig {
-    /// Stable hash of this proxy config for pool-key route segregation.
-    pub(crate) fn route_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.scheme.hash(&mut h);
-        self.uri.hash(&mut h);
-        self.auth.hash(&mut h);
-        // Only HTTP/HTTPS proxies send a CONNECT request with headers; SOCKS
-        // proxies never emit them, so ignoring headers for non-CONNECT schemes
-        // avoids unnecessary pool-key fragmentation.
-        if matches!(self.scheme, ProxyScheme::Http | ProxyScheme::Https) {
-            for (name, value) in &self.connect_headers {
-                name.as_str().hash(&mut h);
-                value.as_bytes().hash(&mut h);
+    pub(crate) fn route_identity(&self) -> ProxyRouteIdentity {
+        ProxyRouteIdentity::from_configs(std::slice::from_ref(self))
+    }
+}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct ProxyRouteHop {
+    scheme: ProxyScheme,
+    endpoint: Option<ProxyRouteEndpoint>,
+    auth: Option<ProxyAuth>,
+    connect_headers: Vec<(HeaderName, Vec<u8>)>,
+}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+struct ProxyRouteEndpoint {
+    host: String,
+    port: ProxyRoutePort,
+}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
+enum ProxyRoutePort {
+    Effective(u16),
+    Invalid(String),
+}
+
+impl ProxyRouteEndpoint {
+    fn from_config(proxy: &ProxyConfig) -> Option<Self> {
+        let authority = proxy.uri.authority()?;
+        let endpoint = endpoint_without_userinfo(authority);
+        let endpoint_authority = endpoint.parse::<http::uri::Authority>().ok();
+        let host = canonical_host(
+            endpoint_authority
+                .as_ref()
+                .map_or_else(|| authority.host(), http::uri::Authority::host),
+        );
+        let port = match endpoint_authority
+            .as_ref()
+            .and_then(|value| value.port_u16())
+        {
+            Some(port) => ProxyRoutePort::Effective(port),
+            None if endpoint_authority
+                .as_ref()
+                .is_none_or(|value| value.as_str() != value.host()) =>
+            {
+                ProxyRoutePort::Invalid(endpoint)
             }
-        }
-        h.finish()
+            None => ProxyRoutePort::Effective(proxy.default_port()),
+        };
+        Some(Self { host, port })
+    }
+}
+
+fn canonical_host(host: &str) -> String {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse::<IpAddr>()
+        .map(|address| address.to_string())
+        .unwrap_or_else(|_| host.to_ascii_lowercase())
+}
+
+fn endpoint_without_userinfo(authority: &http::uri::Authority) -> String {
+    authority
+        .as_str()
+        .rsplit_once('@')
+        .map_or_else(|| authority.as_str(), |(_, endpoint)| endpoint)
+        .to_owned()
+}
+
+/// Structural identity for a fully resolved proxy route.
+///
+/// Hashing accelerates pool lookup, while equality compares the complete route
+/// so a digest collision cannot cross credentials, headers, or proxy hops.
+#[derive(Clone, Hash, Eq, PartialEq)]
+pub(crate) struct ProxyRouteIdentity(Arc<[ProxyRouteHop]>);
+
+impl ProxyRouteIdentity {
+    pub(crate) fn from_configs(configs: &[ProxyConfig]) -> Self {
+        Self(
+            configs
+                .iter()
+                .map(|proxy| ProxyRouteHop {
+                    scheme: proxy.scheme,
+                    endpoint: ProxyRouteEndpoint::from_config(proxy),
+                    auth: proxy.auth.clone(),
+                    connect_headers: if matches!(
+                        proxy.scheme,
+                        ProxyScheme::Http | ProxyScheme::Https
+                    ) {
+                        proxy
+                            .connect_headers
+                            .iter()
+                            .map(|(name, value)| (name.clone(), value.as_bytes().to_vec()))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                })
+                .collect(),
+        )
+    }
+}
+
+impl std::fmt::Debug for ProxyRouteIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyRouteIdentity")
+            .field("hops", &self.0.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -84,7 +178,7 @@ impl std::fmt::Debug for ProxyUriDebug<'_> {
     }
 }
 
-#[derive(Clone, Hash)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 pub(crate) struct ProxyAuth {
     pub username: String,
     pub password: String,

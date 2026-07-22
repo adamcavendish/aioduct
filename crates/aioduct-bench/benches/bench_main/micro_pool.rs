@@ -58,12 +58,10 @@ fn bench_coalescing_checkout(c: &mut Criterion) {
                 });
 
                 let target = format!("e{}.example.com", size - 1);
-                let ip: std::net::IpAddr = [10, 0, 0, 1].into();
+                let addr = std::net::SocketAddr::from(([10, 0, 0, 1], 443));
                 b.iter(|| {
                     std::hint::black_box(aioduct::__bench::checkout_coalesced(
-                        &pool,
-                        &target,
-                        Some(ip),
+                        &pool, &target, addr,
                     ));
                 });
             },

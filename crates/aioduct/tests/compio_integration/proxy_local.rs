@@ -274,6 +274,37 @@ fn test_compio_socks5_proxy_local() {
 }
 
 #[test]
+fn test_compio_proxy_selector_is_snapshotted_once_per_dispatch() {
+    let target_addr = start_server_tokio();
+    let proxy_addr = start_http_proxy_tokio();
+    let selector_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed_calls = selector_calls.clone();
+    let proxy = aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap();
+    let settings = aioduct::ProxySettings::default().custom(move |_uri| {
+        observed_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(proxy.clone())
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .proxy_settings(settings)
+            .timeout(Duration::from_secs(2))
+            .build_local()
+            .unwrap();
+
+        let response = client
+            .get_local(&format!("http://{target_addr}/snapshot"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    });
+
+    assert_eq!(selector_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
 fn test_compio_socks5_proxy_with_auth_local() {
     let target_addr = start_server_tokio();
     let socks5_addr = start_socks5_auth_proxy_tokio();

@@ -21,7 +21,11 @@ async fn checkout_coalesced_finds_by_san() {
     tokio::task::yield_now().await;
 
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_some(), "should find coalesced connection via SAN");
 }
 
@@ -41,7 +45,11 @@ async fn checkout_coalesced_rejects_h1() {
     tokio::task::yield_now().await;
 
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_none(), "h1 connections should not be coalesced");
 }
 
@@ -61,8 +69,84 @@ async fn checkout_coalesced_rejects_different_ip() {
     tokio::task::yield_now().await;
 
     let different_ip: IpAddr = [10, 0, 0, 2].into();
-    let result = pool.checkout_coalesced("cdn.example.com", Some(different_ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(different_ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_none(), "different IP should prevent coalescing");
+}
+
+#[tokio::test]
+async fn checkout_coalesced_rejects_different_port() {
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
+    let key = key_https("origin.example.com:443");
+    let remote_addr = std::net::SocketAddr::from(([10, 0, 0, 1], 443));
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
+    conn.remote_addr = Some(remote_addr);
+    pool.checkin(key, conn);
+
+    tokio::task::yield_now().await;
+
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(remote_addr.ip(), 8443),
+        &ProxyRoute::DIRECT,
+    );
+    assert!(
+        result.is_none(),
+        "same-IP connections on another port must not be coalesced"
+    );
+}
+
+#[tokio::test]
+async fn checkout_coalesced_rejects_forced_pool_entries() {
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
+    let remote_addr = std::net::SocketAddr::from(([10, 0, 0, 1], 443));
+    let mut key = key_https("origin.example.com:443");
+    key.forced_addr = Some(remote_addr);
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
+    conn.remote_addr = Some(remote_addr);
+    pool.checkin(key, conn);
+
+    tokio::task::yield_now().await;
+
+    let result = pool.checkout_coalesced("cdn.example.com", remote_addr, &ProxyRoute::DIRECT);
+    assert!(
+        result.is_none(),
+        "forced connections must not satisfy ordinary coalescing"
+    );
+}
+
+#[tokio::test]
+async fn h2_coalescing_rejects_h3_endpoint_pool_entries() {
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30));
+    let remote_addr = std::net::SocketAddr::from(([10, 0, 0, 1], 443));
+    let mut key = key_https("origin.example.com:443");
+    key.h3_endpoint = Some(("alt.example.com".to_owned(), 443));
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
+    conn.remote_addr = Some(remote_addr);
+    pool.checkin(key, conn);
+
+    tokio::task::yield_now().await;
+
+    let result = pool.checkout_coalesced("cdn.example.com", remote_addr, &ProxyRoute::DIRECT);
+    assert!(result.is_none());
 }
 
 #[tokio::test]
@@ -81,7 +165,11 @@ async fn checkout_coalesced_skips_expired() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(
         result.is_none(),
         "expired connection should not be returned"
@@ -95,7 +183,11 @@ fn checkout_coalesced_empty_pool_returns_none() {
         .with_max_idle_per_host(8)
         .with_idle_timeout(Duration::from_secs(30));
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_none(), "empty pool should return None");
 }
 
@@ -116,7 +208,11 @@ async fn coalesced_checkout_skips_past_max_lifetime() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(
         result.is_none(),
         "connection past max lifetime should not be returned"

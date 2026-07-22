@@ -94,17 +94,15 @@ impl ProxySettings {
     }
 
     pub(crate) fn proxy_for(&self, uri: &Uri) -> Option<ProxyConfig> {
-        if let Some(host) = uri.host()
-            && self.no_proxy.matches_with_port(host, uri.port_u16())
-        {
+        if self.bypasses_proxy(uri) {
             return None;
         }
-        if let Some(ref custom) = self.custom {
-            return custom.proxy_for(uri);
-        }
-        let mut proxy = match uri.scheme_str() {
-            Some("https") => self.https_proxy.clone(),
-            _ => self.http_proxy.clone(),
+        let mut proxy = if let Some(ref custom) = self.custom {
+            custom.proxy_for(uri)
+        } else if uses_https_proxy(uri) {
+            self.https_proxy.clone()
+        } else {
+            self.http_proxy.clone()
         }?;
         if proxy.auth.is_none()
             && let Some(ref resolver) = self.credential_resolver
@@ -118,6 +116,35 @@ impl ProxySettings {
         }
         Some(proxy)
     }
+
+    fn bypasses_proxy(&self, uri: &Uri) -> bool {
+        let Some(authority) = uri.authority() else {
+            return false;
+        };
+        let port = match authority.port_u16() {
+            Some(port) => Some(port),
+            None if authority.as_str() != authority.host() => None,
+            None if uri
+                .scheme_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case("http")) =>
+            {
+                Some(80)
+            }
+            None if uri
+                .scheme_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case("https")) =>
+            {
+                Some(443)
+            }
+            None => None,
+        };
+        self.no_proxy.matches_with_port(authority.host(), port)
+    }
+}
+
+fn uses_https_proxy(uri: &Uri) -> bool {
+    uri.scheme_str()
+        .is_some_and(|value| value.eq_ignore_ascii_case("https"))
 }
 
 pub(super) fn env_proxy(upper: &str, lower: &str) -> Option<ProxyConfig> {

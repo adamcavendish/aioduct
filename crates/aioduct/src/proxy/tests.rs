@@ -144,6 +144,51 @@ fn no_proxy_cidr_with_port_matches_specific_port() {
 }
 
 #[test]
+fn proxy_settings_no_proxy_matches_implicit_default_ports() {
+    let proxy = ProxyConfig::http("http://proxy.test:8080").unwrap();
+    let settings = ProxySettings::all(proxy).no_proxy(NoProxy::new(
+        "http.test:80,https.test:443,[2001:db8::1]:443",
+    ));
+
+    for uri in [
+        "http://http.test/path",
+        "https://https.test/path",
+        "https://[2001:db8::1]/path",
+    ] {
+        assert!(settings.proxy_for(&uri.parse().unwrap()).is_none(), "{uri}");
+    }
+    for uri in [
+        "http://http.test:8080/path",
+        "https://https.test:8443/path",
+        "https://[2001:db8::1]:8443/path",
+    ] {
+        assert!(settings.proxy_for(&uri.parse().unwrap()).is_some(), "{uri}");
+    }
+}
+
+#[test]
+fn proxy_settings_match_mixed_case_schemes() {
+    let settings = ProxySettings::default()
+        .http(ProxyConfig::http("http://http-proxy.test").unwrap())
+        .https(ProxyConfig::http("http://https-proxy.test").unwrap())
+        .no_proxy(NoProxy::new("bypass-http.test:80,bypass-https.test:443"));
+
+    for (uri, bypassed) in [
+        ("HTTP://bypass-http.test/path", true),
+        ("HtTpS://bypass-https.test/path", true),
+        ("HTTP://other.test/path", false),
+        ("HtTpS://other.test/path", false),
+    ] {
+        let uri = uri.parse::<Uri>().unwrap();
+        assert_eq!(settings.proxy_for(&uri).is_none(), bypassed, "{uri}");
+    }
+
+    let https = "HtTpS://other.test/path".parse::<Uri>().unwrap();
+    let selected = settings.proxy_for(&https).unwrap();
+    assert_eq!(selected.authority().unwrap().host(), "https-proxy.test");
+}
+
+#[test]
 fn no_proxy_invalid_cidr_prefix_does_not_match_ip() {
     let np = NoProxy::new("10.0.0.0/33,2001:db8::/129");
     assert!(!np.matches("10.1.2.3"));
@@ -802,25 +847,44 @@ fn header_appends_connect_headers() {
 }
 
 #[test]
-fn route_hash_differs_by_connect_headers() {
+fn route_identity_differs_by_connect_headers() {
     let base = ProxyConfig::http("http://proxy:8080").unwrap();
     let with_header = ProxyConfig::http("http://proxy:8080").unwrap().header(
         http::header::HeaderName::from_static("x-token"),
         http::HeaderValue::from_static("abc"),
     );
     // Different CONNECT headers must segregate pooled routes.
-    assert_ne!(base.route_hash(), with_header.route_hash());
+    assert_ne!(base.route_identity(), with_header.route_identity());
 
-    // Same headers hash equally.
+    // Same headers identify the same route.
     let with_header2 = ProxyConfig::http("http://proxy:8080").unwrap().header(
         http::header::HeaderName::from_static("x-token"),
         http::HeaderValue::from_static("abc"),
     );
-    assert_eq!(with_header.route_hash(), with_header2.route_hash());
+    assert_eq!(with_header.route_identity(), with_header2.route_identity());
 }
 
 #[test]
-fn route_hash_ignores_headers_for_socks() {
+fn route_identity_canonicalizes_proxy_host_and_default_port() {
+    let implicit = ProxyConfig::http("http://EXAMPLE.com").unwrap();
+    let explicit = ProxyConfig::http("http://example.COM:80").unwrap();
+
+    assert_eq!(implicit.route_identity(), explicit.route_identity());
+}
+
+#[test]
+fn route_identity_canonicalizes_uri_and_configured_auth() {
+    let secret = String::from_utf8(vec![b's'; 12]).unwrap();
+    let uri_auth = ProxyConfig::http(&format!("http://user:{secret}@EXAMPLE.com")).unwrap();
+    let configured_auth = ProxyConfig::http("http://example.com:80")
+        .unwrap()
+        .basic_auth("user", &secret);
+
+    assert_eq!(uri_auth.route_identity(), configured_auth.route_identity());
+}
+
+#[test]
+fn route_identity_ignores_headers_for_socks() {
     // SOCKS proxies don't send CONNECT headers, so header() calls should not
     // fragment pool keys for otherwise-identical SOCKS configs. The config is
     // rejected explicitly when used.
@@ -829,18 +893,18 @@ fn route_hash_ignores_headers_for_socks() {
         http::header::HeaderName::from_static("x-irrelevant"),
         http::HeaderValue::from_static("v"),
     );
-    assert_eq!(s1.route_hash(), s2.route_hash());
+    assert_eq!(s1.route_identity(), s2.route_identity());
     assert!(matches!(s2.validate_for_use(), Err(Error::Unsupported(_))));
 }
 
 #[test]
-fn route_hash_does_still_hash_headers_for_https_proxy() {
+fn route_identity_includes_headers_for_https_proxy() {
     let h1 = ProxyConfig::https("https://proxy:443").unwrap();
     let h2 = ProxyConfig::https("https://proxy:443").unwrap().header(
         http::header::HeaderName::from_static("x-token"),
         http::HeaderValue::from_static("secret"),
     );
-    assert_ne!(h1.route_hash(), h2.route_hash());
+    assert_ne!(h1.route_identity(), h2.route_identity());
 }
 
 #[test]

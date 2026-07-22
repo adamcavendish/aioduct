@@ -110,8 +110,8 @@ impl ProxyDispatchRoute {
         };
         let pool_identity = match &selection {
             ProxySelection::Direct => ProxyRoute::DIRECT,
-            ProxySelection::Single(proxy) => ProxyRoute::from_hash(proxy.route_hash()),
-            ProxySelection::Chain(chain) => ProxyRoute::from_hash(chain.route_hash()),
+            ProxySelection::Single(proxy) => ProxyRoute::proxied(proxy.route_identity()),
+            ProxySelection::Chain(chain) => ProxyRoute::proxied(chain.route_identity()),
         };
         let is_proxied = !matches!(selection, ProxySelection::Direct);
         let protocol_hint = match requested_protocol {
@@ -130,6 +130,15 @@ impl ProxyDispatchRoute {
             pool_identity,
             protocol_hint,
         })
+    }
+
+    pub(crate) fn apply_adaptive_h2c_cache(&mut self, cached_h2c: Option<bool>) {
+        self.protocol_hint = match cached_h2c {
+            Some(true) => ProtocolHint::H2c,
+            Some(false) => ProtocolHint::Auto,
+            None if self.is_proxied() => ProtocolHint::Auto,
+            None => ProtocolHint::AdaptiveH2c,
+        };
     }
 
     pub(crate) fn destination(&self) -> &ProxyDestination {
@@ -155,7 +164,7 @@ impl ProxyDispatchRoute {
     }
 
     pub(crate) fn pool_identity(&self) -> ProxyRoute {
-        self.pool_identity
+        self.pool_identity.clone()
     }
 
     pub(crate) fn protocol_hint(&self) -> ProtocolHint {
@@ -266,8 +275,8 @@ mod tests {
                 .unwrap();
         assert!(single.is_proxied());
         assert_eq!(
-            single.single_proxy().map(ProxyConfig::route_hash),
-            Some(first.route_hash())
+            single.single_proxy().map(ProxyConfig::route_identity),
+            Some(first.route_identity())
         );
         assert!(single.chain().is_none());
         assert_ne!(single.pool_identity(), ProxyRoute::DIRECT);
@@ -284,8 +293,8 @@ mod tests {
         assert!(chained.is_proxied());
         assert!(chained.single_proxy().is_none());
         assert_eq!(
-            chained.chain().map(ProxyChain::route_hash),
-            Some(chain.route_hash())
+            chained.chain().map(ProxyChain::route_identity),
+            Some(chain.route_identity())
         );
         assert_ne!(chained.pool_identity(), single.pool_identity());
     }
@@ -311,6 +320,52 @@ mod tests {
             ProxyDispatchRoute::resolve(&uri, None, Some(&second), ProtocolHint::Auto, None)
                 .unwrap();
         assert_ne!(first.pool_identity(), second.pool_identity());
+    }
+
+    #[test]
+    fn route_identity_equality_survives_hash_collisions() {
+        #[derive(Default)]
+        struct ConstantHasher;
+
+        impl std::hash::Hasher for ConstantHasher {
+            fn finish(&self) -> u64 {
+                0
+            }
+
+            fn write(&mut self, _bytes: &[u8]) {}
+        }
+
+        let uri: Uri = "https://example.test/path".parse().unwrap();
+        let first = ProxySettings::all(
+            ProxyConfig::http("http://proxy.test:8080")
+                .unwrap()
+                .basic_auth("user", &test_secret(b'a')),
+        );
+        let second = ProxySettings::all(
+            ProxyConfig::http("http://proxy.test:8080")
+                .unwrap()
+                .basic_auth("user", &test_secret(b'b')),
+        );
+        let first = ProxyDispatchRoute::resolve(&uri, None, Some(&first), ProtocolHint::Auto, None)
+            .unwrap()
+            .pool_identity();
+        let second =
+            ProxyDispatchRoute::resolve(&uri, None, Some(&second), ProtocolHint::Auto, None)
+                .unwrap()
+                .pool_identity();
+        let mut routes: std::collections::HashMap<
+            ProxyRoute,
+            usize,
+            std::hash::BuildHasherDefault<ConstantHasher>,
+        > = std::collections::HashMap::default();
+
+        routes.insert(first.clone(), 1);
+        routes.insert(second.clone(), 2);
+
+        assert_ne!(first, second);
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[&first], 1);
+        assert_eq!(routes[&second], 2);
     }
 
     #[test]
