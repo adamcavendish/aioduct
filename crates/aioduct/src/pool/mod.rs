@@ -4,7 +4,7 @@ pub(crate) mod connection;
 pub(crate) use connection::{ActiveStreamPermit, HttpConnection, PooledConnection};
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -16,6 +16,7 @@ use crate::runtime::RuntimePoll;
 
 const DEFAULT_MAX_IDLE_PER_HOST: usize = 10;
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+static NEXT_PROXY_ROUTE_DIAGNOSTIC_SCOPE: AtomicU64 = AtomicU64::new(1);
 
 /// Protocol version hint for pool key segregation.
 #[derive(Clone, Copy, Debug, Default, Hash, Eq, PartialEq)]
@@ -37,35 +38,146 @@ pub(crate) enum ProtocolHint {
 
 /// Stable identity for a proxy route, used to segregate pooled connections
 /// that reach the same origin through different proxy configurations.
-///
-/// 0 means direct (no proxy). Non-zero is a hash of the proxy chain or
-/// per-request proxy config.
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Default)]
-pub(crate) struct ProxyRoute(u64);
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Default)]
+pub(crate) enum ProxyRoute {
+    #[default]
+    Direct,
+    Proxied(crate::proxy::ProxyRouteIdentity),
+}
 
 impl ProxyRoute {
     /// Sentinel value for direct (non-proxied) connections.
-    pub(crate) const DIRECT: Self = Self(0);
+    pub(crate) const DIRECT: Self = Self::Direct;
 
-    /// Build a route identity from a pre-computed hash.
-    pub(crate) fn from_hash(hash: u64) -> Self {
-        Self(hash)
+    pub(crate) fn proxied(identity: crate::proxy::ProxyRouteIdentity) -> Self {
+        Self::Proxied(identity)
+    }
+
+    fn diagnostic_label(&self, diagnostics: &mut ProxyRouteDiagnostics) -> String {
+        match self {
+            Self::Direct => "direct".to_owned(),
+            Self::Proxied(identity) => diagnostics.label(identity),
+        }
     }
 }
 
-/// Connection pool key identifying a (scheme, authority, protocol, proxy-route)
-/// quadruple.
+struct ProxyRouteDiagnostics {
+    scope: u64,
+    next_route: u64,
+    labels: HashMap<crate::proxy::ProxyRouteIdentity, u64>,
+}
+
+impl ProxyRouteDiagnostics {
+    fn new() -> Self {
+        Self {
+            scope: NEXT_PROXY_ROUTE_DIAGNOSTIC_SCOPE.fetch_add(1, Ordering::Relaxed),
+            next_route: 1,
+            labels: HashMap::new(),
+        }
+    }
+
+    fn reconcile<'a>(&mut self, routes: impl Iterator<Item = &'a ProxyRoute>) {
+        let live: HashSet<_> = routes
+            .filter_map(|route| match route {
+                ProxyRoute::Direct => None,
+                ProxyRoute::Proxied(identity) => Some(identity.clone()),
+            })
+            .collect();
+        self.labels.retain(|route, _| live.contains(route));
+        for route in live {
+            if !self.labels.contains_key(&route) {
+                let label = self.next_route;
+                self.next_route = self.next_route.wrapping_add(1);
+                self.labels.insert(route, label);
+            }
+        }
+    }
+
+    fn label(&mut self, route: &crate::proxy::ProxyRouteIdentity) -> String {
+        let route = if let Some(route) = self.labels.get(route).copied() {
+            route
+        } else {
+            let label = self.next_route;
+            self.next_route = self.next_route.wrapping_add(1);
+            self.labels.insert(route.clone(), label);
+            label
+        };
+        format!("proxy-{:016x}-{route:016x}", self.scope)
+    }
+}
+
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
+struct PoolOrigin {
+    scheme: Scheme,
+    host: String,
+    port: Option<u16>,
+}
+
+impl PoolOrigin {
+    fn new(scheme: Scheme, authority: &Authority) -> Self {
+        let scheme = match scheme.as_str() {
+            value if value.eq_ignore_ascii_case("http") => Scheme::HTTP,
+            value if value.eq_ignore_ascii_case("https") => Scheme::HTTPS,
+            _ => scheme,
+        };
+        let host = authority.host();
+        let host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        let host = host
+            .parse::<std::net::IpAddr>()
+            .map_or_else(|_| host.to_ascii_lowercase(), |address| address.to_string());
+        let port = match authority.port_u16() {
+            Some(port) => Some(port),
+            None if authority.as_str() != authority.host() => None,
+            None if scheme == Scheme::HTTP => Some(80),
+            None if scheme == Scheme::HTTPS => Some(443),
+            None => None,
+        };
+        Self { scheme, host, port }
+    }
+
+    fn authority(&self) -> String {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        match self.port {
+            Some(port) => format!("{host}:{port}"),
+            None => host,
+        }
+    }
+}
+
+/// Connection pool key identifying a connection's origin, protocol, route,
+/// and effective transport endpoint.
+#[derive(Clone, Hash, Eq, PartialEq)]
 pub(crate) struct PoolKey {
-    /// The URI scheme (http or https).
-    pub(crate) scheme: Scheme,
-    /// The URI authority (host and optional port).
-    pub(crate) authority: Authority,
+    origin: PoolOrigin,
     /// Protocol hint for pool segregation.
     pub(crate) protocol: ProtocolHint,
-    /// Proxy route identity: DIRECT for no proxy, hashed from the effective
-    /// proxy configuration otherwise.
+    /// Proxy route identity: direct or the complete effective proxy route.
     pub(crate) proxy_route: ProxyRoute,
+    /// Per-request transport override. Forced connections must not satisfy
+    /// ordinary checkouts or requests targeting another endpoint.
+    pub(crate) forced_addr: Option<SocketAddr>,
+    /// Effective HTTP/3 transport endpoint, including an Alt-Svc override.
+    pub(crate) h3_endpoint: Option<(String, u16)>,
+}
+
+impl std::fmt::Debug for PoolKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PoolKey")
+            .field("scheme", &self.origin.scheme)
+            .field("authority", &self.origin.authority())
+            .field("protocol", &self.protocol)
+            .field("proxy_route", &self.proxy_route)
+            .field("forced_addr", &self.forced_addr)
+            .field("h3_endpoint", &self.h3_endpoint)
+            .finish()
+    }
 }
 
 impl PoolKey {
@@ -73,10 +185,11 @@ impl PoolKey {
     #[allow(dead_code)]
     pub(crate) fn new(scheme: Scheme, authority: Authority) -> Self {
         Self {
-            scheme,
-            authority,
+            origin: PoolOrigin::new(scheme, &authority),
             protocol: ProtocolHint::Auto,
             proxy_route: ProxyRoute::DIRECT,
+            forced_addr: None,
+            h3_endpoint: None,
         }
     }
 
@@ -84,10 +197,11 @@ impl PoolKey {
     #[allow(dead_code)]
     pub(crate) fn with_hint(scheme: Scheme, authority: Authority, protocol: ProtocolHint) -> Self {
         Self {
-            scheme,
-            authority,
+            origin: PoolOrigin::new(scheme, &authority),
             protocol,
             proxy_route: ProxyRoute::DIRECT,
+            forced_addr: None,
+            h3_endpoint: None,
         }
     }
 
@@ -99,10 +213,11 @@ impl PoolKey {
         proxy_route: ProxyRoute,
     ) -> Self {
         Self {
-            scheme,
-            authority,
+            origin: PoolOrigin::new(scheme, &authority),
             protocol,
             proxy_route,
+            forced_addr: None,
+            h3_endpoint: None,
         }
     }
 }
@@ -225,6 +340,7 @@ pub(crate) struct PoolInner<B> {
     max_lifetime: Option<Duration>,
     /// Count of active (checked-out, not yet returned) connections per host key.
     active: HashMap<PoolKey, usize>,
+    route_diagnostics: ProxyRouteDiagnostics,
 }
 
 /// Reservation for a fresh connection attempt counted against the per-host
@@ -301,6 +417,7 @@ impl<B: 'static> ConnectionPool<B> {
                 idle_timeout: DEFAULT_IDLE_TIMEOUT,
                 max_lifetime: None,
                 active: HashMap::new(),
+                route_diagnostics: ProxyRouteDiagnostics::new(),
             })),
             reaper_spawned: Arc::new(AtomicBool::new(false)),
             counters: Arc::new(PoolCounters::new()),
@@ -658,50 +775,42 @@ impl<B: 'static> ConnectionPool<B> {
 
     /// Take a snapshot of pool statistics.
     pub(crate) fn snapshot(&self) -> PoolStats {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let counters = self.counters.snapshot();
         let idle_pool_entries: usize = inner.idle.values().map(|q| q.len()).sum();
         let checked_out_pool_handles: usize = inner.active.values().sum();
 
-        let mut hosts: Vec<PoolHostStats> = inner
+        let mut inventory: Vec<_> = inner
             .idle
             .iter()
             .map(|(key, queue)| {
                 let active = inner.active.get(key).copied().unwrap_or(0);
-                let route = if key.proxy_route.0 == 0 {
-                    "direct".to_owned()
-                } else {
-                    format!("{:x}", key.proxy_route.0)
-                };
-                PoolHostStats {
-                    scheme: key.scheme.to_string(),
-                    authority: key.authority.to_string(),
-                    protocol_hint: format!("{:?}", key.protocol),
-                    route,
-                    idle: queue.len(),
-                    active,
-                }
+                (key.clone(), queue.len(), active)
             })
             .collect();
 
         // Include hosts that only have active connections (no idle queue).
         for (key, &active) in &inner.active {
             if !inner.idle.contains_key(key) && active > 0 {
-                let route = if key.proxy_route.0 == 0 {
-                    "direct".to_owned()
-                } else {
-                    format!("{:x}", key.proxy_route.0)
-                };
-                hosts.push(PoolHostStats {
-                    scheme: key.scheme.to_string(),
-                    authority: key.authority.to_string(),
-                    protocol_hint: format!("{:?}", key.protocol),
-                    route,
-                    idle: 0,
-                    active,
-                });
+                inventory.push((key.clone(), 0, active));
             }
         }
+
+        inner
+            .route_diagnostics
+            .reconcile(inventory.iter().map(|(key, _, _)| &key.proxy_route));
+        let route_diagnostics = &mut inner.route_diagnostics;
+        let mut hosts: Vec<PoolHostStats> = inventory
+            .into_iter()
+            .map(|(key, idle, active)| PoolHostStats {
+                scheme: key.origin.scheme.to_string(),
+                authority: key.origin.authority(),
+                protocol_hint: format!("{:?}", key.protocol),
+                route: key.proxy_route.diagnostic_label(route_diagnostics),
+                idle,
+                active,
+            })
+            .collect();
 
         hosts.sort_by(|a, b| {
             a.scheme
@@ -758,15 +867,15 @@ impl<B: 'static> ConnectionPool<B> {
     }
 
     /// Find a coalesced connection: an idle h2/h3 connection whose SANs cover
-    /// the target host and whose remote IP matches the resolved address.
+    /// the target host and whose remote endpoint matches the resolved address.
     ///
     /// This enables connection coalescing per RFC 7540 §9.1.1.
     /// Uses a SAN→PoolKey reverse index for O(1) candidate lookup.
     pub(crate) fn checkout_coalesced(
         &self,
         target_host: &str,
-        resolved_ip: Option<IpAddr>,
-        proxy_route: ProxyRoute,
+        resolved_addr: SocketAddr,
+        proxy_route: &ProxyRoute,
     ) -> Option<PooledConnection<B>> {
         let pool_weak = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().ok()?;
@@ -785,7 +894,7 @@ impl<B: 'static> ConnectionPool<B> {
         // Scope: all queue operations happen here.
         {
             for key in &candidate_keys {
-                if key.proxy_route != proxy_route {
+                if &key.proxy_route != proxy_route || key.forced_addr.is_some() {
                     continue;
                 }
                 let queue = match inner.idle.get_mut(key) {
@@ -808,12 +917,18 @@ impl<B: 'static> ConnectionPool<B> {
                     if !queue[i].connection.is_h2_or_h3() {
                         continue;
                     }
+                    #[cfg(all(feature = "http3", feature = "rustls"))]
+                    if key.h3_endpoint.is_some() && !queue[i].connection.is_h3() {
+                        continue;
+                    }
+                    #[cfg(not(all(feature = "http3", feature = "rustls")))]
+                    if key.h3_endpoint.is_some() {
+                        continue;
+                    }
                     if !queue[i].connection.sans.iter().any(|s| s == target_host) {
                         continue;
                     }
-                    if let Some(ip) = resolved_ip
-                        && queue[i].connection.remote_addr.map(|a| a.ip()) != Some(ip)
-                    {
+                    if queue[i].connection.remote_addr != Some(resolved_addr) {
                         continue;
                     }
 
@@ -1150,7 +1265,11 @@ mod tests_sync {
 
         assert!(pool.inner.lock().is_err(), "mutex should be poisoned");
         let ip: std::net::IpAddr = [10, 0, 0, 1].into();
-        let result = pool.checkout_coalesced("example.com", Some(ip), ProxyRoute::DIRECT);
+        let result = pool.checkout_coalesced(
+            "example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT,
+        );
         assert!(
             result.is_none(),
             "checkout_coalesced on poisoned mutex should return None"

@@ -58,6 +58,7 @@ pub mod error;
 /// Forwarded header builder and parser (RFC 7239).
 pub mod forwarded;
 mod h2_h3_field_policy;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod h2c_probe;
 /// HSTS (HTTP Strict Transport Security) store.
 pub mod hsts;
@@ -335,7 +336,7 @@ pub use hyper::ext::Protocol;
 #[doc(hidden)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 pub mod __bench {
-    use std::net::{IpAddr, SocketAddr};
+    use std::net::SocketAddr;
     use std::time::Duration;
 
     use crate::body::RequestBodySend;
@@ -419,10 +420,10 @@ pub mod __bench {
     pub fn checkout_coalesced(
         pool: &BenchPool,
         target_host: &str,
-        resolved_ip: Option<IpAddr>,
+        resolved_addr: SocketAddr,
     ) -> bool {
         pool.0
-            .checkout_coalesced(target_host, resolved_ip, crate::pool::ProxyRoute::DIRECT)
+            .checkout_coalesced(target_host, resolved_addr, &crate::pool::ProxyRoute::DIRECT)
             .is_some()
     }
 

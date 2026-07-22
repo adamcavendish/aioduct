@@ -62,21 +62,26 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .notify(request.method(), original_uri, RequestPhase::Started);
         let pool_checkout_start = Instant::now();
 
-        let authority_for_probe = original_uri
-            .authority()
-            .ok_or_else(|| Error::InvalidUrl("missing authority".into()))?;
-        let cached_h2c = if protocol == ProtocolHint::AdaptiveH2c {
-            self.core.h2c_probe_cache.lookup(authority_for_probe)
-        } else {
-            None
-        };
-        let proxy_dispatch_route = crate::proxy::ProxyDispatchRoute::resolve(
+        let mut proxy_dispatch_route = crate::proxy::ProxyDispatchRoute::resolve(
             original_uri,
             self.core.proxy_chain.as_ref(),
             self.core.proxy.as_ref(),
             protocol,
-            cached_h2c,
+            None,
         )?;
+        let h2c_probe_key = if protocol == ProtocolHint::AdaptiveH2c {
+            let destination = proxy_dispatch_route.destination();
+            let key = crate::h2c_probe::H2cProbeKey::new(
+                destination.scheme().clone(),
+                destination.authority(),
+                proxy_dispatch_route.pool_identity(),
+                force_addr,
+            );
+            proxy_dispatch_route.apply_adaptive_h2c_cache(self.core.h2c_probe_cache.lookup(&key));
+            Some(key)
+        } else {
+            None
+        };
         let destination = proxy_dispatch_route.destination();
         let scheme = destination.scheme();
         let authority = destination.authority();
@@ -117,18 +122,27 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 ProtocolHint::H2c | ProtocolHint::AdaptiveH2c => ProtocolHint::H2c,
                 ProtocolHint::Auto => ProtocolHint::Auto,
             },
-            proxy_route,
+            proxy_route.clone(),
         );
+        pool_key.forced_addr = force_addr;
 
         let fresh_connection_required = request
             .extensions()
             .get::<FreshConnectionRequired>()
             .is_some();
         #[cfg(all(feature = "http3", feature = "rustls"))]
+        let mut h3_alt_svc = if is_https && !through_proxy {
+            self.core.alt_svc_cache.lookup_h3(authority)
+        } else {
+            None
+        };
+        #[cfg(all(feature = "http3", feature = "rustls"))]
         let h3_dispatch_selected = is_https
             && !through_proxy
             && self.core.h3_endpoint.is_some()
-            && (self.core.prefer_h3 || self.core.alt_svc_cache.lookup_h3(authority).is_some());
+            && (effective_protocol == ProtocolHint::Http3
+                || (effective_protocol == ProtocolHint::Auto
+                    && (self.core.prefer_h3 || h3_alt_svc.is_some())));
         #[cfg(not(all(feature = "http3", feature = "rustls")))]
         let h3_dispatch_selected = false;
         let replay_policy = RequestReplayPolicy::new(request.method(), body_replayability);
@@ -141,6 +155,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             && replay_policy.permits(ReplayReason::ProvenUnprocessed);
         let can_use_pooled_connection =
             !self.core.no_connection_reuse && !fresh_connection_required;
+
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        if h3_dispatch_selected {
+            let (host, port) = h3_alt_svc
+                .clone()
+                .unwrap_or_else(|| (None, authority.port_u16().unwrap_or(443)));
+            pool_key.h3_endpoint = Some((
+                host.unwrap_or_else(|| authority.host().to_owned())
+                    .to_ascii_lowercase(),
+                port,
+            ));
+        }
 
         let pooled_connection = if can_use_pooled_connection {
             #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -273,6 +299,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     if HttpEngineCore::<RequestBodySend>::h3_failure_invalidates_alt_svc(&conn, &e)
                     {
                         self.core.alt_svc_cache.suppress_h3(authority);
+                        h3_alt_svc = None;
                     }
                     if conn.is_h2_or_h3() {
                         self.core.pool.evict(&pool_key);
@@ -334,26 +361,39 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         }
 
+        let mut pre_resolved_addrs = None;
+
         // Connection coalescing: try to reuse an h2/h3 connection whose TLS cert
         // covers the target domain via SANs (RFC 7540 §9.1.1).
         if force_addr.is_none()
             && self.core.connection_coalescing
             && is_https
             && !h3_dispatch_selected
+            && !through_proxy
             && can_use_pooled_connection
             && effective_protocol == ProtocolHint::Auto
         {
             let port = authority.port_u16().unwrap_or(443);
-            let resolved_ip = self
+            let dns_start = Instant::now();
+            let addrs = self
                 .core
                 .resolve_all_authority_raw(authority.host(), port)
-                .await
-                .ok()
-                .and_then(|addrs| addrs.first().map(|a| a.ip()));
-            if let Some(mut conn) =
+                .await?;
+            self.core.notify(
+                request.method(),
+                original_uri,
+                RequestPhase::DnsResolved {
+                    addrs: addrs.clone(),
+                    duration: dns_start.elapsed(),
+                },
+            );
+            let coalesced = addrs.iter().copied().find_map(|resolved_addr| {
                 self.core
                     .pool
-                    .checkout_coalesced(authority.host(), resolved_ip, proxy_route)
+                    .checkout_coalesced(authority.host(), resolved_addr, &proxy_route)
+            });
+            pre_resolved_addrs = Some(addrs);
+            if let Some(mut conn) = coalesced
                 && body_replayability
                     .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
             {
@@ -560,7 +600,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 && !through_proxy
                 && let Some(endpoint) = &self.core.h3_endpoint
             {
-                let alt_svc = self.core.alt_svc_cache.lookup_h3(authority);
+                let alt_svc = h3_alt_svc.clone();
                 let used_alt_svc = alt_svc.is_some();
                 let opportunistic_h3 = effective_protocol == ProtocolHint::Auto
                     && !self.core.prefer_h3
@@ -569,6 +609,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     || (effective_protocol == ProtocolHint::Auto
                         && (self.core.prefer_h3 || used_alt_svc));
                 if !use_h3 {
+                    pool_key.h3_endpoint = None;
                     break 'h3_dispatch;
                 }
                 self.core.notify(
@@ -587,15 +628,21 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 let (h3_host, h3_port) =
                     alt_svc.unwrap_or_else(|| (None, authority.port_u16().unwrap_or(default_port)));
                 let connect_host = h3_host.as_deref().unwrap_or(authority.host());
+                pool_key.h3_endpoint = Some((connect_host.to_ascii_lowercase(), h3_port));
+                let can_reuse_pre_resolved = connect_host == authority.host()
+                    && h3_port == authority.port_u16().unwrap_or(default_port);
                 let dns_start = Instant::now();
-                let addrs = match force_addr {
-                    Some(addr) => vec![addr],
-                    None => match self
+                let (addrs, report_dns) = if let Some(addr) = force_addr {
+                    (vec![addr], true)
+                } else if can_reuse_pre_resolved && let Some(addrs) = pre_resolved_addrs.take() {
+                    (addrs, false)
+                } else {
+                    match self
                         .core
                         .resolve_all_authority_raw(connect_host, h3_port)
                         .await
                     {
-                        Ok(addrs) => addrs,
+                        Ok(addrs) => (addrs, true),
                         Err(error) => {
                             if used_alt_svc {
                                 self.core.alt_svc_cache.suppress_h3(authority);
@@ -605,16 +652,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             }
                             return Err(error);
                         }
-                    },
+                    }
                 };
-                self.core.notify(
-                    request.method(),
-                    original_uri,
-                    RequestPhase::DnsResolved {
-                        addrs: addrs.clone(),
-                        duration: dns_start.elapsed(),
-                    },
-                );
+                if report_dns {
+                    self.core.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::DnsResolved {
+                            addrs: addrs.clone(),
+                            duration: dns_start.elapsed(),
+                        },
+                    );
+                }
                 let sni_host = authority.host().to_owned();
 
                 let saved_request = ReplayableRequestHead::capture(&request);
@@ -807,6 +856,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     }
                 }
             }
+        }
+
+        #[cfg(all(feature = "http3", feature = "rustls"))]
+        if effective_protocol != ProtocolHint::Http3 {
+            pool_key.h3_endpoint = None;
         }
 
         #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -1122,19 +1176,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             let port = destination.effective_port();
 
             let dns_start = Instant::now();
-            let addrs = if let Some(addr) = force_addr {
-                vec![addr]
+            let (addrs, report_dns) = if let Some(addr) = force_addr {
+                (vec![addr], true)
+            } else if let Some(addrs) = pre_resolved_addrs.take() {
+                (addrs, false)
             } else {
-                self.core.resolve_all_authority_raw(host, port).await?
+                (self.core.resolve_all_authority_raw(host, port).await?, true)
             };
-            self.core.notify(
-                request.method(),
-                original_uri,
-                RequestPhase::DnsResolved {
-                    addrs: addrs.clone(),
-                    duration: dns_start.elapsed(),
-                },
-            );
+            if report_dns {
+                self.core.notify(
+                    request.method(),
+                    original_uri,
+                    RequestPhase::DnsResolved {
+                        addrs: addrs.clone(),
+                        duration: dns_start.elapsed(),
+                    },
+                );
+            }
 
             let tcp_keepalive = self.core.tcp_keepalive;
             let tcp_keepalive_interval = self.core.tcp_keepalive_interval;
@@ -1236,11 +1294,15 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     };
                     match h2c_ok {
                         Some(c) => {
-                            self.core.h2c_probe_cache.record_h2c(authority.clone());
+                            if let Some(key) = h2c_probe_key.clone() {
+                                self.core.h2c_probe_cache.record_h2c(key);
+                            }
                             c
                         }
                         None => {
-                            self.core.h2c_probe_cache.record_h1_only(authority.clone());
+                            if let Some(key) = h2c_probe_key.clone() {
+                                self.core.h2c_probe_cache.record_h1_only(key);
+                            }
                             let (stream2, fallback_addr) = if addrs.len() > 1 {
                                 let (s, a) = crate::happy_eyeballs::connect_happy_eyeballs::<R, C>(
                                     &self.connector,

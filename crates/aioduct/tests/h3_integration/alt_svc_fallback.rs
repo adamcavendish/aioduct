@@ -130,6 +130,68 @@ async fn seed_alt_svc(client: &HttpEngineSend<TokioRuntime, TcpConnector>, url: 
 }
 
 #[tokio::test]
+async fn changed_alt_svc_endpoint_does_not_reuse_previous_h3_connection() {
+    let (second_addr, _, second_counter) =
+        aioduct_test_server::h3::h3_server_streaming_with_transport(
+            Arc::new(quinn::TransportConfig::default()),
+            |_request, mut stream, _connection| async move {
+                stream
+                    .send_response(http::Response::builder().status(200).body(()).unwrap())
+                    .await
+                    .unwrap();
+                stream
+                    .send_data(Bytes::from_static(b"second"))
+                    .await
+                    .unwrap();
+                stream.finish().await.unwrap();
+            },
+        )
+        .await;
+    let advertisement = format!("h3=\":{}\"; ma=3600", second_addr.port());
+    let (first_addr, _, first_counter) =
+        aioduct_test_server::h3::h3_server_streaming_with_transport(
+            Arc::new(quinn::TransportConfig::default()),
+            move |_request, mut stream, _connection| {
+                let advertisement = advertisement.clone();
+                async move {
+                    stream
+                        .send_response(
+                            http::Response::builder()
+                                .status(200)
+                                .header(ALT_SVC, advertisement)
+                                .body(())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    stream
+                        .send_data(Bytes::from_static(b"first"))
+                        .await
+                        .unwrap();
+                    stream.finish().await.unwrap();
+                }
+            },
+        )
+        .await;
+    let (tcp_addr, tcp_counter, _) = alt_svc_tcp_server(first_addr.port()).await;
+    let client = alt_svc_client();
+    let url = format!("https://127.0.0.1:{}/endpoint-change", tcp_addr.port());
+
+    seed_alt_svc(&client, &url).await;
+    let first = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(first.version(), http::Version::HTTP_3);
+    assert_eq!(first.text().await.unwrap(), "first");
+
+    let second = client.get(&url).unwrap().send().await.unwrap();
+    assert_eq!(second.version(), http::Version::HTTP_3);
+    assert_eq!(second.text().await.unwrap(), "second");
+
+    assert_eq!(tcp_counter.requests(), 1);
+    assert_eq!(first_counter.requests(), 1);
+    assert_eq!(second_counter.requests(), 1);
+}
+
+#[tokio::test]
 async fn failed_alt_svc_connect_falls_back_without_consuming_one_shot_body() {
     let held_udp = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let h3_port = held_udp.local_addr().unwrap().port();

@@ -42,6 +42,36 @@ fn test_compio_force_addr_with_resolve_all_workflow() {
 }
 
 #[test]
+fn compio_forced_connections_do_not_satisfy_ordinary_pool_checkouts() {
+    let forced_addr = start_server_with_tokio(|_request| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"forced"))))
+    });
+    let resolved_addr = start_server_with_tokio(|_request| async {
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"resolved"))))
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .resolve("pool-route.test", resolved_addr)
+            .build_local()
+            .unwrap();
+        let url = format!("http://pool-route.test:{}/", resolved_addr.port());
+
+        let forced = client
+            .get_local(&url)
+            .unwrap()
+            .force_addr(forced_addr)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forced.text().await.unwrap(), "forced");
+
+        let ordinary = client.get_local(&url).unwrap().send().await.unwrap();
+        assert_eq!(ordinary.text().await.unwrap(), "resolved");
+    });
+}
+
+#[test]
 fn test_compio_system_resolver_resolves_localhost() {
     let addr = start_server_tokio();
     compio_runtime::Runtime::new().unwrap().block_on(async {

@@ -313,6 +313,40 @@ fn pool_key_different_hints_not_equal() {
 }
 
 #[test]
+fn pool_key_canonicalizes_origin_case_and_default_ports() {
+    let implicit = PoolKey::new(Scheme::HTTPS, "EXAMPLE.com".parse().unwrap());
+    let explicit = PoolKey::new(Scheme::HTTPS, "example.COM:443".parse().unwrap());
+
+    assert_eq!(implicit, explicit);
+}
+
+#[test]
+fn pool_key_separates_forced_transport_endpoints() {
+    let ordinary = PoolKey::new(Scheme::HTTPS, "example.com".parse().unwrap());
+    let mut first = ordinary.clone();
+    first.forced_addr = Some("192.0.2.1:443".parse().unwrap());
+    let mut second = ordinary.clone();
+    second.forced_addr = Some("192.0.2.2:443".parse().unwrap());
+
+    assert_ne!(ordinary, first);
+    assert_ne!(first, second);
+}
+
+#[test]
+fn pool_key_separates_h3_transport_endpoints() {
+    let mut first = PoolKey::with_hint(
+        Scheme::HTTPS,
+        "example.com".parse().unwrap(),
+        ProtocolHint::Http3,
+    );
+    first.h3_endpoint = Some(("alt-a.example".to_owned(), 443));
+    let mut second = first.clone();
+    second.h3_endpoint = Some(("alt-b.example".to_owned(), 8443));
+
+    assert_ne!(first, second);
+}
+
+#[test]
 fn protocol_hint_debug() {
     assert_eq!(format!("{:?}", ProtocolHint::Auto), "Auto");
     assert_eq!(format!("{:?}", ProtocolHint::Http1), "Http1");
@@ -420,24 +454,36 @@ async fn checkout_coalesced_respects_max_active_streams_per_connection() {
 
     let ip: IpAddr = [10, 0, 0, 1].into();
     let out1 = pool
-        .checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT)
+        .checkout_coalesced(
+            "cdn.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT,
+        )
         .expect("first coalesced stream");
     assert!(
-        pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_none(),
+        pool.checkout_coalesced(
+            "cdn.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_none(),
         "second coalesced checkout should hit this connection's active stream limit"
     );
 
     drop(out1);
     assert!(
-        pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_some(),
+        pool.checkout_coalesced(
+            "cdn.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_some(),
         "dropping the active clone should release coalesced stream capacity"
     );
 }
 
 #[tokio::test]
-async fn checkout_coalesced_without_ip_check() {
+async fn checkout_coalesced_accepts_exact_remote_endpoint() {
     let pool = ConnectionPool::<RequestBodySend>::new()
         .without_reaper()
         .with_max_idle_per_host(8)
@@ -451,10 +497,14 @@ async fn checkout_coalesced_without_ip_check() {
 
     tokio::task::yield_now().await;
 
-    let result = pool.checkout_coalesced("cdn.example.com", None, ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        "10.0.0.1:443".parse().unwrap(),
+        &ProxyRoute::DIRECT,
+    );
     assert!(
         result.is_some(),
-        "should find coalesced connection when resolved_ip is None"
+        "should find a coalesced connection at the resolved endpoint"
     );
 }
 
@@ -474,7 +524,11 @@ async fn checkout_coalesced_san_not_found() {
     tokio::task::yield_now().await;
 
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("unknown.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "unknown.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_none(), "SAN not in cert should return None");
 }
 
@@ -588,7 +642,11 @@ async fn checkin_populates_san_index() {
 
     // Should find via SAN index
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("alt.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "alt.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_some(), "SAN index should be populated on checkin");
 }
 
@@ -617,16 +675,28 @@ async fn checkout_coalesced_multiple_sans_finds_any() {
     let ip: IpAddr = [10, 0, 0, 1].into();
     // Should find for any SAN
     assert!(
-        pool.checkout_coalesced("first.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_some()
+        pool.checkout_coalesced(
+            "first.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_some()
     );
     assert!(
-        pool.checkout_coalesced("second.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_some()
+        pool.checkout_coalesced(
+            "second.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_some()
     );
     assert!(
-        pool.checkout_coalesced("third.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_some()
+        pool.checkout_coalesced(
+            "third.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_some()
     );
 }
 
@@ -677,14 +747,22 @@ async fn checkout_coalesced_cleans_stale_san_index() {
 
     let ip: IpAddr = [10, 0, 0, 1].into();
     // This triggers cleanup of stale index entries
-    let result = pool.checkout_coalesced("stale.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "stale.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(
         result.is_none(),
         "expired connection should not be returned"
     );
 
     // After the cleanup, a subsequent lookup should also return None quickly
-    let result2 = pool.checkout_coalesced("stale.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result2 = pool.checkout_coalesced(
+        "stale.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result2.is_none());
 }
 
@@ -753,7 +831,11 @@ async fn checkout_coalesced_removes_not_ready_connection() {
 
     let ip: IpAddr = [10, 0, 0, 1].into();
     // Connection should be found by SAN but be not-ready, triggering the remove path
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     // The not-ready connection gets removed from the pool, None is returned
     assert!(
         result.is_none(),
@@ -780,11 +862,19 @@ async fn checkout_coalesced_cleans_san_index_when_no_connections_remain() {
 
     let ip: IpAddr = [10, 0, 0, 1].into();
     // First checkout_coalesced: removes not-ready connection, cleans up
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_none());
 
     // Second lookup should also be None (SAN index was cleaned)
-    let result2 = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result2 = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result2.is_none());
 
     // The pool key queue should be empty now
@@ -824,7 +914,11 @@ async fn checkout_coalesced_san_index_stale_entry_continue_on_missing_queue() {
 
     let ip: IpAddr = [10, 0, 0, 1].into();
     // checkout_coalesced should skip k1 (not-ready) and find k2
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(
         result.is_some(),
         "should find the second healthy connection even if first is not-ready"
@@ -902,11 +996,19 @@ async fn checkout_coalesced_san_index_has_entry_but_conn_sans_dont_match() {
     // We simulate this by looking up "shared.example.com" (which IS in SANs) -
     // that should succeed:
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("shared.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "shared.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_some(), "shared SAN should match");
 
     // And looking up a host NOT in the SANs should fail:
-    let result = pool.checkout_coalesced("other.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "other.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_none(), "host not in SANs should not match");
 }
 
@@ -937,7 +1039,11 @@ async fn checkout_coalesced_last_connection_in_queue_triggers_removal() {
     let ip: IpAddr = [10, 0, 0, 1].into();
     // H1 connections are rejected by is_h2_or_h3 check (line 243),
     // so this returns None and pool remains intact
-    let result = pool.checkout_coalesced("coalesced.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "coalesced.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_none(), "H1 should be rejected by coalescing");
 
     // Regular checkout should still work
@@ -977,8 +1083,12 @@ async fn ensure_reaper_local_removes_expired() {
     );
     let ip: IpAddr = [10, 0, 0, 1].into();
     assert!(
-        pool.checkout_coalesced("reaper-test.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_none(),
+        pool.checkout_coalesced(
+            "reaper-test.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_none(),
         "reaper should have cleaned SAN index"
     );
 }
@@ -1008,16 +1118,28 @@ async fn checkin_populates_san_index_for_all_sans() {
     let ip: IpAddr = [10, 0, 0, 1].into();
     // All SANs should be findable via coalescing
     assert!(
-        pool.checkout_coalesced("san1.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_some()
+        pool.checkout_coalesced(
+            "san1.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_some()
     );
     assert!(
-        pool.checkout_coalesced("san2.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_some()
+        pool.checkout_coalesced(
+            "san2.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_some()
     );
     assert!(
-        pool.checkout_coalesced("san3.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_some()
+        pool.checkout_coalesced(
+            "san3.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_some()
     );
 }
 
@@ -1097,8 +1219,11 @@ async fn checkout_coalesced_san_index_key_but_idle_empty() {
     // Now san_index still has "coalesce-target.example.com" -> k,
     // but idle map no longer has k. This hits the `None => continue` path (lines 230-231).
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result =
-        pool.checkout_coalesced("coalesce-target.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "coalesce-target.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(
         result.is_none(),
         "should return None when idle map has no entry for the san_index key"
@@ -1135,14 +1260,20 @@ async fn checkout_coalesced_san_index_cleanup_removes_empty_set() {
     // triggering the cleanup that removes the key from san_index and then
     // removes the empty set.
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result =
-        pool.checkout_coalesced("cleanup-target.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cleanup-target.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(result.is_none());
 
     // Verify the SAN index was cleaned: a second call should also be None
     // (the san_index entry should have been removed entirely)
-    let result2 =
-        pool.checkout_coalesced("cleanup-target.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result2 = pool.checkout_coalesced(
+        "cleanup-target.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(
         result2.is_none(),
         "SAN index should have been fully cleaned"
@@ -1209,8 +1340,12 @@ async fn reaper_cleans_san_index_keys_not_in_idle() {
     assert!(pool.checkout(&k).is_none());
     let ip: IpAddr = [10, 0, 0, 1].into();
     assert!(
-        pool.checkout_coalesced("reaper-alt.example.com", Some(ip), ProxyRoute::DIRECT)
-            .is_none()
+        pool.checkout_coalesced(
+            "reaper-alt.example.com",
+            std::net::SocketAddr::new(ip, 443),
+            &ProxyRoute::DIRECT
+        )
+        .is_none()
     );
 }
 

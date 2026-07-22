@@ -295,11 +295,67 @@ async fn connection_coalescing_reuses_h2_tls_connection() {
     client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let connector = aioduct::tls::RustlsConnector::new(std::sync::Arc::new(client_config));
 
+    struct CoalescingResolver {
+        server_addr: std::net::SocketAddr,
+        first_calls: Arc<AtomicU32>,
+        second_calls: Arc<AtomicU32>,
+    }
+
+    impl aioduct::Resolve for CoalescingResolver {
+        fn resolve(
+            &self,
+            host: &str,
+            _port: u16,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::io::Result<std::net::SocketAddr>> + Send>,
+        > {
+            let addresses = self.addresses(host);
+            Box::pin(async move { Ok(addresses[0]) })
+        }
+
+        fn resolve_all(
+            &self,
+            host: &str,
+            _port: u16,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = std::io::Result<Vec<std::net::SocketAddr>>> + Send,
+            >,
+        > {
+            match host {
+                "coalesce-a.local" => self.first_calls.fetch_add(1, Ordering::SeqCst),
+                "coalesce-b.local" => self.second_calls.fetch_add(1, Ordering::SeqCst),
+                other => panic!("unexpected lookup for {other}"),
+            };
+            let addresses = self.addresses(host);
+            Box::pin(async move { Ok(addresses) })
+        }
+    }
+
+    impl CoalescingResolver {
+        fn addresses(&self, host: &str) -> Vec<std::net::SocketAddr> {
+            if host == "coalesce-b.local" {
+                vec![
+                    std::net::SocketAddr::from(([127, 0, 0, 2], self.server_addr.port())),
+                    self.server_addr,
+                ]
+            } else {
+                vec![self.server_addr]
+            }
+        }
+    }
+
+    let first_dns_calls = Arc::new(AtomicU32::new(0));
+    let second_dns_calls = Arc::new(AtomicU32::new(0));
+
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .connection_coalescing(true)
-        .resolve("coalesce-a.local", addr)
-        .resolve("coalesce-b.local", addr)
+        .resolver(CoalescingResolver {
+            server_addr: addr,
+            first_calls: first_dns_calls.clone(),
+            second_calls: second_dns_calls.clone(),
+        })
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
         .build()
@@ -335,6 +391,8 @@ async fn connection_coalescing_reuses_h2_tls_connection() {
         counter.connections()
     );
     assert_eq!(request_count.load(Ordering::SeqCst), 2);
+    assert_eq!(first_dns_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_dns_calls.load(Ordering::SeqCst), 1);
 }
 
 // ── 61. Connection coalescing disabled opens separate connections ────────────

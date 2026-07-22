@@ -36,15 +36,8 @@ impl ProxyChain {
         self.proxies.len()
     }
 
-    /// Stable hash of this chain for pool-key route segregation.
-    pub(crate) fn route_hash(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        for proxy in &self.proxies {
-            h.write_u64(proxy.route_hash());
-        }
-        self.proxies.len().hash(&mut h);
-        h.finish()
+    pub(crate) fn route_identity(&self) -> super::config::ProxyRouteIdentity {
+        super::config::ProxyRouteIdentity::from_configs(&self.proxies)
     }
 
     /// Returns `true` if the chain is empty.

@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use http::uri::Authority;
+use http::uri::{Authority, Scheme};
+
+use crate::pool::ProxyRoute;
 
 const DEFAULT_PROBE_TTL: Duration = Duration::from_secs(300);
 
@@ -12,15 +15,45 @@ enum H2cCapability {
     H1Only { probed_at: Instant },
 }
 
-/// Caches per-authority h2c capability probe results.
+/// Caches h2c capability probe results per effective route.
 ///
 /// When using adaptive h2c, the first request to an unknown host attempts an
 /// HTTP/2 prior-knowledge handshake. If it succeeds, the host is cached as h2c.
-/// If it fails, the host is cached as h1-only. Subsequent requests skip the probe.
+/// If it fails, that route is cached as h1-only. Subsequent requests on the
+/// same route skip the probe.
 #[derive(Clone)]
 pub(crate) struct H2cProbeCache {
-    inner: Arc<Mutex<HashMap<Authority, H2cCapability>>>,
+    inner: Arc<Mutex<HashMap<H2cProbeKey, H2cCapability>>>,
     ttl: Duration,
+}
+
+/// Identity of the route whose adaptive-h2c result was observed.
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub(crate) struct H2cProbeKey {
+    scheme: Scheme,
+    host: String,
+    port: u16,
+    proxy_route: ProxyRoute,
+    forced_addr: Option<SocketAddr>,
+}
+
+impl H2cProbeKey {
+    pub(crate) fn new(
+        scheme: Scheme,
+        authority: &Authority,
+        proxy_route: ProxyRoute,
+        forced_addr: Option<SocketAddr>,
+    ) -> Self {
+        Self {
+            port: authority
+                .port_u16()
+                .unwrap_or(if scheme == Scheme::HTTP { 80 } else { 443 }),
+            scheme,
+            host: authority.host().to_ascii_lowercase(),
+            proxy_route,
+            forced_addr,
+        }
+    }
 }
 
 impl H2cProbeCache {
@@ -39,11 +72,11 @@ impl H2cProbeCache {
     }
 
     /// Returns `Some(true)` if h2c is known, `Some(false)` if h1-only, `None` if unknown/expired.
-    pub(crate) fn lookup(&self, authority: &Authority) -> Option<bool> {
+    pub(crate) fn lookup(&self, key: &H2cProbeKey) -> Option<bool> {
         let Ok(map) = self.inner.lock() else {
             return None;
         };
-        match map.get(authority)? {
+        match map.get(key)? {
             H2cCapability::SupportsH2c { probed_at } => {
                 if probed_at.elapsed() < self.ttl {
                     Some(true)
@@ -61,7 +94,7 @@ impl H2cProbeCache {
         }
     }
 
-    pub(crate) fn record_h2c(&self, authority: Authority) {
+    pub(crate) fn record_h2c(&self, key: H2cProbeKey) {
         let Ok(mut map) = self.inner.lock() else {
             return;
         };
@@ -74,14 +107,14 @@ impl H2cProbeCache {
             });
         }
         map.insert(
-            authority,
+            key,
             H2cCapability::SupportsH2c {
                 probed_at: Instant::now(),
             },
         );
     }
 
-    pub(crate) fn record_h1_only(&self, authority: Authority) {
+    pub(crate) fn record_h1_only(&self, key: H2cProbeKey) {
         let Ok(mut map) = self.inner.lock() else {
             return;
         };
@@ -94,7 +127,7 @@ impl H2cProbeCache {
             });
         }
         map.insert(
-            authority,
+            key,
             H2cCapability::H1Only {
                 probed_at: Instant::now(),
             },
@@ -110,73 +143,79 @@ mod tests {
         s.parse().unwrap()
     }
 
+    fn key(s: &str) -> H2cProbeKey {
+        H2cProbeKey::new(Scheme::HTTP, &authority(s), ProxyRoute::DIRECT, None)
+    }
+
     #[test]
     fn unknown_returns_none() {
         let cache = H2cProbeCache::new();
-        assert_eq!(cache.lookup(&authority("example.com:80")), None);
+        assert_eq!(cache.lookup(&key("example.com:80")), None);
     }
 
     #[test]
     fn record_h2c_returns_true() {
         let cache = H2cProbeCache::new();
-        cache.record_h2c(authority("grpc.example.com:50051"));
-        assert_eq!(
-            cache.lookup(&authority("grpc.example.com:50051")),
-            Some(true)
-        );
+        let key = key("grpc.example.com:50051");
+        cache.record_h2c(key.clone());
+        assert_eq!(cache.lookup(&key), Some(true));
     }
 
     #[test]
     fn record_h1_only_returns_false() {
         let cache = H2cProbeCache::new();
-        cache.record_h1_only(authority("legacy.example.com:80"));
-        assert_eq!(
-            cache.lookup(&authority("legacy.example.com:80")),
-            Some(false)
-        );
+        let key = key("legacy.example.com:80");
+        cache.record_h1_only(key.clone());
+        assert_eq!(cache.lookup(&key), Some(false));
     }
 
     #[test]
     fn expired_entry_returns_none() {
         let cache = H2cProbeCache::with_ttl(Duration::from_millis(0));
-        cache.record_h2c(authority("expired.example.com:80"));
+        let key = key("expired.example.com:80");
+        cache.record_h2c(key.clone());
         std::thread::sleep(Duration::from_millis(1));
-        assert_eq!(cache.lookup(&authority("expired.example.com:80")), None);
+        assert_eq!(cache.lookup(&key), None);
     }
 
     #[test]
     fn expired_h1_only_returns_none() {
         let cache = H2cProbeCache::with_ttl(Duration::from_millis(0));
-        cache.record_h1_only(authority("expired.example.com:80"));
+        let key = key("expired.example.com:80");
+        cache.record_h1_only(key.clone());
         std::thread::sleep(Duration::from_millis(1));
-        assert_eq!(cache.lookup(&authority("expired.example.com:80")), None);
+        assert_eq!(cache.lookup(&key), None);
     }
 
     #[test]
     fn overwrite_h1_with_h2c() {
         let cache = H2cProbeCache::new();
-        cache.record_h1_only(authority("host.com:80"));
-        assert_eq!(cache.lookup(&authority("host.com:80")), Some(false));
-        cache.record_h2c(authority("host.com:80"));
-        assert_eq!(cache.lookup(&authority("host.com:80")), Some(true));
+        let key = key("host.com:80");
+        cache.record_h1_only(key.clone());
+        assert_eq!(cache.lookup(&key), Some(false));
+        cache.record_h2c(key.clone());
+        assert_eq!(cache.lookup(&key), Some(true));
     }
 
     #[test]
     fn multiple_authorities_independent() {
         let cache = H2cProbeCache::new();
-        cache.record_h2c(authority("a.com:80"));
-        cache.record_h1_only(authority("b.com:80"));
-        assert_eq!(cache.lookup(&authority("a.com:80")), Some(true));
-        assert_eq!(cache.lookup(&authority("b.com:80")), Some(false));
-        assert_eq!(cache.lookup(&authority("c.com:80")), None);
+        let a = key("a.com:80");
+        let b = key("b.com:80");
+        cache.record_h2c(a.clone());
+        cache.record_h1_only(b.clone());
+        assert_eq!(cache.lookup(&a), Some(true));
+        assert_eq!(cache.lookup(&b), Some(false));
+        assert_eq!(cache.lookup(&key("c.com:80")), None);
     }
 
     #[test]
     fn clone_shares_state() {
         let cache = H2cProbeCache::new();
         let cloned = cache.clone();
-        cache.record_h2c(authority("shared.com:80"));
-        assert_eq!(cloned.lookup(&authority("shared.com:80")), Some(true));
+        let key = key("shared.com:80");
+        cache.record_h2c(key.clone());
+        assert_eq!(cloned.lookup(&key), Some(true));
     }
 
     #[test]
@@ -192,7 +231,7 @@ mod tests {
         assert!(result.is_err());
 
         // The mutex is now poisoned; lookup should return None (graceful degradation)
-        assert_eq!(cache.lookup(&authority("example.com:80")), None);
+        assert_eq!(cache.lookup(&key("example.com:80")), None);
     }
 
     #[test]
@@ -207,9 +246,10 @@ mod tests {
         assert!(result.is_err());
 
         // record_h2c on a poisoned mutex should silently do nothing
-        cache.record_h2c(authority("poisoned.com:80"));
+        let key = key("poisoned.com:80");
+        cache.record_h2c(key.clone());
         // Verify it didn't panic — reaching here means success
-        assert_eq!(cache.lookup(&authority("poisoned.com:80")), None);
+        assert_eq!(cache.lookup(&key), None);
     }
 
     #[test]
@@ -224,9 +264,10 @@ mod tests {
         assert!(result.is_err());
 
         // record_h1_only on a poisoned mutex should silently do nothing
-        cache.record_h1_only(authority("poisoned.com:80"));
+        let key = key("poisoned.com:80");
+        cache.record_h1_only(key.clone());
         // Verify it didn't panic — reaching here means success
-        assert_eq!(cache.lookup(&authority("poisoned.com:80")), None);
+        assert_eq!(cache.lookup(&key), None);
     }
 
     #[test]
@@ -236,7 +277,7 @@ mod tests {
             let mut map = cache.inner.lock().unwrap();
             for i in 0..66 {
                 map.insert(
-                    authority(&format!("host{i}.com:80")),
+                    key(&format!("host{i}.com:80")),
                     H2cCapability::SupportsH2c {
                         probed_at: Instant::now() - Duration::from_millis(10),
                     },
@@ -245,9 +286,41 @@ mod tests {
         }
 
         // All entries are now expired. Next insert triggers eviction.
-        cache.record_h2c(authority("new.com:80"));
+        cache.record_h2c(key("new.com:80"));
         let map = cache.inner.lock().unwrap();
         // Only the new entry should remain (all expired ones evicted)
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn route_and_forced_endpoint_are_part_of_probe_identity() {
+        let cache = H2cProbeCache::new();
+        let authority = authority("shared.example:80");
+        let direct = H2cProbeKey::new(
+            Scheme::HTTP,
+            &authority,
+            ProxyRoute::DIRECT,
+            Some("127.0.0.1:8001".parse().unwrap()),
+        );
+        let proxy = crate::proxy::ProxyConfig::http("http://proxy.example:8080").unwrap();
+        let proxied = H2cProbeKey::new(
+            Scheme::HTTP,
+            &authority,
+            ProxyRoute::proxied(proxy.route_identity()),
+            Some("127.0.0.1:8001".parse().unwrap()),
+        );
+        let other_endpoint = H2cProbeKey::new(
+            Scheme::HTTP,
+            &authority,
+            ProxyRoute::DIRECT,
+            Some("127.0.0.1:8002".parse().unwrap()),
+        );
+
+        cache.record_h2c(direct.clone());
+        cache.record_h1_only(proxied.clone());
+
+        assert_eq!(cache.lookup(&direct), Some(true));
+        assert_eq!(cache.lookup(&proxied), Some(false));
+        assert_eq!(cache.lookup(&other_endpoint), None);
     }
 }

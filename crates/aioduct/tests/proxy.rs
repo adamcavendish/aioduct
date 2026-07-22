@@ -739,6 +739,156 @@ async fn custom_proxy_is_resolved_once_per_dispatch_attempt() {
 }
 
 #[tokio::test]
+async fn rotating_proxy_selection_binds_credentials_pool_and_transport() {
+    let (target_addr, _) = h1_server().await;
+    let first_connects = captured_connects();
+    let second_connects = captured_connects();
+    let (first_addr, first_connections) =
+        connect_proxy_with_capture(Some(first_connects.clone())).await;
+    let (second_addr, second_connections) =
+        connect_proxy_with_capture(Some(second_connects.clone())).await;
+
+    let selector_calls = Arc::new(AtomicUsize::new(0));
+    let observed_selector_calls = selector_calls.clone();
+    let first = aioduct::ProxyConfig::http(&format!("http://{first_addr}")).unwrap();
+    let second = aioduct::ProxyConfig::http(&format!("http://{second_addr}")).unwrap();
+
+    struct CountingResolver(Arc<AtomicUsize>);
+    impl aioduct::CredentialResolver for CountingResolver {
+        fn resolve(&self, _key: &str) -> Option<(String, String)> {
+            self.0.fetch_add(1, AtomicOrdering::SeqCst);
+            Some(("Aladdin".to_owned(), "open sesame".to_owned()))
+        }
+    }
+    let resolver_calls = Arc::new(AtomicUsize::new(0));
+
+    let settings = aioduct::ProxySettings::default()
+        .custom(move |_uri| {
+            let call = observed_selector_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Some(if call.is_multiple_of(2) {
+                first.clone()
+            } else {
+                second.clone()
+            })
+        })
+        .proxy_credential_resolver(CountingResolver(resolver_calls.clone()));
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_settings(settings)
+        .pool_idle_timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
+
+    for _ in 0..3 {
+        let response = client
+            .get(&format!("http://{target_addr}/snapshot"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    }
+
+    assert_eq!(selector_calls.load(AtomicOrdering::SeqCst), 3);
+    assert_eq!(resolver_calls.load(AtomicOrdering::SeqCst), 3);
+    assert_eq!(first_connections.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(second_connections.load(AtomicOrdering::SeqCst), 1);
+    assert_connect_for_target_has_auth(&first_connects, &target_addr.to_string());
+    assert_connect_for_target_has_auth(&second_connects, &target_addr.to_string());
+}
+
+#[tokio::test]
+async fn canonical_proxy_routes_share_pool_identity() {
+    let (target_addr, _) = h1_server().await;
+    let captured = captured_connects();
+    let (proxy_addr, proxy_connections) = connect_proxy_with_capture(Some(captured.clone())).await;
+    let selector_calls = Arc::new(AtomicUsize::new(0));
+    let observed_selector_calls = selector_calls.clone();
+    let first = aioduct::ProxyConfig::http(&format!(
+        "http://old:credentials@{proxy_addr}/ignored?route=first"
+    ))
+    .unwrap()
+    .basic_auth("Aladdin", "open sesame");
+    let second =
+        aioduct::ProxyConfig::http(&format!("http://{proxy_addr}/another-path?route=second"))
+            .unwrap()
+            .basic_auth("Aladdin", "open sesame");
+    let settings = aioduct::ProxySettings::default().custom(move |_uri| {
+        let call = observed_selector_calls.fetch_add(1, AtomicOrdering::SeqCst);
+        Some(if call.is_multiple_of(2) {
+            first.clone()
+        } else {
+            second.clone()
+        })
+    });
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_settings(settings)
+        .pool_idle_timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
+
+    for path in ["first", "second", "third"] {
+        let response = client
+            .get(&format!("http://{target_addr}/{path}"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    }
+
+    assert_eq!(selector_calls.load(AtomicOrdering::SeqCst), 3);
+    assert_eq!(proxy_connections.load(AtomicOrdering::SeqCst), 1);
+    assert_connect_for_target_has_auth(&captured, &target_addr.to_string());
+}
+
+#[tokio::test]
+async fn proxy_pool_diagnostics_use_engine_scoped_opaque_route_labels() {
+    let (target_addr, _) = h1_server().await;
+    let (proxy_addr, _) = connect_proxy().await;
+    let proxy = aioduct::ProxyConfig::http(&format!("http://{proxy_addr}"))
+        .unwrap()
+        .basic_auth("diagnostic-user", "diagnostic-password")
+        .header(
+            http::header::HeaderName::from_static("x-route-token"),
+            http::HeaderValue::from_static("diagnostic-secret"),
+        );
+
+    let first = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(proxy.clone())
+        .build()
+        .unwrap();
+    let second = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy(proxy)
+        .build()
+        .unwrap();
+
+    for client in [&first, &second] {
+        let response = client
+            .get(&format!("http://{target_addr}/opaque-route"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    }
+
+    let first_label = first.pool_stats().hosts[0].route.clone();
+    assert_eq!(first.pool_stats().hosts[0].route, first_label);
+    let second_label = second.pool_stats().hosts[0].route.clone();
+
+    assert!(first_label.starts_with("proxy-"), "{first_label}");
+    assert_ne!(first_label, second_label);
+    for secret in [
+        "diagnostic-user",
+        "diagnostic-password",
+        "diagnostic-secret",
+    ] {
+        assert!(!first_label.contains(secret));
+        assert!(!second_label.contains(secret));
+    }
+}
+
+#[tokio::test]
 async fn proxy_with_redirect_routing() {
     // Target server (behind proxy).
     let (target_addr, _counter) = h1_server().await;

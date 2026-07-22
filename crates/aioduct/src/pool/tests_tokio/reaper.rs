@@ -57,7 +57,11 @@ async fn reaper_cleans_san_index_for_expired_connections() {
 
     // SAN index should be cleaned up, so coalesced lookup should fail
     let ip: IpAddr = [10, 0, 0, 1].into();
-    let result = pool.checkout_coalesced("cdn.example.com", Some(ip), ProxyRoute::DIRECT);
+    let result = pool.checkout_coalesced(
+        "cdn.example.com",
+        std::net::SocketAddr::new(ip, 443),
+        &ProxyRoute::DIRECT,
+    );
     assert!(
         result.is_none(),
         "reaper should have cleaned expired connections and SAN index"
