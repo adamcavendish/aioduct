@@ -7,7 +7,7 @@ The `aioduct` binary is a unified HTTP toolkit providing two subcommands: a curl
 **Shell installer (no Rust toolchain needed):**
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adamcavendish/aioduct/releases/download/0.2.3/aioduct-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/adamcavendish/aioduct/releases/download/0.2.4/aioduct-cli-installer.sh | sh
 ```
 
 **Nightly build (latest main):**

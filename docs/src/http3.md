@@ -18,14 +18,14 @@ Enable the `http3` transport feature with the rustls backend and a rustls crypto
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.3", features = ["tokio", "http3", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.4", features = ["tokio", "http3", "rustls", "rustls-ring"] }
 ```
 
 To use AWS-LC instead of ring, select the AWS-LC rustls provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.3", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.4", features = ["tokio", "http3", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 The `http3` feature only selects the QUIC/HTTP/3 transport dependencies. Today HTTP/3 still requires the rustls backend because quinn uses rustls for QUIC TLS; choose exactly one of `rustls-ring` or `rustls-aws-lc-rs`.
