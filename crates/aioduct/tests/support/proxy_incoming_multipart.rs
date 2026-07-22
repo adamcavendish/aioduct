@@ -24,6 +24,78 @@ const BACKPRESSURE_PADDING_BYTES: usize = 512 * 1024;
 const HTTPS_PROXY_TUNNEL_CHUNK_BYTES: usize = 8 * 1024;
 const HTTPS_PROXY_TUNNEL_DELAY: Duration = Duration::from_millis(2);
 
+#[derive(Clone)]
+pub(crate) struct ThreadPhase(Arc<std::sync::Mutex<&'static str>>);
+
+impl ThreadPhase {
+    pub(crate) fn set(&self, phase: &'static str) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = phase;
+    }
+}
+
+pub(crate) struct ThreadCompletion {
+    done: std::sync::mpsc::Receiver<()>,
+    phase: ThreadPhase,
+}
+
+pub(crate) struct ThreadCompletionGuard {
+    done: Option<std::sync::mpsc::SyncSender<()>>,
+    phase: ThreadPhase,
+}
+
+impl ThreadCompletionGuard {
+    pub(crate) fn phase(&self) -> ThreadPhase {
+        self.phase.clone()
+    }
+}
+
+impl Drop for ThreadCompletionGuard {
+    fn drop(&mut self) {
+        if let Some(done) = self.done.take() {
+            let _ = done.send(());
+        }
+    }
+}
+
+pub(crate) fn thread_completion(
+    initial_phase: &'static str,
+) -> (ThreadCompletionGuard, ThreadCompletion) {
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    let phase = ThreadPhase(Arc::new(std::sync::Mutex::new(initial_phase)));
+    (
+        ThreadCompletionGuard {
+            done: Some(done_tx),
+            phase: phase.clone(),
+        },
+        ThreadCompletion {
+            done: done_rx,
+            phase,
+        },
+    )
+}
+
+pub(crate) fn join_completed_thread(
+    thread: JoinHandle<()>,
+    completion: &ThreadCompletion,
+    label: &str,
+) {
+    if completion.done.recv_timeout(TEST_TIMEOUT).is_err() {
+        let phase = *completion
+            .phase
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !std::thread::panicking() {
+            panic!("{label} did not stop within {TEST_TIMEOUT:?}; last phase: {phase}");
+        }
+        return;
+    }
+    let result = thread.join();
+    if !std::thread::panicking() {
+        result.unwrap_or_else(|_| panic!("{label} thread panicked"));
+    }
+}
+
 pub(crate) fn multipart_body() -> (String, Bytes) {
     multipart_body_with_padding(0)
 }
@@ -125,6 +197,7 @@ pub(crate) struct HttpsConnectProxy {
     pub(crate) certificate: rustls::pki_types::CertificateDer<'static>,
     pub(crate) observations: Arc<HttpsConnectProxyObservations>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    completion: ThreadCompletion,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -150,16 +223,24 @@ impl HttpsConnectProxy {
         let server_observations = observations.clone();
         let (addr_tx, addr_rx) = std::sync::mpsc::sync_channel(1);
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let (completion_guard, completion) = thread_completion("starting HTTPS proxy runtime");
         let thread = std::thread::spawn(move || {
+            let phase = completion_guard.phase();
+            phase.set("creating HTTPS proxy runtime");
             tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(async move {
+                    phase.set("binding HTTPS proxy listener");
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                     addr_tx.send(listener.local_addr().unwrap()).unwrap();
 
                     loop {
+                        phase.set("accepting HTTPS proxy connections");
                         tokio::select! {
-                            _ = &mut shutdown_rx => break,
+                            _ = &mut shutdown_rx => {
+                                phase.set("shutting down HTTPS proxy runtime");
+                                break;
+                            },
                             accepted = listener.accept() => {
                                 let (tcp, _) = accepted.unwrap();
                                 socket2::SockRef::from(&tcp)
@@ -247,6 +328,7 @@ impl HttpsConnectProxy {
             certificate,
             observations,
             shutdown: Some(shutdown_tx),
+            completion,
             thread: Some(thread),
         }
     }
@@ -258,10 +340,7 @@ impl Drop for HttpsConnectProxy {
             let _ = shutdown.send(());
         }
         if let Some(thread) = self.thread.take() {
-            let result = thread.join();
-            if !std::thread::panicking() {
-                result.expect("HTTPS CONNECT proxy thread panicked");
-            }
+            join_completed_thread(thread, &self.completion, "HTTPS CONNECT proxy");
         }
     }
 }
@@ -386,6 +465,7 @@ pub(crate) struct HttpsMultipartOrigin {
     close_first: Arc<tokio::sync::Notify>,
     first_closed: Arc<AtomicBool>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    completion: ThreadCompletion,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -414,17 +494,26 @@ impl HttpsMultipartOrigin {
         let (expected_content_type, expected_body) = expected_multipart;
         let (addr_tx, addr_rx) = std::sync::mpsc::sync_channel(1);
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let (completion_guard, completion) =
+            thread_completion("starting HTTPS multipart origin runtime");
 
         let thread = std::thread::spawn(move || {
+            let phase = completion_guard.phase();
+            phase.set("creating HTTPS multipart origin runtime");
             tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(async move {
+                    phase.set("binding HTTPS multipart origin listener");
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                     addr_tx.send(listener.local_addr().unwrap()).unwrap();
 
                     loop {
+                        phase.set("accepting HTTPS multipart origin connections");
                         tokio::select! {
-                            _ = &mut shutdown_rx => break,
+                            _ = &mut shutdown_rx => {
+                                phase.set("shutting down HTTPS multipart origin runtime");
+                                break;
+                            },
                             accepted = listener.accept() => {
                                 let (stream, _) = accepted.unwrap();
                                 let connection_id = server_observations
@@ -525,6 +614,7 @@ impl HttpsMultipartOrigin {
             close_first,
             first_closed,
             shutdown: Some(shutdown_tx),
+            completion,
             thread: Some(thread),
         }
     }
@@ -555,10 +645,7 @@ impl Drop for HttpsMultipartOrigin {
             let _ = shutdown.send(());
         }
         if let Some(thread) = self.thread.take() {
-            let result = thread.join();
-            if !std::thread::panicking() {
-                result.expect("HTTPS multipart origin thread panicked");
-            }
+            join_completed_thread(thread, &self.completion, "HTTPS multipart origin");
         }
     }
 }

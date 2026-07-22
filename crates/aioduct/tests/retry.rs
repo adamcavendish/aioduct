@@ -476,15 +476,24 @@ async fn retryable_final_response_replays_finalized_request() {
 
     let origin_attempts = Arc::new(AtomicU32::new(0));
     let origin_attempts_clone = origin_attempts.clone();
-    let (origin_addr, _origin_counter) = h1_server_with(move |_req| {
+    let (origin_addr, _origin_counter) = h1_server_with(move |req| {
         let origin_attempts = origin_attempts_clone.clone();
         let location = format!("http://{target_addr}/final");
         async move {
-            origin_attempts.fetch_add(1, Ordering::SeqCst);
+            let attempt = origin_attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                assert!(req.headers().get(http::header::COOKIE).is_none());
+            } else {
+                assert_eq!(
+                    req.headers().get(http::header::COOKIE).unwrap(),
+                    "redirect_chain=fresh"
+                );
+            }
             Ok::<_, Infallible>(
                 Response::builder()
                     .status(302)
                     .header("location", location)
+                    .header("set-cookie", "redirect_chain=fresh; Path=/")
                     .body(Full::new(Bytes::new()))
                     .unwrap(),
             )
@@ -492,7 +501,10 @@ async fn retryable_final_response_replays_finalized_request() {
     })
     .await;
 
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cookie_jar(aioduct::CookieJar::new())
+        .build()
+        .unwrap();
     let resp = client
         .get(&format!("http://{origin_addr}/start"))
         .unwrap()

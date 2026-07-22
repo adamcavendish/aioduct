@@ -49,6 +49,17 @@ fn client(write_timeout: Option<Duration>) -> HttpEngineSend<TokioRuntime, TcpCo
     builder.build().unwrap()
 }
 
+fn no_reuse_client() -> HttpEngineSend<TokioRuntime, TcpConnector> {
+    HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
+        .http3(true)
+        .unwrap()
+        .no_connection_reuse()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+}
+
 async fn request_reset_code<S>(stream: &mut h3::server::RequestStream<S, Bytes>) -> h3::error::Code
 where
     S: h3::quic::RecvStream,
@@ -64,7 +75,7 @@ where
 }
 
 #[tokio::test]
-async fn h3_returns_early_response_and_continues_upload() {
+async fn h3_no_reuse_returns_early_response_and_continues_upload() {
     let (release_tx, release_rx) = tokio::sync::oneshot::channel::<Bytes>();
     let (received_tx, received_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
     let received_tx = Arc::new(std::sync::Mutex::new(Some(received_tx)));
@@ -100,7 +111,7 @@ async fn h3_returns_early_response_and_continues_upload() {
 
     let response = tokio::time::timeout(
         Duration::from_secs(1),
-        client(None)
+        no_reuse_client()
             .post(&format!("https://127.0.0.1:{}/accepted", addr.port()))
             .unwrap()
             .body_stream(body)

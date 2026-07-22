@@ -22,6 +22,7 @@ struct CompioProxyForwardingBroker {
     addr: SocketAddr,
     warm_identity: String,
     shutdown: Arc<AtomicBool>,
+    completion: support::ThreadCompletion,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -34,10 +35,15 @@ impl CompioProxyForwardingBroker {
         let shutdown = Arc::new(AtomicBool::new(false));
         let server_shutdown = shutdown.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let (completion_guard, completion) =
+            support::thread_completion("starting Compio forwarding broker runtime");
         let thread = std::thread::spawn(move || {
+            let phase = completion_guard.phase();
+            phase.set("creating Compio forwarding broker runtime");
             compio_runtime::Runtime::new()
                 .unwrap()
                 .block_on(async move {
+                    phase.set("warming Compio forwarding broker client");
                     let connector = aioduct::tls::RustlsConnector::new(tls_config);
                     let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
                         .tls(connector)
@@ -61,8 +67,10 @@ impl CompioProxyForwardingBroker {
                         .unwrap();
 
                     loop {
+                        phase.set("accepting Compio forwarding broker connections");
                         let (stream, _) = listener.accept().await.unwrap();
                         if server_shutdown.load(Ordering::SeqCst) {
+                            phase.set("shutting down Compio forwarding broker runtime");
                             return;
                         }
                         let io = Box::pin(aioduct::runtime::compio_rt::CompioIo::new(
@@ -120,6 +128,7 @@ impl CompioProxyForwardingBroker {
             addr,
             warm_identity,
             shutdown,
+            completion,
             thread: Some(thread),
         }
     }
@@ -130,10 +139,11 @@ impl Drop for CompioProxyForwardingBroker {
         self.shutdown.store(true, Ordering::SeqCst);
         let _ = std::net::TcpStream::connect_timeout(&self.addr, support::TEST_TIMEOUT);
         if let Some(thread) = self.thread.take() {
-            let result = thread.join();
-            if !std::thread::panicking() {
-                result.expect("Compio proxy forwarding broker thread panicked");
-            }
+            support::join_completed_thread(
+                thread,
+                &self.completion,
+                "Compio proxy forwarding broker",
+            );
         }
     }
 }

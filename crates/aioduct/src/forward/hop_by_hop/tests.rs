@@ -511,6 +511,37 @@ fn response_hook_cannot_change_connect_tunnel_establishment() {
 }
 
 #[test]
+fn response_hook_cannot_create_or_change_terminal_informational_status() {
+    let policy = ResponseHeaderPolicy::new(HeaderProtocol::Http11, http::Method::GET, false, None);
+
+    for (upstream, forwarded) in [
+        (http::StatusCode::OK, http::StatusCode::EARLY_HINTS),
+        (
+            http::StatusCode::SWITCHING_PROTOCOLS,
+            http::StatusCode::EARLY_HINTS,
+        ),
+        (http::StatusCode::OK, http::StatusCode::SWITCHING_PROTOCOLS),
+    ] {
+        let error = policy
+            .validate_response_hook_status(upstream, forwarded)
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidHeader(message) if message.contains("terminal informational response"))
+        );
+    }
+
+    policy
+        .validate_response_hook_status(
+            http::StatusCode::SWITCHING_PROTOCOLS,
+            http::StatusCode::SWITCHING_PROTOCOLS,
+        )
+        .unwrap();
+    policy
+        .validate_response_hook_status(http::StatusCode::OK, http::StatusCode::CREATED)
+        .unwrap();
+}
+
+#[test]
 fn h2_and_h3_reject_connection_specific_fields_instead_of_repairing_them() {
     for version in [http::Version::HTTP_2, http::Version::HTTP_3] {
         for name in [
