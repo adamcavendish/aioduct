@@ -8,25 +8,24 @@
 //!    [`AddressFamily::PreferIpv4`](crate::AddressFamily::PreferIpv4) (which
 //!    puts IPv4 first) is honored: `[v4, v6, v4, v6, ...]`. Default resolver
 //!    order typically leads with IPv6.
-//! 2. The first connection attempt is spawned immediately.
+//! 2. The first connection attempt begins immediately.
 //! 3. Every 250 ms (the Connection Attempt Delay), the next address is tried
 //!    while all previous attempts **stay alive**.
-//! 4. The first attempt to connect wins; all others are dropped.
+//! 4. The first attempt to connect wins; all others are dropped and canceled.
 //! 5. If all in-flight attempts fail before the timer fires, the next address
 //!    is tried immediately without waiting.
 //!
-//! Two parallel implementations are generated via `impl_race_connect!`:
-//! - **Send** (`race_connect`): for poll-based runtimes (tokio, smol) using `spawn_send`.
-//! - **Local** (`race_connect_local`): for completion-based runtimes (compio) using `spawn_local`.
+//! Attempts remain child futures of the caller instead of detached runtime
+//! tasks. Dropping the caller therefore cancels every in-flight attempt.
+//! `impl_race_connect!` generates Send (tokio/smol) and Local (compio)
+//! variants without changing that ownership model.
 
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::Poll;
 use std::time::Duration;
-
-use futures_channel::mpsc;
-use futures_core::Stream;
 
 use crate::runtime::{ConnectorLocal, ConnectorSend, RuntimeLocal, RuntimePoll};
 
@@ -95,63 +94,110 @@ async fn tcp_connect_send<C: ConnectorSend>(
     }
 }
 
+enum RaceEvent<S> {
+    Attempt {
+        index: usize,
+        result: io::Result<S>,
+        addr: SocketAddr,
+    },
+    Delay,
+}
+
 // ── Macro: generate both Send and Local variants ─────────────────────────────
 
 macro_rules! impl_race_connect {
     (
         race_fn: $race_fn:ident,
-        spawn_fn: $spawn_fn:ident,
         connect_fn: $connect_fn:ident,
-        wait_result: $WaitResult:ident,
-        wait_future: $WaitFuture:ident,
         connector_trait: $C:ident $(: $extra_bound:ident)*,
         runtime_trait: $R:ident,
-        spawn_method: $spawn_method:ident,
-        future_extra_bound: $fut_bound:tt,
+        future_bounds: [$($future_bound:ident),* $(,)?],
     ) => {
         async fn $race_fn<R: $R, C: $C $(+ $extra_bound)*>(
             connector: &C,
             addrs: &[SocketAddr],
             local_address: Option<std::net::IpAddr>,
         ) -> io::Result<(C::Stream, SocketAddr)> {
-            let mut last_err =
-                io::Error::new(io::ErrorKind::AddrNotAvailable, "no addresses");
+            fn attempt<'a, C: $C $(+ $extra_bound)*>(
+                connector: &'a C,
+                addr: SocketAddr,
+                local_address: Option<std::net::IpAddr>,
+            ) -> Pin<
+                Box<
+                    dyn Future<Output = (io::Result<C::Stream>, SocketAddr)>
+                        $(+ $future_bound)*
+                        + 'a,
+                >,
+            > {
+                Box::pin(async move {
+                    let result = $connect_fn::<C>(connector, addr, local_address).await;
+                    (result, addr)
+                })
+            }
 
-            let (tx, mut rx) =
-                mpsc::unbounded::<Result<(C::Stream, SocketAddr), io::Error>>();
-
+            let mut attempts: Vec<
+                Pin<
+                    Box<
+                        dyn Future<Output = (io::Result<C::Stream>, SocketAddr)>
+                            $(+ $future_bound)*
+                            + '_,
+                    >,
+                >,
+            > = Vec::new();
             let mut next_idx = 0;
-            let mut in_flight = 0usize;
-
-            $spawn_fn::<R, C>(connector, addrs[next_idx], local_address, &tx);
+            attempts.push(attempt::<C>(connector, addrs[next_idx], local_address));
             next_idx += 1;
-            in_flight += 1;
 
-            let mut delay: Pin<Box<dyn std::future::Future<Output = ()> + $fut_bound>> =
-                if next_idx < addrs.len() {
-                    Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY))
-                } else {
-                    Box::pin(std::future::pending())
-                };
+            let mut delay: Pin<
+                Box<dyn Future<Output = ()> $(+ $future_bound)* + '_>,
+            > = if next_idx < addrs.len() {
+                Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY))
+            } else {
+                Box::pin(std::future::pending())
+            };
 
             loop {
-                match ($WaitResult::<C>::wait(&mut rx, &mut delay)).await {
-                    $WaitResult::Message(Ok((stream, addr))) => return Ok((stream, addr)),
-                    $WaitResult::Message(Err(e)) => {
-                        last_err = e;
-                        in_flight -= 1;
-                        if in_flight == 0 {
+                let event = std::future::poll_fn(|cx| {
+                    for (index, attempt) in attempts.iter_mut().enumerate() {
+                        if let Poll::Ready((result, addr)) = attempt.as_mut().poll(cx) {
+                            return Poll::Ready(RaceEvent::Attempt {
+                                index,
+                                result,
+                                addr,
+                            });
+                        }
+                    }
+
+                    if let Poll::Ready(()) = delay.as_mut().poll(cx) {
+                        return Poll::Ready(RaceEvent::Delay);
+                    }
+
+                    Poll::Pending
+                })
+                .await;
+
+                match event {
+                    RaceEvent::Attempt {
+                        index,
+                        result,
+                        addr,
+                    } => {
+                        drop(attempts.swap_remove(index));
+                        let error = match result {
+                            Ok(stream) => return Ok((stream, addr)),
+                            Err(error) => error,
+                        };
+
+                        if attempts.is_empty() {
                             if next_idx >= addrs.len() {
-                                return Err(last_err);
+                                return Err(error);
                             }
-                            $spawn_fn::<R, C>(
+                            attempts.push(attempt::<C>(
                                 connector,
                                 addrs[next_idx],
                                 local_address,
-                                &tx,
-                            );
+                            ));
                             next_idx += 1;
-                            in_flight += 1;
                             delay = if next_idx < addrs.len() {
                                 Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY))
                             } else {
@@ -159,16 +205,14 @@ macro_rules! impl_race_connect {
                             };
                         }
                     }
-                    $WaitResult::Delay => {
+                    RaceEvent::Delay => {
                         if next_idx < addrs.len() {
-                            $spawn_fn::<R, C>(
+                            attempts.push(attempt::<C>(
                                 connector,
                                 addrs[next_idx],
                                 local_address,
-                                &tx,
-                            );
+                            ));
                             next_idx += 1;
-                            in_flight += 1;
                             delay = if next_idx < addrs.len() {
                                 Box::pin(R::sleep(HAPPY_EYEBALLS_DELAY))
                             } else {
@@ -176,82 +220,7 @@ macro_rules! impl_race_connect {
                             };
                         }
                     }
-                    $WaitResult::ChannelClosed => {
-                        return Err(last_err);
-                    }
                 }
-            }
-        }
-
-        fn $spawn_fn<R: $R, C: $C $(+ $extra_bound)*>(
-            connector: &C,
-            addr: SocketAddr,
-            local_address: Option<std::net::IpAddr>,
-            tx: &mpsc::UnboundedSender<Result<(C::Stream, SocketAddr), io::Error>>,
-        ) {
-            let connector = connector.clone();
-            let tx = tx.clone();
-            R::$spawn_method(async move {
-                let result = $connect_fn::<C>(&connector, addr, local_address).await;
-                let _ = tx.unbounded_send(result.map(|stream| (stream, addr)));
-            });
-        }
-
-        enum $WaitResult<C: $C $(+ $extra_bound)*> {
-            Message(Result<(C::Stream, SocketAddr), io::Error>),
-            Delay,
-            ChannelClosed,
-        }
-
-        impl<C: $C $(+ $extra_bound)*> $WaitResult<C> {
-            fn wait<'a>(
-                rx: &'a mut mpsc::UnboundedReceiver<
-                    Result<(C::Stream, SocketAddr), io::Error>,
-                >,
-                delay: &'a mut Pin<
-                    Box<dyn std::future::Future<Output = ()> + $fut_bound>,
-                >,
-            ) -> $WaitFuture<'a, C> {
-                $WaitFuture {
-                    rx,
-                    delay,
-                    _marker: std::marker::PhantomData,
-                }
-            }
-        }
-
-        struct $WaitFuture<'a, C: $C $(+ $extra_bound)*> {
-            rx: &'a mut mpsc::UnboundedReceiver<
-                Result<(C::Stream, SocketAddr), io::Error>,
-            >,
-            delay: &'a mut Pin<
-                Box<dyn std::future::Future<Output = ()> + $fut_bound>,
-            >,
-            _marker: std::marker::PhantomData<C>,
-        }
-
-        impl<C: $C $(+ $extra_bound)*> std::future::Future for $WaitFuture<'_, C> {
-            type Output = $WaitResult<C>;
-
-            fn poll(
-                self: Pin<&mut Self>,
-                cx: &mut Context<'_>,
-            ) -> Poll<Self::Output> {
-                // SAFETY: we only hold mutable references to sub-futures; we never move them.
-                let this = unsafe { self.get_unchecked_mut() };
-
-                if let Poll::Ready(msg) = Pin::new(&mut *this.rx).poll_next(cx) {
-                    return Poll::Ready(match msg {
-                        Some(result) => $WaitResult::Message(result),
-                        None => $WaitResult::ChannelClosed,
-                    });
-                }
-
-                if let Poll::Ready(()) = this.delay.as_mut().poll(cx) {
-                    return Poll::Ready($WaitResult::Delay);
-                }
-
-                Poll::Pending
             }
         }
     };
@@ -261,14 +230,10 @@ macro_rules! impl_race_connect {
 
 impl_race_connect! {
     race_fn: race_connect,
-    spawn_fn: spawn_attempt,
     connect_fn: tcp_connect_send,
-    wait_result: WaitResult,
-    wait_future: WaitFuture,
     connector_trait: ConnectorSend,
     runtime_trait: RuntimePoll,
-    spawn_method: spawn_send,
-    future_extra_bound: Send,
+    future_bounds: [Send],
 }
 
 // ── Local variant (compio) ───────────────────────────────────────────────────
@@ -308,19 +273,111 @@ pub(crate) async fn connect_happy_eyeballs_local<R: RuntimeLocal, C: ConnectorLo
 
 impl_race_connect! {
     race_fn: race_connect_local,
-    spawn_fn: spawn_attempt_local,
     connect_fn: tcp_connect_local,
-    wait_result: WaitResultLocal,
-    wait_future: WaitFutureLocal,
     connector_trait: ConnectorLocal: Clone,
     runtime_trait: RuntimeLocal,
-    spawn_method: spawn_local,
-    future_extra_bound: 'static,
+    future_bounds: [],
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug)]
+    struct DummyStream;
+
+    impl hyper::rt::Read for DummyStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl hyper::rt::Write for DummyStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(0))
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl crate::runtime::SocketConfig for DummyStream {
+        fn set_keepalive(
+            &self,
+            _time: Duration,
+            _interval: Option<Duration>,
+            _retries: Option<u32>,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct PendingConnector {
+        started: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+
+    struct AttemptGuard(Arc<AtomicUsize>);
+
+    impl Drop for AttemptGuard {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    async fn pending_attempt(connector: PendingConnector) -> io::Result<DummyStream> {
+        connector.started.fetch_add(1, Ordering::SeqCst);
+        let _guard = AttemptGuard(Arc::clone(&connector.dropped));
+        std::future::pending().await
+    }
+
+    impl ConnectorSend for PendingConnector {
+        type Stream = DummyStream;
+
+        fn connect(
+            &self,
+            _addr: SocketAddr,
+        ) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+            pending_attempt(self.clone())
+        }
+    }
+
+    impl ConnectorLocal for PendingConnector {
+        type Stream = DummyStream;
+
+        async fn connect(&self, _addr: SocketAddr) -> io::Result<Self::Stream> {
+            pending_attempt(self.clone()).await
+        }
+    }
+
+    fn pending_addrs() -> [SocketAddr; 2] {
+        [
+            "192.0.2.1:80".parse().unwrap(),
+            "198.51.100.1:80".parse().unwrap(),
+        ]
+    }
 
     #[test]
     fn interleave_leads_with_first_family_v6() {
@@ -523,6 +580,30 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn parent_cancellation_drops_tokio_attempts() {
+        use crate::runtime::RuntimeCompletion;
+        use crate::runtime::tokio_rt::TokioRuntime;
+
+        let connector = PendingConnector::default();
+        let started = Arc::clone(&connector.started);
+        let dropped = Arc::clone(&connector.dropped);
+        let result = crate::timeout::race_deadline(
+            connect_happy_eyeballs::<TokioRuntime, PendingConnector>(
+                &connector,
+                &pending_addrs(),
+                None,
+            ),
+            TokioRuntime::sleep(HAPPY_EYEBALLS_DELAY + Duration::from_millis(100)),
+        )
+        .await;
+
+        assert!(result.is_none(), "the cancellation deadline should win");
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
+
     #[cfg(feature = "compio")]
     #[test]
     fn local_connect_empty_addrs_errors() {
@@ -608,6 +689,32 @@ mod tests {
             )
             .await;
             assert!(result.is_err());
+        });
+    }
+
+    #[cfg(feature = "compio")]
+    #[test]
+    fn parent_cancellation_drops_compio_attempts() {
+        use crate::runtime::RuntimeCompletion;
+        use crate::runtime::compio_rt::CompioRuntime;
+
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let connector = PendingConnector::default();
+            let started = Arc::clone(&connector.started);
+            let dropped = Arc::clone(&connector.dropped);
+            let result = crate::timeout::race_deadline(
+                connect_happy_eyeballs_local::<CompioRuntime, PendingConnector>(
+                    &connector,
+                    &pending_addrs(),
+                    None,
+                ),
+                CompioRuntime::sleep(HAPPY_EYEBALLS_DELAY + Duration::from_millis(100)),
+            )
+            .await;
+
+            assert!(result.is_none(), "the cancellation deadline should win");
+            assert_eq!(started.load(Ordering::SeqCst), 2);
+            assert_eq!(dropped.load(Ordering::SeqCst), 2);
         });
     }
 
@@ -753,6 +860,32 @@ mod tests {
             )
             .await;
             assert!(result.is_err());
+        });
+    }
+
+    #[cfg(feature = "smol")]
+    #[test]
+    fn parent_cancellation_drops_smol_attempts() {
+        use crate::runtime::RuntimeCompletion;
+        use crate::runtime::smol_rt::SmolRuntime;
+
+        smol::block_on(async {
+            let connector = PendingConnector::default();
+            let started = Arc::clone(&connector.started);
+            let dropped = Arc::clone(&connector.dropped);
+            let result = crate::timeout::race_deadline(
+                connect_happy_eyeballs::<SmolRuntime, PendingConnector>(
+                    &connector,
+                    &pending_addrs(),
+                    None,
+                ),
+                SmolRuntime::sleep(HAPPY_EYEBALLS_DELAY + Duration::from_millis(100)),
+            )
+            .await;
+
+            assert!(result.is_none(), "the cancellation deadline should win");
+            assert_eq!(started.load(Ordering::SeqCst), 2);
+            assert_eq!(dropped.load(Ordering::SeqCst), 2);
         });
     }
 

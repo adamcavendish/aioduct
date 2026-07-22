@@ -1,5 +1,7 @@
 #![cfg(feature = "tokio")]
 
+#[path = "timeouts/connection_acquisition.rs"]
+mod connection_acquisition;
 #[path = "timeouts/read_timeout.rs"]
 mod read_timeout;
 #[path = "timeouts/request_timeout.rs"]

@@ -9,6 +9,8 @@ mod client_behavior;
 #[cfg(feature = "rustls")]
 #[path = "compio_integration/connect_tunnel.rs"]
 mod connect_tunnel;
+#[path = "compio_integration/connection_deadline.rs"]
+mod connection_deadline;
 #[path = "compio_integration/forward_local.rs"]
 mod forward_local;
 #[path = "compio_integration/forward_upgrades.rs"]

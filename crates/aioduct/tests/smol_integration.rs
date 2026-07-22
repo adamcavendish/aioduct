@@ -1,5 +1,8 @@
 #![cfg(feature = "smol")]
 
+#[path = "smol_integration/connection_deadline.rs"]
+mod connection_deadline;
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;

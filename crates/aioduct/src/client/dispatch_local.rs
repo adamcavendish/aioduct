@@ -3,6 +3,7 @@ use http::Uri;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use super::connection_deadline::ConnectionDeadline;
 use super::connection_lifecycle::{H2ConnectGuard, PooledSendError};
 use super::replay::{ReplayReason, RequestReplayPolicy};
 use super::request_replay::{ReplayableRequestHead, replay_request_local};
@@ -334,18 +335,21 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             },
         );
 
+        let mut connection_deadline = ConnectionDeadline::new(connect_timeout);
         let mut owns_h2_mark = false;
         if may_h2 && can_use_pooled_connection && {
             let already_marked = self.core.pool.mark_connecting_h2(&pool_key);
             owns_h2_mark = !already_marked;
             already_marked
         } {
-            let wait_budget = connect_timeout.unwrap_or(std::time::Duration::from_secs(5));
             let poll_interval = std::time::Duration::from_millis(5);
-            let max_polls =
-                (wait_budget.as_millis() / poll_interval.as_millis().max(1)).clamp(1, 200);
+            let max_polls = if connect_timeout.is_some() {
+                usize::MAX
+            } else {
+                200
+            };
             for _ in 0..max_polls {
-                R::sleep(poll_interval).await;
+                connection_deadline.sleep::<R>(poll_interval).await?;
                 if let Some(mut conn) = self.core.pool.checkout(&pool_key)
                     && body_replayability
                         .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
@@ -438,6 +442,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                 pool_checkout_start,
                             );
                             request = *recovered;
+                            connection_deadline = ConnectionDeadline::new(connect_timeout);
                             break;
                         }
                         Err(PooledSendError::Failed(e))
@@ -487,6 +492,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                 let signature_headers = signature.sign_local().await?;
                                 signature_headers.insert_into(request.headers_mut())?;
                             }
+                            connection_deadline = ConnectionDeadline::new(connect_timeout);
                             break;
                         }
                         Err(error) => {
@@ -529,6 +535,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             .pool
             .try_reserve_active(&pool_key)
             .map_err(Error::from)?;
+        connection_deadline.check()?;
 
         self.core.pool.record_checkout_miss();
 
@@ -563,16 +570,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     .map(|connection| (connection, None))
                 }
             };
-            match connect_timeout {
-                Some(duration) => {
-                    crate::timeout::Timeout::WithTimeout {
-                        future: connect_fut,
-                        sleep: R::sleep(duration),
-                    }
-                    .await?
-                }
-                None => connect_fut.await?,
-            }
+            connection_deadline.run::<R, _, _>(connect_fut).await?
         } else {
             let host = authority.host();
             let port = destination.effective_port();
@@ -581,7 +579,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             let addrs = if let Some(addr) = force_addr {
                 vec![addr]
             } else {
-                self.core.resolve_all_authority_raw(host, port).await?
+                connection_deadline
+                    .run::<R, _, _>(self.core.resolve_all_authority_raw(host, port))
+                    .await?
             };
             self.core.notify(
                 request.method(),
@@ -752,7 +752,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             };
 
             let (conn, connect_done, pending_h1_probe) =
-                crate::timeout::connect_timeout::<R, _, _>(connect_fut, connect_timeout).await?;
+                connection_deadline.run::<R, _, _>(connect_fut).await?;
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             if is_https {
                 if let Some(tls_dur) = conn.tls_handshake_duration {
