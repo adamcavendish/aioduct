@@ -5,6 +5,7 @@ mod builder_setters;
 mod connect_handshake;
 mod connect_protocol_local;
 mod connect_protocol_send;
+mod connection_deadline;
 mod connection_lifecycle;
 mod dispatch_local;
 mod dispatch_send;

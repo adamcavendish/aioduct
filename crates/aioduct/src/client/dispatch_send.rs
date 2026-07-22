@@ -4,6 +4,7 @@ use bytes::Bytes;
 use http::Uri;
 use std::time::Duration;
 
+use super::connection_deadline::ConnectionDeadline;
 use super::connection_lifecycle::{H2ConnectGuard, PooledSendError};
 use super::replay::{ReplayReason, RequestReplayPolicy, StaleReplayBudget};
 use super::{BodyReplayability, FreshConnectionRequired, HttpEngineCore, HttpEngineSend};
@@ -403,6 +404,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         }
 
+        let mut connection_deadline = ConnectionDeadline::new(connect_timeout);
+        let mut fresh_after_pooled_recovery = false;
         let mut pre_resolved_addrs = None;
 
         // Connection coalescing: try to reuse an h2/h3 connection whose TLS cert
@@ -417,10 +420,23 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         {
             let port = authority.port_u16().unwrap_or(443);
             let dns_start = Instant::now();
-            let addrs = self
-                .core
-                .resolve_all_authority_raw(authority.host(), port)
-                .await?;
+            let addrs = match connection_deadline
+                .run::<R, _, _>(self.core.resolve_all_authority_raw(authority.host(), port))
+                .await
+            {
+                Ok(addrs) => addrs,
+                Err(error) => {
+                    self.core.notify(
+                        request.method(),
+                        original_uri,
+                        RequestPhase::PoolCheckoutComplete {
+                            outcome: observer::PoolOutcome::Miss,
+                            blocked_duration: pool_checkout_start.elapsed(),
+                        },
+                    );
+                    return Err(error);
+                }
+            };
             self.core.notify(
                 request.method(),
                 original_uri,
@@ -534,6 +550,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                             pool_checkout_start,
                         );
                         request = *recovered;
+                        fresh_after_pooled_recovery = true;
                     }
                     Err(PooledSendError::Failed(e))
                         if saved_request.is_some()
@@ -561,6 +578,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         ) {
                             self.core.alt_svc_cache.suppress_h3(authority);
                         }
+                        fresh_after_pooled_recovery = true;
                         if conn.is_h2_or_h3() {
                             let evict_key = conn.key.as_ref().unwrap_or(&pool_key);
                             self.core.pool.evict(evict_key);
@@ -627,6 +645,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
         }
 
+        if fresh_after_pooled_recovery {
+            connection_deadline = ConnectionDeadline::new(connect_timeout);
+        }
+
         #[cfg(all(feature = "http3", feature = "rustls"))]
         let mut pool_miss_recorded = false;
         #[cfg(not(all(feature = "http3", feature = "rustls")))]
@@ -679,9 +701,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 } else if can_reuse_pre_resolved && let Some(addrs) = pre_resolved_addrs.take() {
                     (addrs, false)
                 } else {
-                    match self
-                        .core
-                        .resolve_all_authority_raw(connect_host, h3_port)
+                    match connection_deadline
+                        .run::<R, _, _>(self.core.resolve_all_authority_raw(connect_host, h3_port))
                         .await
                     {
                         Ok(addrs) => (addrs, true),
@@ -690,6 +711,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 self.core.alt_svc_cache.suppress_h3(authority);
                             }
                             if opportunistic_h3 {
+                                connection_deadline = ConnectionDeadline::new(connect_timeout);
                                 break 'h3_dispatch;
                             }
                             return Err(error);
@@ -723,23 +745,20 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         &sni_host,
                         self.core.local_address,
                     );
-                    let (mut pooled, addr) = match crate::timeout::connect_timeout::<R, _, _>(
-                        h3_connect_fut,
-                        connect_timeout,
-                    )
-                    .await
-                    {
-                        Ok(connected) => connected,
-                        Err(error) => {
-                            if used_alt_svc {
-                                self.core.alt_svc_cache.suppress_h3(authority);
+                    let (mut pooled, addr) =
+                        match connection_deadline.run::<R, _, _>(h3_connect_fut).await {
+                            Ok(connected) => connected,
+                            Err(error) => {
+                                if used_alt_svc {
+                                    self.core.alt_svc_cache.suppress_h3(authority);
+                                }
+                                if opportunistic_h3 {
+                                    connection_deadline = ConnectionDeadline::new(connect_timeout);
+                                    break 'h3_dispatch;
+                                }
+                                return Err(error);
                             }
-                            if opportunistic_h3 {
-                                break 'h3_dispatch;
-                            }
-                            return Err(error);
-                        }
-                    };
+                        };
                     self.core.notify(
                         request.method(),
                         original_uri,
@@ -844,6 +863,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 let signature_headers = signature.sign_send().await?;
                                 signature_headers.insert_into(request.headers_mut())?;
                             }
+                            connection_deadline = ConnectionDeadline::new(connect_timeout);
                         }
                         Err(error)
                             if opportunistic_h3
@@ -878,6 +898,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 let signature_headers = signature.sign_send().await?;
                                 signature_headers.insert_into(request.headers_mut())?;
                             }
+                            connection_deadline = ConnectionDeadline::new(connect_timeout);
                             break 'h3_dispatch;
                         }
                         Err(error) => {
@@ -933,12 +954,14 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             owns_h2_mark = !already_marked;
             already_marked
         } {
-            let wait_budget = connect_timeout.unwrap_or(std::time::Duration::from_secs(5));
             let poll_interval = std::time::Duration::from_millis(5);
-            let max_polls =
-                (wait_budget.as_millis() / poll_interval.as_millis().max(1)).clamp(1, 200);
+            let max_polls = if connect_timeout.is_some() {
+                usize::MAX
+            } else {
+                200
+            };
             for _ in 0..max_polls {
-                R::sleep(poll_interval).await;
+                connection_deadline.sleep::<R>(poll_interval).await?;
                 if let Some(mut conn) = self.core.pool.checkout(&pool_key)
                     && body_replayability
                         .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
@@ -1031,6 +1054,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 pool_checkout_start,
                             );
                             request = *recovered;
+                            connection_deadline = ConnectionDeadline::new(connect_timeout);
                             break;
                         }
                         Err(PooledSendError::Failed(e))
@@ -1093,6 +1117,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                                 let signature_headers = signature.sign_send().await?;
                                 signature_headers.insert_into(request.headers_mut())?;
                             }
+                            connection_deadline = ConnectionDeadline::new(connect_timeout);
                             break;
                         }
                         Err(error) => {
@@ -1143,6 +1168,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .pool
             .try_reserve_active(&pool_key)
             .map_err(Error::from)?;
+        connection_deadline.check()?;
 
         if !pool_miss_recorded {
             self.core.pool.record_checkout_miss();
@@ -1179,16 +1205,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         "unix socket support requires tokio or smol feature".into(),
                     ))
                 };
-                let connection = match connect_timeout {
-                    Some(duration) => {
-                        crate::timeout::Timeout::WithTimeout {
-                            future: connect_fut,
-                            sleep: R::sleep(duration),
-                        }
-                        .await?
-                    }
-                    None => connect_fut.await?,
-                };
+                let connection = connection_deadline.run::<R, _, _>(connect_fut).await?;
                 (connection, None)
             }
             #[cfg(not(unix))]
@@ -1223,16 +1240,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     .map(|connection| (connection, None))
                 }
             };
-            match connect_timeout {
-                Some(duration) => {
-                    crate::timeout::Timeout::WithTimeout {
-                        future: connect_fut,
-                        sleep: R::sleep(duration),
-                    }
-                    .await?
-                }
-                None => connect_fut.await?,
-            }
+            connection_deadline.run::<R, _, _>(connect_fut).await?
         } else {
             let host = authority.host();
             let port = destination.effective_port();
@@ -1243,7 +1251,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             } else if let Some(addrs) = pre_resolved_addrs.take() {
                 (addrs, false)
             } else {
-                (self.core.resolve_all_authority_raw(host, port).await?, true)
+                (
+                    connection_deadline
+                        .run::<R, _, _>(self.core.resolve_all_authority_raw(host, port))
+                        .await?,
+                    true,
+                )
             };
             if report_dns {
                 self.core.notify(
@@ -1433,7 +1446,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             };
 
             let (conn, connect_done, pending_h1_probe) =
-                crate::timeout::connect_timeout::<R, _, _>(connect_fut, connect_timeout).await?;
+                connection_deadline.run::<R, _, _>(connect_fut).await?;
             let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
             if is_https {
                 if let Some(tls_dur) = conn.tls_handshake_duration {
