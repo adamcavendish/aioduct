@@ -62,42 +62,28 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .notify(request.method(), original_uri, RequestPhase::Started);
         let pool_checkout_start = Instant::now();
 
-        let scheme = original_uri
-            .scheme()
-            .ok_or_else(|| Error::InvalidUrl("missing scheme".into()))?;
-        let authority = original_uri
+        let authority_for_probe = original_uri
             .authority()
             .ok_or_else(|| Error::InvalidUrl("missing authority".into()))?;
-
-        let is_https = scheme == &http::uri::Scheme::HTTPS;
-
-        // Resolve AdaptiveH2c via the probe cache.
-        let mut effective_protocol = match protocol {
-            ProtocolHint::AdaptiveH2c => {
-                match self.core.h2c_probe_cache.lookup(authority) {
-                    Some(true) => ProtocolHint::H2c,
-                    Some(false) => ProtocolHint::Auto,
-                    None => ProtocolHint::AdaptiveH2c, // needs probing
-                }
-            }
-            other => other,
+        let cached_h2c = if protocol == ProtocolHint::AdaptiveH2c {
+            self.core.h2c_probe_cache.lookup(authority_for_probe)
+        } else {
+            None
         };
-
-        // Through proxies, uncached AdaptiveH2c resolves to Auto (H1):
-        // probing requires re-establishing the proxy tunnel on failure,
-        // which is disproportionate. Use .h2c() to force h2c through proxies.
-        // Must resolve BEFORE pool-key construction so the guard and mark
-        // are keyed correctly.
-        let through_proxy = self.core.proxy_chain.is_some()
-            || self
-                .core
-                .proxy
-                .as_ref()
-                .and_then(|s| s.proxy_for(original_uri))
-                .is_some();
-        if through_proxy && effective_protocol == ProtocolHint::AdaptiveH2c {
-            effective_protocol = ProtocolHint::Auto;
-        }
+        let proxy_dispatch_route = crate::proxy::ProxyDispatchRoute::resolve(
+            original_uri,
+            self.core.proxy_chain.as_ref(),
+            self.core.proxy.as_ref(),
+            protocol,
+            cached_h2c,
+        )?;
+        let destination = proxy_dispatch_route.destination();
+        let scheme = destination.scheme();
+        let authority = destination.authority();
+        let is_https = scheme == &http::uri::Scheme::HTTPS;
+        let effective_protocol = proxy_dispatch_route.protocol_hint();
+        let through_proxy = proxy_dispatch_route.is_proxied();
+        let proxy_route = proxy_dispatch_route.pool_identity();
         if effective_protocol == ProtocolHint::Http3 {
             if through_proxy {
                 return Err(Error::Unsupported(
@@ -120,22 +106,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ProtocolHint::Http2 | ProtocolHint::H2c | ProtocolHint::AdaptiveH2c
         );
         let force_h1 = effective_protocol == ProtocolHint::Http1;
-
-        // Compute a stable proxy route identity for pool-key segregation.
-        // Requests through different proxies (or direct vs proxied) must not
-        // share connections.
-        let proxy_route = if let Some(ref chain) = self.core.proxy_chain {
-            crate::pool::ProxyRoute::from_hash(chain.route_hash())
-        } else if let Some(ref config) = self
-            .core
-            .proxy
-            .as_ref()
-            .and_then(|s| s.proxy_for(original_uri))
-        {
-            crate::pool::ProxyRoute::from_hash(config.route_hash())
-        } else {
-            crate::pool::ProxyRoute::DIRECT
-        };
 
         let mut pool_key = crate::pool::PoolKey::with_hint_and_route(
             scheme.clone(),
@@ -1067,12 +1037,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             active: may_h2 && owns_h2_mark,
         };
 
-        let proxy = self
-            .core
-            .proxy
-            .as_ref()
-            .and_then(|settings| settings.proxy_for(original_uri));
-
         #[cfg(unix)]
         let unix_socket = self.core.unix_socket.as_ref();
         #[cfg(not(unix))]
@@ -1093,7 +1057,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let proxy_force_h2c = force_h2c;
 
         let mut pooled = if let Some(unix_path) = unix_socket {
-            let _ = &proxy;
             // unix_path is unused on non-unix or when neither tokio nor smol is active
             #[cfg(not(all(unix, any(feature = "tokio", feature = "smol"))))]
             let _ = unix_path;
@@ -1136,7 +1099,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             }
             #[cfg(not(unix))]
             unreachable!()
-        } else if let Some(ref chain) = self.core.proxy_chain {
+        } else if let Some(chain) = proxy_dispatch_route.chain() {
             self.connect_via_proxy_chain_send(
                 chain,
                 authority,
@@ -1145,7 +1108,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 proxy_force_h2c,
             )
             .await?
-        } else if let Some(ref proxy) = proxy {
+        } else if let Some(proxy) = proxy_dispatch_route.single_proxy() {
             self.connect_via_proxy_send(
                 proxy,
                 authority,
@@ -1155,9 +1118,8 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             )
             .await?
         } else {
-            let default_port = if is_https { 443 } else { 80 };
             let host = authority.host();
-            let port = authority.port_u16().unwrap_or(default_port);
+            let port = destination.effective_port();
 
             let dns_start = Instant::now();
             let addrs = if let Some(addr) = force_addr {
