@@ -22,13 +22,14 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 | `deflate`| flate2                            | Stable       | Deflate response decompression       |
 | `brotli` | brotli                            | Stable       | Brotli response decompression        |
 | `zstd`   | zstd                              | Stable       | Zstd response decompression          |
-| `blocking`| tokio                            | Stable       | Synchronous blocking client wrapper  |
+| `blocking`| selected native runtime          | Stable       | Synchronous wrapper for Tokio, smol, or compio clients |
 | `hickory-dns` | hickory-resolver, tokio      | Stable       | DNS resolution via hickory           |
 | `doh`   | hickory-resolver (https)            | Stable       | DNS-over-HTTPS (implies `hickory-dns`) |
 | `dot`   | hickory-resolver (tls)              | Stable       | DNS-over-TLS (implies `hickory-dns`)   |
 | `tower`  | tower-service, tower-layer        | Stable       | Tower Service/Layer integration      |
 | `tracing`| tracing                           | Stable       | Tracing spans for HTTP requests      |
 | `otel`   | opentelemetry, opentelemetry-http | Stable       | OpenTelemetry middleware             |
+| `precise-timing` | none                       | Stable       | Use `std::time::Instant` instead of the default coarse clock for sub-millisecond observer and timeout measurements |
 | `http3`  | [h3](https://crates.io/crates/h3), quinn | Experimental | HTTP/3 transport; currently requires Tokio, `rustls`, and one rustls provider |
 
 ## TLS Provider Features
@@ -70,7 +71,7 @@ aioduct = { version = "0.2.4", features = ["compio"] }
 # HTTPS + JSON + compression, tokio runtime
 aioduct = { version = "0.2.4", features = ["tokio", "rustls", "rustls-ring", "json", "gzip", "brotli", "zstd", "deflate"] }
 
-# Blocking client (synchronous)
+# Blocking client (select one native runtime; Tokio shown)
 aioduct = { version = "0.2.4", features = ["tokio", "rustls", "rustls-ring", "blocking"] }
 
 # With tracing and OpenTelemetry

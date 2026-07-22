@@ -13,8 +13,9 @@ Markers:
 | ⚠      | Platform-managed (delegated to host runtime) |
 | —      | Not applicable |
 
-Lines in [brackets] reference the implementation file and line number for ⚠
-claims. Feature flags in backticks cite the cfg gate enabling the capability.
+Numbered footnotes explain which platform owns each ⚠ capability and name the
+relevant implementation module or symbol. Feature flags in backticks cite the
+cfg gate enabling the capability.
 
 ## Feature Comparison
 
@@ -26,8 +27,7 @@ claims. Feature flags in backticks cite the cfg gate enabling the capability.
 | Custom method | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✓ `wasm` | ✓ `wasi-p2` |
 
 All backends support the six standard methods plus an arbitrary-method
-`request()` entry point. WASM: `wasm.rs` lines 37-76. WASI-P2: `wasi_p2.rs`
-lines 69-111.
+`request()` entry point through `WasmClient` or `WasiClient`.
 
 ### Request Headers
 
@@ -37,9 +37,9 @@ lines 69-111.
 | Override (batch) | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✓ `wasm` | ✓ `wasi-p2` |
 | Default headers | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✓ `wasm` | ✓ `wasi-p2` |
 
-All backends support setting headers per-request and configuring default headers
-on the client builder. WASM: `wasm.rs` lines 185-194 (set), 92-96 (default).
-WASI-P2: `wasi_p2.rs` lines 167-176 (set), 38-42 (default).
+All backends support setting headers per request and configuring default
+headers on their client builder. The platform implementations live on
+`WasmRequestBuilder` and `WasiRequestBuilder`.
 
 ### HTTP Message Signatures
 
@@ -94,12 +94,9 @@ the portable context APIs instead.
 | Digest auth | ✓ | ✓ | ✓ | ✗ | ✗ |
 | Netrc | ✓ | ✓ | ✓ | ✗ | ✗ |
 
-WASM: `wasm.rs` `bearer_auth()` at line 203 and `basic_auth()` at line 215 set
-the `Authorization` header with Bearer/Basic credentials. `basic_auth()` uses
-base64 encoding (matching the native implementation).
-
-WASI-P2: `wasi_p2.rs` `bearer_auth()` at line 197 and `basic_auth()` at line
-210 set the `Authorization` header identically.
+`WasmRequestBuilder` and `WasiRequestBuilder` implement `bearer_auth()` and
+`basic_auth()` by setting the `Authorization` header. `basic_auth()` uses
+base64 encoding, matching the native implementation.
 
 Digest auth and netrc-based auth are not integrated into WASM or WASI-P2 clients
 — the portable types compile but are not wired into the request flow.
@@ -138,9 +135,9 @@ WASI-P2: `wasi_p2.rs` accepts `impl Into<Bytes>` via `body()` and URL-encoded
 string forms via `form()`. No streaming or multipart integration. JSON is
 available with `cfg(feature = "json")`.
 
-Native runtimes support streaming bodies via `RequestBodySend`, multipart via
-the `multipart` module, string-pair form encoding, and serializable form values
-through `serde_urlencoded`.
+Native runtimes support streaming bodies via `RequestBodySend` or
+`RequestBodyLocal`, multipart via the `multipart` module, string-pair form
+encoding, and serializable form values through `serde_urlencoded`.
 
 ### Response Body
 
@@ -152,14 +149,14 @@ through `serde_urlencoded`.
 | Streaming (`into_bytes_stream()`) | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✓ `wasm` | ⚠ sync-only [1] |
 | SSE (Server-Sent Events) | ✓ | ✓ | ✓ | ✗ | ✗ |
 
-[1] WASI-P2: `wasi_p2.rs` lines 426-453. `into_bytes_stream()` returns
-`WasiBodyStream` which uses `blocking_read` internally — the stream's `next()`
-is synchronous (line 486: `stream.blocking_read(64 * 1024)`), not truly async.
-It blocks the calling thread. This is adequate for single-threaded WASI
-environments but not for concurrent workloads.
+[1] WASI-P2: `WasiResponse::into_bytes_stream()` returns `WasiBodyStream`,
+which uses the WASI input stream's `blocking_read` operation internally. Its
+`next()` operation blocks the calling thread and is not an asynchronous poll.
+This is adequate for simple single-threaded WASI guests but not for concurrent
+workloads.
 
-WASM: `wasm.rs` lines 442-453. `into_bytes_stream()` returns `WasmBodyStream`
-which wraps the browser's `ReadableStream` — fully async via `JsFuture`.
+WASM: `WasmResponse::into_bytes_stream()` returns `WasmBodyStream`, which wraps
+the browser's `ReadableStream` and waits asynchronously through `JsFuture`.
 
 SSE: The `SseDecoder` (portable) can parse event streams from raw bytes on any
 target. However, the streaming `SseStream<B>` type requires `B: Body<Data =
@@ -174,11 +171,11 @@ Feed bytes through `SseDecoder` manually on these targets.
 | Max redirects | ✓ | ✓ | ✓ | ⚠ browser-managed [2] | ✗ |
 | Custom policy | ✓ | ✓ | ✓ | ✗ | ✗ |
 
-[2] WASM: `wasm.rs` line 267 creates a `web_sys::Request` via
-`new_with_str_and_init`. The `RequestInit` does not set a `redirect` mode —
-the browser's default of `follow` applies. The user cannot inspect or control
-the redirect count, nor apply a custom policy. The `RedirectPolicy` type
-(`redirect.rs`) is portable but not wired into `WasmClient`.
+[2] WASM: `WasmRequestBuilder::send()` creates a `web_sys::Request` without
+overriding `RequestInit.redirect`, so the browser's default `follow` mode
+applies. The user cannot inspect or control the redirect count or apply a
+custom policy. The portable `RedirectPolicy` type is not wired into
+`WasmClient`.
 
 WASI-P2: `wasi_p2.rs` has no redirect handling; the response is returned
 as-is. The `RedirectPolicy` type is not integrated.
@@ -193,12 +190,12 @@ Native runtimes execute redirects in the client engine (gated behind
 | Cookie jar (store/apply) | ✓ | ✓ | ✓ | ⚠ browser-managed [3] | ✗ |
 | Set-Cookie handling | ✓ | ✓ | ✓ | ⚠ browser-managed [3] | ✗ |
 
-[3] WASM: The browser's fetch API handles cookies transparently — `Set-Cookie`
-headers are processed and `Cookie` headers are attached automatically. The
-`CookieJar` portable module (`cookie/mod.rs`) compiles on WASM and can be used
-manually, but it is not integrated into `WasmClient` (no automatic
-`store_from_response` or `apply_to_request` calls). Marked ⚠ because cookie
-behavior exists but is opaque to the application.
+[3] WASM: Cookie handling follows the browser's Fetch credentials and CORS
+policy. Same-origin cookies use the browser-managed cookie store by default;
+cross-origin behavior depends on browser policy, and `WasmClient` does not
+currently expose a credentials-mode control. The portable `CookieJar` module
+compiles on WASM but is not integrated into `WasmClient`, and forbidden
+`Set-Cookie` response fields are not exposed to application code.
 
 WASI-P2: No cookie jar integration. The `CookieJar` type is available as a
 portable module for manual use.
@@ -211,12 +208,11 @@ portable module for manual use.
 | Connect timeout | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ explicit error [4] | ⚠ WASI-mapped [5] |
 | Read timeout | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ explicit error [4] | ⚠ WASI-mapped [5] |
 
-[4] WASM: `wasm.rs` lines 258-264 create an `AbortController` and attach its
-signal to the `RequestInit`. A `setTimeout` callback (lines 276-288 for Window,
-296-310 for Worker) fires `controller.abort()` after the timeout duration
-elapses. This is a combined request-level timeout; finer-grained connect/read
-timeouts are not available. Calling those request-builder controls records an
-unsupported-operation error returned by `send()`.
+[4] WASM: `WasmRequestBuilder::send()` creates an `AbortController`, attaches
+its signal to `RequestInit`, and schedules `controller.abort()` through the
+available Window or Worker timer API. This is one request-level timeout;
+finer-grained connect/read timeouts are unavailable. Calling those builder
+controls records an unsupported-operation error returned by `send()`.
 
 [5] WASI-P2: the user's request timeout is converted to nanoseconds and passed
 to all three WASI `RequestOptions` fields: `connect_timeout`,
@@ -248,14 +244,12 @@ The `proxy` module types compile but are not integrated.
 | Custom resolver | ✓ `hickory-dns` | ✓ `hickory-dns` | ✓ `hickory-dns` | ⚠ browser-managed [6] | ⚠ WASI-managed [7] |
 | System resolver | ✓ | ✓ | ✓ | ⚠ browser-managed [6] | ⚠ WASI-managed [7] |
 
-[6] WASM: The browser resolves DNS internally. The `web_sys::Request` /
-`fetch()` interface provides no DNS configuration hooks. `wasi_p2.rs` module
-doc comment (line 4-5): "TLS, connection pooling, and DNS resolution are
-handled transparently by the WASI runtime."
+[6] WASM: The browser resolves DNS internally. The `web_sys::Request` and
+`fetch()` interfaces provide no DNS configuration hooks.
 
-[7] WASI-P2: DNS is resolved by the WASI runtime (e.g., wasmtime). The
-`wasi:http/outgoing-handler` does not expose DNS resolver configuration.
-`wasi_p2.rs` lines 4-5 document this.
+[7] WASI-P2: DNS is resolved by the WASI runtime, such as Wasmtime. The
+`wasi:http/outgoing-handler` interface does not expose DNS resolver
+configuration.
 
 ### TLS
 
@@ -265,14 +259,13 @@ handled transparently by the WASI runtime."
 | Platform-native certs | ✓ `rustls-native-roots` | ✓ `rustls-native-roots` | ✓ `rustls-native-roots` | — | — |
 | Client certificates | ✓ `rustls` | ✓ `rustls` | ✓ `rustls` | ✗ | ✗ |
 
-[8] WASM: The browser's fetch API handles TLS negotiation automatically. No TLS
-configuration is exposed. `lib.rs` line 122-123: `tls` module gated behind
-`#[cfg(not(target_arch = "wasm32"))]`.
+[8] WASM: The browser's Fetch API handles TLS negotiation automatically. No TLS
+configuration is exposed, and the native `tls` module is unavailable on
+`wasm32`.
 
-[9] WASI-P2: The WASI runtime manages TLS. `wasi_p2.rs` module doc comment
-(lines 4-5): "TLS, connection pooling, and DNS resolution are handled
-transparently by the WASI runtime." No client-certificate or TLS-version
-configuration is available.
+[9] WASI-P2: The WASI runtime manages TLS through
+`wasi:http/outgoing-handler`. No client-certificate or TLS-version
+configuration is available through `WasiClient`.
 
 ### Connection Pooling
 
@@ -284,11 +277,10 @@ configuration is available.
 | max_lifetime | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ⚠ browser-managed [10] | ⚠ WASI-managed [11] |
 
 [10] WASM: The browser manages HTTP connection pools internally. No pool
-configuration is exposed. `lib.rs` line 104-105: `pool` module gated behind
-`#[cfg(not(target_arch = "wasm32"))]`.
+configuration is exposed, and the native pool is unavailable on `wasm32`.
 
-[11] WASI-P2: The WASI runtime manages connection pooling. `wasi_p2.rs` lines
-4-5 document this. No pool knobs are available.
+[11] WASI-P2: The WASI runtime manages connection pooling behind
+`wasi:http/outgoing-handler`; `WasiClient` exposes no pool controls.
 
 ### Retry
 
@@ -398,9 +390,8 @@ The WASI-P2 client (`wasi_p2.rs`) uses the **`wasi:http/outgoing-handler`**
 interface. This interface is intentionally high-level:
 
 - **TLS, DNS, connection pooling**: The WASI component model abstracts these
-  away. `wasi_p2.rs` lines 4-5: "TLS, connection pooling, and DNS resolution
-  are handled transparently by the WASI runtime (e.g., wasmtime)."
-  Configuration depends entirely on the host runtime.
+  away behind `wasi:http/outgoing-handler`. Configuration depends entirely on
+  the host runtime.
 
 - **Redirects and cookies**: `outgoing-handler` does not include redirect
   following or cookie management. These must be implemented in the client, but
@@ -408,8 +399,8 @@ interface. This interface is intentionally high-level:
   or `CookieJar` types.
 
 - **Timeout**: Timeout values are passed through to the WASI runtime via
-  `RequestOptions` (lines 287-292). Whether they are honored depends on the
-  runtime implementation.
+  `RequestOptions`. Whether they are honored depends on the runtime
+  implementation.
 
 - **Streaming response body**: The WASI-P2 `InputStream` uses `blocking_read`,
   which is synchronous. This is consistent with the WASI Preview 2 model but

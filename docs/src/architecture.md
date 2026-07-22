@@ -2,89 +2,66 @@
 
 ## Module Layout
 
-```
+```text
 src/
-  lib.rs              # Re-exports, compile_error gate, type aliases
-  error.rs            # Error enum, type aliases
-  engine.rs           # HttpEngineCore<B>, HttpEngineSend<R,C>, HttpEngineLocal<R,C>
-  engine_builder.rs   # HttpEngineBuilder<R,C> — fluent client configuration
-  request.rs          # RequestBuilderSend<R,C>, RequestBuilderLocal<R,C>
-  response.rs         # ResponseBodySend, ResponseBodyLocal — status, headers, body consumption
-  body.rs             # BodyStream, RequestBody (buffered/streaming)
-  timeout.rs          # Pin-projected Timeout future
-  cookie.rs           # CookieJar, Cookie, Set-Cookie parsing
-  cache.rs            # HttpCache, CacheConfig — in-memory HTTP cache
-  retry.rs            # RetryConfig, RetryBudget — exponential backoff
-  throttle.rs         # RateLimiter — token-bucket rate limiting
-  bandwidth.rs        # BandwidthLimiter — byte-rate download throttle
-  redirect.rs         # RedirectPolicy, RedirectAction
-  middleware.rs       # Middleware trait
-  digest_auth.rs      # DigestAuth — HTTP Digest challenge-response
-  netrc.rs            # Netrc, NetrcMiddleware — .netrc credential injection
-  happy_eyeballs.rs   # RFC 6555 IPv6/IPv4 connection racing
-  sse.rs              # SseStream, SseEvent — Server-Sent Events
-  multipart.rs        # Multipart, Part — multipart/form-data
-  chunk_download.rs   # ChunkDownloadSend/Local — parallel range requests
-  upgrade.rs          # UpgradedSend/Local — HTTP/1.1 protocol upgrade
-  decompress.rs       # DecompressBody — gzip/brotli/zstd/deflate
-  proxy.rs            # ProxyConfig, ProxySettings, NoProxy
-  socks4.rs           # SOCKS4/4a handshake
-  socks5.rs           # SOCKS5 handshake
-  blocking.rs         # Blocking client wrapper (requires tokio)
-  traits.rs           # HttpClient, RequestBuilderExt, ResponseExt, ByteStreamExt
-  runtime/
-    mod.rs            # RuntimeCompletion, RuntimePoll, RuntimeLocal traits
-    tokio_rt.rs       # TokioRuntime, TcpConnector, TokioIo
-    smol_rt.rs        # SmolRuntime, TcpConnector, SmolIo
-    compio_rt.rs      # CompioRuntime, TcpConnector
-  connector.rs        # ConnectorSend, ConnectorLocal traits, SocketConfig
-  pool/
-    mod.rs            # ConnectionPool — keyed pooling
-    connection.rs     # PooledConnection, HttpConnection enum
-  tls/
-    mod.rs            # TlsConnect trait, re-exports
-    rustls_connector.rs  # RustlsConnector, TlsStream, ALPN
-  h3/
-    mod.rs            # HTTP/3 transport (experimental)
-  http2.rs            # Http2Config
-  hickory.rs          # HickoryResolver (requires hickory-dns)
-  wasm/               # WASM/browser runtime
+  lib.rs                  # Public exports, feature gates, client aliases
+  client/                 # Engines, builders, request flow, dispatch, replay,
+                          # connection deadlines, and proxy establishment
+  request/                # RequestBuilderSend and RequestBuilderLocal
+  response/               # Response and body transforms/consumption
+  body/                   # Buffered and streaming request/response bodies
+  forward/                # Forward builders, dispatch plans, targets, headers,
+                          # and trailer policy
+  proxy/                  # Proxy configuration, immutable routes, chains,
+                          # bypass rules, and establishment plans
+  connector/              # ConnectorSend and ConnectorLocal
+  runtime/                # Runtime traits, executors, resolvers, and adapters
+  pool/                   # Pool keys, connection handles, and accounting
+  tls/                    # TLS traits plus the rustls connector state machine
+  h3/                     # HTTP/3 request lifecycle and Quinn adapter
+  message_signatures/     # RFC 9421 parsing, signing, and verification
+  upgrade/                # UpgradedSend and UpgradedLocal
+  chunk_download/         # Send/local parallel range downloaders
+  cache/ cookie/ sse/     # Higher-level HTTP facilities
+  wasm.rs / wasi_p2.rs    # Platform-managed guest transports
+  wasmtime/               # Host-side WASI HTTP adapter
 ```
+
+The tree above shows ownership boundaries rather than every supporting module.
+Protocol helpers such as HTTP/2 configuration, framing validation, SOCKS
+handshakes, redirects, digest authentication, and observability remain
+top-level modules where they are shared by several dispatch paths.
 
 ## Request Flow
 
 A request in aioduct goes through these stages:
 
-```
+```text
 client.get("http://example.com/path")?
-  -> RequestBuilderSend (accumulate headers, body, timeout, query params)
+  -> RequestBuilderSend (method, URI, headers, body, protocol, timeouts)
   -> RequestBuilderSend::send()
-    -> apply timeout wrapper (Timeout future)
-    -> rate limiter wait (if configured)
-    -> check HTTP cache (if configured, return cached response on hit)
-    -> HttpEngineCore::execute()
-      -> merge default headers
-      -> apply cookie jar cookies (if configured)
-      -> retry loop (if configured):
-        -> redirect loop (up to max_redirects):
-          -> run middleware on_request hooks
-          -> build http::Request with method, path-only URI, headers
-          -> execute_single()
-            -> pool checkout (reuse existing connection?)
-            -> if miss: ConnectorSend::connect(&SocketConfig)
-              -> TCP connect -> TLS handshake (if HTTPS)
-            -> ALPN -> select h1 or h2 sender
-            -> send request on connection
-            -> pool checkin
-          -> digest auth retry (if 401 + WWW-Authenticate: Digest)
-          -> run middleware on_response hooks
-          -> store response cookies in jar (if configured)
-          -> check redirect status -> follow or return
-      -> cache response (if configured and cacheable)
-      -> decompress body (if content-encoding matches)
-      -> apply bandwidth limiter (if configured)
+    -> apply HSTS, default headers, cookies, middleware, and cache validators
+    -> classify body replayability and finalize digest/signature metadata
+    -> capture the finalized request state used by eligible retries
+    -> for each redirect, digest retry, or configured retry attempt:
+      -> resolve one immutable ProxyDispatchRoute
+      -> select the exact/negotiable protocol and full pool key
+      -> check out a matching H1, H2, or H3 transport
+      -> on a pool miss, run one connection-acquisition deadline across
+         coordination, DNS, TCP/QUIC, proxy negotiation, TLS, and handshake
+      -> send the request with evidence-gated stale-connection recovery
+      -> supervise upload completion and return response headers
+    -> apply response middleware, redirects, cookies, cache policy,
+       decompression, read timeout, and bandwidth limiting
   -> ResponseBodySend
 ```
+
+The Local engine follows the same policy with `RequestBuilderLocal`, local
+futures, and local connector/transport implementations. Forwarding bypasses
+ordinary client middleware but enters the same dispatch layer after its
+upstream target, protocol, and hop-field policy have been finalized. See
+[Request Dispatch Guarantees](request_dispatch.md) for replay, proxy, timeout,
+and protocol boundaries.
 
 ## Key Design Decisions
 
