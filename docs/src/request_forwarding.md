@@ -2,6 +2,12 @@
 
 aioduct includes a built-in request forwarding builder for reverse proxy and API gateway use cases. It strips hop-by-hop headers, rewrites the URI to target an upstream, streams the body without buffering, and bypasses all client middleware (redirects, cookies, cache, decompression).
 
+The runnable [`forward-multipart`](https://github.com/adamcavendish/aioduct/tree/main/examples/tokio/forward-multipart)
+example receives a real `Request<hyper::body::Incoming>` in a Hyper handler and
+streams its multipart file body through `forward`. Equivalent examples are
+available for [smol](https://github.com/adamcavendish/aioduct/tree/main/examples/smol/forward-multipart)
+and [compio](https://github.com/adamcavendish/aioduct/tree/main/examples/compio/forward-multipart).
+
 ## Basic Forwarding
 
 ```rust,no_run

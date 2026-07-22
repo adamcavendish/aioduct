@@ -2,6 +2,12 @@
 
 aioduct supports automatic retries with configurable exponential backoff. Retries can be set at the client level (applied to all requests) or per-request.
 
+The runnable [`timeout-and-retry`](https://github.com/adamcavendish/aioduct/tree/main/examples/tokio/timeout-and-retry)
+example contrasts replayable buffered request bodies with one-shot streaming
+bodies. Equivalent examples are available for
+[smol](https://github.com/adamcavendish/aioduct/tree/main/examples/smol/timeout-and-retry)
+and [compio](https://github.com/adamcavendish/aioduct/tree/main/examples/compio/timeout-and-retry).
+
 ## Basic Usage
 
 ```rust,no_run

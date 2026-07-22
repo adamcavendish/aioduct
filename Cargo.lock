@@ -1765,6 +1765,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-compio-forward-multipart"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "bytes",
+ "compio-io",
+ "compio-net",
+ "compio-runtime",
+ "http",
+ "http-body-util",
+ "hyper",
+]
+
+[[package]]
 name = "example-compio-http-cache"
 version = "0.2.3"
 dependencies = [
@@ -1817,6 +1831,30 @@ dependencies = [
 
 [[package]]
 name = "example-compio-post-form"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "compio-runtime",
+]
+
+[[package]]
+name = "example-compio-proxy-chain"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "compio-runtime",
+]
+
+[[package]]
+name = "example-compio-proxy-connect"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "compio-runtime",
+]
+
+[[package]]
+name = "example-compio-proxy-routing"
 version = "0.2.3"
 dependencies = [
  "aioduct",
@@ -1878,7 +1916,10 @@ name = "example-compio-timeout-and-retry"
 version = "0.2.3"
 dependencies = [
  "aioduct",
+ "bytes",
  "compio-runtime",
+ "http",
+ "http-body-util",
 ]
 
 [[package]]
@@ -1988,6 +2029,18 @@ dependencies = [
  "hyper",
  "smol",
  "tokio",
+]
+
+[[package]]
+name = "example-smol-forward-multipart"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "bytes",
+ "http",
+ "http-body-util",
+ "hyper",
+ "smol",
 ]
 
 [[package]]
@@ -2121,6 +2174,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-smol-proxy-chain"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "smol",
+]
+
+[[package]]
+name = "example-smol-proxy-connect"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "smol",
+]
+
+[[package]]
+name = "example-smol-proxy-routing"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "smol",
+]
+
+[[package]]
 name = "example-smol-proxy-socks"
 version = "0.2.3"
 dependencies = [
@@ -2175,6 +2252,8 @@ name = "example-smol-timeout-and-retry"
 version = "0.2.3"
 dependencies = [
  "aioduct",
+ "bytes",
+ "http-body-util",
  "smol",
 ]
 
@@ -2286,6 +2365,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-tokio-forward-multipart"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "bytes",
+ "http",
+ "http-body-util",
+ "hyper",
+ "tokio",
+]
+
+[[package]]
 name = "example-tokio-forward-sse"
 version = "0.2.3"
 dependencies = [
@@ -2334,6 +2425,20 @@ name = "example-tokio-http2-prior"
 version = "0.2.3"
 dependencies = [
  "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-tokio-http3-streaming-upload"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "aioduct-test-server",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
  "tokio",
 ]
 
@@ -2413,6 +2518,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-tokio-proxy-chain"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-tokio-proxy-connect"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
+name = "example-tokio-proxy-routing"
+version = "0.2.3"
+dependencies = [
+ "aioduct",
+ "tokio",
+]
+
+[[package]]
 name = "example-tokio-proxy-socks"
 version = "0.2.3"
 dependencies = [
@@ -2467,6 +2596,8 @@ name = "example-tokio-timeout-and-retry"
 version = "0.2.3"
 dependencies = [
  "aioduct",
+ "bytes",
+ "http-body-util",
  "tokio",
 ]
 

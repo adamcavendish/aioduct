@@ -1,11 +1,9 @@
 [package]
-name = "example-smol-timeout-and-retry"
+name = "example-smol-proxy-routing"
 version.workspace = true
 edition.workspace = true
 publish = false
 
 [dependencies]
 aioduct = { workspace = true, features = ["smol", "rustls", "rustls-ring"] }
-bytes.workspace = true
-http-body-util.workspace = true
 smol.workspace = true

@@ -1,12 +1,9 @@
 [package]
-name = "example-compio-timeout-and-retry"
+name = "example-compio-proxy-routing"
 version.workspace = true
 edition.workspace = true
 publish = false
 
 [dependencies]
 aioduct = { workspace = true, features = ["compio", "rustls", "rustls-ring"] }
-bytes.workspace = true
 compio-runtime.workspace = true
-http.workspace = true
-http-body-util.workspace = true

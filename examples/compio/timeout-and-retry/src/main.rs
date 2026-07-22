@@ -1,6 +1,21 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use aioduct::{CompioClient, RetryConfig};
+use aioduct::{CompioClient, RetryConfig, RetryDecision};
+use bytes::Bytes;
+use http_body_util::{BodyExt as _, Full};
+
+fn observed_retries(attempts: Arc<AtomicU32>) -> RetryConfig {
+    RetryConfig::default()
+        .max_retries(3)
+        .initial_backoff(Duration::from_millis(100))
+        .max_backoff(Duration::from_secs(2))
+        .classify(move |context| {
+            attempts.store(context.attempt() + 1, Ordering::Relaxed);
+            RetryDecision::UseDefault
+        })
+}
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
@@ -41,6 +56,42 @@ fn main() -> Result<(), aioduct::Error> {
             Ok(resp) => println!("\nGot response: {}", resp.status()),
             Err(e) => println!("\nOther error: {e}"),
         }
+
+        // Buffered bodies can be reproduced byte-for-byte for configured retries.
+        let buffered_attempts = Arc::new(AtomicU32::new(0));
+        let buffered_client = CompioClient::builder()
+            .retry(observed_retries(Arc::clone(&buffered_attempts)))
+            .build_local()?;
+        let buffered = buffered_client
+            .request_local(http::Method::PUT, "https://httpbin.org/status/503")?
+            .body("buffered upload")
+            .send()
+            .await?;
+        println!(
+            "\nBuffered body: {} attempt(s), final status {}",
+            buffered_attempts.load(Ordering::Relaxed),
+            buffered.status()
+        );
+
+        // Streaming bodies are one-shot. A retryable response is returned without
+        // replaying the request with an empty or partially consumed body.
+        let one_shot_attempts = Arc::new(AtomicU32::new(0));
+        let one_shot_client = CompioClient::builder()
+            .retry(observed_retries(Arc::clone(&one_shot_attempts)))
+            .build_local()?;
+        let body = Full::new(Bytes::from_static(b"one-shot upload"))
+            .map_err(|never| match never {})
+            .boxed_unsync();
+        let one_shot = one_shot_client
+            .request_local(http::Method::PUT, "https://httpbin.org/status/503")?
+            .body_stream(body)
+            .send()
+            .await?;
+        println!(
+            "One-shot body: {} attempt(s), final status {}",
+            one_shot_attempts.load(Ordering::Relaxed),
+            one_shot.status()
+        );
 
         Ok(())
     })

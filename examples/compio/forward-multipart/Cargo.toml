@@ -1,0 +1,15 @@
+[package]
+name = "example-compio-forward-multipart"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio"] }
+bytes.workspace = true
+compio-io.workspace = true
+compio-net.workspace = true
+compio-runtime.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["server", "http1"] }

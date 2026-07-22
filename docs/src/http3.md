@@ -7,6 +7,11 @@ that aioduct cannot implement against the released upstream API without
 weakening validation or stream-lifecycle guarantees is deferred and fails
 closed where aioduct can identify it.
 
+The Tokio-only
+[`http3-streaming-upload`](https://github.com/adamcavendish/aioduct/tree/main/examples/tokio/http3-streaming-upload)
+example demonstrates ordered upload chunks, producer write timeouts, and
+fail-closed request trailers against a local HTTP/3 server.
+
 ## Feature Flag
 
 Enable the `http3` transport feature with the rustls backend and a rustls crypto provider:

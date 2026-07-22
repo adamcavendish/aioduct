@@ -156,6 +156,18 @@ guarantees; see the
 
 ## Examples
 
+Runnable examples are organized by runtime. The dispatch and proxy examples
+below exercise complete request paths rather than configuration alone.
+
+| Scenario | Tokio | smol | compio |
+| --- | --- | --- | --- |
+| Forward a real incoming multipart upload | [`forward-multipart`](examples/tokio/forward-multipart) | [`forward-multipart`](examples/smol/forward-multipart) | [`forward-multipart`](examples/compio/forward-multipart) |
+| Use one HTTP, HTTPS, or SOCKS proxy | [`proxy-connect`](examples/tokio/proxy-connect) | [`proxy-connect`](examples/smol/proxy-connect) | [`proxy-connect`](examples/compio/proxy-connect) |
+| Route through a two-hop proxy chain | [`proxy-chain`](examples/tokio/proxy-chain) | [`proxy-chain`](examples/smol/proxy-chain) | [`proxy-chain`](examples/compio/proxy-chain) |
+| Select proxies by target scheme and `NO_PROXY` | [`proxy-routing`](examples/tokio/proxy-routing) | [`proxy-routing`](examples/smol/proxy-routing) | [`proxy-routing`](examples/compio/proxy-routing) |
+| Compare buffered and one-shot retry behavior | [`timeout-and-retry`](examples/tokio/timeout-and-retry) | [`timeout-and-retry`](examples/smol/timeout-and-retry) | [`timeout-and-retry`](examples/compio/timeout-and-retry) |
+| Stream an HTTP/3 upload and fail closed | [`http3-streaming-upload`](examples/tokio/http3-streaming-upload) | Not supported | Not supported |
+
 ### JSON
 
 ```rust
