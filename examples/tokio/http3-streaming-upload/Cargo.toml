@@ -1,0 +1,15 @@
+[package]
+name = "example-tokio-http3-streaming-upload"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio", "rustls", "rustls-ring", "http3"] }
+aioduct-test-server = { workspace = true, features = ["http3"] }
+bytes.workspace = true
+futures-util.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+tokio = { workspace = true, features = ["full"] }

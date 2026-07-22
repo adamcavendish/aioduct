@@ -1,11 +1,9 @@
 [package]
-name = "example-tokio-timeout-and-retry"
+name = "example-tokio-proxy-routing"
 version.workspace = true
 edition.workspace = true
 publish = false
 
 [dependencies]
 aioduct = { workspace = true, features = ["tokio", "rustls", "rustls-ring"] }
-bytes.workspace = true
-http-body-util.workspace = true
 tokio = { workspace = true, features = ["full"] }

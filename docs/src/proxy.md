@@ -2,6 +2,14 @@
 
 aioduct supports routing requests through HTTP, HTTPS, SOCKS4/SOCKS4a, SOCKS5, and SOCKS5h proxies. Both HTTP and HTTPS targets use a CONNECT tunnel through HTTP and HTTPS proxies. SOCKS proxies tunnel all traffic regardless of scheme at the TCP level.
 
+## Runnable Examples
+
+| Scenario | Tokio | smol | compio |
+| --- | --- | --- | --- |
+| One HTTP, HTTPS, or SOCKS proxy | [`proxy-connect`](https://github.com/adamcavendish/aioduct/tree/main/examples/tokio/proxy-connect) | [`proxy-connect`](https://github.com/adamcavendish/aioduct/tree/main/examples/smol/proxy-connect) | [`proxy-connect`](https://github.com/adamcavendish/aioduct/tree/main/examples/compio/proxy-connect) |
+| Two-hop proxy chain | [`proxy-chain`](https://github.com/adamcavendish/aioduct/tree/main/examples/tokio/proxy-chain) | [`proxy-chain`](https://github.com/adamcavendish/aioduct/tree/main/examples/smol/proxy-chain) | [`proxy-chain`](https://github.com/adamcavendish/aioduct/tree/main/examples/compio/proxy-chain) |
+| Scheme routing, `NO_PROXY`, and environment credentials | [`proxy-routing`](https://github.com/adamcavendish/aioduct/tree/main/examples/tokio/proxy-routing) | [`proxy-routing`](https://github.com/adamcavendish/aioduct/tree/main/examples/smol/proxy-routing) | [`proxy-routing`](https://github.com/adamcavendish/aioduct/tree/main/examples/compio/proxy-routing) |
+
 ## Proxy Schemes
 
 | Scheme | Constructor | DNS Resolution | Description |
