@@ -30,7 +30,7 @@ let http  = ProxyConfig::detect_from_url("http://proxy:8080");    // ProxyScheme
 let https = ProxyConfig::detect_from_url("https://proxy:443");    // ProxyScheme::Https
 let s5    = ProxyConfig::detect_from_url("socks5://proxy:1080");  // ProxyScheme::Socks5
 let s5h   = ProxyConfig::detect_from_url("socks5h://proxy:1080"); // ProxyScheme::Socks5h
-let s4    = ProxyConfig::detect_from_url("socks4a://proxy:1080"); // ProxyScheme::Socks4
+let s4    = ProxyConfig::detect_from_url("socks4a://proxy:1080"); // SOCKS4a proxy
 
 // Bare hostname:port — defaults to http://
 let bare  = ProxyConfig::detect_from_url("proxy:3128");           // ProxyScheme::Http
@@ -224,7 +224,9 @@ let client = TokioClient::builder()
 ### Credential Resolver
 
 The `CredentialResolver` trait allows looking up proxy credentials from
-external sources. It is called when a proxy has no explicit auth set.
+external sources. It is called when a proxy has no explicit basic auth or
+`Proxy-Authorization` CONNECT header. Resolver keys use the proxy's canonical
+`host:port`, including the scheme's default port when the URI omits it.
 
 ```rust,no_run
 use aioduct::{CredentialResolver, ProxyConfig, ProxySettings, TokioClient};
@@ -233,8 +235,8 @@ use aioduct::{CredentialResolver, ProxyConfig, ProxySettings, TokioClient};
 use aioduct::EnvCredentialResolver;
 
 // Reads AIODUCT_PROXY_USER and AIODUCT_PROXY_PASS globally.
-// The `key` parameter (proxy host:port) is reserved for future
-// per-proxy resolvers (e.g. platform keychains).
+// The `key` parameter is the canonical proxy host:port and can be used by
+// per-proxy resolvers such as platform keychains.
 let client = TokioClient::builder()
     .proxy_settings(
         ProxySettings::all(
@@ -272,7 +274,9 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
-Priority: `basic_auth()` > URI-embedded credentials > credential resolver.
+`basic_auth()` overrides URI-embedded credentials. Basic/URI authentication
+and an explicit `Proxy-Authorization` CONNECT header are mutually exclusive;
+the credential resolver is used only when neither explicit source is present.
 
 ## Proxy Chaining
 
@@ -296,14 +300,18 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
-Any combination of proxy schemes is supported for both hops:
+Any combination of HTTP, HTTPS, SOCKS4, SOCKS4a, SOCKS5, and SOCKS5h can be
+used for both hops:
 
-| First Hop | Second Hop | Supported |
-|-----------|------------|-----------|
-| HTTP | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
-| SOCKS5/SOCKS5h | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
-| SOCKS4 | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
-| HTTPS | HTTP/HTTPS/SOCKS5/SOCKS5h/SOCKS4 | Yes |
+| First hop | Valid second hops |
+|-----------|-------------------|
+| HTTP | HTTP, HTTPS, SOCKS4, SOCKS4a, SOCKS5, SOCKS5h |
+| HTTPS | HTTP, HTTPS, SOCKS4, SOCKS4a, SOCKS5, SOCKS5h |
+| SOCKS4 or SOCKS4a | HTTP, HTTPS, SOCKS4, SOCKS4a, SOCKS5, SOCKS5h |
+| SOCKS5 or SOCKS5h | HTTP, HTTPS, SOCKS4, SOCKS4a, SOCKS5, SOCKS5h |
+
+This includes HTTPS-to-SOCKS chains: the SOCKS handshake runs over the TLS
+stream established to the first HTTPS proxy.
 
 When both a proxy chain and a single proxy are configured, the chain
 takes priority.
@@ -331,7 +339,7 @@ This ensures end-to-end encryption — the proxy only sees the target
 hostname, not the request content.
 
 Proxy plans are validated before DNS or TCP I/O. This includes rejecting
-non-textual HTTP CONNECT header values, NUL-containing SOCKS4 user IDs,
+non-textual HTTP CONNECT header values, NUL-containing SOCKS4/SOCKS4a user IDs,
 SOCKS4/SOCKS4a IPv6 targets, and SOCKS5 credentials longer than the protocol's
 255-byte fields. DNS, TCP, proxy TLS, CONNECT, and origin TLS observer phases
 are emitted when each phase completes, rather than being buffered until the
@@ -343,6 +351,12 @@ When the proxy URL itself uses `https://`, the client wraps the connection
 to the proxy in TLS before sending the CONNECT command. This encrypts the
 CONNECT handshake (including target hostname and proxy credentials) from
 any intermediary between the client and the proxy.
+
+An ECH-enabled rustls configuration intended for the origin cannot be reused
+for this outer proxy TLS connection. aioduct rejects an HTTPS proxy route with
+such a configuration before proxy transport I/O rather than offering the
+origin's ECH configuration to the proxy. Use a TLS configuration without ECH
+for HTTPS proxy routes, or a proxy scheme that does not add an outer TLS layer.
 
 ### SOCKS Proxies
 
@@ -430,6 +444,7 @@ behavior on those targets.
 |---------|-----------------------|----------|------|---------|
 | HTTP proxy (CONNECT tunnel) | Yes | Yes, via wrapped async client | Browser-managed | Host-managed |
 | HTTPS proxy (TLS to proxy) | Yes | Yes | Browser-managed | Host-managed |
+| Origin ECH configuration through HTTPS proxy | Rejected before proxy transport I/O | Rejected before proxy transport I/O | Browser-managed | Host-managed |
 | SOCKS4 / SOCKS4a | Yes | Yes | Not available | Not available |
 | SOCKS5 / SOCKS5h | Yes | Yes | Not available | Not available |
 | Proxy auth (Basic, URI-embedded) | Yes | Yes | Browser-managed | Host-managed |
@@ -455,15 +470,19 @@ behavior on those targets.
 ## Limitations
 
 - SOCKS5 supports no-auth and username/password authentication (RFC 1928/1929)
-- SOCKS4 supports optional user ID authentication
+- SOCKS4 and SOCKS4a support optional user ID authentication
 - Proxy chaining supports up to 2 hops
 - CONNECT headers on SOCKS proxies are rejected with a clear error before any I/O.
 - HTTP CONNECT headers must contain textual values that can be encoded on the
   HTTP/1.1 CONNECT request.
-- SOCKS4 and SOCKS4a cannot carry IPv6 destinations, and SOCKS4 user IDs
-  cannot contain NUL bytes.
+- SOCKS4 and SOCKS4a cannot carry IPv6 destinations, and their user IDs cannot
+  contain NUL bytes.
 - SOCKS5 usernames and passwords are limited to 255 bytes each.
-- `EnvCredentialResolver` applies the same credentials to all proxies (the
-  `key` parameter is reserved for future per-proxy resolvers)
+- `EnvCredentialResolver` applies the same credentials to all proxies and
+  ignores the resolver key. Custom resolvers can use the canonical key for
+  per-proxy resolution.
+- An ECH-enabled origin rustls configuration cannot be used for the outer TLS
+  connection to an HTTPS proxy; the route is rejected before proxy transport
+  I/O.
 - The HTTP proxy URI must use `http://` or `https://` scheme; SOCKS proxies
   must use `socks4://`, `socks4a://`, `socks5://`, or `socks5h://`

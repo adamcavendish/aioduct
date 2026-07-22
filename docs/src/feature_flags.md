@@ -29,7 +29,7 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 | `tower`  | tower-service, tower-layer        | Stable       | Tower Service/Layer integration      |
 | `tracing`| tracing                           | Stable       | Tracing spans for HTTP requests      |
 | `otel`   | opentelemetry, opentelemetry-http | Stable       | OpenTelemetry middleware             |
-| `http3`  | h3, h3-quinn, quinn | Experimental | HTTP/3 transport; currently requires `rustls` plus one rustls provider |
+| `http3`  | [h3](https://crates.io/crates/h3), quinn | Experimental | HTTP/3 transport; currently requires Tokio, `rustls`, and one rustls provider |
 
 ## TLS Provider Features
 

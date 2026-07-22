@@ -9,6 +9,7 @@
 - [Wasmtime Host Adapter](wasmtime_host.md)
 - [TLS & HTTPS](tls.md)
 - [Connection Pool](connection_pool.md)
+- [Request Dispatch Guarantees](request_dispatch.md)
 - [Server-Sent Events](sse.md)
 - [Retry with Backoff](retry.md)
 - [Redirect Policy](redirect.md)

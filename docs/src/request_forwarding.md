@@ -51,23 +51,42 @@ println!("status: {}", resp.status());
 | `.response_message_signature_async(config, signer)` | Sign the downstream response with a send-runtime async signer (send builders) |
 | `.response_message_signature_async_local(config, signer)` | Sign the downstream response with a local-runtime async signer (local builders) |
 | `.h2c()` | Force HTTP/2 prior knowledge (h2c) on this forward |
-| `.adaptive_h2c()` | Probe h2c, fall back to h1; result cached per-authority |
+| `.adaptive_h2c()` | Probe h2c, fall back to h1; result cached per effective route and forced address |
 | `.upgrade()` | Force upgrade header preservation (usually auto-detected) |
 
 ## Hop-by-Hop Header Stripping
 
-`ForwardBuilderSend` automatically strips these headers from both the incoming request and the upstream response:
+`ForwardBuilderSend` automatically strips hop-by-hop fields from both the
+incoming request and the upstream response:
 
 - `Connection`
 - `Keep-Alive`
 - `Proxy-Authenticate`
 - `Proxy-Authorization`
 - `Proxy-Connection`
-- `TE`
-- `Trailer`
 - `Transfer-Encoding`
 
-Use `.forward_header(name)` to preserve specific headers through stripping.
+Use `.forward_header(name)` to preserve ordinary headers through the upstream
+rewrite. It does not override protocol safety rules for hop-by-hop fields.
+
+Protocol-specific fields are handled after the final request hook and selected
+upstream protocol are known. When HTTP/1.1 trailer negotiation applies, aioduct
+regenerates canonical `Connection: TE` and `TE: trailers` fields; HTTP/1.0
+removes `TE`. HTTP/2 and HTTP/3 may retain only canonical `TE: trailers`.
+`Upgrade` is restored only for a validated HTTP/1.1 upgrade, and
+`HTTP2-Settings` only for a valid h2c upgrade. Fields named by `Connection` are
+removed unless that upgrade policy explicitly restores them.
+
+`Trailer` declarations are preserved for end-to-stream metadata, but names
+that are forbidden in trailer fields are removed from the declaration. Actual
+trailer frames are sanitized on both request and response bodies. Framing,
+routing, authentication, request-control, response-control, and payload
+interpretation fields such as `Content-Length`, `Host`, `Authorization`,
+`Set-Cookie`, and `Content-Type` are never forwarded as trailers. Extension
+metadata such as `X-Upload-Checksum` remains eligible.
+
+Actual HTTP/3 request and response trailer frames currently fail closed with
+`Error::Unsupported`, even when their fields would otherwise be eligible.
 
 ## WebSocket / HTTP Upgrade Forwarding
 
@@ -78,7 +97,8 @@ Upgrade requests are auto-detected and handled correctly:
 When `Connection: Upgrade` is present, `ForwardBuilderSend`:
 - Preserves `Connection` and `Upgrade` headers through hop-by-hop stripping
 - Forces HTTP/1.1 on the upstream connection
-- Skips response hop-by-hop stripping (101 is terminal)
+- Sanitizes the `101` response, then restores only the validated
+  `Connection: upgrade` and `Upgrade` fields required for the tunnel
 
 ```rust,no_run
 use aioduct::TokioClient;
@@ -91,6 +111,7 @@ let client = TokioClient::new();
 let ws_req = http::Request::builder()
     .method("GET")
     .uri("/ws/chat")
+    .header("host", "proxy.example")
     .header("connection", "Upgrade")
     .header("upgrade", "websocket")
     .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
@@ -120,7 +141,7 @@ let mut upstream_io = resp.upgrade().await?;
 When the request method is `CONNECT` and a `Protocol` extension is present, `ForwardBuilderSend`:
 - Forces HTTP/2 on the upstream connection
 - Uses the full URI (not path-only) so hyper generates correct pseudo-headers
-- Skips response hop-by-hop stripping
+- Validates and sanitizes response headers and trailers before tunnel handoff
 
 ```rust,no_run
 use aioduct::{TokioClient, Protocol};
@@ -153,6 +174,12 @@ let mut upstream_io = resp.upgrade().await?;
 # }
 ```
 
+HTTP/2 tunnel handoff currently requires status `200 OK` for both ordinary and
+extended CONNECT. Hyper 1.10 does not expose the bidirectional stream for other
+successful 2xx statuses, so aioduct returns an explicit unsupported error
+instead of exposing a one-way or false tunnel. HTTP/1.1 CONNECT continues to
+accept the full successful 2xx range.
+
 ## Hooks
 
 Use `on_request` and `on_response` for transformations not covered by other builder methods:
@@ -163,7 +190,7 @@ Use `on_request` and `on_response` for transformations not covered by other buil
 # use http_body_util::Full;
 # async fn example() -> Result<(), aioduct::Error> {
 # let client = TokioClient::new();
-# let incoming_req = http::Request::builder().uri("/test").body(Full::new(Bytes::new())).unwrap();
+# let incoming_req = http::Request::builder().uri("/test").header("host", "proxy.example").body(Full::new(Bytes::new())).unwrap();
 let resp = client
     .forward(incoming_req)
     .upstream("http://backend:8080".parse::<http::Uri>().unwrap())
@@ -335,7 +362,13 @@ let resp = client
 
 ### Adaptive h2c
 
-When you don't know whether the upstream speaks h2c, use `.adaptive_h2c()`. On the first request to a given authority, it probes with an h2 prior knowledge handshake. If the upstream rejects it, the request falls back to HTTP/1.1 transparently. The result is cached per-authority so subsequent requests skip the probe:
+When you don't know whether the upstream speaks h2c, use `.adaptive_h2c()`.
+On the first request for an unknown effective route and endpoint, it probes
+with an h2 prior-knowledge handshake. If the upstream rejects it, the request
+falls back to HTTP/1.1 transparently. The cache key includes the origin scheme,
+host, effective port, complete proxy route, and any forced transport address.
+The same authority reached directly, through a proxy, or through different
+forced addresses is therefore probed independently:
 
 ```rust,no_run
 # use aioduct::TokioClient;
@@ -350,7 +383,7 @@ let req = http::Request::builder()
     .body(Full::new(Bytes::new()))
     .unwrap();
 
-// First request probes; subsequent requests use cached result
+// First request probes; subsequent requests on this route use the cached result
 let resp = client
     .forward(req)
     .upstream("http://backend:8080".parse::<http::Uri>().unwrap())

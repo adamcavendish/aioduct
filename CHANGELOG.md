@@ -5,10 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Rustls streams now drain pending ciphertext before accepting more plaintext,
+  preserving write accounting and HTTPS upload progress under transport
+  backpressure.
+- Request replay and connection recovery now retain the complete finalized
+  request contract and require protocol evidence before resending a request.
+- HTTP/3 uploads now stream under producer and transport backpressure, handle
+  early responses independently, and use progress-aware write timeouts.
+- HTTP/3 trailers observed before response handoff or while reading a response,
+  extended CONNECT, and 0-RTT fail closed while their end-to-end validation and
+  lifecycle guarantees remain deferred. A request trailer emitted after
+  response handoff cancels the detached upload but cannot replace the response
+  already returned. Wire-level malformed-field handling remains upstream-owned,
+  and GOAWAY alone no longer authorizes request replay.
+- Forwarding now derives one finalized dispatch plan after request hooks, applies
+  protocol-aware target and hop-field translation, and preserves exact real
+  incoming upload bodies without buffering or duplicate delivery.
+- Proxy dispatch now binds each attempt to one immutable resolved route,
+  executes complete one- and two-hop CONNECT/SOCKS chains, and validates CONNECT
+  status, framing, ALPN, and post-header tunnel bytes.
+- One connection-acquisition deadline now covers pool coordination, DNS, TCP,
+  proxy negotiation, and TLS at every hop; stale pooled fallback starts a fresh
+  acquisition budget without consuming upload or response-body timeouts.
+
+### Changed
+- HTTP/3 now integrates upstream `h3` through aioduct's own Quinn adapter,
+  replacing the `h3-quinn` runtime dependency.
+
 ## [0.2.3] - 2026-07-09
 
 ### Fixed
-- Forwarded one-shot upload bodies now skip stale pooled upstream connections
+- Forwarded one-shot upload bodies now bypass pooled upstream connections
   across send, local, and forwarding dispatch paths, preserving streaming proxy
   semantics while avoiding write failures on closed HTTP/1.x, HTTP/2, and
   HTTP/3 connections.

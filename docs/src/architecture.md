@@ -93,7 +93,11 @@ client.get("http://example.com/path")?
 hyper 1.x provides raw connection-level primitives. hyper-util wraps them in a legacy `Client` that mimics hyper 0.x behavior. aioduct skips hyper-util entirely and implements:
 
 - **IO adapters** (TokioIo, SmolIo): Bridge runtime-specific `AsyncRead`/`AsyncWrite` to `hyper::rt::Read`/`hyper::rt::Write`. Each is ~50 lines of unsafe pin projection.
-- **HyperExecutor**: A generic executor that delegates `spawn` to the active Runtime. Uses `PhantomData<fn() -> R>` (not `PhantomData<R>`) to ensure it is always `Unpin`, which hyper's h2 handshake requires.
+- **HTTP/2 task executors**: Separate internal `PollExecutor` and
+  `CompletionExecutor` implementations delegate to the active runtime's
+  `spawn_send` or `spawn_local` operation. Both use `PhantomData<fn() -> R>` so
+  the executor type does not inherit unnecessary ownership or auto-trait bounds
+  from the runtime marker.
 
 ### Split Engine Types: Send vs Local
 
@@ -127,7 +131,17 @@ The `HttpClient`, `RequestBuilderExt`, `ResponseExt`, and `ByteStreamExt` traits
 
 ### Connection Pool
 
-The pool is keyed by `(scheme, authority)` and stores connections in a `VecDeque` per key. On checkout, expired connections are evicted. On checkin, the pool respects `max_idle_per_host`. HTTP/2 connections can be shared across concurrent requests since h2 multiplexes streams.
+The pool key contains `(scheme, authority, protocol hint, proxy route, forced
+transport endpoint, effective HTTP/3 endpoint)`. The complete proxy route keeps
+direct connections separate from each distinct proxy configuration. Forced
+addresses cannot satisfy ordinary checkouts or requests forced to another
+address, and the HTTP/3 endpoint prevents an Alt-Svc change from reusing a QUIC
+connection to an older endpoint.
+
+Connections are stored in a `VecDeque` per full key. On checkout, expired
+connections are evicted. On checkin, the pool respects `max_idle_per_host`.
+HTTP/2 and HTTP/3 connections can be shared across concurrent requests because
+they multiplex streams.
 
 ### TLS State Machine
 

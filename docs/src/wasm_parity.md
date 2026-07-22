@@ -79,10 +79,11 @@ targets do not expose the native forwarding builder. Browser Fetch and WASI
 request dispatch do not expose automatic digest/signing hooks; use the portable
 helper flow and manual headers there. Automatic trailer-based digest or
 signature generation is not exposed on any runtime: native HTTP/1 and HTTP/2 can
-carry request trailer frames, but HTTP/3 currently buffers request bodies before
-handoff, browser Fetch and WASI do not expose matching request-trailer hooks, and
-forward response signing runs before the downstream response body is streamed.
-Use caller-supplied trailer maps with the portable context APIs instead.
+carry request trailer frames, but native HTTP/3 streams request bodies while
+failing closed if either direction emits trailers, browser Fetch and WASI do not
+expose matching request-trailer hooks, and forward response signing runs before
+the downstream response body is streamed. Use caller-supplied trailer maps with
+the portable context APIs instead.
 
 ### Authentication
 
@@ -348,20 +349,21 @@ response body pipeline. Each codec is behind a cfg feature: `gzip`, `brotli`,
 |---------|-------|------|--------|------|---------|
 | HTTP/2 | ✓ | ✓ | ✓ | ⚠ browser-managed [13] | ⚠ WASI-managed [14] |
 | HTTP/2 config tuning | ✓ `tokio` | ✓ `smol` | ✓ `compio` | ✗ | ✗ |
-| HTTP/3 | ✓ `http3` | ✓ `http3` | ✓ `http3` | ⚠ browser-managed [13] | ⚠ WASI-managed [14] |
+| HTTP/3 | ✓ `http3` | ✗ | ✗ | ⚠ browser-managed [13] | ⚠ WASI-managed [14] |
 
 [13] WASM: The browser negotiates HTTP/2 and HTTP/3 via ALPN. No version
 selection or tuning is exposed by the fetch API. The `Http2Config` type
 (`http2.rs`) is portable but its `apply()` method is gated behind
-`#[cfg(not(target_arch = "wasm32"))]` (line 119). Calling request-builder
+`#[cfg(not(target_arch = "wasm32"))]`. Calling request-builder
 `version()` records an unsupported-operation error returned by `send()`.
 
 [14] WASI-P2: The WASI runtime negotiates the HTTP version. No version
 configuration is exposed. `Http2Config` is not applicable, and request-builder
 `version()` records an unsupported-operation error returned by `send()`.
 
-Native runtimes negotiate HTTP/2 through hyper's `http2` builder. HTTP/3 is
-enabled via the `http3` feature (requires `rustls`; see `lib.rs` line 23-24).
+Native runtimes negotiate HTTP/2 through hyper's `http2` builder. Native
+HTTP/3 is Tokio-only and is enabled via the `http3` feature, which requires
+`rustls`.
 
 ## Why Features Are Platform-Managed on WASM and WASI-P2
 

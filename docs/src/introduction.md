@@ -18,7 +18,8 @@ aioduct fills this gap: a production-quality HTTP client that uses hyper 1.x **t
 2. **No default runtime** — the core crate is pure types, traits, and logic. Opt into a runtime via feature flags.
 3. **No default TLS** — plain HTTP works out of the box. Enable `rustls` for HTTPS.
 4. **Runtime-agnostic core** — `HttpEngineSend<R, C>` and `HttpEngineLocal<R, C>` are generic over runtime and connector traits. All pool, TLS, and HTTP logic works with any conforming runtime.
-5. **HTTP/3 as experimental** — h3 + h3-quinn behind a feature flag.
+5. **HTTP/3 as experimental** — upstream `h3` + quinn behind a feature flag,
+   with unsupported protocol edges failing closed instead of requiring a fork.
 
 ## Comparison with reqwest
 
