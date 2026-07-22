@@ -734,7 +734,7 @@ let client = TokioClient::builder()
 | `DnsResolved` | `addrs`, `duration` | DNS resolution completes |
 | `TcpConnected` | `remote_addr`, `duration`, `protocol` | TCP connection established |
 | `TlsHandshakeComplete` | `duration`, `alpn_protocol`, `peer_certificate_der` | TLS negotiation done |
-| `RequestSent` | `duration`, `headers` | Request fully sent to server |
+| `RequestSent` | `duration`, `headers` | Finalized request is about to be handed to the protocol sender |
 | `ResponseStarted` | `waiting_duration` | TTFB — first response byte received |
 | `ResponseComplete` | `status`, `protocol`, `total_duration` | Response headers complete |
 | `Redirected` | `status`, `from`, `to` | A redirect was followed |

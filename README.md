@@ -23,7 +23,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **No hyper-util** — custom IO adapters and executor directly against `hyper::rt` traits
 - **Multi-runtime** — tokio, smol, and compio (io_uring) via feature flags; WASM/browser and WASI Preview 2 support
 - **rustls TLS** — async handshake with ALPN-based HTTP/1.1 and HTTP/2 negotiation
-- **Connection pooling** — keyed by (scheme, authority) with idle timeout and per-host limits, plus `pool_stats()` diagnostics (hit/miss/eviction counters and per-host idle/active inventory)
+- **Connection pooling** — keyed by scheme, authority, protocol hint, proxy route, forced transport address, and effective HTTP/3 endpoint, with idle timeout and per-host limits plus `pool_stats()` diagnostics (hit/miss/eviction counters and per-host idle/active inventory)
 - **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping and content header removal
 - **Cookie jar** — automatic cookie storage, domain/path/subdomain matching, Max-Age and Expires expiration, Secure flag enforcement, SameSite (Strict/Lax/None), cookie prefixes (__Host-, __Secure-)
 - **Timeouts** — client-level and per-request total, connect, read, and write timeouts, plus per-request timeout bypass
@@ -47,7 +47,6 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
 - **Per-request h2c** — `RequestBuilder::h2c_prior_knowledge()` drives h2c prior knowledge per request, and adaptive h2c probes-then-caches per authority, so one client can mix h1 and h2c targets without a global flag
 - **Connection coalescing** — reuses h2/h3 connections whose TLS certificate SANs cover the target domain (RFC 7540 §9.1.1), matching browser behavior
-- **HTTP/3 0-RTT** — opt-in early data for repeat connections to known servers, with automatic fallback on rejection
 - **TCP keepalive** — configurable keepalive interval for long-lived connections
 - **TCP Fast Open** — reduced connection latency on Linux via TCP_FASTOPEN_CONNECT
 - **Local address binding** — bind outgoing connections to a specific local IP
@@ -145,9 +144,15 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 | `tower`   | Tower `Service` and `Layer` integration | Stable      |
 | `tracing` | Tracing spans for requests             | Stable       |
 | `otel`    | OpenTelemetry middleware               | Stable       |
-| `http3`   | HTTP/3 transport via h3 + h3-quinn; currently requires `rustls` plus one rustls provider | Experimental |
+| `http3`   | HTTP/3 via upstream [h3](https://crates.io/crates/h3) and quinn; requires Tokio, `rustls`, and one rustls provider | Experimental |
 
 At least one runtime feature must be enabled or compilation will fail. When `rustls` is enabled, choose exactly one of `rustls-ring` or `rustls-aws-lc-rs`. The `native-tls` backend name is reserved for possible future OpenSSL/native TLS support and is not implemented today.
+
+HTTP/3 deliberately follows upstream `h3` rather than carrying a protocol
+fork. Deferred capabilities fail closed or use conservative replay behavior
+until they can be implemented with complete validation and stream-lifecycle
+guarantees; see the
+[HTTP/3 limitations](https://adamcavendish.github.io/aioduct/http3.html#deferred-protocol-capabilities).
 
 ## Examples
 
@@ -332,6 +337,7 @@ let client = TokioClient::new();
 let incoming_req = http::Request::builder()
     .method("GET")
     .uri("/api/users?page=2")
+    .header("host", "proxy.example")
     .body(Full::new(Bytes::new()))
     .unwrap();
 
@@ -407,7 +413,7 @@ HttpEngineSend<R: RuntimePoll, C: ConnectorSend>  ← tokio, smol (Send futures)
 HttpEngineLocal<R: RuntimeLocal, C: ConnectorLocal>  ← compio (completion-based, !Send)
   ├── HttpEngineCore<B>       ← shared config (pool, timeouts, middleware, etc.)
   ├── RequestBuilderSend      ← fluent API (headers, body, auth, query, timeout)
-  ├── ConnectionPool          ← keyed by (scheme, authority), idle eviction
+  ├── ConnectionPool          ← keyed by origin, protocol, route, address, H3 endpoint
   ├── TLS (rustls)            ← async handshake, ALPN → h1/h2
   ├── ConnectorSend / ConnectorLocal  ← TCP connect + TLS
   └── Runtime traits
@@ -484,7 +490,7 @@ pub trait Resolve: Send + Sync + 'static {
 | Request timings | No | Observer |
 | Connection coalescing | No | Built-in (RFC 7540) |
 | DNS-over-HTTPS/TLS | No | Built-in |
-| HTTP/3 0-RTT | No | Built-in |
+| HTTP/3 0-RTT | No | Unsupported |
 | Request forwarding | No | Built-in |
 
 ## MSRV

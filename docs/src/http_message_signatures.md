@@ -596,12 +596,12 @@ builders. Blocking clients inherit configured native-client behavior.
 
 Automatic trailer-based digest or signature generation is intentionally not
 exposed yet. HTTP/1 and HTTP/2 native dispatch can carry body trailer frames, but
-the current HTTP/3 dispatch buffers request bodies before handoff, browser Fetch
-and WASI do not expose matching request-trailer hooks, and forward response
-signing builds the signature headers before the downstream response body is
-streamed. Until those transport seams have common semantics, use explicit
-`Content-Digest` fields and caller-supplied trailer maps with the manual context
-APIs.
+the current native HTTP/3 dispatch streams request data and fails closed on
+request and response trailer frames. Browser Fetch and WASI do not expose
+matching request-trailer hooks, and forward response signing builds the signature
+headers before the downstream response body is streamed. Until those transport
+seams have common semantics, use explicit `Content-Digest` fields and
+caller-supplied trailer maps with the manual context APIs.
 
 Browser Fetch and WASI hosts can still alter or reject some headers at the host
 boundary. That host behavior is outside aioduct's control.

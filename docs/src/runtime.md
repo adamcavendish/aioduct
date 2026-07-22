@@ -132,15 +132,17 @@ Compio is a completion-based I/O runtime (io_uring on Linux, IOCP on Windows) wi
 
 **Important**: compio futures are `!Send` (they cannot be sent between threads). The `CompioClient` type alias uses `HttpEngineLocal`, which does not require `Send` bounds on futures or streams. This is safe because compio's thread-per-core model guarantees futures never cross thread boundaries.
 
-## HyperExecutor
+## HTTP/2 Task Executors
 
-hyper's HTTP/2 handshake requires an `Executor` to spawn background tasks for connection management. aioduct provides a generic `HyperExecutor<R>` that delegates to `R::spawn_send` (for `RuntimePoll`) or `R::spawn_local` (for `RuntimeLocal`):
+hyper's HTTP/2 client handshake requires an `Executor` to drive background
+connection tasks. aioduct uses separate internal executors for the two runtime
+models: `PollExecutor<R>` delegates to `RuntimePoll::spawn_send`, while
+`CompletionExecutor<R>` delegates to `RuntimeLocal::spawn_local`.
 
-```rust
-pub struct HyperExecutor<R>(PhantomData<fn() -> R>);
-```
-
-The `PhantomData<fn() -> R>` (rather than `PhantomData<R>`) ensures `HyperExecutor` is always `Unpin` regardless of `R`, which hyper's h2 handshake requires.
+Both use `PhantomData<fn() -> R>` so the executor type does not inherit
+unnecessary ownership or auto-trait bounds from the runtime marker. These
+executors are internal connection-lifecycle machinery, not part of the public
+runtime trait contract.
 
 ## Implementing a Custom Runtime
 

@@ -6,14 +6,24 @@ aioduct maintains a connection pool to reuse TCP (and TLS) connections across re
 
 ### Pool Key
 
-Connections are keyed by `(scheme, authority, protocol hint, proxy route)` — for example, `(https, api.example.com:443, Auto, direct)`. Two requests share a pooled connection only when all four fields match, except for the explicit h2/h3 coalescing path described below. The proxy route component keeps direct traffic separate from proxied traffic, and also separates different proxy configurations for the same origin.
+Connections are keyed by `(scheme, authority, protocol hint, proxy route,
+forced transport address, effective HTTP/3 endpoint)` -- for example,
+`(https, api.example.com:443, Auto, direct, none, none)`. Two requests share a
+pooled connection only when all six fields match, except for the explicit
+h2/h3 coalescing path described below. The proxy route component keeps direct
+traffic separate from proxied traffic and separates different proxy
+configurations for the same origin. The forced-address component prevents a
+per-request transport override from satisfying an ordinary checkout or a
+request forced to a different address. The HTTP/3 endpoint component keeps
+connections to distinct Alt-Svc hosts or ports separate while preserving the
+origin authority used for SNI and request semantics.
 
 ### Lifecycle
 
 1. **Checkout**: When a request is made, the pool checks for an existing idle connection to the target pool key. It uses LIFO ordering (most recently returned first) to prefer the freshest connections. Each candidate is checked for readiness and maximum lifetime — if a connection is stale, closed, too old, or saturated by the active stream cap, it's skipped or discarded and the next one is tried.
 2. **Reserve**: If no reusable connection is available and `pool_max_active_per_host` is configured, a fresh connection attempt atomically reserves an active slot before DNS or TCP dialing. This prevents connection bursts from opening more concurrent fresh sockets than the configured cap. When the cap is reached, the request fails immediately with a typed [`PoolLimitKind::MaxActivePerHost`][pool-limit] error.
 3. **Send**: The request is sent on the connection (either reused or freshly established).
-4. **Checkin**: HTTP/2 and HTTP/3 connections return to the pool immediately because they can multiplex concurrent streams. HTTP/1.1 connections return only after the response body has drained and the sender is ready again. Connections past `pool_max_lifetime` are not checked back in. When the idle queue is at capacity, the oldest idle connection is evicted to make room for the new one.
+4. **Checkin**: HTTP/2 and HTTP/3 connections return to the pool immediately because they can multiplex concurrent streams. A checkout's active-stream permit is released after response headers arrive; successful HTTP/2 CONNECT requests retain it through the upgraded stream instead. HTTP/1.1 connections return only after the response body has drained and the sender is ready again. Connections past `pool_max_lifetime` are not checked back in. When the idle queue is at capacity, the oldest idle connection is evicted to make room for the new one.
 
 ### Idle Eviction
 
@@ -28,17 +38,17 @@ Connections are evicted in three ways:
 
 `pool_max_active_per_host(n)` controls currently checked-out handles plus fresh connection attempts for the same pool key. Use it to cap concurrent sockets/handles toward one origin or proxy route. When the cap is reached, new requests fail immediately with a typed [`PoolLimitKind::MaxActivePerHost`][pool-limit] error. A value of `0` disables the active cap and leaves it unlimited.
 
-`pool_max_active_streams_per_connection(n)` is different: it applies only to HTTP/2 and HTTP/3 multiplexed connections and caps how many concurrent stream handles can be cloned from one pooled transport. HTTP/1.1 has no multiplexed streams, so this limit does not affect HTTP/1.1.
+`pool_max_active_streams_per_connection(n)` is different: it applies only to HTTP/2 and HTTP/3 multiplexed connections and caps how many concurrent sender handles may be checked out from one pooled transport. A permit starts when dispatch clones the pooled transport and normally ends when response headers arrive. Successful HTTP/2 CONNECT requests retain the permit through tunnel handoff. HTTP/1.1 has no multiplexed sender clones, so this limit does not affect HTTP/1.1.
 
 ### HTTP/2 Multiplexing
 
 HTTP/2 connections support multiplexing — multiple concurrent requests share a single connection. The pool tracks the hyper `SendRequest` handle, which naturally supports this. When an h2 connection is checked out, it remains usable by other requests concurrently.
 
-By default, aioduct does not cap active multiplexed streams per connection. Use `pool_max_active_streams_per_connection(n)` to limit how many active HTTP/2 or HTTP/3 stream handles may be cloned from one pooled connection at a time. The value must be greater than 0. HTTP/1.1 connections are not affected.
+By default, aioduct does not cap active multiplexed checkouts per connection. Use `pool_max_active_streams_per_connection(n)` to limit how many HTTP/2 or HTTP/3 sender handles may be checked out from one pooled connection at a time. The value must be greater than 0. HTTP/1.1 connections are not affected.
 
 ### HTTP/3 (QUIC) Pooling
 
-When the `http3` feature is enabled with the rustls backend and one rustls provider, QUIC connections are pooled alongside TCP connections. Like HTTP/2, HTTP/3 multiplexes streams over a single connection, so a pooled QUIC connection can serve multiple sequential requests to the same origin without re-establishing the handshake. The pool uses the same `(scheme, authority)` key for both TCP and QUIC connections.
+When the `http3` feature is enabled with the rustls backend and one rustls provider, QUIC connections are pooled alongside TCP connections. Like HTTP/2, HTTP/3 multiplexes streams over a single connection, so a pooled QUIC connection can serve multiple sequential requests to the same origin without re-establishing the handshake. TCP and QUIC candidates retain the same origin identity but are segregated by the full pool key, including protocol hint and any forced transport endpoint.
 
 ## Configuration
 
@@ -64,9 +74,9 @@ The builder methods compose fluently and are applied to the underlying
 |-------------------------------------------|-----------|------------------------------------------------------|
 | `pool_idle_timeout`                       | 90s       | How long an idle connection is kept before eviction   |
 | `pool_max_lifetime`                       | none      | Maximum connection age before it stops being reused   |
-| `pool_max_idle_per_host`                  | 10        | Maximum idle connections per (scheme, authority)      |
+| `pool_max_idle_per_host`                  | 10        | Maximum idle connections per full pool key            |
 | `pool_max_active_per_host`                | unlimited | Maximum checked-out handles and fresh connection attempts per pool key; 0 disables the cap |
-| `pool_max_active_streams_per_connection`  | unlimited | Maximum active HTTP/2 or HTTP/3 streams per connection |
+| `pool_max_active_streams_per_connection`  | unlimited | Maximum concurrent pooled H2/H3 sender checkouts per connection |
 
 [pool-limit]: https://docs.rs/aioduct/latest/aioduct/enum.PoolLimitKind.html
 
