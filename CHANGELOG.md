@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.4] - 2026-07-23
+
+### Added
+- Added runnable Tokio, smol, and compio examples for forwarding real incoming
+  multipart uploads, selecting and chaining proxies, and comparing buffered
+  with one-shot retry behavior, plus a Tokio HTTP/3 streaming upload example.
 
 ### Fixed
 - Rustls streams now drain pending ciphertext before accepting more plaintext,

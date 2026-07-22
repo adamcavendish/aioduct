@@ -15,7 +15,7 @@ runtime you want, such as `tokio`, `smol`, or `compio`, and enable one rustls
 provider when the host transport needs TLS:
 
 ```toml
-aioduct = { version = "0.2.3", features = ["wasmtime", "tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.4", features = ["wasmtime", "tokio", "rustls", "rustls-ring"] }
 ```
 
 ## Quick Start
