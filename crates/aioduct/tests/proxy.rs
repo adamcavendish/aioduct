@@ -711,6 +711,34 @@ async fn proxy_settings_custom_with_no_proxy_precedence() {
 }
 
 #[tokio::test]
+async fn custom_proxy_is_resolved_once_per_dispatch_attempt() {
+    let (target_addr, _counter) = h1_server().await;
+    let (proxy_addr, _conns) = connect_proxy().await;
+    let resolutions = Arc::new(AtomicUsize::new(0));
+    let observed_resolutions = resolutions.clone();
+
+    let settings = aioduct::ProxySettings::default().custom(move |_uri| {
+        observed_resolutions.fetch_add(1, AtomicOrdering::SeqCst);
+        Some(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+    });
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .proxy_settings(settings)
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(&format!("http://{target_addr}/custom-proxy"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), http::StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    assert_eq!(resolutions.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn proxy_with_redirect_routing() {
     // Target server (behind proxy).
     let (target_addr, _counter) = h1_server().await;

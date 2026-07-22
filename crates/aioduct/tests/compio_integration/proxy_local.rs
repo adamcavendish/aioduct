@@ -357,6 +357,40 @@ fn test_compio_http_proxy_local() {
 }
 
 #[test]
+fn test_compio_custom_proxy_is_resolved_once_per_dispatch_attempt() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let target_addr = start_server_tokio();
+    let proxy_addr = start_http_proxy_tokio();
+    let resolutions = Arc::new(AtomicUsize::new(0));
+    let observed_resolutions = resolutions.clone();
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let settings = aioduct::ProxySettings::default().custom(move |_uri| {
+            observed_resolutions.fetch_add(1, Ordering::SeqCst);
+            Some(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
+        });
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .proxy_settings(settings)
+            .build_local()
+            .unwrap();
+
+        let response = client
+            .get_local(&format!("http://{target_addr}/custom-proxy"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    });
+
+    assert_eq!(resolutions.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn test_compio_http_proxy_with_auth_local() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
