@@ -39,13 +39,13 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Streaming** — chunked downloads and streaming uploads without buffering
 - **Chunk download** — parallel HTTP Range requests for large files
 - **HTTP upgrade** — WebSocket and other protocol upgrades via HTTP/1.1 101 and HTTP/2 extended CONNECT (RFC 8441)
-- **Request forwarding** — proxy/gateway builder via `client.forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, supports H2 extended CONNECT tunneling, per-forward h2c for gRPC upstreams, and adaptive h2c/h1 fallback with per-authority capability caching
+- **Request forwarding** — proxy/gateway builder via `client.forward(req)` that strips hop-by-hop headers, rewrites URIs, streams bodies, auto-detects WebSocket upgrades, supports H2 extended CONNECT tunneling, per-forward h2c for gRPC upstreams, and adaptive h2c/h1 fallback cached by effective route and endpoint
 - **HTTP Message Signatures** — RFC 9421 request/response signing and verification, `Accept-Signature`, `Content-Digest`, trailer components, async signers, and forwarded message signing
 - **Wasmtime host adapter** — host-owned WASI HTTP forwarding via `aioduct::wasmtime`, with Tokio, smol, and compio transports plus explicit header policy controls
 - **Blocking client** — synchronous wrapper for non-async contexts (`BlockingTokioClient`, `BlockingSmolClient`, `BlockingCompioClient`)
 - **Custom DNS** — pluggable resolver via the `Resolve` trait; hickory-dns integration; DNS-over-HTTPS (`doh` feature) and DNS-over-TLS (`dot` feature)
 - **HTTP/2 tuning** — configurable window sizes, frame size, adaptive window, keepalive PINGs
-- **Per-request h2c** — `RequestBuilder::h2c_prior_knowledge()` drives h2c prior knowledge per request, and adaptive h2c probes-then-caches per authority, so one client can mix h1 and h2c targets without a global flag
+- **Per-request h2c** — `RequestBuilderSend` and `RequestBuilderLocal` expose `h2c_prior_knowledge()`, while adaptive h2c probes and caches by effective route and endpoint so one client can mix h1 and h2c targets
 - **Connection coalescing** — reuses h2/h3 connections whose TLS certificate SANs cover the target domain (RFC 7540 §9.1.1), matching browser behavior
 - **TCP keepalive** — configurable keepalive interval for long-lived connections
 - **TCP Fast Open** — reduced connection latency on Linux via TCP_FASTOPEN_CONNECT
@@ -137,13 +137,14 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 | `deflate` | Deflate response decompression         | Stable       |
 | `brotli`  | Brotli response decompression          | Stable       |
 | `zstd`    | Zstd response decompression            | Stable       |
-| `blocking`| Synchronous blocking client (requires tokio) | Stable |
+| `blocking`| Synchronous wrapper for Tokio, smol, or compio clients | Stable |
 | `hickory-dns` | DNS via hickory-resolver (requires tokio) | Stable |
 | `doh`     | DNS-over-HTTPS (implies `hickory-dns`)  | Stable       |
 | `dot`     | DNS-over-TLS (implies `hickory-dns`)    | Stable       |
 | `tower`   | Tower `Service` and `Layer` integration | Stable      |
 | `tracing` | Tracing spans for requests             | Stable       |
 | `otel`    | OpenTelemetry middleware               | Stable       |
+| `precise-timing` | Use `std::time::Instant` for sub-millisecond timing | Stable |
 | `http3`   | HTTP/3 via upstream [h3](https://crates.io/crates/h3) and quinn; requires Tokio, `rustls`, and one rustls provider | Experimental |
 
 At least one runtime feature must be enabled or compilation will fail. When `rustls` is enabled, choose exactly one of `rustls-ring` or `rustls-aws-lc-rs`. The `native-tls` backend name is reserved for possible future OpenSSL/native TLS support and is not implemented today.
@@ -424,12 +425,13 @@ Both tools are workspace members (`publish = false`) and serve as real-world int
 HttpEngineSend<R: RuntimePoll, C: ConnectorSend>  ← tokio, smol (Send futures)
 HttpEngineLocal<R: RuntimeLocal, C: ConnectorLocal>  ← compio (completion-based, !Send)
   ├── HttpEngineCore<B>       ← shared config (pool, timeouts, middleware, etc.)
-  ├── RequestBuilderSend      ← fluent API (headers, body, auth, query, timeout)
+  ├── RequestBuilderSend / RequestBuilderLocal
+  │                           ← fluent APIs (headers, body, auth, query, timeout)
   ├── ConnectionPool          ← keyed by origin, protocol, route, address, H3 endpoint
-  ├── TLS (rustls)            ← async handshake, ALPN → h1/h2
-  ├── ConnectorSend / ConnectorLocal  ← TCP connect + TLS
+  ├── TLS (rustls)            ← async handshake, ALPN → h1/h2; Quinn for h3
+  ├── ConnectorSend / ConnectorLocal  ← pre-resolved socket connection and config
   └── Runtime traits
-       ├── RuntimeCompletion  ← base: sleep
+       ├── RuntimeCompletion  ← base: sleep and block_on
        ├── RuntimePoll        ← Send spawn (tokio, smol)
        └── RuntimeLocal       ← !Send spawn (compio)
 
@@ -439,40 +441,54 @@ Type aliases:
   CompioClient = HttpEngineLocal<CompioRuntime, compio_rt::TcpConnector>
 ```
 
-The runtime and connector responsibilities are split into separate traits:
+The runtime and connector responsibilities are split into separate traits.
+Their core signatures are shown below; connector socket-adoption helpers and
+the resolver's `resolve_all` default method are omitted for brevity.
 
 ```rust
-/// Base runtime — sleep and time
-pub trait RuntimeCompletion: Send + Sync + 'static {
-    type Sleep: Future<Output = ()> + Send;
+/// Base runtime: timing and synchronous entry.
+pub trait RuntimeCompletion: 'static {
+    type Sleep: Future<Output = ()>;
     fn sleep(duration: Duration) -> Self::Sleep;
+    fn block_on<F: Future>(future: F) -> Result<F::Output, aioduct::Error>;
 }
 
-/// Send-capable runtime — spawn Send futures (tokio, smol)
-pub trait RuntimePoll: RuntimeCompletion {
-    fn spawn<F: Future<Output = ()> + Send + 'static>(future: F);
+/// Send-capable runtime: spawn Send futures (Tokio and smol).
+pub trait RuntimePoll: RuntimeCompletion<Sleep: Send> + Send + Sync {
+    fn spawn_send<F: Future<Output = ()> + Send + 'static>(future: F);
 }
 
-/// !Send runtime — spawn local futures (compio)
+/// Local runtime: spawn futures that need not be Send (compio).
 pub trait RuntimeLocal: RuntimeCompletion {
     fn spawn_local<F: Future<Output = ()> + 'static>(future: F);
 }
 
-/// Send connector — TCP connect (Clone + Send + Sync)
+/// Send connector for a pre-resolved socket address.
 pub trait ConnectorSend: Clone + Send + Sync + 'static {
-    type TcpStream: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static;
-    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::TcpStream>;
+    type Stream: hyper::rt::Read
+        + hyper::rt::Write
+        + SocketConfig
+        + Send
+        + Unpin
+        + 'static;
+    fn connect(&self, addr: SocketAddr)
+        -> impl Future<Output = io::Result<Self::Stream>> + Send;
 }
 
-/// !Send connector — for completion-based runtimes
-pub trait ConnectorLocal: Clone + 'static {
-    type TcpStream: hyper::rt::Read + hyper::rt::Write + Unpin + 'static;
-    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::TcpStream>;
+/// Local connector for completion-based runtimes.
+pub trait ConnectorLocal: 'static {
+    type Stream: hyper::rt::Read
+        + hyper::rt::Write
+        + SocketConfig
+        + Unpin
+        + 'static;
+    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream>;
 }
 
-/// DNS resolution (pluggable)
+/// Pluggable DNS resolution.
 pub trait Resolve: Send + Sync + 'static {
-    async fn resolve(&self, host: &str, port: u16) -> io::Result<SocketAddr>;
+    fn resolve(&self, host: &str, port: u16)
+        -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>>;
 }
 ```
 

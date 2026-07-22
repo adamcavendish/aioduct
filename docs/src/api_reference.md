@@ -65,7 +65,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 |-------------------------|-------------|--------------------------------------|
 | `base_url(&str)`        | None        | Base URL that relative request URLs resolve against (RFC 3986) |
 | `timeout(Duration)`     | None        | Overall request deadline             |
-| `connect_timeout(Duration)` | None   | Connection establishment timeout for TCP/proxy/TLS phases |
+| `connect_timeout(Duration)` | None   | One connection-acquisition deadline across pool coordination, DNS, transport, proxy, TLS, and protocol setup |
 | `read_timeout(Duration)` | None      | Timeout between response body chunks |
 | `write_timeout(Duration)` | None      | Timeout between request body chunks (upload) |
 | `tcp_keepalive(Duration)` | None     | Enable TCP keepalive with given interval |
@@ -107,7 +107,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | Timeout | Phase covered | Phase not covered |
 |---------|---------------|-------------------|
 | `timeout(Duration)` | One request attempt until `send()` returns, including redirects, response headers, and body upload | Retry backoff, later retry attempts, and response body reads after `send()` returns |
-| `connect_timeout(Duration)` | TCP connection, proxy tunnel setup, and TLS handshake | Request upload and response body reads |
+| `connect_timeout(Duration)` | Pool coordination, DNS, TCP or QUIC setup, every proxy hop, TLS, and HTTP/2 or HTTP/3 establishment on a pool miss | Pooled request dispatch, request upload, response headers after dispatch, and response body reads |
 | `read_timeout(Duration)` | Gaps between response body chunks | Waiting for response headers and request upload |
 | `write_timeout(Duration)` | Gaps while uploading request body chunks | Waiting for response headers and response body reads |
 
@@ -241,8 +241,9 @@ assert_eq!(rb.url().to_string(), "http://example.com/api");
 assert!(rb.headers_ref().contains_key(http::header::ACCEPT));
 ```
 
-The builders are `#[must_use]`: a `RequestBuilder` that is never sent or built,
-or a `ClientBuilder` that is never built, produces a compiler warning.
+The builders are `#[must_use]`: a `RequestBuilderSend` or
+`RequestBuilderLocal` that is never sent or built, or an `HttpEngineBuilder`
+that is never built, produces a compiler warning.
 
 ### HTTP Message Signatures
 

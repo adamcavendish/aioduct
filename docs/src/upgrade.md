@@ -56,7 +56,9 @@ For proxy/gateway use cases, see [Request Forwarding](request_forwarding.md) whi
 
 ## How It Works
 
-1. **HTTP/1.1**: Call `.upgrade()` on the `RequestBuilder` to set the required headers (`Connection: Upgrade`, `Upgrade: websocket`) and force HTTP/1.1.
+1. **HTTP/1.1**: Call `.upgrade()` on `RequestBuilderSend` or
+   `RequestBuilderLocal` to set the required headers (`Connection: Upgrade`,
+   `Upgrade: websocket`) and force HTTP/1.1.
 2. **HTTP/2**: Insert a `Protocol` extension into the request and use `CONNECT` method. The server must have `SETTINGS_ENABLE_CONNECT_PROTOCOL` enabled.
 3. Send the request and check for `101` (H1) or `200` (H2 CONNECT).
 4. Call `.upgrade()` on the `Response` to consume it and obtain an `UpgradedSend` stream.

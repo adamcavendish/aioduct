@@ -62,8 +62,8 @@ println!("status: {}", resp.status());
 
 ## Hop-by-Hop Header Stripping
 
-`ForwardBuilderSend` automatically strips hop-by-hop fields from both the
-incoming request and the upstream response:
+`ForwardBuilderSend` and `ForwardBuilderLocal` automatically strip hop-by-hop
+fields from both the incoming request and the upstream response:
 
 - `Connection`
 - `Keep-Alive`
@@ -100,7 +100,7 @@ Upgrade requests are auto-detected and handled correctly:
 
 ### HTTP/1.1 Upgrade
 
-When `Connection: Upgrade` is present, `ForwardBuilderSend`:
+When `Connection: Upgrade` is present, both forward builders:
 - Preserves `Connection` and `Upgrade` headers through hop-by-hop stripping
 - Forces HTTP/1.1 on the upstream connection
 - Sanitizes the `101` response, then restores only the validated
@@ -144,7 +144,8 @@ let mut upstream_io = resp.upgrade().await?;
 
 ### HTTP/2 Extended CONNECT (RFC 8441)
 
-When the request method is `CONNECT` and a `Protocol` extension is present, `ForwardBuilderSend`:
+When the request method is `CONNECT` and a `Protocol` extension is present,
+both forward builders:
 - Forces HTTP/2 on the upstream connection
 - Uses the full URI (not path-only) so hyper generates correct pseudo-headers
 - Validates and sanitizes response headers and trailers before tunnel handoff
@@ -340,7 +341,9 @@ error instead of an unsigned or undigested response.
 
 ## gRPC / h2c Forwarding
 
-For gRPC or other HTTP/2 cleartext (h2c) upstreams, use `.h2c()` to force HTTP/2 prior knowledge on an individual forward without requiring `http2_prior_knowledge()` on the entire client:
+For gRPC or other HTTP/2 cleartext (h2c) upstreams, use `.h2c()` to force
+HTTP/2 prior knowledge on an individual forward without applying that protocol
+policy to every request made by the client:
 
 ```rust,no_run
 # use aioduct::TokioClient;
@@ -410,7 +413,7 @@ let client = TokioClient::builder()
     .build()?;
 ```
 
-## What ForwardBuilderSend Does NOT Do
+## What Forward Builders Do NOT Do
 
 - **No request body buffering** — the incoming request body streams through as-is
 - **No middleware** — redirects, cookies, cache, and decompression are all bypassed

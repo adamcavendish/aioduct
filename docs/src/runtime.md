@@ -4,40 +4,44 @@ aioduct is runtime-agnostic. The runtime and connector traits define the minimal
 
 ## Runtime Trait Hierarchy
 
-The runtime system is split into a three-level trait hierarchy, from most general to most capable:
+The runtime system uses one shared completion trait with separate Send-capable
+and thread-local execution traits:
 
 ```rust
 pub trait RuntimeCompletion: 'static {
-    fn block_on<F: Future>(future: F) -> F::Output;
+    type Sleep: Future<Output = ()>;
+
+    fn sleep(duration: Duration) -> Self::Sleep;
+    fn block_on<F: Future>(future: F) -> Result<F::Output, aioduct::Error>;
 }
 
-pub trait RuntimePoll: RuntimeCompletion {
+pub trait RuntimePoll: RuntimeCompletion<Sleep: Send> + Send + Sync {
     fn spawn_send<F>(future: F)
     where
         F: Future<Output = ()> + Send + 'static;
-
-    fn sleep(duration: Duration) -> impl Future<Output = ()> + Send;
 }
 
 pub trait RuntimeLocal: RuntimeCompletion {
     fn spawn_local<F>(future: F)
     where
         F: Future<Output = ()> + 'static;
-
-    fn sleep(duration: Duration) -> impl Future<Output = ()>;
 }
 ```
 
 ### RuntimeCompletion (Base)
 
-The foundation trait. Provides `block_on` to drive a future to completion synchronously. Every runtime implements this.
+The foundation trait. It defines the runtime's sleep future and provides
+`block_on` to drive a future to completion on a new runtime instance. Runtime
+construction can fail, so `block_on` returns `Result`. Every native runtime
+implements this trait.
 
 ### RuntimePoll (Send-capable runtimes)
 
 Extends `RuntimeCompletion` with:
 
 - **`spawn_send`**: Spawn a `Send` future as a detached background task. Used for driving hyper connection futures on work-stealing schedulers.
-- **`sleep`**: Create a `Send` sleep future for the given duration. Used for timeouts and pool idle eviction.
+
+Its `RuntimeCompletion::Sleep` future must also be `Send`.
 
 Implemented by `TokioRuntime` and `SmolRuntime`.
 
@@ -46,25 +50,40 @@ Implemented by `TokioRuntime` and `SmolRuntime`.
 Extends `RuntimeCompletion` with:
 
 - **`spawn_local`**: Spawn a `!Send` future on the current thread. Used for thread-per-core runtimes where tasks never cross thread boundaries.
-- **`sleep`**: Create a sleep future (not required to be `Send`).
+
+Its `RuntimeCompletion::Sleep` future does not need to be `Send`.
 
 Implemented by `CompioRuntime`.
 
 ## Connector Traits
 
-Networking is decoupled from the runtime via connector traits. Each connector is responsible for establishing a TCP connection given a `SocketConfig`.
+Networking is decoupled from the runtime via connector traits. DNS resolution
+happens before connector dispatch, so each connector establishes a stream to a
+pre-resolved `SocketAddr`.
 
 ```rust
 pub trait ConnectorSend: Clone + Send + Sync + 'static {
-    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
+    type Stream: hyper::rt::Read
+        + hyper::rt::Write
+        + SocketConfig
+        + Unpin
+        + Send
+        + 'static;
 
-    fn connect(&self, config: &SocketConfig) -> impl Future<Output = io::Result<Self::Stream>> + Send;
+    fn connect(
+        &self,
+        addr: SocketAddr,
+    ) -> impl Future<Output = io::Result<Self::Stream>> + Send;
 }
 
 pub trait ConnectorLocal: 'static {
-    type Stream: AsyncRead + AsyncWrite + Unpin + 'static;
+    type Stream: hyper::rt::Read
+        + hyper::rt::Write
+        + SocketConfig
+        + Unpin
+        + 'static;
 
-    fn connect(&self, config: &SocketConfig) -> impl Future<Output = io::Result<Self::Stream>>;
+    async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream>;
 }
 ```
 
@@ -76,9 +95,16 @@ For use with `HttpEngineSend<R, C>`. Must be `Clone + Send + Sync` so it can be 
 
 For use with `HttpEngineLocal<R, C>`. No `Send` bounds — the connector and its streams live on a single thread.
 
+Both connector traits also support `connect_bound` for a requested local
+address and `from_std_tcp` for adopting a socket created by Happy Eyeballs.
+
 ### SocketConfig
 
-Both connector traits receive a `SocketConfig` that contains the target address, port, DNS resolution hints, TCP options (nodelay, keepalive), and local bind address.
+Connector stream types implement `SocketConfig`. The engine uses that trait
+after connection establishment to apply TCP keepalive, TCP Fast Open, and
+interface binding where the platform supports them. Destination addresses and
+local bind addresses are passed to connector methods rather than stored in a
+configuration object.
 
 ## Built-in Implementations
 
@@ -92,7 +118,9 @@ use aioduct::TokioClient;
 let client = TokioClient::new();
 ```
 
-- `TokioRuntime` implements `RuntimePoll` using `tokio::runtime::Handle::block_on`, `tokio::spawn`, and `tokio::time::sleep`.
+- `TokioRuntime` creates a current-thread runtime for `block_on`, rejects
+  blocking use from inside an active Tokio runtime, and implements
+  `RuntimePoll` with `tokio::spawn` plus `tokio::time::sleep`.
 - `tokio_rt::TcpConnector` implements `ConnectorSend` using `tokio::net::TcpStream`. Sets `TCP_NODELAY` by default.
 - The `TokioIo` adapter bridges tokio's `AsyncRead`/`AsyncWrite` to hyper's `rt::Read`/`rt::Write`.
 
@@ -106,7 +134,8 @@ use aioduct::SmolClient;
 let client = SmolClient::new();
 ```
 
-- `SmolRuntime` implements `RuntimePoll` using `smol::block_on`, `smol::spawn`, and `async_io::Timer`.
+- `SmolRuntime` implements `RuntimeCompletion` and `RuntimePoll` using
+  `smol::block_on`, `smol::spawn`, and `async_io::Timer`.
 - `smol_rt::TcpConnector` implements `ConnectorSend` using `smol::net::TcpStream`.
 - The `SmolIo` adapter bridges `futures_io::AsyncRead`/`AsyncWrite` to hyper's traits.
 
@@ -127,7 +156,9 @@ compio_runtime::Runtime::new().unwrap().block_on(async {
 
 Compio is a completion-based I/O runtime (io_uring on Linux, IOCP on Windows) with a thread-per-core execution model.
 
-- `CompioRuntime` implements `RuntimeLocal` using `compio_runtime::block_on`, `compio_runtime::spawn`, and compio's native timers.
+- `CompioRuntime` creates a `compio_runtime::Runtime` for `block_on`, uses
+  `compio_runtime::spawn` for local tasks, and wraps `async_io::Timer` for the
+  shared runtime sleep contract.
 - `compio_rt::TcpConnector` implements `ConnectorLocal`. Streams are `!Send` since they are bound to the completion ring of the current thread.
 
 **Important**: compio futures are `!Send` (they cannot be sent between threads). The `CompioClient` type alias uses `HttpEngineLocal`, which does not require `Send` bounds on futures or streams. This is safe because compio's thread-per-core model guarantees futures never cross thread boundaries.
