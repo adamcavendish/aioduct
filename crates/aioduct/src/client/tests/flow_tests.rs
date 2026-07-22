@@ -530,7 +530,7 @@ fn prepare_request_headers_applies_cookies() {
 
     let uri: Uri = "http://example.com/page".parse().unwrap();
     let mut headers = HeaderMap::new();
-    core.prepare_request_headers(&uri, None, &mut headers);
+    core.prepare_request_headers_tracking(&uri, None, &mut headers);
 
     let cookie_header = headers.get(http::header::COOKIE).unwrap().to_str().unwrap();
     assert!(
@@ -540,12 +540,51 @@ fn prepare_request_headers_applies_cookies() {
 }
 
 #[test]
+fn refresh_replay_headers_replaces_only_the_previous_jar_cookie() {
+    let jar = crate::cookie::CookieJar::new();
+    let mut first_response = http::HeaderMap::new();
+    first_response.insert(
+        http::header::SET_COOKIE,
+        "session=old; Path=/".parse().unwrap(),
+    );
+    jar.store_from_response("example.com", "/", &first_response);
+
+    let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .cookie_jar(jar.clone())
+        .build()
+        .unwrap()
+        .core;
+    let uri: Uri = "http://example.com/page".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(http::header::COOKIE, "caller=preserved".parse().unwrap());
+    let previous = core
+        .prepare_request_headers_tracking(&uri, None, &mut headers)
+        .unwrap();
+
+    let mut redirected_response = http::HeaderMap::new();
+    redirected_response.insert(
+        http::header::SET_COOKIE,
+        "session=new; Path=/".parse().unwrap(),
+    );
+    jar.store_from_response("example.com", "/", &redirected_response);
+
+    let current = core
+        .refresh_replay_headers(&uri, None, Some(&previous), &mut headers)
+        .unwrap();
+    assert_eq!(current, "session=new");
+    assert_eq!(
+        headers.get(http::header::COOKIE).unwrap(),
+        "caller=preserved; session=new"
+    );
+}
+
+#[test]
 fn prepare_request_headers_sets_host_when_missing() {
     let core = make_test_core();
     let uri: Uri = "http://example.com:8080/path".parse().unwrap();
     let mut headers = HeaderMap::new();
 
-    core.prepare_request_headers(&uri, None, &mut headers);
+    core.prepare_request_headers_tracking(&uri, None, &mut headers);
 
     assert_eq!(headers.get(http::header::HOST).unwrap(), "example.com:8080");
 }
@@ -557,7 +596,7 @@ fn prepare_request_headers_does_not_overwrite_existing_host() {
     let mut headers = HeaderMap::new();
     headers.insert(http::header::HOST, "custom-host.com".parse().unwrap());
 
-    core.prepare_request_headers(&uri, None, &mut headers);
+    core.prepare_request_headers_tracking(&uri, None, &mut headers);
 
     assert_eq!(headers.get(http::header::HOST).unwrap(), "custom-host.com");
 }
@@ -569,7 +608,7 @@ fn prepare_request_headers_no_cookie_jar_is_noop() {
     let mut headers = HeaderMap::new();
     headers.insert(http::header::HOST, "already-set".parse().unwrap());
 
-    core.prepare_request_headers(&uri, None, &mut headers);
+    core.prepare_request_headers_tracking(&uri, None, &mut headers);
 
     assert!(headers.get(http::header::COOKIE).is_none());
     assert_eq!(headers.get(http::header::HOST).unwrap(), "already-set");

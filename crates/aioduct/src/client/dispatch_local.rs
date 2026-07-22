@@ -862,6 +862,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             {
                 pooled.pool = std::sync::Weak::new();
                 pooled.key = None;
+                self.core.pool.ensure_reaper_local::<R>();
                 self.core.checkin_connection(pool_key.clone(), pooled);
                 pooled = cloned;
             }

@@ -309,6 +309,15 @@ impl ResponseHeaderPolicy {
         upstream_status: http::StatusCode,
         forwarded_status: http::StatusCode,
     ) -> Result<(), Error> {
+        if forwarded_status.is_informational()
+            && (upstream_status != http::StatusCode::SWITCHING_PROTOCOLS
+                || forwarded_status != http::StatusCode::SWITCHING_PROTOCOLS)
+        {
+            return Err(Error::InvalidHeader(
+                "response hook cannot create or change a terminal informational response"
+                    .to_owned(),
+            ));
+        }
         if self.request_method == http::Method::CONNECT
             && upstream_status.is_success() != forwarded_status.is_success()
         {

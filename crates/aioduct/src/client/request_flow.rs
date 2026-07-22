@@ -12,6 +12,36 @@ use crate::observer::RequestPhase;
 use crate::redirect::RedirectAction;
 use crate::response::Response;
 
+fn remove_cookie_contribution(headers: &mut HeaderMap, contribution: &HeaderValue) {
+    let Some(existing) = headers.get(COOKIE) else {
+        return;
+    };
+    let (Ok(existing), Ok(contribution)) = (existing.to_str(), contribution.to_str()) else {
+        return;
+    };
+    let mut parts = existing
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for owned_part in contribution
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        if let Some(index) = parts.iter().rposition(|part| part == owned_part) {
+            parts.remove(index);
+        }
+    }
+
+    if parts.is_empty() {
+        headers.remove(COOKIE);
+    } else if let Ok(value) = parts.join("; ").parse() {
+        headers.insert(COOKIE, value);
+    }
+}
+
 pub(crate) enum CacheLookupOutcome {
     Fresh(Box<Response>),
     Stale(crate::cache::CachedResponse),
@@ -185,19 +215,27 @@ impl<B> HttpEngineCore<B> {
         }
     }
 
-    pub(super) fn prepare_request_headers(
+    pub(super) fn prepare_request_headers_tracking(
         &self,
         uri: &Uri,
         site_for_cookies: Option<&str>,
         headers: &mut HeaderMap,
-    ) {
-        if let Some(jar) = &self.cookie_jar
+    ) -> Option<HeaderValue> {
+        let applied_cookie_header = if let Some(jar) = &self.cookie_jar
             && let Some(authority) = uri.authority()
         {
             let is_secure = uri.scheme() == Some(&http::uri::Scheme::HTTPS);
             let path = uri.path();
-            jar.apply_to_request(authority.host(), is_secure, path, site_for_cookies, headers);
-        }
+            jar.apply_to_request_tracking(
+                authority.host(),
+                is_secure,
+                path,
+                site_for_cookies,
+                headers,
+            )
+        } else {
+            None
+        };
 
         if !headers.contains_key(HOST)
             && let Some(authority) = uri.authority()
@@ -205,6 +243,20 @@ impl<B> HttpEngineCore<B> {
         {
             headers.insert(HOST, host_value);
         }
+        applied_cookie_header
+    }
+
+    pub(super) fn refresh_replay_headers(
+        &self,
+        uri: &Uri,
+        site_for_cookies: Option<&str>,
+        previous_cookie_header: Option<&HeaderValue>,
+        headers: &mut HeaderMap,
+    ) -> Option<HeaderValue> {
+        if let Some(previous_cookie_header) = previous_cookie_header {
+            remove_cookie_contribution(headers, previous_cookie_header);
+        }
+        self.prepare_request_headers_tracking(uri, site_for_cookies, headers)
     }
 
     pub(super) fn post_execute<RB>(

@@ -2712,7 +2712,7 @@ async fn https_proxy_tls_to_proxy_reaches_http_target() {
 
 #[cfg(feature = "rustls")]
 #[tokio::test]
-async fn https_proxy_tls_does_not_receive_origin_client_identity() {
+async fn https_proxy_tls_uses_configured_client_identity() {
     aioduct_test_server::tls::install_crypto_provider();
     let (target_addr, _) = h1_server().await;
     let client_certificate =
@@ -2745,8 +2745,8 @@ async fn https_proxy_tls_does_not_receive_origin_client_identity() {
         .unwrap();
     assert_eq!(response.text().await.unwrap(), "hello aioduct");
     assert!(
-        !client_certificate_seen.load(AtomicOrdering::SeqCst),
-        "origin client identity leaked to the HTTPS proxy"
+        client_certificate_seen.load(AtomicOrdering::SeqCst),
+        "configured client identity was not presented to the HTTPS proxy"
     );
 }
 

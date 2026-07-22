@@ -177,6 +177,9 @@ pub(crate) enum BodyReplayability {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FreshConnectionRequired;
 
+#[derive(Clone, Debug)]
+pub(crate) struct AppliedCookieHeader(pub(crate) HeaderValue);
+
 /// Replay-relevant state after middleware has finalized the wire request.
 ///
 /// Retry policy and replay both use the method, body state, and immutable head
@@ -191,6 +194,7 @@ pub(crate) struct FinalizedRequestSnapshot {
     cache_state: FinalizedCacheState,
     fragment: Option<String>,
     digest_challenge: Option<crate::digest_auth::PreparedDigestChallenge>,
+    applied_cookie_header: Option<HeaderValue>,
 }
 
 #[derive(Clone)]
@@ -270,6 +274,10 @@ impl FinalizedRequestSnapshot {
             cache_state,
             fragment,
             digest_challenge: None,
+            applied_cookie_header: request
+                .extensions()
+                .get::<AppliedCookieHeader>()
+                .map(|applied| applied.0.clone()),
         })
     }
 
@@ -309,6 +317,10 @@ impl FinalizedRequestSnapshot {
 
     pub(crate) fn fragment(&self) -> Option<&str> {
         self.fragment.as_deref()
+    }
+
+    pub(crate) fn applied_cookie_header(&self) -> Option<&HeaderValue> {
+        self.applied_cookie_header.as_ref()
     }
 
     pub(crate) fn stale_replay_bytes(&self) -> Option<Bytes> {
@@ -371,6 +383,7 @@ pub(crate) struct FinalizedRequestState {
     snapshot: Option<FinalizedRequestSnapshot>,
     pending_replay: Option<FinalizedRequestSnapshot>,
     retry_attempt: u32,
+    pending_retry_eligibility: bool,
     pending_retry_reservation: Option<u32>,
     max_retries: u32,
     retry_budget: Option<crate::retry::RetryBudget>,
@@ -390,6 +403,7 @@ impl FinalizedRequestState {
             snapshot: None,
             pending_replay: None,
             retry_attempt: 0,
+            pending_retry_eligibility: false,
             pending_retry_reservation: None,
             max_retries,
             retry_budget,
@@ -449,10 +463,6 @@ impl FinalizedRequestState {
         self.retry_attempt
     }
 
-    pub(crate) fn max_retries(&self) -> u32 {
-        self.max_retries
-    }
-
     /// Reserve one configured retry before dispatching it.
     ///
     /// Digest authentication and the outer retry loop share this state so all
@@ -460,10 +470,14 @@ impl FinalizedRequestState {
     pub(crate) fn try_start_retry(&mut self) -> Option<u32> {
         self.retry_budget_denied = false;
         debug_assert!(
+            !self.pending_retry_eligibility,
+            "retry eligibility must be committed or released before reserving an attempt"
+        );
+        debug_assert!(
             self.pending_retry_reservation.is_none(),
             "a retry reservation must be committed or cancelled before reserving another"
         );
-        if self.pending_retry_reservation.is_some() {
+        if self.pending_retry_eligibility || self.pending_retry_reservation.is_some() {
             return None;
         }
         if self.retry_attempt >= self.max_retries {
@@ -502,6 +516,7 @@ impl FinalizedRequestState {
         self.pending_retry_reservation = None;
     }
 
+    #[cfg(test)]
     pub(crate) fn cancel_retry_reservation(&mut self) {
         let Some(reserved_attempt) = self.pending_retry_reservation.take() else {
             return;
@@ -515,8 +530,75 @@ impl FinalizedRequestState {
     }
 }
 
+/// Holds retry-budget eligibility while a response is drained for replay.
+///
+/// The logical attempt and observer-visible retry state are committed only
+/// after draining succeeds. Dropping an uncommitted permit restores the budget.
+pub(crate) struct RetryEligibilityPermit<'a> {
+    state: &'a std::sync::Mutex<FinalizedRequestState>,
+    committed: bool,
+}
+
+impl<'a> RetryEligibilityPermit<'a> {
+    pub(crate) fn try_new(state: &'a std::sync::Mutex<FinalizedRequestState>) -> Option<Self> {
+        let mut finalized = state.lock().unwrap_or_else(|error| error.into_inner());
+        finalized.retry_budget_denied = false;
+        if finalized.pending_retry_eligibility
+            || finalized.pending_retry_reservation.is_some()
+            || finalized.retry_attempt >= finalized.max_retries
+        {
+            return None;
+        }
+        if let Some(budget) = &finalized.retry_budget
+            && !budget.try_withdraw()
+        {
+            finalized.retry_budget_denied = true;
+            return None;
+        }
+        finalized.pending_retry_eligibility = true;
+        Some(Self {
+            state,
+            committed: false,
+        })
+    }
+
+    pub(crate) fn commit(mut self) -> (u32, u32) {
+        let mut finalized = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        debug_assert!(finalized.pending_retry_eligibility);
+        debug_assert!(finalized.pending_retry_reservation.is_none());
+        finalized.pending_retry_eligibility = false;
+        finalized.retry_attempt += 1;
+        let attempt = finalized.retry_attempt;
+        let max_retries = finalized.max_retries;
+        finalized.pending_retry_reservation = Some(attempt);
+        self.committed = true;
+        (attempt, max_retries)
+    }
+}
+
+impl Drop for RetryEligibilityPermit<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut finalized = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if finalized.pending_retry_eligibility {
+            finalized.pending_retry_eligibility = false;
+            if let Some(budget) = &finalized.retry_budget {
+                budget.refund();
+            }
+            finalized.retry_budget_denied = false;
+        }
+    }
+}
+
 impl Drop for FinalizedRequestState {
     fn drop(&mut self) {
+        if self.pending_retry_eligibility
+            && let Some(budget) = &self.retry_budget
+        {
+            budget.refund();
+        }
         if self.pending_retry_reservation.take().is_some()
             && let Some(budget) = &self.retry_budget
         {
@@ -826,6 +908,45 @@ mod tests {
         }
 
         assert_eq!(budget.available(), 1);
+    }
+
+    #[test]
+    fn dropping_retry_eligibility_does_not_advance_or_spend_the_retry() {
+        let budget = crate::retry::RetryBudget::new(1, 0);
+        let state = std::sync::Mutex::new(FinalizedRequestState::new(
+            Method::GET,
+            BodyReplayability::Empty,
+            1,
+            Some(budget.clone()),
+        ));
+
+        let permit = RetryEligibilityPermit::try_new(&state).unwrap();
+        assert_eq!(budget.available(), 0);
+        drop(permit);
+
+        let state = state.lock().unwrap();
+        assert_eq!(state.retry_attempt(), 0);
+        assert_eq!(budget.available(), 1);
+        assert!(!state.retry_budget_denied());
+    }
+
+    #[test]
+    fn committing_retry_eligibility_creates_the_retry_reservation() {
+        let budget = crate::retry::RetryBudget::new(1, 0);
+        let state = std::sync::Mutex::new(FinalizedRequestState::new(
+            Method::GET,
+            BodyReplayability::Empty,
+            2,
+            Some(budget.clone()),
+        ));
+
+        let permit = RetryEligibilityPermit::try_new(&state).unwrap();
+        assert_eq!(permit.commit(), (1, 2));
+
+        let mut state = state.lock().unwrap();
+        assert_eq!(state.retry_attempt(), 1);
+        assert_eq!(budget.available(), 0);
+        state.commit_retry_reservation();
     }
 
     #[test]

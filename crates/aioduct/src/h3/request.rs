@@ -192,6 +192,7 @@ where
 {
     let (parts, body) = request.into_parts();
     let request = Request::from_parts(parts, ());
+    let connection_owner = connection.send_request().clone();
     let mut stream = connection
         .send_request()
         .send_request(request)
@@ -216,6 +217,7 @@ where
         write_timeout,
         control_receiver,
         result_sender,
+        connection_owner,
     ));
 
     let mut receive_response = Box::pin(recv.recv_response());
@@ -271,6 +273,7 @@ async fn supervise_upload<R: RuntimePoll>(
     write_timeout: Option<Duration>,
     mut control: futures_channel::oneshot::Receiver<UploadControl>,
     result: futures_channel::oneshot::Sender<Result<(), Error>>,
+    connection_owner: super::H3SendRequest,
 ) {
     let write_progress = request_stream.write_progress();
     let mut peer_stopped = Box::pin(request_stream);
@@ -345,6 +348,9 @@ async fn supervise_upload<R: RuntimePoll>(
             let _ = result.send(stopped);
         }
     }
+    // Upstream h3 closes the connection when its final SendRequest owner is
+    // dropped. Keep this clone alive until the detached stream has quiesced.
+    drop(connection_owner);
 }
 
 async fn upload_body<R, B>(

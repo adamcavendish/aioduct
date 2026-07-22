@@ -59,17 +59,11 @@ impl DigestAuth {
         challenge: &PreparedDigestChallenge,
     ) -> Option<HeaderValue> {
         let params = &challenge.params;
-        let realm = params.get("realm")?;
         let nonce = params.get("nonce")?;
-        let qop = params.get("qop");
-        let opaque = params.get("opaque");
-        let algorithm = params.get("algorithm").map(|s| s.as_str()).unwrap_or("MD5");
-
-        let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-
-        let Ok(mut counts) = self.nonce_counts.lock() else {
-            return None;
-        };
+        let mut counts = self
+            .nonce_counts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         while counts.len() > 64 {
             if let Some(evict) = counts
                 .iter()
@@ -84,6 +78,37 @@ impl DigestAuth {
         let nc = counts.get(nonce).copied().unwrap_or(0).saturating_add(1);
         let nc_str = format!("{nc:08x}");
         let cnonce = format!("{:016x}", rand_u64());
+
+        let value = self.authorization_value(method, uri, challenge, &nc_str, &cnonce)?;
+        counts.insert(nonce.clone(), nc);
+        Some(value)
+    }
+
+    pub(crate) fn can_authorize_prepared(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        challenge: &PreparedDigestChallenge,
+    ) -> bool {
+        self.authorization_value(method, uri, challenge, "00000001", "0000000000000000")
+            .is_some()
+    }
+
+    fn authorization_value(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        challenge: &PreparedDigestChallenge,
+        nc_str: &str,
+        cnonce: &str,
+    ) -> Option<HeaderValue> {
+        let params = &challenge.params;
+        let realm = params.get("realm")?;
+        let nonce = params.get("nonce")?;
+        let qop = params.get("qop");
+        let opaque = params.get("opaque");
+        let algorithm = params.get("algorithm").map(|s| s.as_str()).unwrap_or("MD5");
+        let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
         let hash_fn: fn(&str) -> String = match algorithm {
             "SHA-256" | "SHA-256-sess" => sha256_hex,
@@ -125,9 +150,7 @@ impl DigestAuth {
             value.push_str(&format!(", algorithm={algorithm}"));
         }
 
-        let value = HeaderValue::from_str(&value).ok()?;
-        counts.insert(nonce.clone(), nc);
-        Some(value)
+        HeaderValue::from_str(&value).ok()
     }
 }
 
@@ -333,6 +356,29 @@ mod tests {
         assert!(v.contains("username=\"user\""));
         assert!(v.contains("realm=\"testrealm@host.com\""));
         assert!(v.contains("qop=auth"));
+    }
+
+    #[test]
+    fn authorization_preflight_does_not_consume_a_nonce_count() {
+        let auth = DigestAuth::new("user".into(), std::any::type_name::<DigestAuth>().into());
+        let uri: Uri = "http://example.com/resource".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Digest realm="test", nonce="nonce", qop="auth""#),
+        );
+        let challenge = auth.prepare(&headers).unwrap();
+
+        assert!(auth.can_authorize_prepared(&Method::GET, &uri, &challenge));
+        let first = auth
+            .authorize_prepared(&Method::GET, &uri, &challenge)
+            .unwrap();
+        let second = auth
+            .authorize_prepared(&Method::GET, &uri, &challenge)
+            .unwrap();
+
+        assert!(first.to_str().unwrap().contains("nc=00000001"));
+        assert!(second.to_str().unwrap().contains("nc=00000002"));
     }
 
     #[test]

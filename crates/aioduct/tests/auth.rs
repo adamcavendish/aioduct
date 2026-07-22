@@ -1,18 +1,41 @@
 #![cfg(feature = "tokio")]
 
 use std::convert::Infallible;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::Response;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
 use aioduct_test_server::h1::{h1_server, h1_server_with};
+
+#[derive(Clone, Default)]
+struct DigestRetryObserver {
+    retries: Arc<Mutex<Vec<(u32, u32)>>>,
+}
+
+impl aioduct::RequestObserver for DigestRetryObserver {
+    fn on_event(&self, event: &aioduct::RequestEvent) {
+        if let aioduct::RequestPhase::Retrying {
+            attempt,
+            max_retries,
+            ..
+        } = &event.phase
+        {
+            self.retries.lock().unwrap().push((*attempt, *max_retries));
+        }
+    }
+
+    fn on_connection_event(&self, _event: &aioduct::ConnectionEvent) {}
+}
 
 #[tokio::test]
 async fn test_bearer_auth() {
@@ -115,6 +138,61 @@ async fn test_digest_auth_flow() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "authenticated");
     assert_eq!(attempt.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn digest_response_drain_failure_does_not_commit_retry_state() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+        stream
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\n\
+                  WWW-Authenticate: Digest realm=\"test\", nonce=\"nonce\", qop=\"auth\"\r\n\
+                  Content-Length: 4\r\n\
+                  Connection: close\r\n\r\n\
+                  x",
+            )
+            .await
+            .unwrap();
+        stream.shutdown().await.unwrap();
+    });
+
+    let budget = aioduct::RetryBudget::new(1, 0);
+    let observer = DigestRetryObserver::default();
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .digest_auth("user", "password")
+        .request_observer(observer.clone())
+        .retry(
+            aioduct::RetryConfig::default()
+                .max_retries(2)
+                .budget(budget.clone())
+                .classify(|_| aioduct::RetryDecision::DoNotRetry),
+        )
+        .build()
+        .unwrap();
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        client.get(&format!("http://{addr}/digest")).unwrap().send(),
+    )
+    .await
+    .expect("Digest response drain stalled")
+    .unwrap_err();
+
+    assert!(error.to_string().contains("body"), "{error}");
+    assert_eq!(budget.available(), 1);
+    assert!(observer.retries.lock().unwrap().is_empty());
+    server.await.unwrap();
 }
 #[tokio::test]
 async fn test_digest_auth_post_replays_buffered_body() {

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use http::HeaderMap;
 use http::header::{COOKIE, SET_COOKIE};
+use http::{HeaderMap, HeaderValue};
 
 mod date;
 mod matching;
@@ -149,8 +149,25 @@ impl CookieJar {
         site_for_cookies: Option<&str>,
         headers: &mut HeaderMap,
     ) {
+        let _ = self.apply_to_request_tracking(
+            domain,
+            is_secure,
+            request_path,
+            site_for_cookies,
+            headers,
+        );
+    }
+
+    pub(crate) fn apply_to_request_tracking(
+        &self,
+        domain: &str,
+        is_secure: bool,
+        request_path: &str,
+        site_for_cookies: Option<&str>,
+        headers: &mut HeaderMap,
+    ) -> Option<HeaderValue> {
         let Ok(jar) = self.inner.lock() else {
-            return;
+            return None;
         };
 
         let is_cross_site = site_for_cookies.is_some_and(|site| !is_same_site(domain, site));
@@ -189,7 +206,7 @@ impl CookieJar {
         }
 
         if matching_cookies.is_empty() {
-            return;
+            return None;
         }
 
         let cookie_header: String = matching_cookies
@@ -198,16 +215,16 @@ impl CookieJar {
             .collect::<Vec<_>>()
             .join("; ");
 
-        if let Ok(value) = cookie_header.parse() {
-            if let Some(existing) = headers.get(COOKIE) {
-                let merged = format!("{}; {}", existing.to_str().unwrap_or(""), cookie_header);
-                if let Ok(merged_value) = merged.parse() {
-                    headers.insert(COOKIE, merged_value);
-                }
-            } else {
-                headers.insert(COOKIE, value);
+        let value = cookie_header.parse::<HeaderValue>().ok()?;
+        if let Some(existing) = headers.get(COOKIE) {
+            let merged = format!("{}; {}", existing.to_str().unwrap_or(""), cookie_header);
+            if let Ok(merged_value) = merged.parse() {
+                headers.insert(COOKIE, merged_value);
             }
+        } else {
+            headers.insert(COOKIE, value.clone());
         }
+        Some(value)
     }
 
     /// Remove all stored cookies.

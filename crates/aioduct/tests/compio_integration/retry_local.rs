@@ -39,6 +39,144 @@ impl aioduct::RequestObserver for LocalDigestRetryRecorder {
 }
 
 #[test]
+fn local_fresh_h2_publication_starts_reaper_before_first_response() {
+    let (addr_tx, addr_rx) = std::sync::mpsc::sync_channel(1);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    let server = std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                addr_tx.send(listener.local_addr().unwrap()).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut connection = h2::server::handshake(stream).await.unwrap();
+                let (_request, mut response) = connection
+                    .accept()
+                    .await
+                    .expect("Local H2 connection ended before the first request")
+                    .expect("first Local H2 request was invalid");
+                response.send_reset(h2::Reason::CANCEL);
+                tokio::pin!(shutdown_rx);
+                tokio::select! {
+                    _ = &mut shutdown_rx => {}
+                    _ = connection.accept() => {}
+                }
+            });
+        let _ = done_tx.send(());
+    });
+    let addr = addr_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let idle_timeout = Duration::from_millis(50);
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .pool_idle_timeout(idle_timeout)
+            .timeout(Duration::from_secs(2))
+            .build_local()
+            .unwrap();
+        let error = client
+            .get_local(&format!("http://{addr}/reset"))
+            .unwrap()
+            .h2c_prior_knowledge()
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("http2 error"), "{error}");
+        assert_eq!(
+            client.pool_stats().idle_pool_entries,
+            1,
+            "the original fresh Local H2 handle should be published before the clone fails"
+        );
+        compio_runtime::time::sleep(idle_timeout + Duration::from_millis(150)).await;
+        assert_eq!(client.pool_stats().idle_pool_entries, 0);
+        assert!(client.pool_stats().idle_timeout_evictions >= 1);
+    });
+
+    let _ = shutdown_tx.send(());
+    done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("Local H2 reset server did not stop");
+    server.join().unwrap();
+}
+
+#[test]
+fn local_digest_response_drain_failure_does_not_commit_retry_state() {
+    let (addr_tx, addr_rx) = std::sync::mpsc::sync_channel(1);
+    let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+    let server = std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                addr_tx.send(listener.local_addr().unwrap()).unwrap();
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\n\
+                          WWW-Authenticate: Digest realm=\"test\", nonce=\"nonce\", qop=\"auth\"\r\n\
+                          Content-Length: 4\r\n\
+                          Connection: close\r\n\r\n\
+                          x",
+                    )
+                    .await
+                    .unwrap();
+                stream.shutdown().await.unwrap();
+            });
+        let _ = done_tx.send(());
+    });
+    let addr = addr_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let budget = aioduct::RetryBudget::new(1, 0);
+    let recorder = LocalDigestRetryRecorder {
+        middleware_attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
+        observer_attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
+    };
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .digest_auth("user", "password")
+            .request_observer(recorder.clone())
+            .retry(
+                aioduct::RetryConfig::default()
+                    .max_retries(2)
+                    .budget(budget.clone())
+                    .classify(|_| aioduct::RetryDecision::DoNotRetry),
+            )
+            .build_local()
+            .unwrap();
+        let error = compio_runtime::time::timeout(
+            Duration::from_secs(2),
+            client
+                .get_local(&format!("http://{addr}/digest"))
+                .unwrap()
+                .send(),
+        )
+        .await
+        .expect("Local Digest response drain stalled")
+        .unwrap_err();
+        assert!(error.to_string().contains("body"), "{error}");
+    });
+
+    assert_eq!(budget.available(), 1);
+    assert!(recorder.middleware_attempts.lock().unwrap().is_empty());
+    assert!(recorder.observer_attempts.lock().unwrap().is_empty());
+    done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("Local Digest server did not stop");
+    server.join().unwrap();
+}
+
+#[test]
 fn client_default_retry_applies_to_local_requests() {
     let attempts = Arc::new(AtomicU32::new(0));
     let server_attempts = attempts.clone();
@@ -77,6 +215,55 @@ fn client_default_retry_applies_to_local_requests() {
             .unwrap();
 
         assert_eq!(response.status(), http::StatusCode::OK);
+    });
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn local_status_retry_refreshes_cookie_jar_headers() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let server_attempts = attempts.clone();
+    let addr = start_server_with_tokio(move |request| {
+        let attempts = server_attempts.clone();
+        async move {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                assert!(request.headers().get(http::header::COOKIE).is_none());
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(http::StatusCode::SERVICE_UNAVAILABLE)
+                        .header(http::header::SET_COOKIE, "session=fresh; Path=/")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+            } else {
+                assert_eq!(
+                    request.headers().get(http::header::COOKIE).unwrap(),
+                    "session=fresh"
+                );
+                Ok(Response::new(Full::new(Bytes::from_static(b"ok"))))
+            }
+        }
+    });
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .cookie_jar(aioduct::CookieJar::new())
+            .retry(
+                aioduct::RetryConfig::default()
+                    .max_retries(1)
+                    .initial_backoff(Duration::ZERO),
+            )
+            .build_local()
+            .unwrap();
+        let response = client
+            .get_local(&format!("http://{addr}/cookie"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.text().await.unwrap(), "ok");
     });
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }

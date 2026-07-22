@@ -778,7 +778,8 @@ fn start_https_proxy_tokio() -> (
     std::net::SocketAddr,
     rustls::pki_types::CertificateDer<'static>,
 ) {
-    start_https_proxy_tokio_with_alpn(true)
+    let (addr, certificate, _) = start_https_proxy_tokio_with_options(true, None);
+    (addr, certificate)
 }
 
 #[cfg(feature = "rustls")]
@@ -786,32 +787,70 @@ fn start_https_proxy_tokio_without_alpn() -> (
     std::net::SocketAddr,
     rustls::pki_types::CertificateDer<'static>,
 ) {
-    start_https_proxy_tokio_with_alpn(false)
+    let (addr, certificate, _) = start_https_proxy_tokio_with_options(false, None);
+    (addr, certificate)
 }
 
 #[cfg(feature = "rustls")]
-fn start_https_proxy_tokio_with_alpn(
-    advertise_http1_alpn: bool,
+fn start_https_proxy_tokio_observing_client_certificate(
+    client_certificate: rustls::pki_types::CertificateDer<'static>,
 ) -> (
     std::net::SocketAddr,
     rustls::pki_types::CertificateDer<'static>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    start_https_proxy_tokio_with_options(true, Some((client_certificate, seen)))
+}
+
+#[cfg(feature = "rustls")]
+fn start_https_proxy_tokio_with_options(
+    advertise_http1_alpn: bool,
+    client_auth_observation: Option<(
+        rustls::pki_types::CertificateDer<'static>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    )>,
+) -> (
+    std::net::SocketAddr,
+    rustls::pki_types::CertificateDer<'static>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     aioduct_test_server::tls::install_crypto_provider();
     let cert = aioduct_test_server::tls::generate_self_signed(&["localhost"]);
     let cert_der = cert.cert_der.clone();
-    let mut server_config =
+    let builder =
         rustls::ServerConfig::builder_with_provider(aioduct_test_server::tls::crypto_provider())
             .with_safe_default_protocol_versions()
-            .expect("configured rustls provider does not support the default TLS versions")
-            .with_no_client_auth()
-            .with_single_cert(vec![cert.cert_der], cert.key_der)
+            .expect("configured rustls provider does not support the default TLS versions");
+    let client_certificate_seen = client_auth_observation
+        .as_ref()
+        .map(|(_, seen)| seen.clone())
+        .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let builder = match client_auth_observation {
+        Some((client_certificate, _)) => {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(client_certificate).unwrap();
+            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                std::sync::Arc::new(roots),
+                aioduct_test_server::tls::crypto_provider(),
+            )
+            .allow_unauthenticated()
+            .build()
             .unwrap();
+            builder.with_client_cert_verifier(verifier)
+        }
+        None => builder.with_no_client_auth(),
+    };
+    let mut server_config = builder
+        .with_single_cert(vec![cert.cert_der], cert.key_der)
+        .unwrap();
     if advertise_http1_alpn {
         server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     }
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config));
+    let server_client_certificate_seen = client_certificate_seen.clone();
 
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -823,10 +862,19 @@ fn start_https_proxy_tokio_with_alpn(
             loop {
                 let (tcp, _) = listener.accept().await.unwrap();
                 let acceptor = acceptor.clone();
+                let client_certificate_seen = server_client_certificate_seen.clone();
                 tokio::spawn(async move {
                     let Ok(mut client) = acceptor.accept(tcp).await else {
                         return;
                     };
+                    if client
+                        .get_ref()
+                        .1
+                        .peer_certificates()
+                        .is_some_and(|certificates| !certificates.is_empty())
+                    {
+                        client_certificate_seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     if advertise_http1_alpn
                         && client.get_ref().1.alpn_protocol() != Some(b"http/1.1")
                     {
@@ -867,7 +915,7 @@ fn start_https_proxy_tokio_with_alpn(
         });
     });
 
-    (rx.recv().unwrap(), cert_der)
+    (rx.recv().unwrap(), cert_der, client_certificate_seen)
 }
 
 #[test]
@@ -1989,6 +2037,50 @@ fn test_compio_https_proxy_negotiates_http1_local() {
         assert_eq!(response.status(), http::StatusCode::OK);
         assert_eq!(response.text().await.unwrap(), "hello aioduct");
     });
+}
+
+#[cfg(feature = "rustls")]
+#[test]
+fn compio_https_proxy_uses_configured_client_identity_local() {
+    aioduct_test_server::tls::install_crypto_provider();
+    let target_addr = start_server_tokio();
+    let client_certificate =
+        rcgen::generate_simple_self_signed(vec!["proxy-client.test".into()]).unwrap();
+    let client_certificate_der =
+        rustls::pki_types::CertificateDer::from(client_certificate.cert.der().to_vec());
+    let mut identity_pem = client_certificate.cert.pem();
+    identity_pem.push_str(&client_certificate.signing_key.serialize_pem());
+    let identity = aioduct::tls::Identity::from_pem(identity_pem.as_bytes()).unwrap();
+    let (proxy_addr, proxy_certificate, client_certificate_seen) =
+        start_https_proxy_tokio_observing_client_certificate(client_certificate_der);
+
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .add_root_certificates(&[aioduct::tls::Certificate::from_der(
+                proxy_certificate.to_vec(),
+            )])
+            .identity(identity)
+            .proxy(
+                aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
+                    .unwrap(),
+            )
+            .timeout(Duration::from_secs(5))
+            .build_local()
+            .unwrap();
+
+        let response = client
+            .get_local(&format!("http://{target_addr}/proxy-client-identity"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "hello aioduct");
+    });
+
+    assert!(
+        client_certificate_seen.load(std::sync::atomic::Ordering::SeqCst),
+        "configured client identity was not presented to the HTTPS proxy"
+    );
 }
 
 #[cfg(feature = "rustls")]

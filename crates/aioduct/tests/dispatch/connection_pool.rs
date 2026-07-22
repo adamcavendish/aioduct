@@ -24,6 +24,54 @@ async fn h2c_prior_knowledge_works() {
     assert_eq!(resp.text().await.unwrap(), "h2 ok");
 }
 
+#[tokio::test]
+async fn fresh_h2_publication_starts_reaper_before_first_response() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut connection = h2::server::handshake(stream).await.unwrap();
+        let (_request, mut response) = connection
+            .accept()
+            .await
+            .expect("H2 connection ended before the first request")
+            .expect("first H2 request was invalid");
+        response.send_reset(h2::Reason::CANCEL);
+        tokio::pin!(shutdown_rx);
+        tokio::select! {
+            _ = &mut shutdown_rx => {}
+            _ = connection.accept() => {}
+        }
+    });
+
+    let idle_timeout = Duration::from_millis(50);
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .pool_idle_timeout(idle_timeout)
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let error = client
+        .get(&format!("http://{addr}/reset"))
+        .unwrap()
+        .h2c_prior_knowledge()
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("stream error"), "{error}");
+    assert_eq!(
+        client.pool_stats().idle_pool_entries,
+        1,
+        "the original fresh H2 handle should have been published before the cloned request failed"
+    );
+
+    tokio::time::sleep(idle_timeout + Duration::from_millis(150)).await;
+    assert_eq!(client.pool_stats().idle_pool_entries, 0);
+    assert!(client.pool_stats().idle_timeout_evictions >= 1);
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
 // ── 20. No connection reuse ──────────────────────────────────────────────────
 
 #[tokio::test]

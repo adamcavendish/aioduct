@@ -1,38 +1,11 @@
-use std::sync::{Arc, OnceLock};
-
 use crate::error::Error;
 use crate::proxy::{ProxyEstablishmentPlan, ProxyScheme};
 use crate::tls::{RustlsConnector, TlsStream};
-
-#[derive(Debug)]
-struct NoProxyClientIdentity;
-
-impl rustls::client::ResolvesClientCert for NoProxyClientIdentity {
-    fn resolve(
-        &self,
-        _root_hint_subjects: &[&[u8]],
-        _sigschemes: &[rustls::SignatureScheme],
-    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
-        None
-    }
-
-    fn has_certs(&self) -> bool {
-        false
-    }
-}
-
-fn no_proxy_client_identity() -> Arc<dyn rustls::client::ResolvesClientCert> {
-    static RESOLVER: OnceLock<Arc<NoProxyClientIdentity>> = OnceLock::new();
-    RESOLVER
-        .get_or_init(|| Arc::new(NoProxyClientIdentity))
-        .clone()
-}
 
 fn http1_connector(connector: &RustlsConnector) -> RustlsConnector {
     let mut connector = connector.clone();
     let config = connector.config_mut();
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    config.client_auth_cert_resolver = no_proxy_client_identity();
     connector
 }
 
@@ -104,6 +77,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[cfg(feature = "rustls-aws-lc-rs")]
     #[derive(Debug)]
@@ -204,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_connector_omits_origin_identity_without_mutating_origin_policy() {
+    fn proxy_connector_preserves_configured_client_identity() {
         crate::tls::install_default_crypto_provider();
         let mut connector = RustlsConnector::danger_accept_invalid_certs();
         connector.config_mut().enable_sni = false;
@@ -214,7 +188,7 @@ mod tests {
 
         assert!(connector.config().client_auth_cert_resolver.has_certs());
         assert!(
-            !proxy_connector
+            proxy_connector
                 .config()
                 .client_auth_cert_resolver
                 .has_certs()

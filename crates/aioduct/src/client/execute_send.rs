@@ -4,7 +4,9 @@ use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 use std::time::Duration;
 
-use super::replay::{FinalizedCacheState, FinalizedRequestSnapshot, audit_send_body};
+use super::replay::{
+    FinalizedCacheState, FinalizedRequestSnapshot, RetryEligibilityPermit, audit_send_body,
+};
 use super::{BodyReplayability, FinalizedRequestState, HttpEngineSend};
 use crate::body::{RequestBody, RequestBodySend};
 use crate::digest_fields::ContentDigestBody;
@@ -96,6 +98,12 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             ) = if let Some(snapshot) = replay_snapshot.take() {
                 current_uri = snapshot.effective_uri().clone();
                 current_headers = snapshot.headers().clone();
+                let applied_cookie_header = self.core.refresh_replay_headers(
+                    &current_uri,
+                    Some(&site_for_cookies),
+                    snapshot.applied_cookie_header(),
+                    &mut current_headers,
+                );
 
                 let replay_body = snapshot.body_bytes();
                 let req_body: RequestBodySend = http_body_util::Full::new(replay_body)
@@ -112,8 +120,22 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 let finalized_cache_state = snapshot.cache_state().clone();
                 let cache_entry = finalized_cache_state.cache_entry();
                 let stale_if_error = finalized_cache_state.stale_if_error();
-                let cache_request_headers = finalized_cache_state.request_headers().clone();
-                let request = snapshot.to_request(req_body);
+                let mut cache_request_headers = finalized_cache_state.request_headers().clone();
+                match current_headers.get(http::header::COOKIE).cloned() {
+                    Some(cookie) => {
+                        cache_request_headers.insert(http::header::COOKIE, cookie);
+                    }
+                    None => {
+                        cache_request_headers.remove(http::header::COOKIE);
+                    }
+                }
+                let mut request = snapshot.to_request(req_body);
+                *request.headers_mut() = current_headers.clone();
+                if let Some(applied_cookie_header) = applied_cookie_header {
+                    request
+                        .extensions_mut()
+                        .insert(super::replay::AppliedCookieHeader(applied_cookie_header));
+                }
                 let body_for_replay = snapshot.stale_replay_bytes().map(RequestBody::Buffered);
                 let replay_bytes_for_snapshot = snapshot.stale_replay_bytes();
 
@@ -135,7 +157,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .unwrap_or_else(|error| error.into_inner())
                         .clear_replay_snapshot();
                 }
-                self.core.prepare_request_headers(
+                let applied_cookie_header = self.core.prepare_request_headers_tracking(
                     &current_uri,
                     Some(&site_for_cookies),
                     &mut current_headers,
@@ -193,6 +215,11 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
                 let mut request = builder.body(req_body)?;
                 *request.headers_mut() = current_headers.clone();
+                if let Some(applied_cookie_header) = applied_cookie_header {
+                    request
+                        .extensions_mut()
+                        .insert(super::replay::AppliedCookieHeader(applied_cookie_header));
+                }
                 let middleware_replay_body = match body_for_replay.as_ref() {
                     Some(RequestBody::Buffered(body)) => Some(body.clone()),
                     _ => None,
@@ -462,27 +489,27 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let Some(challenge) = digest.prepare(&challenge_headers) else {
             return Ok(resp);
         };
-        let (attempt, max_retries) = if let Some(finalized_request) = finalized_request {
-            let mut state = finalized_request
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let Some(attempt) = state.try_start_retry() else {
+        if !digest.can_authorize_prepared(snapshot.method(), snapshot.request_uri(), &challenge) {
+            return Ok(resp);
+        }
+        let retry_eligibility = if let Some(finalized_request) = finalized_request {
+            let Some(permit) = RetryEligibilityPermit::try_new(finalized_request) else {
                 return Ok(resp);
             };
-            (attempt, state.max_retries())
+            Some(permit)
         } else {
-            (1, 1)
+            None
         };
-        let Some(auth_value) =
-            digest.authorize_prepared(snapshot.method(), snapshot.request_uri(), &challenge)
-        else {
-            if let Some(finalized_request) = finalized_request {
-                finalized_request
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .cancel_retry_reservation();
-            }
-            return Ok(resp);
+
+        resp.bytes().await?;
+        let auth_value = digest
+            .authorize_prepared(snapshot.method(), snapshot.request_uri(), &challenge)
+            .ok_or_else(|| {
+                Error::Other("digest authorization failed after replay quiescence".into())
+            })?;
+        let (attempt, max_retries) = match retry_eligibility {
+            Some(permit) => permit.commit(),
+            None => (1, 1),
         };
 
         let retry_reason = Error::Other("digest authentication challenge".into());
@@ -539,7 +566,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
 
         let effective_uri = authenticated.effective_uri().clone();
         let body_replayability = authenticated.body_replayability();
-        let _ = resp.bytes().await;
         if let Some(finalized_request) = finalized_request {
             finalized_request
                 .lock()
