@@ -60,7 +60,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           summary-always: true
           comment-on-alert: true
-          fail-on-alert: true
+          # GitHub-hosted runner timings vary enough to produce correlated
+          # 2x swings across aioduct and every comparison client. Keep the
+          # alert and history, but do not fail main on one absolute sample.
+          fail-on-alert: false
           alert-threshold: "200%"
 
       - name: Save benchmark history

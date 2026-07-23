@@ -43,11 +43,14 @@ The GitHub benchmark workflow runs the full Criterion suite on pushes to
 `main`, once per day, and on manual dispatch. It emits
 bencher-compatible output for
 [`benchmark-action/github-action-benchmark`](https://github.com/benchmark-action/github-action-benchmark),
-stores benchmark history in the workflow cache, writes a job summary, and fails
-when a benchmark regresses by more than 200% compared with the previous result
-for the same branch. After saving the cache, the benchmark workflow triggers the
-Pages workflow, which restores the latest benchmark cache and publishes the chart
-dashboard at
+stores benchmark history in the workflow cache, writes a job summary, and
+reports an alert when a benchmark is more than 200% of the previous result for
+the same branch. Alerts are informational rather than merge-blocking because
+absolute loopback timings on GitHub-hosted runners can vary substantially with
+the assigned host. A regression should be confirmed on a stable machine and
+against the comparison clients from the same run. After saving the cache, the
+benchmark workflow triggers the Pages workflow, which restores the latest
+benchmark cache and publishes the chart dashboard at
 <https://adamcavendish.github.io/aioduct/dev/bench/>.
 
 ## Results
