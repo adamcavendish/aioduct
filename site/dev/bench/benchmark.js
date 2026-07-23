@@ -1,3 +1,5 @@
+import { normalizeRuns } from "./benchmark-data.mjs";
+
 const DATA_URL = "benchmark-data.json";
 
 const els = {
@@ -34,27 +36,6 @@ fetch(DATA_URL, { cache: "no-store" })
         runs = [];
         render();
     });
-
-function normalizeRuns(data) {
-    const values = Array.isArray(data) ? data : data?.entries || data?.runs || [data];
-    return values
-        .filter((run) => run && Array.isArray(run.benches))
-        .map((run) => ({
-            date: Number(run.date || Date.parse(run.commit?.timestamp) || 0),
-            commit: run.commit || {},
-            benches: run.benches
-                .filter((bench) => bench && typeof bench.name === "string")
-                .map((bench) => ({
-                    name: bench.name,
-                    value: Number(bench.value),
-                    range: Number(bench.range || 0),
-                    unit: bench.unit || "ns/iter",
-                }))
-                .filter((bench) => Number.isFinite(bench.value)),
-        }))
-        .filter((run) => run.benches.length > 0)
-        .sort((a, b) => a.date - b.date);
-}
 
 function render() {
     if (runs.length === 0) {

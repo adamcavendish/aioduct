@@ -161,7 +161,7 @@ publish:
 # ---------- CI (run everything) ----------
 
 # Run the full CI pipeline locally
-ci: fmt-check clippy-all doc-check book msrv test-all test-wasm test-wasi-p2 coverage-lcov check-snippets
+ci: fmt-check clippy-all doc-check book msrv test-all test-wasm test-wasi-p2 coverage-lcov check-snippets check-benchmark-dashboard
 
 # Cross-check the CLI for all cargo-dist targets (requires cross-compilers)
 cross-check:
@@ -186,8 +186,12 @@ check-snippets:
     bash scripts/check-snippets.sh
     rm -f site/wasm/.gitignore site/wasm/package.json
 
+# Check benchmark dashboard data normalization
+check-benchmark-dashboard:
+    node --test scripts/benchmark-dashboard.test.mjs
+
 # Assemble the full site (landing page + mdBook docs)
-site-build: book site-wasm
+site-build: book site-wasm check-benchmark-dashboard
     rm -rf _site
     mkdir -p _site
     cp site/index.html site/style.css site/app.js _site/
