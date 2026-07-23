@@ -77,6 +77,9 @@ jobs:
             exit 1
           fi
 
+      - name: Check benchmark dashboard
+        run: node --test scripts/benchmark-dashboard.test.mjs
+
       # --- Assemble deploy artifact ---
       - name: Assemble site
         run: |

@@ -79,6 +79,8 @@ jobs:
       - uses: taiki-e/install-action@just
       - uses: taiki-e/install-action@mdbook
       - run: just book
+      - name: Check benchmark dashboard
+        run: just check-benchmark-dashboard
 
   basics:
     name: Basics
