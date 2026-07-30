@@ -21,7 +21,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 ## Features
 
 - **No hyper-util** — custom IO adapters and executor directly against `hyper::rt` traits
-- **Multi-runtime** — tokio, smol, and compio (io_uring) via feature flags; WASM/browser and WASI Preview 2 support
+- **Multi-runtime** — tokio, smol, and compio (io_uring) via feature flags; compatible WASM browser/worker and WASI Preview 2 support
 - **rustls TLS** — async handshake with ALPN-based HTTP/1.1 and HTTP/2 negotiation
 - **Connection pooling** — keyed by scheme, authority, protocol hint, proxy route, forced transport address, and effective HTTP/3 endpoint, with idle timeout and per-host limits plus `pool_stats()` diagnostics (hit/miss/eviction counters and per-host idle/active inventory)
 - **Redirect following** — RFC-compliant handling of 301/302/303/307/308 with sensitive header stripping and content header removal
@@ -124,7 +124,7 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 | `tokio`   | Tokio async runtime                    | Stable       |
 | `smol`    | Smol async runtime                     | Stable       |
 | `compio`  | Compio runtime (io_uring / IOCP)       | Experimental |
-| `wasm`    | Browser/WASM runtime via web-sys       | Experimental |
+| `wasm`    | Compatible browser/worker WASM via host Fetch API | Experimental |
 | `wasi-p2` | WASI Preview 2 guest HTTP client       | Experimental |
 | `wasmtime` | Host-side Wasmtime WASI HTTP adapter  | Experimental |
 | `rustls`  | TLS via rustls; requires exactly one rustls provider | Stable |

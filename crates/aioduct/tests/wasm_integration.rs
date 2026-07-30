@@ -4,7 +4,7 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
-use aioduct::wasm::WasmClient;
+use aioduct::{Error, wasm::WasmClient};
 
 const BASE: &str = "http://127.0.0.1:9877";
 
@@ -231,7 +231,10 @@ async fn builder_timeout_aborts() {
         .unwrap()
         .send()
         .await;
-    assert!(result.is_err(), "request should time out");
+    assert!(
+        matches!(result, Err(Error::Timeout)),
+        "request should return Error::Timeout, got {result:?}"
+    );
 }
 
 #[wasm_bindgen_test]
@@ -243,7 +246,48 @@ async fn per_request_timeout_aborts() {
         .timeout(std::time::Duration::from_millis(100))
         .send()
         .await;
-    assert!(result.is_err(), "request should time out");
+    assert!(
+        matches!(result, Err(Error::Timeout)),
+        "request should return Error::Timeout, got {result:?}"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn timed_request_succeeds_before_deadline() {
+    let client = WasmClient::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let response = client
+        .get(&format!("{BASE}/delay/10"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), http::StatusCode::OK);
+}
+
+#[wasm_bindgen_test]
+async fn cancelled_timed_request_clears_timer() {
+    let client = WasmClient::builder()
+        .timeout(std::time::Duration::from_millis(50))
+        .build()
+        .unwrap();
+    let mut request = Box::pin(client.get(&format!("{BASE}/delay/200")).unwrap().send());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        std::future::Future::poll(request.as_mut(), &mut context).is_pending(),
+        "delayed request should still be pending after its first poll"
+    );
+    drop(request);
+
+    let response = WasmClient::new()
+        .get(&format!("{BASE}/delay/300"))
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), http::StatusCode::OK);
 }
 
 #[wasm_bindgen_test]

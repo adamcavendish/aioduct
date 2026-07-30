@@ -1,8 +1,8 @@
 # WASM/WASI Runtime Parity
 
 This document compares HTTP client capabilities across aioduct's five runtime
-backends: **tokio**, **smol**, **compio** (native), **wasm** (browser Fetch API),
-and **wasi-p2** (WASI Preview 2 `wasi:http/outgoing-handler`).
+backends: **tokio**, **smol**, **compio** (native), **wasm** (compatible host
+Fetch API), and **wasi-p2** (WASI Preview 2 `wasi:http/outgoing-handler`).
 
 Markers:
 
@@ -359,12 +359,14 @@ HTTP/3 is Tokio-only and is enabled via the `http3` feature, which requires
 
 ## Why Features Are Platform-Managed on WASM and WASI-P2
 
-### WASM (browser)
+### WASM (host Fetch API)
 
-The browser WASM client (`wasm.rs`) delegates all networking to the
-**browser's Fetch API** (`web_sys::Request` / `window.fetch()`). This means:
+The WASM client (`wasm.rs`) delegates networking to a compatible host's Fetch
+API (`web_sys::Request` / `globalThis.fetch()`). Browser and worker runtimes
+share this transport entry point, while browser-specific policy still follows
+the browser Fetch implementation. This means:
 
-- **TLS, DNS, HTTP/2, connection pooling**: These are internal to the browser's
+- **TLS, DNS, HTTP/2, connection pooling**: These are internal to the host's
   network stack. The Fetch API provides no configuration hooks for any of
   these. The `WasmClient` literally cannot influence them.
 
@@ -416,14 +418,14 @@ full networking stack.
 
 ## Summary
 
-| Capability area | Native (tokio/smol/compio) | WASM (browser) | WASI-P2 |
+| Capability area | Native (tokio/smol/compio) | WASM (host Fetch) | WASI-P2 |
 |-----------------|---------------------------|----------------|---------|
 | Request/response basics | Fully supported | Fully supported | Fully supported |
 | Streaming body | Full async streaming | Response streaming via ReadableStream | Sync-only body stream |
 | Redirect, cookie, retry, middleware | Integrated | Not applicable / platform-managed | Types available, not integrated |
-| TLS, DNS, pooling, HTTP version | Configurable | Browser-managed | WASI runtime-managed |
+| TLS, DNS, pooling, HTTP version | Configurable | Host-managed | WASI runtime-managed |
 | Proxy | Full support | Not available | Not available |
-| Compression | Per-codec cfg features | Browser-managed | Not integrated |
+| Compression | Per-codec cfg features | Host-managed | Not integrated |
 
 ## Wasmtime Host Adapter
 

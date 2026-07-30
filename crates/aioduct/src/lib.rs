@@ -147,7 +147,7 @@ pub mod upgrade;
 
 // ── Platform-specific client modules ─────────────────────────────────────────
 
-/// WebAssembly (browser) runtime support.
+/// Compatible WebAssembly browser and worker runtime support.
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
@@ -299,7 +299,7 @@ pub type CompioClient =
 #[cfg(feature = "compio")]
 pub type CompioEngine = CompioClient;
 
-/// Convenience alias for the WebAssembly (browser Fetch API) client.
+/// Convenience alias for the compatible WebAssembly host Fetch API client.
 #[cfg(feature = "wasm")]
 pub type WasmClient = wasm::WasmClient;
 

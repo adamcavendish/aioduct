@@ -167,16 +167,17 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@wasm-pack
+      - uses: taiki-e/install-action@just
       - name: Verify wasm32 portable modules compile
         run: cargo check -p aioduct --target wasm32-unknown-unknown --features wasm,json,gzip,brotli,deflate
       - name: Verify wasm32-wasip2 compilation
         run: cargo check -p aioduct --target wasm32-wasip2 --features wasi-p2,json,gzip,brotli,deflate
-      - name: Build and start test server
-        run: |
-          cargo run -p wasm-test-server &
-          sleep 2
-      - name: Run WASM integration tests
-        run: cd crates/aioduct && wasm-pack test --headless --chrome --features wasm,json
+      - name: Run browser WASM integration tests
+        run: just test-wasm
+      - name: Install pinned worker-build
+        run: cargo install --locked --version 0.8.4 worker-build
+      - name: Run Cloudflare Worker integration tests
+        run: just test-wasm-worker
 
   wasi:
     name: WASI-P2 tests

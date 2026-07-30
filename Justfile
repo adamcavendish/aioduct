@@ -88,6 +88,10 @@ test-wasm:
     cd crates/aioduct && wasm-pack test --headless --chrome --features wasm,json; \
     STATUS=$?; kill $SERVER_PID 2>/dev/null; exit $STATUS
 
+# Run WASM integration tests in workerd through worker-rs
+test-wasm-worker:
+    bash tests/fixtures/cloudflare-worker/test.sh
+
 # ---------- Coverage ----------
 
 # Show coverage summary table
@@ -161,7 +165,7 @@ publish:
 # ---------- CI (run everything) ----------
 
 # Run the full CI pipeline locally
-ci: fmt-check clippy-all doc-check book msrv test-all test-wasm test-wasi-p2 coverage-lcov check-snippets check-benchmark-dashboard
+ci: fmt-check clippy-all doc-check book msrv test-all test-wasm test-wasm-worker test-wasi-p2 coverage-lcov check-snippets check-benchmark-dashboard
 
 # Cross-check the CLI for all cargo-dist targets (requires cross-compilers)
 cross-check:

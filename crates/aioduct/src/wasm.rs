@@ -2,16 +2,76 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::error::{BuilderError, Error};
 
-/// A browser-based HTTP client using the Fetch API.
+#[wasm_bindgen]
+extern "C" {
+    type GlobalScope;
+
+    #[wasm_bindgen(method, structural, catch, js_name = fetch)]
+    fn fetch_with_request(
+        this: &GlobalScope,
+        request: &web_sys::Request,
+    ) -> Result<js_sys::Promise, JsValue>;
+
+    #[wasm_bindgen(method, structural, catch, js_name = setTimeout)]
+    fn set_timeout(
+        this: &GlobalScope,
+        callback: &js_sys::Function,
+        milliseconds: i32,
+    ) -> Result<i32, JsValue>;
+
+    #[wasm_bindgen(method, structural, catch, js_name = clearTimeout)]
+    fn clear_timeout(this: &GlobalScope, handle: i32) -> Result<(), JsValue>;
+}
+
+fn js_error_message(value: &JsValue) -> String {
+    if let Some(message) = value.as_string() {
+        return message;
+    }
+
+    if let Ok(message) = js_sys::Reflect::get(value, &JsValue::from_str("message"))
+        && let Some(message) = message.as_string()
+    {
+        return message;
+    }
+
+    js_sys::JSON::stringify(value)
+        .map(String::from)
+        .unwrap_or_else(|_| format!("{value:?}"))
+}
+
+struct TimeoutRegistration<'a> {
+    global: &'a GlobalScope,
+    handle: i32,
+    _callback: Closure<dyn FnMut()>,
+    active: bool,
+}
+
+impl TimeoutRegistration<'_> {
+    fn clear(mut self) -> Result<(), JsValue> {
+        let result = self.global.clear_timeout(self.handle);
+        self.active = false;
+        result
+    }
+}
+
+impl Drop for TimeoutRegistration<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.global.clear_timeout(self.handle);
+        }
+    }
+}
+
+/// An HTTP client using the host-managed Fetch API.
 ///
 /// This client is only available on `wasm32` targets with the `wasm` feature.
-/// It delegates all networking to the browser's `fetch()` API, which handles
-/// connection pooling, TLS, and HTTP/2 automatically.
+/// It delegates networking to the Fetch API supplied by a compatible browser
+/// or worker runtime.
 #[derive(Clone, Debug)]
 pub struct WasmClient {
     default_headers: HeaderMap,
@@ -235,12 +295,12 @@ impl<'a> WasmRequestBuilder<'a> {
 
     /// Set a per-request connect timeout.
     ///
-    /// Browser Fetch does not expose connection-establishment timing controls.
+    /// The host Fetch API does not expose connection-establishment timing controls.
     pub fn connect_timeout(mut self, _timeout: Duration) -> Self {
         BuilderError::set_once(
             &mut self.builder_error,
             BuilderError::Unsupported(
-                "connect_timeout is not supported by the browser fetch runtime".into(),
+                "connect_timeout is not supported by the host fetch runtime".into(),
             ),
         );
         self
@@ -248,12 +308,12 @@ impl<'a> WasmRequestBuilder<'a> {
 
     /// Set a per-request read timeout.
     ///
-    /// Browser Fetch does not expose response-body read-gap timing controls.
+    /// The host Fetch API does not expose response-body read-gap timing controls.
     pub fn read_timeout(mut self, _timeout: Duration) -> Self {
         BuilderError::set_once(
             &mut self.builder_error,
             BuilderError::Unsupported(
-                "read_timeout is not supported by the browser fetch runtime".into(),
+                "read_timeout is not supported by the host fetch runtime".into(),
             ),
         );
         self
@@ -261,12 +321,12 @@ impl<'a> WasmRequestBuilder<'a> {
 
     /// Disable automatic response decompression for this request.
     ///
-    /// Browser Fetch manages decompression and does not expose raw compressed bytes.
+    /// The host Fetch API manages decompression and does not expose raw compressed bytes.
     pub fn no_decompression(mut self) -> Self {
         BuilderError::set_once(
             &mut self.builder_error,
             BuilderError::Unsupported(
-                "no_decompression is not supported by the browser fetch runtime".into(),
+                "no_decompression is not supported by the host fetch runtime".into(),
             ),
         );
         self
@@ -329,13 +389,11 @@ impl<'a> WasmRequestBuilder<'a> {
 
     /// Force a specific HTTP version.
     ///
-    /// Browser Fetch negotiates protocol versions internally.
+    /// The host Fetch API negotiates protocol versions internally.
     pub fn version(mut self, _version: http::Version) -> Self {
         BuilderError::set_once(
             &mut self.builder_error,
-            BuilderError::Unsupported(
-                "version is not supported by the browser fetch runtime".into(),
-            ),
+            BuilderError::Unsupported("version is not supported by the host fetch runtime".into()),
         );
         self
     }
@@ -385,7 +443,7 @@ impl<'a> WasmRequestBuilder<'a> {
         Ok(self)
     }
 
-    /// Send the request using the browser's Fetch API.
+    /// Send the request using the host runtime's Fetch API.
     pub async fn send(mut self) -> Result<WasmResponse, Error> {
         if let Some(error) = self.builder_error.take() {
             return Err(error.into_error());
@@ -450,77 +508,56 @@ impl<'a> WasmRequestBuilder<'a> {
         let request = web_sys::Request::new_with_str_and_init(&url, &opts)
             .map_err(|e| Error::Other(format!("Request::new failed: {e:?}").into()))?;
 
-        let global = js_sys::global();
-        let (resp_promise, timeout_handle) = if let Ok(window) =
-            global.clone().dyn_into::<web_sys::Window>()
+        let global: GlobalScope = js_sys::global().unchecked_into();
+        let timeout_registration = if let (Some(duration), Some(controller)) =
+            (timeout, abort_controller.clone())
         {
-            let resp_promise = window.fetch_with_request(&request);
-            let timeout_handle = if let (Some(duration), Some(controller)) =
-                (timeout, abort_controller.clone())
-            {
-                let ms = duration.as_millis().min(i32::MAX as u128) as i32;
-                Some(
-                    window
-                        .set_timeout_with_callback_and_timeout_and_arguments_0(
-                            &wasm_bindgen::closure::Closure::once_into_js(move || {
-                                controller.abort();
-                            })
-                            .unchecked_into(),
-                            ms,
-                        )
-                        .map_err(|e| Error::Other(format!("setTimeout failed: {e:?}").into()))?,
-                )
-            } else {
-                None
-            };
-            (resp_promise, timeout_handle)
-        } else if let Ok(worker) = global.clone().dyn_into::<web_sys::WorkerGlobalScope>() {
-            let resp_promise = worker.fetch_with_request(&request);
-            let timeout_handle = if let (Some(duration), Some(controller)) =
-                (timeout, abort_controller.clone())
-            {
-                let ms = duration.as_millis().min(i32::MAX as u128) as i32;
-                Some(
-                    worker
-                        .set_timeout_with_callback_and_timeout_and_arguments_0(
-                            &wasm_bindgen::closure::Closure::once_into_js(move || {
-                                controller.abort();
-                            })
-                            .unchecked_into(),
-                            ms,
-                        )
-                        .map_err(|e| Error::Other(format!("setTimeout failed: {e:?}").into()))?,
-                )
-            } else {
-                None
-            };
-            (resp_promise, timeout_handle)
+            let milliseconds = duration.as_millis().min(i32::MAX as u128) as i32;
+            let callback = Closure::once(move || controller.abort());
+            let handle = global
+                .set_timeout(callback.as_ref().unchecked_ref(), milliseconds)
+                .map_err(|error| {
+                    Error::Other(format!("setTimeout failed: {}", js_error_message(&error)).into())
+                })?;
+            Some(TimeoutRegistration {
+                global: &global,
+                handle,
+                _callback: callback,
+                active: true,
+            })
         } else {
-            return Err(Error::Other(
-                "unsupported JS global scope (expected Window or WorkerGlobalScope)".into(),
-            ));
+            None
         };
 
-        let result = JsFuture::from(resp_promise).await.map_err(|e| {
-            let msg = js_sys::JSON::stringify(&e)
-                .map(String::from)
-                .unwrap_or_else(|_| format!("{e:?}"));
-            if msg.contains("abort") {
-                Error::Timeout
-            } else {
-                Error::Other(format!("fetch failed: {msg}").into())
-            }
-        });
+        let fetch_result = match global.fetch_with_request(&request) {
+            Ok(response_promise) => JsFuture::from(response_promise).await.map_err(|error| {
+                if abort_controller
+                    .as_ref()
+                    .is_some_and(|controller| controller.signal().aborted())
+                {
+                    Error::Timeout
+                } else {
+                    Error::Other(format!("fetch failed: {}", js_error_message(&error)).into())
+                }
+            }),
+            Err(error) => Err(Error::Other(
+                format!("fetch failed: {}", js_error_message(&error)).into(),
+            )),
+        };
 
-        if let Some(handle) = timeout_handle {
-            if let Ok(window) = global.clone().dyn_into::<web_sys::Window>() {
-                window.clear_timeout_with_handle(handle);
-            } else if let Ok(worker) = global.clone().dyn_into::<web_sys::WorkerGlobalScope>() {
-                worker.clear_timeout_with_handle(handle);
-            }
-        }
+        let cleanup_result = if let Some(registration) = timeout_registration {
+            registration.clear().map_err(|error| {
+                Error::Other(format!("clearTimeout failed: {}", js_error_message(&error)).into())
+            })
+        } else {
+            Ok(())
+        };
 
-        let resp_value = result?;
+        let resp_value = match (fetch_result, cleanup_result) {
+            (Err(error), _) => return Err(error),
+            (Ok(_), Err(error)) => return Err(error),
+            (Ok(response), Ok(())) => response,
+        };
 
         let resp: web_sys::Response = resp_value
             .dyn_into()
