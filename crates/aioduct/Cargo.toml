@@ -102,7 +102,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, optional = true, features = [
     "Headers", "Request", "RequestInit", "RequestMode",
-    "Response", "Window", "WorkerGlobalScope", "ReadableStream", "ReadableStreamDefaultReader",
+    "Response", "ReadableStream", "ReadableStreamDefaultReader",
     "AbortController", "AbortSignal",
 ] }
 webpki-roots = { workspace = true, optional = true }

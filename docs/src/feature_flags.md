@@ -9,7 +9,7 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 | `tokio`  | tokio                             | Stable       | Tokio async runtime                  |
 | `smol`   | smol, async-io, futures-io        | Stable       | Smol async runtime                   |
 | `compio` | compio-runtime, async-io          | Experimental | Compio runtime (io_uring / IOCP)     |
-| `wasm`   | wasm-bindgen, web-sys, js-sys     | Experimental | Browser/WASM runtime                 |
+| `wasm`   | wasm-bindgen, web-sys, js-sys     | Experimental | Compatible browser/worker Fetch runtime |
 | `wasi-p2` | wasi                             | Experimental | WASI Preview 2 guest HTTP client     |
 | `wasmtime` | wasmtime, wasmtime-wasi, wasmtime-wasi-http | Experimental | Wasmtime host-side WASI HTTP adapter |
 | `rustls` | rustls, webpki-roots, rustls-pemfile | Stable | TLS backend via rustls; requires exactly one rustls provider |

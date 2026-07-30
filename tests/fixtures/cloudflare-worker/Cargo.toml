@@ -1,0 +1,19 @@
+[package]
+name = "aioduct-cloudflare-worker-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aioduct = { path = "../../../crates/aioduct", default-features = false, features = ["wasm"] }
+worker = "=0.8.5"
+
+[workspace]
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
