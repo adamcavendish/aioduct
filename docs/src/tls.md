@@ -8,21 +8,21 @@ Use the `rustls` TLS backend with the ring crypto provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.4", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.5", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 Use the same rustls backend with the AWS-LC crypto provider:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.4", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.5", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 Add `rustls-native-roots` alongside either provider to use the OS certificate store:
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.4", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.5", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ## Quick Start
