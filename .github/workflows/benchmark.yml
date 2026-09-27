@@ -46,6 +46,9 @@ jobs:
       - name: Run benchmarks
         run: |
           mkdir -p .benchmark-cache
+          # rust-cache keeps Criterion's base directories but removes their
+          # sample files. Start with complete baselines on every runner.
+          rm -rf target/criterion
           cargo bench -p aioduct-bench --bench bench_main \
             -- --output-format bencher --noplot --color never \
             | tee output.txt
