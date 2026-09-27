@@ -321,7 +321,9 @@ mod tests {
             (payload_len & 0xff) as u8,
         ]);
         frame[3] = 0x04;
-        for (chunk, (identifier, value)) in frame[9..].chunks_exact_mut(6).zip(settings) {
+        for (chunk, (identifier, value)) in
+            frame[9..].as_chunks_mut::<6>().0.iter_mut().zip(settings)
+        {
             chunk[..2].copy_from_slice(&identifier.to_be_bytes());
             chunk[2..].copy_from_slice(&value.to_be_bytes());
         }

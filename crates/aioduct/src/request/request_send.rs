@@ -551,6 +551,10 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     /// On failure, returns [`SendError`] which includes the URL that was being
     /// requested. Use [`SendError::into_error()`] to discard URL context, or
     /// call convenience methods like [`SendError::is_timeout()`] directly.
+    #[allow(
+        clippy::result_large_err,
+        reason = "Keep the public SendError return type without adding an allocation on failure"
+    )]
     pub async fn send(self) -> Result<Response, SendError> {
         let mut this = self;
         let url = this.uri.clone();
