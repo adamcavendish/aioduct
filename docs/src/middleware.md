@@ -95,4 +95,10 @@ Middleware hooks run at these points in the request lifecycle:
 6. Decompression is applied (if enabled).
 7. The response is returned to the caller.
 
-Note that middleware runs on each individual request, including redirect hops.
+Middleware runs on each individual request, including redirect hops. For ordinary
+client requests, automatic `Host` insertion happens after middleware, once an
+HTTP/1 connection has been selected. HTTP/2 and HTTP/3 use the URI authority
+without adding a redundant `Host`. Use the full URI passed to `on_request` to
+read the destination authority. Explicit `Host` fields are preserved; automatic
+message signing that covers `host` also supplies the field before middleware and
+signing.

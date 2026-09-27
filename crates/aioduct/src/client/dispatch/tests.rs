@@ -685,3 +685,41 @@ fn should_checkin_successful_h2_connect() {
     resp.set_version(http::Version::HTTP_2);
     assert!(!Core::should_skip_checkin(&resp, &http::Method::CONNECT));
 }
+
+#[test]
+fn recovered_request_recomputes_automatic_host_for_its_protocol() {
+    use http_body_util::Full;
+
+    let uri: Uri = "https://example.com:8443/path".parse().unwrap();
+    let mut request = http::Request::builder()
+        .uri("/path")
+        .body(Full::new(bytes::Bytes::new()))
+        .unwrap();
+    prepare_automatic_host(&mut request, &uri, true).unwrap();
+    assert_eq!(request.headers()["host"], "example.com:8443");
+
+    // Both an exact recovered request and a reconstructed replay must retain
+    // enough provenance to remove a transport-generated H1 Host on H2/H3.
+    let head = crate::client::request_replay::ReplayableRequestHead::capture(&request);
+    let mut replay = head.into_request(Full::new(bytes::Bytes::new()));
+    prepare_automatic_host(&mut request, &uri, false).unwrap();
+    prepare_automatic_host(&mut replay, &uri, false).unwrap();
+    assert!(!request.headers().contains_key("host"));
+    assert!(!replay.headers().contains_key("host"));
+
+    // A subsequent H1 attempt must synthesize Host again.
+    prepare_automatic_host(&mut replay, &uri, true).unwrap();
+    assert_eq!(replay.headers()["host"], "example.com:8443");
+}
+
+#[test]
+fn automatic_host_cleanup_preserves_a_replaced_field() {
+    let uri: Uri = "https://example.com/".parse().unwrap();
+    let mut request = http::Request::new(());
+    prepare_automatic_host(&mut request, &uri, true).unwrap();
+    request
+        .headers_mut()
+        .insert("host", "explicit.test".parse().unwrap());
+    prepare_automatic_host(&mut request, &uri, false).unwrap();
+    assert_eq!(request.headers()["host"], "explicit.test");
+}

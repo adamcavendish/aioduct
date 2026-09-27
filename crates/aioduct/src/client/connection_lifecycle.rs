@@ -9,6 +9,11 @@ use crate::response::{BodyObserverCtx, Response};
 
 use super::replay::ReplayReason;
 
+// A request recovered before serialization can be retried on another protocol.
+// Track only the transport-generated Host; explicit and signed fields stay intact.
+#[derive(Clone)]
+pub(super) struct AutomaticHost(http::HeaderValue);
+
 pub(super) struct H2ConnectGuard<'a, B: 'static> {
     pub(super) pool: &'a crate::pool::ConnectionPool<B>,
     pub(super) key: &'a crate::pool::PoolKey,
@@ -121,6 +126,7 @@ impl<B: 'static> HttpEngineCore<B> {
         connection: &PooledConnection<B>,
         full_uri: &Uri,
     ) -> Result<(), Error> {
+        prepare_automatic_host(request, full_uri, connection.is_h1())?;
         match &connection.conn {
             HttpConnection::H1(_) => prepare_h1_request_target(request),
             HttpConnection::H2(_) => {
@@ -687,6 +693,37 @@ fn validate_h2_connect_tunnel_response<B>(
             "HTTP/2 CONNECT tunnel handoff requires status 200 because the HTTP/2 transport does not expose an upgrade stream for other successful statuses"
                 .to_owned(),
         ));
+    }
+    Ok(())
+}
+
+fn prepare_automatic_host<B>(
+    request: &mut http::Request<B>,
+    full_uri: &Uri,
+    is_h1: bool,
+) -> Result<(), Error> {
+    if let Some(AutomaticHost(previous)) = request.extensions_mut().remove::<AutomaticHost>()
+        && request.headers().get(http::header::HOST) == Some(&previous)
+        && request.headers().get_all(http::header::HOST).iter().count() == 1
+    {
+        request.headers_mut().remove(http::header::HOST);
+    }
+    // Forwarding owns its authority/Host policy, including authority-omitted
+    // targets. Do not synthesize headers on top of that policy.
+    if is_h1
+        && !request.headers().contains_key(http::header::HOST)
+        && request
+            .extensions()
+            .get::<crate::forward::dispatch_plan::ForwardSigningTarget>()
+            .is_none()
+        && let Some(authority) = full_uri.authority()
+    {
+        let host = http::HeaderValue::from_str(authority.as_str())
+            .map_err(|error| Error::InvalidHeader(format!("invalid Host authority: {error}")))?;
+        request
+            .headers_mut()
+            .insert(http::header::HOST, host.clone());
+        request.extensions_mut().insert(AutomaticHost(host));
     }
     Ok(())
 }

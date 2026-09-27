@@ -237,7 +237,13 @@ impl<B> HttpEngineCore<B> {
             None
         };
 
-        if !headers.contains_key(HOST)
+        // Signed Host fields must exist before signing. Otherwise, only the
+        // HTTP/1 transport synthesizes Host once the protocol is known.
+        if self
+            .message_signature
+            .as_ref()
+            .is_some_and(|signature| signature.covers_host())
+            && !headers.contains_key(HOST)
             && let Some(authority) = uri.authority()
             && let Ok(host_value) = authority.as_str().parse()
         {
@@ -395,7 +401,8 @@ impl<B> HttpEngineCore<B> {
             _ => return Err(Error::Redirect("unexpected redirect status".into())),
         };
 
-        if let Some(authority) = next_uri.authority()
+        if headers.contains_key(HOST)
+            && let Some(authority) = next_uri.authority()
             && let Ok(host_value) = authority.as_str().parse()
         {
             headers.insert(HOST, host_value);

@@ -22,10 +22,20 @@ pub(super) fn is_unsafe_method(method: &Method) -> bool {
     )
 }
 
+// Cache lookup precedes connection selection. A missing Host in that snapshot
+// may still become an automatic Host on HTTP/1, so it is not a known absence.
+pub(super) fn has_unresolved_host(vary: &[String], request_headers: &HeaderMap) -> bool {
+    !request_headers.contains_key(http::header::HOST)
+        && vary.iter().any(|name| name.eq_ignore_ascii_case("host"))
+}
+
 pub(crate) fn vary_matches(entry: &CacheEntry, request_headers: &HeaderMap) -> bool {
     let Some(ref vary_names) = entry.vary else {
         return true;
     };
+    if has_unresolved_host(vary_names, request_headers) {
+        return false;
+    }
     let Some(ref stored) = entry.request_vary_headers else {
         return true;
     };
@@ -42,7 +52,6 @@ pub(crate) fn vary_matches(entry: &CacheEntry, request_headers: &HeaderMap) -> b
             return false;
         }
     }
-    let _ = vary_names;
     true
 }
 

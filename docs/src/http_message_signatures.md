@@ -73,6 +73,11 @@ otherwise valid.
 | `@status` | Response status code with no reason phrase. |
 | Header and trailer fields | Lowercase field names; repeated values are joined with `, `. Supports `;sf`, `;key`, `;bs`, and caller-supplied `;tr` component parameters. |
 
+For signatures used across HTTP versions, prefer the derived `@authority`
+component over the `host` header field. Native automatic signing that explicitly
+covers `host` supplies a missing Host before middleware and signing, and retains
+it on the wire even for HTTP/2 or HTTP/3. Signing `@authority` does not add Host.
+
 When building a response signature base with a related request,
 `MessageSignatureComponent::related_request()` adds the `;req` parameter and
 derives that component from the triggering request.

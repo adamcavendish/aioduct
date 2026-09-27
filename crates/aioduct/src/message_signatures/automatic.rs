@@ -68,6 +68,14 @@ impl AutomaticMessageSignature {
         }
     }
 
+    pub(crate) fn covers_host(&self) -> bool {
+        self.config.components().iter().any(|component| {
+            matches!(component.kind(), MessageSignatureComponentKind::Header(name) if name == http::header::HOST)
+                && !component.has_trailer_parameter()
+                && !component.has_related_request_parameter()
+        })
+    }
+
     pub(crate) fn prepare_headers(
         &self,
         method: &Method,
