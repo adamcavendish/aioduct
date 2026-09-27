@@ -10,6 +10,14 @@ Async-native Rust HTTP client built directly on **hyper 1.x** — no hyper-util,
 
 [Documentation](https://adamcavendish.github.io/aioduct/) | [API Reference](https://docs.rs/aioduct) | [Crates.io](https://crates.io/crates/aioduct)
 
+## 0.2.6
+
+This release fixes HTTP/2 stream resets from google.com by generating automatic
+`Host` only for HTTP/1. Explicit and signed Host fields remain supported.
+Middleware that needs destination authority should read its full URI argument.
+See the [changelog](CHANGELOG.md#026---2026-09-28) for the `Vary: Host` cache
+compatibility change and other release notes.
+
 ## Why aioduct?
 
 - **reqwest** depends on hyper-util's `legacy::Client`, wrapping hyper 0.x-style patterns over hyper 1.x with years of backwards-compatibility baggage.
@@ -70,7 +78,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 
 ```toml
 [dependencies]
-aioduct = { version = "0.2.5", features = ["tokio"] }
+aioduct = { version = "0.2.6", features = ["tokio"] }
 ```
 
 ```rust
@@ -95,19 +103,19 @@ async fn main() -> Result<(), aioduct::Error> {
 Enable the `rustls` TLS backend plus exactly one rustls crypto provider:
 
 ```toml
-aioduct = { version = "0.2.5", features = ["tokio", "rustls", "rustls-ring"] }
+aioduct = { version = "0.2.6", features = ["tokio", "rustls", "rustls-ring"] }
 ```
 
 To use rustls with AWS-LC instead of ring, select the AWS-LC provider:
 
 ```toml
-aioduct = { version = "0.2.5", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.6", features = ["tokio", "rustls", "rustls-aws-lc-rs"] }
 ```
 
 To use the OS certificate store, add `rustls-native-roots` alongside either TLS provider:
 
 ```toml
-aioduct = { version = "0.2.5", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
+aioduct = { version = "0.2.6", features = ["tokio", "rustls-native-roots", "rustls-aws-lc-rs"] }
 ```
 
 ```rust
