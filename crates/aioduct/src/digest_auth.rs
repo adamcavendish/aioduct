@@ -221,10 +221,10 @@ fn md5_compute(data: &[u8]) -> [u8; 16] {
     }
     padded.extend_from_slice(&bit_len.to_le_bytes());
 
-    for chunk in padded.chunks_exact(64) {
+    for chunk in padded.as_chunks::<64>().0 {
         let mut m = [0u32; 16];
-        for (i, word) in chunk.chunks_exact(4).enumerate() {
-            m[i] = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+        for (i, word) in chunk.as_chunks::<4>().0.iter().enumerate() {
+            m[i] = u32::from_le_bytes(*word);
         }
         md5_round(&mut state, &m);
     }
