@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-09-28
+
+### Fixed
+- Native clients now synthesize `Host` only for HTTP/1 after connection
+  selection. HTTP/2 and HTTP/3 use the URI authority without a redundant
+  automatic `Host`, fixing HTTP/2 stream resets from google.com (#416).
+  Explicit, middleware-provided, signed, and forwarded Host policies are
+  preserved across retries and redirects.
+- Cache matching now considers every `Vary` header line, including repeated
+  fields with mixed-case names.
+- Updated fixed-size chunk iteration for Rust 1.98 Clippy compatibility.
+
+### Changed
+- Ordinary request middleware no longer receives an automatically synthesized
+  `Host`; use the full URI argument to read destination authority. Automatic
+  signing that covers `host` still supplies it before middleware and signing.
+- Responses with `Vary: Host` are not stored or reused when Host is absent
+  before connection selection, preventing incorrect cache sharing across
+  HTTP versions. This includes stale responses and conditional revalidation;
+  explicit and automatically signed Host variants remain cacheable.
+
 ## [0.2.5] - 2026-07-30
 
 ### Fixed
