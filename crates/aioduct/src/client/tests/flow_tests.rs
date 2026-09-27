@@ -405,11 +405,12 @@ fn process_redirect_same_origin_preserves_sensitive_headers() {
 }
 
 #[test]
-fn process_redirect_sets_host_header() {
+fn process_redirect_rewrites_existing_host_header() {
     let core = make_test_core();
     let resp = make_redirect_response(StatusCode::FOUND, "http://newhost.com/path");
     let uri: Uri = "http://origin.com/old".parse().unwrap();
     let mut headers = HeaderMap::new();
+    headers.insert(http::header::HOST, "origin.com".parse().unwrap());
 
     let result = core
         .process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
@@ -579,14 +580,14 @@ fn refresh_replay_headers_replaces_only_the_previous_jar_cookie() {
 }
 
 #[test]
-fn prepare_request_headers_sets_host_when_missing() {
+fn prepare_request_headers_defers_host_until_protocol_is_known() {
     let core = make_test_core();
     let uri: Uri = "http://example.com:8080/path".parse().unwrap();
     let mut headers = HeaderMap::new();
 
     core.prepare_request_headers_tracking(&uri, None, &mut headers);
 
-    assert_eq!(headers.get(http::header::HOST).unwrap(), "example.com:8080");
+    assert!(!headers.contains_key(http::header::HOST));
 }
 
 #[test]

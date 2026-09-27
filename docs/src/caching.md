@@ -68,6 +68,20 @@ When a cached response becomes stale, the cache performs conditional validation:
 2. If the cached response has a `Last-Modified` date, the request includes `If-Modified-Since`
 3. A `304 Not Modified` response refreshes the cache entry without transferring the body
 
+## Vary and Host
+
+The cache matches the request fields named by `Vary`, including names spread
+across multiple `Vary` header lines. A response with `Vary: Host` is stored and
+reused only when the request supplies Host before connection selection. Explicit
+Host values and Host supplied for automatic message signing can be matched this
+way.
+
+When Host is absent at cache lookup, its final value is not yet known: HTTP/1
+will add it, while HTTP/2 and HTTP/3 normally omit it. The cache therefore skips
+storage and reuse of Host-dependent variants for those requests, including stale
+responses and conditional revalidation. Other cacheable responses are unaffected.
+This also applies when clients using different protocols share an `HttpCache`.
+
 ## Cache Configuration
 
 `CacheConfig` controls cache behavior:

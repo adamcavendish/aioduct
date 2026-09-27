@@ -8,6 +8,7 @@ use crate::pool::ProtocolHint;
 
 #[derive(Clone)]
 struct ReplayableRequestMetadata {
+    automatic_host: Option<super::connection_lifecycle::AutomaticHost>,
     protocol_hint: Option<ProtocolHint>,
     extended_connect_protocol: Option<hyper::ext::Protocol>,
     deferred_te: Option<crate::forward::dispatch_plan::DeferredTe>,
@@ -20,6 +21,9 @@ struct ReplayableRequestMetadata {
 impl ReplayableRequestMetadata {
     fn capture(extensions: &http::Extensions) -> Self {
         Self {
+            automatic_host: extensions
+                .get::<super::connection_lifecycle::AutomaticHost>()
+                .cloned(),
             protocol_hint: extensions.get::<ProtocolHint>().copied(),
             extended_connect_protocol: extensions.get::<hyper::ext::Protocol>().cloned(),
             deferred_te: extensions
@@ -41,6 +45,9 @@ impl ReplayableRequestMetadata {
     }
 
     fn restore(self, extensions: &mut http::Extensions) {
+        if let Some(host) = self.automatic_host {
+            extensions.insert(host);
+        }
         if let Some(protocol_hint) = self.protocol_hint {
             extensions.insert(protocol_hint);
         }

@@ -246,14 +246,24 @@ impl HttpCache {
             return;
         }
 
-        let vary = headers
-            .get(http::header::VARY)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| {
-                v.split(',')
-                    .map(|s| s.trim().to_lowercase())
-                    .collect::<Vec<_>>()
-            });
+        let mut vary_names = Vec::new();
+        for value in headers.get_all(http::header::VARY) {
+            let Ok(value) = value.to_str() else {
+                return;
+            };
+            vary_names.extend(
+                value
+                    .split(',')
+                    .map(|name| name.trim().to_ascii_lowercase()),
+            );
+        }
+        let vary = (!vary_names.is_empty()).then_some(vary_names);
+        if vary
+            .as_deref()
+            .is_some_and(|names| policy::has_unresolved_host(names, request_headers))
+        {
+            return;
+        }
 
         let request_vary_headers = vary.as_ref().map(|vary_names| {
             vary_names

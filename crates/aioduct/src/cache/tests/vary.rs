@@ -129,3 +129,40 @@ fn test_vary_star_always_misses() {
         _ => panic!("Vary: * should always miss"),
     }
 }
+
+#[test]
+fn unresolved_host_cannot_use_existing_fresh_or_stale_variants() {
+    for control in [
+        "max-age=3600",
+        "max-age=0, stale-if-error=600",
+        "max-age=0, stale-while-revalidate=600",
+    ] {
+        let cache = HttpCache::new();
+        let uri: Uri = "https://example.com/".parse().unwrap();
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(CACHE_CONTROL, control.parse().unwrap());
+        response_headers.insert(http::header::VARY, "Host".parse().unwrap());
+        response_headers.insert(http::header::ETAG, "\"variant\"".parse().unwrap());
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert(http::header::HOST, "example.com".parse().unwrap());
+        cache.store(
+            &Method::GET,
+            &uri,
+            StatusCode::OK,
+            &response_headers,
+            &Bytes::from_static(b"host-present"),
+            &request_headers,
+        );
+
+        // Model a previously stored pre-transport snapshot that incorrectly
+        // recorded the automatic H1 Host as absent.
+        let mut entry = cache.store.get(&Method::GET, &uri).pop().unwrap();
+        cache.clear();
+        entry.request_vary_headers = Some(vec![("host".to_owned(), None)]);
+        cache.store.put(&Method::GET, &uri, entry);
+        assert!(matches!(
+            cache.lookup(&Method::GET, &uri, &HeaderMap::new()),
+            CacheLookup::Miss
+        ));
+    }
+}
