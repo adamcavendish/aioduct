@@ -897,6 +897,14 @@ impl<B: 'static> ConnectionPool<B> {
                 if &key.proxy_route != proxy_route || key.forced_addr.is_some() {
                     continue;
                 }
+                // Check the candidate's host cap before borrowing its queue or
+                // creating a multiplex clone. This keeps the check and the
+                // later active increment inside the same pool critical section.
+                if let Some(max) = inner.max_active_per_host
+                    && inner.active.get(key).copied().unwrap_or(0) >= max.get()
+                {
+                    continue;
+                }
                 let queue = match inner.idle.get_mut(key) {
                     Some(q) => q,
                     None => {
@@ -971,26 +979,10 @@ impl<B: 'static> ConnectionPool<B> {
             }
         }
 
-        // Increment active count after queue borrows are released.
+        // Increment active count after queue borrows are released. The H2/H3
+        // candidate was checked against the cap before cloning while this same
+        // pool mutex was held, so there is no check/increment race.
         if let Some(ref k) = active_key {
-            if let Some(max) = inner.max_active_per_host {
-                let active = inner.active.get(k).copied().unwrap_or(0);
-                if active >= max.get() {
-                    // Gate — put the connection back and return None.
-                    #[allow(clippy::collapsible_if)]
-                    if let Some(ref key) = found_key {
-                        if let Some(queue) = inner.idle.get_mut(key) {
-                            if let Some(conn) = found_conn.take() {
-                                queue.push_back(IdleConnection {
-                                    connection: conn,
-                                    idle_since: Instant::now(),
-                                });
-                            }
-                        }
-                    }
-                    return None;
-                }
-            }
             *inner.active.entry(k.clone()).or_insert(0) += 1;
         }
 
