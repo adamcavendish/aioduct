@@ -186,21 +186,3 @@ impl DownloadArgs {
         Ok(uris)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::common::parse_byte_size;
-
-    #[test]
-    fn test_parse_size() {
-        assert_eq!(parse_byte_size("1M").unwrap(), 1024 * 1024);
-        assert_eq!(parse_byte_size("20M").unwrap(), 20 * 1024 * 1024);
-        assert_eq!(parse_byte_size("500K").unwrap(), 500 * 1024);
-        assert_eq!(parse_byte_size("1G").unwrap(), 1024 * 1024 * 1024);
-        assert_eq!(parse_byte_size("1024").unwrap(), 1024);
-        assert_eq!(
-            parse_byte_size("1.5M").unwrap(),
-            (1.5 * 1024.0 * 1024.0) as u64
-        );
-    }
-}

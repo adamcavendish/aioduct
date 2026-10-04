@@ -709,18 +709,23 @@ mod tests {
 
     #[test]
     fn idempotent_methods() {
-        assert!(is_idempotent(&http::Method::GET));
-        assert!(is_idempotent(&http::Method::HEAD));
-        assert!(is_idempotent(&http::Method::PUT));
-        assert!(is_idempotent(&http::Method::DELETE));
-        assert!(is_idempotent(&http::Method::OPTIONS));
-        assert!(is_idempotent(&http::Method::TRACE));
+        for method in [
+            http::Method::GET,
+            http::Method::HEAD,
+            http::Method::PUT,
+            http::Method::DELETE,
+            http::Method::OPTIONS,
+            http::Method::TRACE,
+        ] {
+            assert!(is_idempotent(&method), "{method} should be idempotent");
+        }
     }
 
     #[test]
     fn non_idempotent_methods() {
-        assert!(!is_idempotent(&http::Method::POST));
-        assert!(!is_idempotent(&http::Method::PATCH));
+        for method in [http::Method::POST, http::Method::PATCH] {
+            assert!(!is_idempotent(&method), "{method} should not be idempotent");
+        }
     }
 
     #[test]

@@ -95,42 +95,6 @@ mod compio_tests {
     }
 
     #[test]
-    fn connect_plaintext_local_defaults_to_h1() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let async_listener = async_io::Async::new(listener).unwrap();
-
-        compio_runtime::Runtime::new().unwrap().block_on(async {
-            let client_tcp = async_io::Async::<std::net::TcpStream>::connect(addr)
-                .await
-                .unwrap();
-            let (server_tcp, _) = async_listener.accept().await.unwrap();
-
-            compio_runtime::spawn(async move {
-                use futures_io::AsyncRead;
-                let mut server = server_tcp;
-                let mut buf = [0u8; 4096];
-                while std::future::poll_fn(|cx| {
-                    std::pin::Pin::new(&mut server).poll_read(cx, &mut buf)
-                })
-                .await
-                .unwrap_or(0)
-                    > 0
-                {}
-            })
-            .detach();
-
-            let io = CompioIo::new(client_tcp);
-            let engine = make_local_engine();
-            let result = engine.connect_plaintext_local_with_hint(io, false).await;
-            assert!(result.is_ok());
-            let pooled = result.unwrap();
-            assert!(matches!(pooled.conn, crate::pool::HttpConnection::H1(_)));
-        });
-    }
-
-    #[test]
     fn connect_plaintext_local_with_hint_false_uses_h1() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
