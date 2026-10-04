@@ -2,6 +2,46 @@ use super::*;
 use std::net::IpAddr;
 
 #[tokio::test]
+async fn checkout_coalesced_skips_candidate_at_host_cap_without_deadlocking() {
+    let max_active = std::num::NonZeroUsize::new(1).unwrap();
+    let pool = ConnectionPool::<RequestBodySend>::new()
+        .without_reaper()
+        .with_max_idle_per_host(8)
+        .with_idle_timeout(Duration::from_secs(30))
+        .with_max_active_per_host(Some(max_active));
+    let key = key_https("origin.example.com:443");
+    let remote_addr = std::net::SocketAddr::from(([10, 0, 0, 1], 443));
+
+    let mut conn = make_h2_conn().await;
+    conn.sans = std::sync::Arc::from(vec!["origin.example.com".into(), "cdn.example.com".into()]);
+    conn.remote_addr = Some(remote_addr);
+    pool.checkin(key.clone(), conn);
+    tokio::task::yield_now().await;
+
+    let first = pool
+        .checkout_coalesced("cdn.example.com", remote_addr, &ProxyRoute::DIRECT)
+        .expect("first coalesced checkout should consume the only host slot");
+    assert!(!pool.can_connect(&key));
+
+    let second = pool.checkout_coalesced("cdn.example.com", remote_addr, &ProxyRoute::DIRECT);
+    assert!(second.is_none(), "checkout at host cap should be rejected");
+    assert!(
+        !pool.can_connect(&key),
+        "failed checkout must not decrement active"
+    );
+
+    drop(first);
+    assert!(
+        pool.can_connect(&key),
+        "dropping clone should release host slot"
+    );
+    assert!(
+        pool.checkout_coalesced("cdn.example.com", remote_addr, &ProxyRoute::DIRECT)
+            .is_some()
+    );
+}
+
+#[tokio::test]
 async fn checkout_coalesced_finds_by_san() {
     let pool = ConnectionPool::<RequestBodySend>::new()
         .without_reaper()
