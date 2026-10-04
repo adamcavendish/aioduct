@@ -46,7 +46,7 @@ impl RateLimiter {
         self.refill();
         self.inner
             .tokens
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 if current > 0 { Some(current - 1) } else { None }
             })
             .is_ok()
@@ -77,7 +77,7 @@ impl RateLimiter {
             let consumed_ns = new_tokens * refill_ns;
             let won_refill = inner
                 .last_refill_ns
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |l| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |l| {
                     if l == last {
                         Some(l + consumed_ns)
                     } else {
@@ -88,7 +88,7 @@ impl RateLimiter {
             if won_refill {
                 inner
                     .tokens
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                         Some(current.saturating_add(new_tokens).min(inner.max_tokens))
                     })
                     .ok();
