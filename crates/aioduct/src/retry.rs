@@ -358,7 +358,7 @@ impl RetryBudget {
     pub(crate) fn try_withdraw(&self) -> bool {
         self.inner
             .tokens
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 if current > 0 { Some(current - 1) } else { None }
             })
             .is_ok()
@@ -369,7 +369,7 @@ impl RetryBudget {
         let inner = &self.inner;
         inner
             .tokens
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 let new = current.saturating_add(inner.deposit_amount);
                 Some(new.min(inner.max_tokens))
             })
@@ -381,7 +381,7 @@ impl RetryBudget {
         let inner = &self.inner;
         inner
             .tokens
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 Some(current.saturating_add(1).min(inner.max_tokens))
             })
             .ok();

@@ -743,9 +743,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "cfg_aliases"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
@@ -895,27 +895,25 @@ dependencies = [
 
 [[package]]
 name = "compio-buf"
-version = "0.8.3"
+version = "0.9.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b51a2c35873865376ed4cdb6cfeb602b6cf569815f017ddd7bd8f86ad49b34c7"
+checksum = "c3835bb995572c2f79ce1d2c7db5612c86ee859b7bf71c37ba06e61bdb9b8cab"
 dependencies = [
  "arrayvec",
  "bytes",
- "libc",
 ]
 
 [[package]]
 name = "compio-driver"
-version = "0.12.3"
+version = "0.13.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a580d231c022f336ccb7a2e133eaf56e34bf586417176a1a8d392a4a6e9a41f4"
+checksum = "7b41bdf20bfaef6a65dda38b71a30c563dc99239a9ea0baddf2c2713ad6bcc66"
 dependencies = [
  "bitflags 2.13.0",
  "cfg_aliases",
  "compio-buf",
  "compio-log",
  "compio-send-wrapper",
- "crossbeam-queue",
  "flume",
  "futures-util",
  "libc",
@@ -933,9 +931,9 @@ dependencies = [
 
 [[package]]
 name = "compio-executor"
-version = "0.1.2"
+version = "0.2.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "809fc31e0180a97ea760300b9aa97d99fbb19c9831cc49cebfd5a98f44a8371b"
+checksum = "c079d8c9911a74d988b587f0a5cb12bb36ee2a048c985c26c49b49d5088ca5b9"
 dependencies = [
  "compio-log",
  "compio-send-wrapper",
@@ -946,9 +944,9 @@ dependencies = [
 
 [[package]]
 name = "compio-io"
-version = "0.10.1"
+version = "0.11.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3a354e085c4046dd8d2d9d514cf8c15c615eb8adf6c5f41dbf7899420457e9b"
+checksum = "3e7a6f46c99a40d572d622b2c055c074d86cc3a31b8b915aa308d5f0f694cd59"
 dependencies = [
  "compio-buf",
  "futures-util",
@@ -962,18 +960,18 @@ dependencies = [
 
 [[package]]
 name = "compio-log"
-version = "0.2.0"
+version = "0.3.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef39fff6341af7ab6c27fae9a3887e1ec618320d43f3b9c924c7a644f693a859"
+checksum = "093c364338a3a4f961d9136058e1c3aa4e2006dd8a6f6f42405de82c84d88e27"
 dependencies = [
  "tracing",
 ]
 
 [[package]]
 name = "compio-net"
-version = "0.12.1"
+version = "0.13.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a985ea5d7580318104d44f4a3c8ae48a7ee750e9c98b68a69a869e01d4d6df0"
+checksum = "d425d068f452a4880440e0e8e0bf905f8b275f49cee9e6b81bc1b8a1b8aac41e"
 dependencies = [
  "compio-buf",
  "compio-driver",
@@ -992,9 +990,9 @@ dependencies = [
 
 [[package]]
 name = "compio-runtime"
-version = "0.12.2"
+version = "0.13.0-beta.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dde4b0b7de96fc8b99e089964d65e9ed5669f8ea39bc46381f7fd563dc10a753"
+checksum = "4d16e42c7f860d210ca9d1ec5b67522ec04b8ce0b3e5c626b353af69cfc49f80"
 dependencies = [
  "compio-buf",
  "compio-driver",
@@ -1002,11 +1000,12 @@ dependencies = [
  "compio-io",
  "compio-log",
  "compio-send-wrapper",
- "core_affinity",
  "futures-util",
  "libc",
  "pin-project-lite",
+ "rustix",
  "scoped-tls",
+ "socket2",
  "synchrony",
  "windows-sys 0.61.2",
 ]
@@ -1099,17 +1098,6 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
-name = "core_affinity"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a034b3a7b624016c6e13f5df875747cc25f884156aad2abd12b6c46797971342"
-dependencies = [
- "libc",
- "num_cpus",
- "winapi",
-]
 
 [[package]]
 name = "cpp_demangle"
@@ -4000,16 +3988,6 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
-]
-
-[[package]]
-name = "num_cpus"
-version = "1.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91df4bbde75afed763b708b7eee1e8e7651e02d97f6d5dd763e89367e957b23b"
-dependencies = [
- "hermit-abi",
- "libc",
 ]
 
 [[package]]

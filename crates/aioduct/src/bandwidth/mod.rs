@@ -49,7 +49,7 @@ impl BandwidthLimiter {
         let mut consumed = 0;
         self.inner
             .tokens
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 let take = current.min(n);
                 consumed = take;
                 Some(current - take)
@@ -89,7 +89,7 @@ impl BandwidthLimiter {
             (new_bytes as u128 * 1_000_000_000u128 / inner.bytes_per_sec.max(1) as u128) as u64;
         let won_refill = inner
             .last_refill_ns
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |l| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |l| {
                 if l == last {
                     Some(l + consumed_ns)
                 } else {
@@ -101,7 +101,7 @@ impl BandwidthLimiter {
         if won_refill {
             inner
                 .tokens
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                     Some(current.saturating_add(new_bytes).min(inner.bytes_per_sec))
                 })
                 .ok();
