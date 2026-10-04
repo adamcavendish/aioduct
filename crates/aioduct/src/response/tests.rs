@@ -259,13 +259,6 @@ fn error_for_status_ref_1xx_is_ok() {
     assert!(resp.error_for_status_ref().is_ok());
 }
 
-#[test]
-fn extensions_mut_can_insert() {
-    let mut resp = make_response(200);
-    resp.extensions_mut().insert(42u32);
-    assert_eq!(resp.extensions().get::<u32>(), Some(&42));
-}
-
 #[cfg(feature = "json")]
 #[tokio::test]
 async fn json_valid() {

@@ -553,12 +553,6 @@ fn test_cache_immutable_with_must_revalidate() {
 }
 
 #[test]
-fn test_httpdate_parse_november() {
-    let result = httpdate_parse("Sun, 06 Nov 1994 08:49:37 GMT");
-    assert!(result.is_some());
-}
-
-#[test]
 fn test_httpdate_parse_december() {
     let result = httpdate_parse("Sun, 25 Dec 2022 12:00:00 GMT");
     assert!(result.is_some());

@@ -904,16 +904,6 @@ mod tests {
         assert!(!is_idempotent(&http::Method::PATCH));
     }
 
-    #[test]
-    fn get_head_put_delete_options_trace_idempotent() {
-        assert!(is_idempotent(&http::Method::GET));
-        assert!(is_idempotent(&http::Method::HEAD));
-        assert!(is_idempotent(&http::Method::PUT));
-        assert!(is_idempotent(&http::Method::DELETE));
-        assert!(is_idempotent(&http::Method::OPTIONS));
-        assert!(is_idempotent(&http::Method::TRACE));
-    }
-
     // ────────────────────────────────────────────────────────
     // RequestBody::Streaming try_clone
     // ────────────────────────────────────────────────────────

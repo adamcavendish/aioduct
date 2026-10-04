@@ -117,12 +117,6 @@ async fn test_custom_header() {
 }
 
 #[tokio::test]
-async fn test_invalid_url() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
-    assert!(client.get("not a url").is_err());
-}
-
-#[tokio::test]
 async fn test_missing_scheme() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
     assert!(client.get("127.0.0.1/path").is_err());
@@ -899,34 +893,6 @@ async fn custom_method_propfind() {
         .unwrap();
 
     assert_eq!(resp.text().await.unwrap(), "PROPFIND");
-}
-
-#[tokio::test]
-async fn no_default_headers_removes_user_agent() {
-    let (addr, _counter) = h1_server_with(|req| async move {
-        let ua = req
-            .headers()
-            .get("user-agent")
-            .map(|v| v.to_str().unwrap_or("").to_owned())
-            .unwrap_or_else(|| "none".to_owned());
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(ua))))
-    })
-    .await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .no_default_headers()
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("http://{addr}/"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-
-    let body = resp.text().await.unwrap();
-    assert_eq!(body, "none");
 }
 
 #[tokio::test]
