@@ -1145,6 +1145,15 @@ mod tests_sync {
         )
     }
 
+    #[test]
+    fn checkout_returns_none_on_empty_pool() {
+        let pool = ConnectionPool::<RequestBodySend>::new()
+            .without_reaper()
+            .with_max_idle_per_host(8)
+            .with_idle_timeout(Duration::from_secs(30));
+        assert!(pool.checkout(&key("example.com:80")).is_none());
+    }
+
     /// When the mutex is poisoned, checkout should return None rather than panic.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]

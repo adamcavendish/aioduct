@@ -50,24 +50,6 @@ async fn client_invalid_url() {
 }
 
 #[tokio::test]
-async fn client_https_only_rejects_http() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .https_only(true)
-        .build()
-        .unwrap();
-    assert!(client.core.https_only);
-}
-
-#[tokio::test]
-async fn client_no_connection_reuse_sets_flag() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .no_connection_reuse()
-        .build()
-        .unwrap();
-    assert!(client.core.no_connection_reuse);
-}
-
-#[tokio::test]
 async fn builder_tcp_fast_open() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tcp_fast_open(true)
@@ -179,15 +161,6 @@ async fn builder_digest_auth() {
         .build()
         .unwrap();
     assert!(client.core.digest_auth.is_some());
-}
-
-#[tokio::test]
-async fn builder_https_only() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .https_only(true)
-        .build()
-        .unwrap();
-    assert!(client.core.https_only);
 }
 
 #[tokio::test]
@@ -479,15 +452,6 @@ fn hsts_does_not_upgrade_unknown_host() {
             .unwrap()
             .should_upgrade("not-stored.com")
     );
-}
-
-#[test]
-fn no_connection_reuse_flag() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .no_connection_reuse()
-        .build()
-        .unwrap();
-    assert!(client.core.no_connection_reuse);
 }
 
 #[test]

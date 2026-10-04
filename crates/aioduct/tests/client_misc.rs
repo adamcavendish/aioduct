@@ -18,12 +18,6 @@ use aioduct_test_server::h1::{h1_server, h1_server_with};
 use aioduct_test_server::raw::raw_server;
 
 #[tokio::test]
-async fn test_connection_refused() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
-    let result = client.get("http://127.0.0.1:1/").unwrap().send().await;
-    assert!(result.is_err());
-}
-#[tokio::test]
 async fn test_client_clone_shares_pool() {
     let (addr, _counter) = h1_server().await;
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();

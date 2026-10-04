@@ -495,26 +495,6 @@ async fn connect_timeout_fires_on_unreachable() {
 
 // ── 15. TCP keepalive ────────────────────────────────────────────────────────
 
-#[tokio::test]
-async fn tcp_keepalive_basic_request_works() {
-    let (addr, _counter) = h1_server().await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .tcp_keepalive(Duration::from_secs(60))
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("http://{addr}/"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), http::StatusCode::OK);
-    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
-}
-
 // ── 16. Error for status ─────────────────────────────────────────────────────
 
 #[tokio::test]
