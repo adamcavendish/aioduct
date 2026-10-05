@@ -952,35 +952,8 @@ async fn test_http_proxy_preserves_host_header() {
 
 #[tokio::test]
 async fn test_connect_tunnel_includes_proxy_auth() {
-    // Simulate a proxy that receives a CONNECT request.
-    // We parse the raw CONNECT to check for Proxy-Authorization.
-    let auth_seen = Arc::new(AtomicBool::new(false));
-    let auth_seen_clone = auth_seen.clone();
-
-    let proxy_addr = raw_server(move |req_bytes| {
-        let auth_seen = auth_seen_clone.clone();
-        async move {
-            let req_str = String::from_utf8_lossy(&req_bytes);
-
-            // Check that this is a CONNECT request
-            if req_str.starts_with("CONNECT") {
-                // Check for Proxy-Authorization header
-                for line in req_str.lines() {
-                    if line.to_lowercase().starts_with("proxy-authorization:") {
-                        let value = line.split_once(':').map(|x| x.1).unwrap_or("").trim();
-                        if value == "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" {
-                            auth_seen.store(true, AtomicOrdering::SeqCst);
-                        }
-                    }
-                }
-            }
-
-            // Return 400 to avoid dealing with actual TLS tunneling.
-            // This will cause an error on the client side, which is expected.
-            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n".to_vec()
-        }
-    })
-    .await;
+    let captured_connects = captured_connects();
+    let (proxy_addr, _) = connect_proxy_with_capture(Some(Arc::clone(&captured_connects))).await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(
@@ -1001,10 +974,7 @@ async fn test_connect_tunnel_includes_proxy_auth() {
     // The request should fail because our mock proxy returns 400
     assert!(result.is_err(), "expected tunnel error, got success");
 
-    assert!(
-        auth_seen.load(AtomicOrdering::SeqCst),
-        "CONNECT request should include Proxy-Authorization header"
-    );
+    assert_connect_for_target_has_auth(&captured_connects, "hyper.rs.local:443");
 }
 
 #[tokio::test]
@@ -1245,35 +1215,21 @@ fn test_https_proxy_constructor_without_port() {
 // --- Integration tests ---
 
 /// Serializes env var mutations in integration tests.
-static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ENV_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn system_proxy_integration() {
-    let connect_seen = Arc::new(AtomicBool::new(false));
-    let connect_seen_clone = connect_seen.clone();
-
-    let proxy_addr = raw_server(move |req_bytes| {
-        let connect_seen = connect_seen_clone.clone();
-        async move {
-            let req_str = String::from_utf8_lossy(&req_bytes);
-            if req_str.starts_with("CONNECT") {
-                connect_seen.store(true, AtomicOrdering::SeqCst);
-            }
-            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n".to_vec()
-        }
-    })
-    .await;
+    let _env_guard = ENV_MUTEX.lock().await;
+    let captured_connects = captured_connects();
+    let (proxy_addr, _) = connect_proxy_with_capture(Some(Arc::clone(&captured_connects))).await;
 
     let proxy_url = format!("http://{proxy_addr}");
 
-    {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        unsafe {
-            std::env::set_var("HTTP_PROXY", &proxy_url);
-            std::env::set_var("HTTPS_PROXY", &proxy_url);
-            std::env::remove_var("NO_PROXY");
-            std::env::remove_var("no_proxy");
-        }
+    unsafe {
+        std::env::set_var("HTTP_PROXY", &proxy_url);
+        std::env::set_var("HTTPS_PROXY", &proxy_url);
+        std::env::remove_var("NO_PROXY");
+        std::env::remove_var("no_proxy");
     }
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
@@ -1287,20 +1243,20 @@ async fn system_proxy_integration() {
         .send()
         .await;
 
-    {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        unsafe {
-            std::env::remove_var("HTTP_PROXY");
-            std::env::remove_var("http_proxy");
-            std::env::remove_var("HTTPS_PROXY");
-            std::env::remove_var("https_proxy");
-        }
+    unsafe {
+        std::env::remove_var("HTTP_PROXY");
+        std::env::remove_var("http_proxy");
+        std::env::remove_var("HTTPS_PROXY");
+        std::env::remove_var("https_proxy");
     }
 
     // HTTPS request should trigger a CONNECT tunnel through the proxy
+    let connect_reqs = captured_connects.lock().unwrap();
     assert!(
-        connect_seen.load(AtomicOrdering::SeqCst),
-        "system_proxy should route HTTPS request through proxy CONNECT"
+        connect_reqs
+            .iter()
+            .any(|req| req.starts_with("CONNECT hyper.rs.local:443 ")),
+        "system_proxy should route HTTPS request through proxy CONNECT, got {connect_reqs:?}"
     );
     // The request itself should fail because our raw server returns 400
     assert!(result.is_err(), "expected tunnel to fail with 400");
@@ -2479,8 +2435,7 @@ async fn credential_resolver_global_env() {
     // EnvCredentialResolver applies global credentials (ignores key).
     use aioduct::{CredentialResolver, EnvCredentialResolver};
 
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = ENV_MUTEX.lock().unwrap();
+    let _env_guard = ENV_MUTEX.lock().await;
 
     // The resolver reads from env; using defaults means no proxy-user is set.
     // The resolver is a no-op when no env vars are set.
