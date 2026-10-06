@@ -10,6 +10,8 @@ use pin_project_lite::pin_project;
 
 use super::{ConnectorLocal, RuntimeCompletion, RuntimeLocal};
 
+type CompioPollFd = compio_runtime::fd::PollFd<socket2::Socket>;
+
 /// Compio async runtime implementation using native io_uring/IOCP for TCP I/O.
 pub struct CompioRuntime;
 
@@ -34,8 +36,8 @@ impl RuntimeLocal for CompioRuntime {
     }
 }
 
-// CompioRuntime does NOT implement RuntimePoll — it's completion-based,
-// single-threaded, and cannot migrate futures between threads.
+// CompioRuntime does NOT implement RuntimePoll — its local executor is
+// single-threaded, so streams remain on the runtime that owns them.
 
 // ── SocketConfig ──────────────────────────────────────────────────────────
 
@@ -118,8 +120,8 @@ impl super::SocketConfig for CompioTcpStream {
 
 /// TCP connector for the Compio runtime.
 ///
-/// Uses native `compio_net::TcpStream` for io_uring (Linux) / IOCP (Windows)
-/// I/O, bridged to futures-io via `compio_io::compat::AsyncStream`.
+/// Uses the native `compio_net::TcpStream` and its `PollFd` adapter for
+/// readiness-driven socket I/O on Linux and Windows.
 #[derive(Clone, Copy, Default)]
 pub struct TcpConnector;
 
@@ -129,7 +131,7 @@ impl ConnectorLocal for TcpConnector {
     async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
         let stream = compio_net::TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
-        Ok(CompioTcpStream::new(stream))
+        CompioTcpStream::new(stream)
     }
 
     async fn connect_bound(
@@ -156,14 +158,14 @@ impl ConnectorLocal for TcpConnector {
         let std_stream = std_stream?;
         std_stream.set_nonblocking(true)?;
         let compio_stream = compio_net::TcpStream::from_std(std_stream)?;
-        Ok(CompioTcpStream::new(compio_stream))
+        CompioTcpStream::new(compio_stream)
     }
 
     fn from_std_tcp(&self, stream: std::net::TcpStream) -> io::Result<Self::Stream> {
         stream.set_nonblocking(true)?;
         stream.set_nodelay(true)?;
         let compio_stream = compio_net::TcpStream::from_std(stream)?;
-        Ok(CompioTcpStream::new(compio_stream))
+        CompioTcpStream::new(compio_stream)
     }
 
     fn into_std_tcp(&self, stream: Self::Stream) -> io::Result<std::net::TcpStream> {
@@ -179,66 +181,86 @@ impl ConnectorLocal for TcpConnector {
 // ── CompioTcpStream ──────────────────────────────────────────────────────────
 
 pin_project! {
-    /// Compound stream type that keeps a `compio_net::TcpStream` handle alongside
-    /// the async I/O bridge for socket operations (keepalive, fast open, etc.).
+    /// Compio TCP stream backed by direct readiness I/O on the native socket.
     ///
     /// `compio_net::TcpStream` is clone-cheap (shared fd), so this is essentially
     /// free. The `socket_handle` is used by `set_tcp_keepalive` etc. to access the
     /// raw socket via `AsFd`.
     ///
     pub struct CompioTcpStream {
-        io: Pin<Box<CompioIo<compio_io::compat::AsyncStream<compio_net::TcpStream>>>>,
         pub(crate) socket_handle: compio_net::TcpStream,
+        #[pin]
+        poll_fd: CompioPollFd,
     }
 }
 
 impl CompioTcpStream {
-    pub(crate) fn new(stream: compio_net::TcpStream) -> Self {
+    /// Create a stream with one native readiness handle for all HTTP I/O.
+    ///
+    /// The readiness handle owns the socket operation state; the cloned
+    /// `TcpStream` is retained only for socket configuration and conversion
+    /// back to a standard stream.
+    pub(crate) fn new(stream: compio_net::TcpStream) -> io::Result<Self> {
         let socket_handle = stream.clone();
-        Self {
-            io: Box::pin(CompioIo::new(compio_io::compat::AsyncStream::new(stream))),
+        let poll_fd = socket_handle.to_poll_fd()?;
+        Ok(Self {
             socket_handle,
-        }
+            poll_fd,
+        })
     }
 }
 
 impl Read for CompioTcpStream {
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: rt::ReadBufCursor<'_>,
+        mut buf: rt::ReadBufCursor<'_>,
     ) -> Poll<io::Result<()>> {
-        Read::poll_read(self.project().io.as_mut(), cx, buf)
+        let this = self.as_mut().project();
+        let dst = unsafe {
+            std::slice::from_raw_parts_mut(buf.as_mut().as_mut_ptr() as *mut u8, buf.as_mut().len())
+        };
+        match this.poll_fd.poll_read(cx, dst) {
+            Poll::Ready(Ok(n)) => {
+                unsafe { buf.advance(n) };
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
 impl Write for CompioTcpStream {
     fn poll_write(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Write::poll_write(self.project().io.as_mut(), cx, buf)
+        let this = self.as_mut().project();
+        this.poll_fd.poll_write(cx, buf)
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Write::poll_flush(self.project().io.as_mut(), cx)
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.as_mut().project();
+        this.poll_fd.poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Write::poll_shutdown(self.project().io.as_mut(), cx)
+        futures_io::AsyncWrite::poll_close(self.project().poll_fd, cx)
     }
 
     fn poll_write_vectored(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
-        Write::poll_write_vectored(self.project().io.as_mut(), cx, bufs)
+        let this = self.as_mut().project();
+        this.poll_fd.poll_write_vectored(cx, bufs)
     }
 
     fn is_write_vectored(&self) -> bool {
-        self.io.is_write_vectored()
+        true
     }
 }
 
