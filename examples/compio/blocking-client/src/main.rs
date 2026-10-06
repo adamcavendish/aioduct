@@ -3,7 +3,7 @@ use aioduct::CompioClient;
 
 fn main() -> Result<(), aioduct::Error> {
     let engine = CompioClient::builder().build_local().unwrap();
-    let client = BlockingCompioClient::new(engine);
+    let client = BlockingCompioClient::new(engine).unwrap();
 
     // Synchronous GET
     let resp = client.get("https://httpbin.org/get")?.send()?;

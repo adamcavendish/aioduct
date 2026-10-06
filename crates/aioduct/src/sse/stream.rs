@@ -35,13 +35,9 @@ impl<B: Body<Data = bytes::Bytes, Error = Error> + Unpin> SseStream<B> {
 
     /// Create a stream with a custom maximum payload size per event.
     /// Pass `0` to disable the limit.
-    pub fn with_max_payload_size(body: B, max: usize) -> Self {
-        Self {
-            body,
-            buf: BytesMut::new(),
-            decoder: SseDecoder::with_max_payload_size(max),
-            done: false,
-        }
+    pub fn with_max_payload_size(mut self, max: usize) -> Self {
+        self.decoder.set_max_payload_size(max);
+        self
     }
 
     /// Returns the next SSE event, or `None` when the stream ends.
@@ -79,7 +75,37 @@ pub type SseStreamSend = SseStream<crate::body::RequestBodySend>;
 
 /// SSE stream for Local runtimes (compio).
 #[cfg(not(target_arch = "wasm32"))]
-pub type SseStreamLocal = SseStream<crate::body::ResponseBodyLocal>;
+pub struct SseStreamLocal {
+    inner: SseStream<crate::body::ResponseBodyLocal>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for SseStreamLocal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SseStreamLocal").finish()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SseStreamLocal {
+    pub(crate) fn new(body: crate::body::ResponseBodyLocal) -> Self {
+        Self {
+            inner: SseStream::new(body),
+        }
+    }
+
+    /// Set the maximum payload size for each event.
+    /// Pass `0` to disable the limit.
+    pub fn with_max_payload_size(mut self, max: usize) -> Self {
+        self.inner = self.inner.with_max_payload_size(max);
+        self
+    }
+
+    /// Returns the next SSE event, or `None` when the stream ends.
+    pub async fn next(&mut self) -> Option<Result<SseEvent, Error>> {
+        self.inner.next().await
+    }
+}
 
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
@@ -169,7 +195,7 @@ mod tests {
     #[tokio::test]
     async fn with_max_payload_size_works() {
         let body = send_body(b"data: short\n\n");
-        let mut stream = SseStream::with_max_payload_size(body, 1024);
+        let mut stream = SseStream::new(body).with_max_payload_size(1024);
         let event = stream.next().await.unwrap().unwrap();
         match event {
             SseEvent::Message(m) => assert_eq!(m.data, "short"),
@@ -209,7 +235,7 @@ mod tests {
     #[tokio::test]
     async fn local_body_stream_works() {
         let body = local_body(b"data: local\n\n");
-        let mut stream: SseStreamLocal = SseStream::new(body);
+        let mut stream = SseStreamLocal::new(body);
         let event = stream.next().await.unwrap().unwrap();
         match event {
             SseEvent::Message(m) => assert_eq!(m.data, "local"),

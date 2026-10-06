@@ -8,7 +8,8 @@ pub use fallback_resolver::FallbackResolver;
 #[cfg(any(feature = "tokio", feature = "smol", feature = "compio"))]
 pub use system_resolver::SystemResolver;
 pub use traits::{
-    ConnectorLocal, ConnectorSend, RuntimeCompletion, RuntimeLocal, RuntimePoll, SocketConfig,
+    BlockingRuntime, ConnectorLocal, ConnectorSend, RuntimeCompletion, RuntimeLocal, RuntimePoll,
+    SocketConfig,
 };
 
 use std::future::Future;

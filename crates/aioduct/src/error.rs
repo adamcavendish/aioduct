@@ -23,6 +23,23 @@ impl UnsupportedCapability {
 /// Boxed error type for dynamic dispatch.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Errors raised while running a blocking client session.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum BlockingRuntimeError {
+    /// A blocking client was used from within an async runtime.
+    #[error("blocking client cannot be used from within an async runtime")]
+    InAsyncRuntime,
+
+    /// The blocking runtime session lock was poisoned.
+    #[error("blocking runtime session is poisoned")]
+    SessionPoisoned,
+
+    /// A blocking runtime session was entered recursively.
+    #[error("nested blocking runtime session")]
+    NestedSession,
+}
+
 /// Errors that can occur during HTTP operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -54,6 +71,13 @@ pub enum Error {
     /// Reading the response timed out.
     #[error("read timeout")]
     ReadTimeout,
+
+    /// An individual SSE event exceeded the configured payload limit.
+    #[error("SSE event exceeded the configured limit of {limit_bytes} bytes")]
+    SseEventTooLarge {
+        /// The configured maximum event size in bytes.
+        limit_bytes: usize,
+    },
 
     /// Writing the request body timed out.
     #[error("write timeout")]
@@ -94,6 +118,10 @@ pub enum Error {
     /// An HTTP Message Signatures error.
     #[error(transparent)]
     MessageSignature(#[from] crate::message_signatures::MessageSignatureError),
+
+    /// An error raised by a blocking runtime session.
+    #[error(transparent)]
+    BlockingRuntime(#[from] BlockingRuntimeError),
 
     /// A catch-all for other errors.
     #[error("{0}")]
@@ -646,6 +674,30 @@ mod tests {
         assert!(!err.is_status());
         assert!(!err.is_timeout());
         assert!(!err.is_redirect());
+    }
+
+    #[test]
+    fn blocking_runtime_errors_remain_strongly_typed() {
+        let cases = [
+            (
+                BlockingRuntimeError::InAsyncRuntime,
+                "blocking client cannot be used from within an async runtime",
+            ),
+            (
+                BlockingRuntimeError::SessionPoisoned,
+                "blocking runtime session is poisoned",
+            ),
+            (
+                BlockingRuntimeError::NestedSession,
+                "nested blocking runtime session",
+            ),
+        ];
+
+        for (source, message) in cases {
+            let error: Error = source.into();
+            assert_eq!(error.to_string(), message);
+            assert!(matches!(error, Error::BlockingRuntime(_)));
+        }
     }
 
     #[test]

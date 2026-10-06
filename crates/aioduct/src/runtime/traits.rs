@@ -23,6 +23,21 @@ pub trait RuntimeCompletion: 'static {
     fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error>;
 }
 
+/// Runtime support for the blocking client, with a persistent connection-driving session.
+pub trait BlockingRuntime: RuntimeCompletion {
+    /// Cloneable handle to the runtime session owned by a blocking client.
+    type Session: Clone + 'static;
+
+    /// Create a session that remains alive across blocking calls.
+    fn new_session() -> Result<Self::Session, crate::error::Error>;
+
+    /// Drive one future on the session. Calls for a session must be serialized.
+    fn block_on_session<F: Future>(
+        session: &Self::Session,
+        future: F,
+    ) -> Result<F::Output, crate::error::Error>;
+}
+
 /// Thread-local spawning for completion-based runtimes (compio, wasm).
 ///
 /// The spawned future does **not** need to be `Send` — it will never migrate

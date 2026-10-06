@@ -5,12 +5,12 @@ use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode};
 
 use crate::error::Error;
-use crate::runtime::RuntimeCompletion;
-use crate::traits::{HttpClient, RequestBuilderExt, ResponseExt};
+use crate::runtime::BlockingRuntime;
+use crate::traits::{ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt};
 
 /// A blocking HTTP client that wraps any async [`HttpClient`] implementor.
 ///
-/// Uses [`RuntimeCompletion::block_on`] to execute async operations synchronously.
+/// Uses [`BlockingRuntime::block_on_session`] to execute async operations synchronously.
 ///
 /// # Type aliases
 ///
@@ -18,27 +18,30 @@ use crate::traits::{HttpClient, RequestBuilderExt, ResponseExt};
 /// - [`BlockingTokioClient`](crate::BlockingTokioClient)
 /// - [`BlockingSmolClient`](crate::BlockingSmolClient)
 /// - [`BlockingCompioClient`](crate::BlockingCompioClient)
-pub struct BlockingClient<C: HttpClient, R: RuntimeCompletion> {
+pub struct BlockingClient<C: HttpClient, R: BlockingRuntime> {
     inner: C,
+    session: R::Session,
     _runtime: PhantomData<R>,
 }
 
-impl<C: HttpClient, R: RuntimeCompletion> Clone for BlockingClient<C, R> {
+impl<C: HttpClient, R: BlockingRuntime> Clone for BlockingClient<C, R> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            session: self.session.clone(),
             _runtime: PhantomData,
         }
     }
 }
 
-impl<C: HttpClient, R: RuntimeCompletion> BlockingClient<C, R> {
-    /// Create a blocking client wrapping the given async client.
-    pub fn new(inner: C) -> Self {
-        Self {
+impl<C: HttpClient, R: BlockingRuntime> BlockingClient<C, R> {
+    /// Create a blocking client, returning an error if the runtime session cannot be built.
+    pub fn new(inner: C) -> Result<Self, Error> {
+        Ok(Self {
             inner,
+            session: R::new_session()?,
             _runtime: PhantomData,
-        }
+        })
     }
 
     /// Get a reference to the inner async client.
@@ -50,6 +53,7 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingClient<C, R> {
     pub fn get(&self, uri: &str) -> Result<BlockingRequestBuilder<C, R>, Error> {
         Ok(BlockingRequestBuilder {
             inner: self.inner.get(uri)?,
+            session: self.session.clone(),
             _runtime: PhantomData,
         })
     }
@@ -58,6 +62,7 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingClient<C, R> {
     pub fn head(&self, uri: &str) -> Result<BlockingRequestBuilder<C, R>, Error> {
         Ok(BlockingRequestBuilder {
             inner: self.inner.head(uri)?,
+            session: self.session.clone(),
             _runtime: PhantomData,
         })
     }
@@ -66,6 +71,7 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingClient<C, R> {
     pub fn post(&self, uri: &str) -> Result<BlockingRequestBuilder<C, R>, Error> {
         Ok(BlockingRequestBuilder {
             inner: self.inner.post(uri)?,
+            session: self.session.clone(),
             _runtime: PhantomData,
         })
     }
@@ -74,6 +80,7 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingClient<C, R> {
     pub fn put(&self, uri: &str) -> Result<BlockingRequestBuilder<C, R>, Error> {
         Ok(BlockingRequestBuilder {
             inner: self.inner.put(uri)?,
+            session: self.session.clone(),
             _runtime: PhantomData,
         })
     }
@@ -82,6 +89,7 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingClient<C, R> {
     pub fn patch(&self, uri: &str) -> Result<BlockingRequestBuilder<C, R>, Error> {
         Ok(BlockingRequestBuilder {
             inner: self.inner.patch(uri)?,
+            session: self.session.clone(),
             _runtime: PhantomData,
         })
     }
@@ -90,6 +98,7 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingClient<C, R> {
     pub fn delete(&self, uri: &str) -> Result<BlockingRequestBuilder<C, R>, Error> {
         Ok(BlockingRequestBuilder {
             inner: self.inner.delete(uri)?,
+            session: self.session.clone(),
             _runtime: PhantomData,
         })
     }
@@ -102,18 +111,20 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingClient<C, R> {
     ) -> Result<BlockingRequestBuilder<C, R>, Error> {
         Ok(BlockingRequestBuilder {
             inner: self.inner.request(method, uri)?,
+            session: self.session.clone(),
             _runtime: PhantomData,
         })
     }
 }
 
 /// A blocking request builder.
-pub struct BlockingRequestBuilder<C: HttpClient, R: RuntimeCompletion> {
+pub struct BlockingRequestBuilder<C: HttpClient, R: BlockingRuntime> {
     inner: C::RequestBuilder,
+    session: R::Session,
     _runtime: PhantomData<R>,
 }
 
-impl<C: HttpClient, R: RuntimeCompletion> BlockingRequestBuilder<C, R> {
+impl<C: HttpClient, R: BlockingRuntime> BlockingRequestBuilder<C, R> {
     /// Add a typed header to the request.
     pub fn header(
         mut self,
@@ -195,21 +206,24 @@ impl<C: HttpClient, R: RuntimeCompletion> BlockingRequestBuilder<C, R> {
         self,
     ) -> Result<BlockingResponse<<C::RequestBuilder as RequestBuilderExt>::Response, R>, Error>
     {
-        let resp = R::block_on(self.inner.send())?.map_err(|e| e.into_error())?;
+        let resp =
+            R::block_on_session(&self.session, self.inner.send())?.map_err(|e| e.into_error())?;
         Ok(BlockingResponse {
             inner: resp,
+            session: self.session.clone(),
             _runtime: PhantomData,
         })
     }
 }
 
 /// A blocking HTTP response.
-pub struct BlockingResponse<Resp: ResponseExt, R: RuntimeCompletion> {
+pub struct BlockingResponse<Resp: ResponseExt, R: BlockingRuntime> {
     inner: Resp,
+    session: R::Session,
     _runtime: PhantomData<R>,
 }
 
-impl<Resp: ResponseExt, R: RuntimeCompletion> BlockingResponse<Resp, R> {
+impl<Resp: ResponseExt, R: BlockingRuntime> BlockingResponse<Resp, R> {
     /// Returns the HTTP status code.
     pub fn status(&self) -> StatusCode {
         self.inner.status()
@@ -253,16 +267,75 @@ impl<Resp: ResponseExt, R: RuntimeCompletion> BlockingResponse<Resp, R> {
 
     /// Consume the response body and return it as bytes.
     pub fn bytes(self) -> Result<Bytes, Error> {
-        R::block_on(self.inner.bytes())?
+        R::block_on_session(&self.session, self.inner.bytes())?
     }
 
     /// Consume the response body and return it as a UTF-8 string.
     pub fn text(self) -> Result<String, Error> {
-        R::block_on(self.inner.text())?
+        R::block_on_session(&self.session, self.inner.text())?
+    }
+
+    /// Convert the response into a blocking Server-Sent Events stream.
+    pub fn into_sse_stream(self) -> BlockingSseStream<Resp::ByteStream, R> {
+        BlockingSseStream {
+            body: self.inner.into_bytes_stream(),
+            buf: bytes::BytesMut::new(),
+            decoder: crate::SseDecoder::new(),
+            session: self.session,
+            done: false,
+        }
     }
 }
 
-impl<Resp: ResponseExt, R: RuntimeCompletion> std::fmt::Debug for BlockingResponse<Resp, R> {
+/// Blocking Server-Sent Events stream backed by an async response body.
+pub struct BlockingSseStream<S: ByteStreamExt, R: BlockingRuntime> {
+    body: S,
+    buf: bytes::BytesMut,
+    decoder: crate::SseDecoder,
+    session: R::Session,
+    done: bool,
+}
+
+impl<S: ByteStreamExt, R: BlockingRuntime> std::fmt::Debug for BlockingSseStream<S, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockingSseStream").finish()
+    }
+}
+
+impl<S: ByteStreamExt, R: BlockingRuntime> BlockingSseStream<S, R> {
+    /// Set the maximum payload size for each event. Pass `0` to disable it.
+    pub fn with_max_payload_size(mut self, max: usize) -> Self {
+        self.decoder.set_max_payload_size(max);
+        self
+    }
+
+    /// Returns the next SSE event, or `None` when the stream ends.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Option<Result<crate::SseEvent, Error>> {
+        loop {
+            if let Some(event) = self.decoder.decode(&mut self.buf) {
+                return Some(event);
+            }
+            if self.done {
+                return None;
+            }
+            match R::block_on_session(&self.session, self.body.next()) {
+                Ok(Some(Ok(chunk))) => self.buf.extend_from_slice(&chunk),
+                Ok(Some(Err(error))) => return Some(Err(error)),
+                Ok(None) => {
+                    self.done = true;
+                    if let Some(event) = self.decoder.decode(&mut self.buf) {
+                        return Some(event);
+                    }
+                    return None;
+                }
+                Err(error) => return Some(Err(error)),
+            }
+        }
+    }
+}
+
+impl<Resp: ResponseExt, R: BlockingRuntime> std::fmt::Debug for BlockingResponse<Resp, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlockingResponse")
             .field("status", &self.inner.status())
@@ -272,7 +345,7 @@ impl<Resp: ResponseExt, R: RuntimeCompletion> std::fmt::Debug for BlockingRespon
 
 /// Additional methods available when the inner response is [`Response`](crate::Response).
 #[cfg(not(target_arch = "wasm32"))]
-impl<R: RuntimeCompletion> BlockingResponse<crate::Response, R> {
+impl<R: BlockingRuntime> BlockingResponse<crate::Response, R> {
     /// Returns the final URL of this response, after any redirects.
     pub fn url(&self) -> &http::Uri {
         self.inner.url()
@@ -311,7 +384,7 @@ impl<R: RuntimeCompletion> BlockingResponse<crate::Response, R> {
     /// Consume the response body and deserialize it as JSON.
     #[cfg(feature = "json")]
     pub fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, Error> {
-        R::block_on(self.inner.json())?
+        R::block_on_session(&self.session, self.inner.json())?
     }
 }
 
@@ -327,7 +400,7 @@ mod tests {
             .user_agent("blocking-test/1.0")
             .build()
             .unwrap();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let result = client.get("http://127.0.0.1:1/nonexistent");
         assert!(result.is_ok());
     }
@@ -345,7 +418,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let config = client.inner.core.http2.as_ref().expect("http2 config");
         assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
         assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
@@ -366,7 +439,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let client = BlockingClient::<_, crate::runtime::SmolRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::SmolRuntime>::new(engine).unwrap();
         let config = client.inner.core.http2.as_ref().expect("http2 config");
         assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
         assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
@@ -388,7 +461,7 @@ mod tests {
                 .build_local()
                 .unwrap();
 
-        let client = BlockingClient::<_, crate::runtime::CompioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::CompioRuntime>::new(engine).unwrap();
         let config = client.inner.core.http2.as_ref().expect("http2 config");
         assert_eq!(client.inner.core.timeout, Some(Duration::from_secs(5)));
         assert_eq!(config.keep_alive_interval, Some(Duration::from_secs(30)));
@@ -401,7 +474,7 @@ mod tests {
     fn blocking_client_all_methods() {
         use crate::runtime::tokio_rt::TcpConnector;
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         assert!(client.get("http://127.0.0.1:1/").is_ok());
         assert!(client.head("http://127.0.0.1:1/").is_ok());
         assert!(client.post("http://127.0.0.1:1/").is_ok());
@@ -420,7 +493,7 @@ mod tests {
     fn blocking_client_invalid_url() {
         use crate::runtime::tokio_rt::TcpConnector;
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         assert!(client.get("not a valid url\n").is_err());
     }
 
@@ -429,7 +502,7 @@ mod tests {
     fn blocking_client_invalid_url_all_methods() {
         use crate::runtime::tokio_rt::TcpConnector;
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let bad_url = "not a valid url\n";
         assert!(client.head(bad_url).is_err());
         assert!(client.post(bad_url).is_err());
@@ -446,7 +519,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/", addr))
             .unwrap()
@@ -462,7 +535,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/", addr))
             .unwrap()
@@ -478,7 +551,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/", addr))
             .unwrap()
@@ -495,7 +568,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/", addr))
             .unwrap()
@@ -520,7 +593,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/", addr))
             .unwrap()
@@ -542,7 +615,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server();
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let mut resp = client
             .get(&format!("http://{addr}/"))
             .unwrap()
@@ -568,7 +641,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .head(&format!("http://{}/test", addr))
             .unwrap()
@@ -584,7 +657,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .post(&format!("http://{}/submit", addr))
             .unwrap()
@@ -610,7 +683,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .put(&format!("http://{}/resource", addr))
             .unwrap()
@@ -636,7 +709,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .patch(&format!("http://{}/resource", addr))
             .unwrap()
@@ -662,7 +735,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .delete(&format!("http://{}/resource/42", addr))
             .unwrap()
@@ -687,7 +760,7 @@ mod tests {
 
         let addr = aioduct_test_server::h1::spawn_h1_server_with(aioduct_test_server::h1::echo);
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .request(Method::OPTIONS, &format!("http://{}/options", addr))
             .unwrap()
@@ -713,7 +786,7 @@ mod tests {
                 .unwrap())
         });
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/missing", addr))
             .unwrap()
@@ -741,7 +814,7 @@ mod tests {
                 .unwrap())
         });
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/fail", addr))
             .unwrap()
@@ -767,7 +840,7 @@ mod tests {
                 .unwrap())
         });
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/secret", addr))
             .unwrap()
@@ -793,7 +866,7 @@ mod tests {
                 .unwrap())
         });
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/", addr))
             .unwrap()
@@ -815,7 +888,7 @@ mod tests {
                 .unwrap())
         });
         let engine = crate::HttpEngineSend::<crate::runtime::TokioRuntime, TcpConnector>::new();
-        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine);
+        let client = BlockingClient::<_, crate::runtime::TokioRuntime>::new(engine).unwrap();
         let resp = client
             .get(&format!("http://{}/", addr))
             .unwrap()

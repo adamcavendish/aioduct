@@ -189,7 +189,7 @@ pub use digest_fields::{
     CONTENT_DIGEST, insert_sha256_content_digest, sha256_content_digest_value,
     sha256_content_digest_value_from_digest,
 };
-pub use error::{Error, PoolError, PoolLimitError, PoolLimitKind, SendError};
+pub use error::{BlockingRuntimeError, Error, PoolError, PoolLimitError, PoolLimitKind, SendError};
 pub use forwarded::ForwardedElement;
 pub use hsts::HstsStore;
 pub use http2::Http2Config;
@@ -258,8 +258,8 @@ pub use response::Response;
 pub use runtime::SystemResolver;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::{
-    ConnectorLocal, ConnectorSend, FallbackResolver, Resolve, RuntimeCompletion, RuntimeLocal,
-    RuntimePoll, SocketConfig, StaticResolver,
+    BlockingRuntime, ConnectorLocal, ConnectorSend, FallbackResolver, Resolve, RuntimeCompletion,
+    RuntimeLocal, RuntimePoll, SocketConfig, StaticResolver,
 };
 #[cfg(feature = "wasi-p2")]
 pub use traits::OwnedWasiRequestBuilder;

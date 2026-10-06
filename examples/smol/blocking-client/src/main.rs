@@ -3,7 +3,7 @@ use aioduct::SmolClient;
 
 fn main() -> Result<(), aioduct::Error> {
     let engine = SmolClient::builder().build().unwrap();
-    let client = BlockingSmolClient::new(engine);
+    let client = BlockingSmolClient::new(engine).unwrap();
 
     // Synchronous GET
     let resp = client.get("https://httpbin.org/get")?.send()?;

@@ -46,7 +46,8 @@ pub struct SseDecoder {
     staged_last_event_id: Arc<str>,
     max_payload_size: usize,
     bom_stripped: bool,
-    corrupted: bool,
+    draining: Option<DrainingOversized>,
+    scan_pos: usize,
 }
 
 impl SseDecoder {
@@ -63,8 +64,13 @@ impl SseDecoder {
             staged_last_event_id: Arc::from(""),
             max_payload_size: max,
             bom_stripped: false,
-            corrupted: false,
+            draining: None,
+            scan_pos: 0,
         }
+    }
+
+    pub(crate) fn set_max_payload_size(&mut self, max: usize) {
+        self.max_payload_size = max;
     }
 
     /// Returns the current `Last-Event-ID`.
@@ -79,24 +85,53 @@ impl SseDecoder {
     pub fn decode(&mut self, buf: &mut BytesMut) -> Option<Result<SseEvent, Error>> {
         self.strip_bom(buf);
 
+        if let Some(state) = &mut self.draining {
+            let (boundary, consumed) = state.scan(buf);
+            buf.advance(consumed);
+            if boundary.is_some() {
+                self.draining = None;
+                self.scan_pos = 0;
+            }
+            if self.draining.is_some() {
+                return None;
+            }
+        }
+
         loop {
-            let boundary = find_event_boundary(&buf[..])?;
+            let boundary = match find_event_boundary_from(&buf[..], self.scan_pos) {
+                Some(boundary) => boundary,
+                None => {
+                    if self.max_payload_size > 0
+                        && exceeds_payload_limit(buf, self.max_payload_size)
+                    {
+                        let mut state = DrainingOversized::new();
+                        let (boundary, consumed) = state.scan(buf);
+                        buf.advance(consumed);
+                        if boundary.is_some() {
+                            self.draining = None;
+                            return Some(Err(Error::SseEventTooLarge {
+                                limit_bytes: self.max_payload_size,
+                            }));
+                        }
+                        self.draining = Some(state);
+                        return Some(Err(Error::SseEventTooLarge {
+                            limit_bytes: self.max_payload_size,
+                        }));
+                    }
+                    self.scan_pos = buf.len().saturating_sub(2);
+                    return None;
+                }
+            };
 
             let block_end = boundary.block_end;
             let consume = boundary.consume;
-
-            if self.corrupted {
-                buf.advance(consume);
-                self.corrupted = false;
-                continue;
-            }
+            self.scan_pos = 0;
 
             if self.max_payload_size > 0 && block_end > self.max_payload_size {
                 buf.advance(consume);
-                self.corrupted = true;
-                return Some(Err(Error::Other(
-                    "SSE payload too large".to_string().into(),
-                )));
+                return Some(Err(Error::SseEventTooLarge {
+                    limit_bytes: self.max_payload_size,
+                }));
             }
 
             let block_str = String::from_utf8_lossy(&buf[..block_end]).into_owned();
@@ -184,13 +219,56 @@ impl SseDecoder {
     }
 
     fn strip_bom(&mut self, buf: &mut BytesMut) {
-        if self.bom_stripped {
+        if self.bom_stripped || buf.is_empty() {
+            return;
+        }
+        if buf.len() < 3 {
+            if !b"\xef\xbb\xbf".starts_with(buf) {
+                self.bom_stripped = true;
+            }
             return;
         }
         if buf.len() >= 3 && &buf[..3] == b"\xef\xbb\xbf" {
             buf.advance(3);
         }
         self.bom_stripped = true;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DrainingOversized {
+    line_start: bool,
+}
+
+impl DrainingOversized {
+    fn new() -> Self {
+        Self { line_start: false }
+    }
+
+    /// Consume complete lines until the oversized event's blank-line boundary.
+    /// A trailing CR is retained so a split CRLF is resolved by the next call.
+    fn scan(&mut self, buf: &[u8]) -> (Option<usize>, usize) {
+        let mut i = 0;
+        while i < buf.len() {
+            let (width, is_line_end) = match buf[i] {
+                b'\r' if i + 1 == buf.len() => break,
+                b'\r' if buf[i + 1] == b'\n' => (2, true),
+                b'\r' => (1, true),
+                b'\n' => (1, true),
+                _ => (1, false),
+            };
+            if !is_line_end {
+                self.line_start = false;
+                i += width;
+                continue;
+            }
+            if self.line_start {
+                return (Some(i + width), i + width);
+            }
+            self.line_start = true;
+            i += width;
+        }
+        (None, i)
     }
 }
 
@@ -205,8 +283,13 @@ struct EventBoundary {
     consume: usize,
 }
 
+#[allow(dead_code)]
 fn find_event_boundary(bytes: &[u8]) -> Option<EventBoundary> {
-    let mut pos = 0;
+    find_event_boundary_from(bytes, 0)
+}
+
+fn find_event_boundary_from(bytes: &[u8], mut pos: usize) -> Option<EventBoundary> {
+    pos = pos.min(bytes.len());
     while pos < bytes.len() {
         let i = memchr2(b'\r', b'\n', &bytes[pos..])?;
         let abs = pos + i;
@@ -230,6 +313,17 @@ fn find_event_boundary(bytes: &[u8]) -> Option<EventBoundary> {
         pos = line_end;
     }
     None
+}
+
+fn exceeds_payload_limit(bytes: &[u8], limit: usize) -> bool {
+    let effective_len = if bytes.ends_with(b"\r\n") {
+        bytes.len().saturating_sub(2)
+    } else if bytes.ends_with(b"\r") || bytes.ends_with(b"\n") {
+        bytes.len().saturating_sub(1)
+    } else {
+        bytes.len()
+    };
+    effective_len > limit
 }
 
 fn consume_line_ending(bytes: &[u8], pos: usize) -> (usize, usize) {
@@ -532,11 +626,15 @@ mod tests {
         let mut decoder = SseDecoder::with_max_payload_size(10);
 
         let e1 = decoder.decode(&mut buf);
-        assert!(e1.unwrap().is_err());
+        assert!(matches!(
+            e1.unwrap(),
+            Err(Error::SseEventTooLarge { limit_bytes: 10 })
+        ));
 
-        // Next block is skipped (corrupted recovery)
-        let e2 = decoder.decode(&mut buf).unwrap().unwrap();
-        assert_eq!(e2, msg("message", "ok"));
+        let e2 = decoder.decode(&mut buf);
+        assert!(e2.unwrap().is_err());
+        let e3 = decoder.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(e3, msg("message", "ok"));
     }
 
     #[test]
@@ -737,22 +835,55 @@ mod tests {
     }
 
     #[test]
-    fn corrupted_state_skips_next_block() {
-        // After a too-large payload error, the corrupted flag is set. The next
-        // event block is skipped (since the decoder state may be inconsistent
-        // after partial reads of the oversized event). Normal decoding resumes
-        // after the skipped block.
+    fn oversized_events_are_independent() {
         let mut buf =
             BytesMut::from(&b"data: AAAAAAAAAAAAAAA\n\ndata: BBBBBBBBBBBBBBB\n\ndata: ok\n\n"[..]);
         let mut decoder = SseDecoder::with_max_payload_size(10);
 
-        // First too-large event returns error, sets corrupted=true
         let e1 = decoder.decode(&mut buf).unwrap();
         assert!(e1.is_err());
 
-        // Second block is skipped due to corrupted flag, third event succeeds
-        let e2 = decoder.decode(&mut buf).unwrap().unwrap();
-        assert_eq!(e2, msg("message", "ok"));
+        let e2 = decoder.decode(&mut buf).unwrap();
+        assert!(e2.is_err());
+        let e3 = decoder.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(e3, msg("message", "ok"));
+    }
+
+    #[test]
+    fn oversized_incomplete_event_drains_incrementally() {
+        let mut decoder = SseDecoder::with_max_payload_size(8);
+        let mut buf = BytesMut::from(&b"data: 123456789"[..]);
+        assert!(matches!(
+            decoder.decode(&mut buf),
+            Some(Err(Error::SseEventTooLarge { limit_bytes: 8 }))
+        ));
+        assert!(buf.is_empty());
+        buf.extend_from_slice(b"\n\ndata: ok\n\n");
+        assert_eq!(
+            decoder.decode(&mut buf).unwrap().unwrap(),
+            msg("message", "ok")
+        );
+    }
+
+    #[test]
+    fn trailing_cr_at_limit_is_not_oversized() {
+        let mut decoder = SseDecoder::with_max_payload_size(5);
+        let mut buf = BytesMut::from(&b"data:\r"[..]);
+        assert!(decoder.decode(&mut buf).is_none());
+        buf.extend_from_slice(b"\n\n");
+        assert!(matches!(
+            decoder.decode(&mut buf),
+            Some(Ok(SseEvent::Message(_)))
+        ));
+
+        let mut decoder = SseDecoder::with_max_payload_size(7);
+        let mut buf = BytesMut::from(&b"data:ok\n"[..]);
+        assert!(decoder.decode(&mut buf).is_none());
+        buf.extend_from_slice(b"\n");
+        assert!(matches!(
+            decoder.decode(&mut buf),
+            Some(Ok(SseEvent::Message(_)))
+        ));
     }
 
     #[test]

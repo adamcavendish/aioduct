@@ -8,10 +8,14 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::{ConnectorLocal, RuntimeCompletion, RuntimeLocal};
+use super::{BlockingRuntime, ConnectorLocal, RuntimeCompletion, RuntimeLocal};
 
 /// Compio async runtime implementation using native io_uring/IOCP for TCP I/O.
 pub struct CompioRuntime;
+
+#[derive(Clone)]
+/// Thread-local runtime session used by the blocking compio client.
+pub struct CompioBlockingSession(std::rc::Rc<(compio_runtime::Runtime, std::cell::RefCell<()>)>);
 
 // ── New trait impls (v0.2) ──────────────────────────────────────────────────
 
@@ -25,6 +29,30 @@ impl RuntimeCompletion for CompioRuntime {
     fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error> {
         let rt = compio_runtime::Runtime::new().map_err(crate::error::Error::Io)?;
         Ok(rt.block_on(future))
+    }
+}
+
+impl BlockingRuntime for CompioRuntime {
+    type Session = CompioBlockingSession;
+
+    fn new_session() -> Result<Self::Session, crate::error::Error> {
+        let runtime = compio_runtime::Runtime::new().map_err(crate::error::Error::Io)?;
+        Ok(CompioBlockingSession(std::rc::Rc::new((
+            runtime,
+            std::cell::RefCell::new(()),
+        ))))
+    }
+
+    fn block_on_session<F: Future>(
+        session: &Self::Session,
+        future: F,
+    ) -> Result<F::Output, crate::error::Error> {
+        let _guard = session
+            .0
+            .1
+            .try_borrow_mut()
+            .map_err(|_| crate::error::BlockingRuntimeError::NestedSession)?;
+        Ok(session.0.0.block_on(future))
     }
 }
 
@@ -534,6 +562,23 @@ mod tests {
         use crate::runtime::RuntimeCompletion;
         let result = CompioRuntime::block_on(async { 42 }).unwrap();
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn blocking_session_rejects_nested_calls() {
+        use crate::runtime::BlockingRuntime;
+        let session = CompioRuntime::new_session().unwrap();
+        let nested_session = session.clone();
+        let result = CompioRuntime::block_on_session(&session, async move {
+            CompioRuntime::block_on_session(&nested_session, async { 42 })
+        })
+        .unwrap();
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::BlockingRuntime(
+                crate::error::BlockingRuntimeError::NestedSession
+            ))
+        ));
     }
 
     #[test]
