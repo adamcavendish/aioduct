@@ -4,12 +4,13 @@
 //! TLS, connection pooling, and DNS resolution are handled transparently by the
 //! WASI runtime (e.g., wasmtime).
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http::header::HeaderValue;
 use http::{HeaderMap, Method, StatusCode, Uri};
 use std::time::Duration;
 
 use crate::error::{BuilderError, Error};
+use crate::sse::{SseDecoder, SseEvent};
 
 /// HTTP client for WASI Preview 2 environments.
 ///
@@ -644,6 +645,16 @@ impl WasiResponse {
         }
     }
 
+    /// Convert the response into a streaming Server-Sent Events reader.
+    pub fn into_sse_stream(self) -> WasiSseStream {
+        WasiSseStream {
+            body: self.into_bytes_stream(),
+            buf: BytesMut::new(),
+            decoder: SseDecoder::new(),
+            done: false,
+        }
+    }
+
     /// Returns an error if the status code is 4xx or 5xx.
     pub fn error_for_status(self) -> Result<Self, Error> {
         let status = self.status;
@@ -660,6 +671,52 @@ pub struct WasiBodyStream {
     stream: Option<wasi::io::streams::InputStream>,
     incoming_body: Option<wasi::http::types::IncomingBody>,
     done: bool,
+}
+
+/// Synchronous Server-Sent Events stream for WASI Preview 2.
+pub struct WasiSseStream {
+    body: WasiBodyStream,
+    buf: BytesMut,
+    decoder: SseDecoder,
+    done: bool,
+}
+
+impl std::fmt::Debug for WasiSseStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasiSseStream").finish()
+    }
+}
+
+impl WasiSseStream {
+    /// Set the maximum payload size for each event. Pass `0` to disable it.
+    pub fn with_max_payload_size(mut self, max: usize) -> Self {
+        self.decoder.set_max_payload_size(max);
+        self
+    }
+
+    /// Returns the next SSE event, or `None` when the stream ends.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Option<Result<SseEvent, Error>> {
+        loop {
+            if let Some(event) = self.decoder.decode(&mut self.buf) {
+                return Some(event);
+            }
+            if self.done {
+                return None;
+            }
+            match self.body.next() {
+                Some(Ok(chunk)) => self.buf.extend_from_slice(&chunk),
+                Some(Err(error)) => return Some(Err(error)),
+                None => {
+                    self.done = true;
+                    if let Some(event) = self.decoder.decode(&mut self.buf) {
+                        return Some(event);
+                    }
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for WasiBodyStream {

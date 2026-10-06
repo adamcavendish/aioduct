@@ -1,11 +1,12 @@
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::error::{BuilderError, Error};
+use crate::sse::{SseDecoder, SseEvent};
 
 #[wasm_bindgen]
 extern "C" {
@@ -671,6 +672,16 @@ impl WasmResponse {
         }
     }
 
+    /// Convert the response into a streaming Server-Sent Events reader.
+    pub fn into_sse_stream(self) -> WasmSseStream {
+        WasmSseStream {
+            body: self.into_bytes_stream(),
+            buf: BytesMut::new(),
+            decoder: SseDecoder::new(),
+            done: false,
+        }
+    }
+
     /// Return an error if the status code indicates failure (4xx or 5xx).
     pub fn error_for_status(self) -> Result<Self, Error> {
         let status = self.status;
@@ -686,6 +697,51 @@ impl WasmResponse {
 pub struct WasmBodyStream {
     reader: Option<web_sys::ReadableStreamDefaultReader>,
     done: bool,
+}
+
+/// Async Server-Sent Events stream for browser and worker runtimes.
+pub struct WasmSseStream {
+    body: WasmBodyStream,
+    buf: BytesMut,
+    decoder: SseDecoder,
+    done: bool,
+}
+
+impl std::fmt::Debug for WasmSseStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmSseStream").finish()
+    }
+}
+
+impl WasmSseStream {
+    /// Set the maximum payload size for each event. Pass `0` to disable it.
+    pub fn with_max_payload_size(mut self, max: usize) -> Self {
+        self.decoder.set_max_payload_size(max);
+        self
+    }
+
+    /// Returns the next SSE event, or `None` when the stream ends.
+    pub async fn next(&mut self) -> Option<Result<SseEvent, Error>> {
+        loop {
+            if let Some(event) = self.decoder.decode(&mut self.buf) {
+                return Some(event);
+            }
+            if self.done {
+                return None;
+            }
+            match self.body.next().await {
+                Some(Ok(chunk)) => self.buf.extend_from_slice(&chunk),
+                Some(Err(error)) => return Some(Err(error)),
+                None => {
+                    self.done = true;
+                    if let Some(event) = self.decoder.decode(&mut self.buf) {
+                        return Some(event);
+                    }
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for WasmBodyStream {

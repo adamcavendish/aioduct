@@ -8,10 +8,18 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::{ConnectorLocal, RuntimeCompletion, RuntimePoll};
+use super::{BlockingRuntime, ConnectorLocal, RuntimeCompletion, RuntimePoll};
 
 /// Smol async runtime implementation.
 pub struct SmolRuntime;
+
+#[derive(Clone, Default)]
+/// Serialized session handle used by the blocking smol client.
+pub struct SmolBlockingSession(std::sync::Arc<std::sync::Mutex<()>>);
+
+thread_local! {
+    static BLOCKING_DEPTH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 // ── New trait impls (v0.2) ──────────────────────────────────────────────────
 
@@ -25,6 +33,36 @@ impl RuntimeCompletion for SmolRuntime {
     }
 
     fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error> {
+        Ok(smol::block_on(future))
+    }
+}
+
+impl BlockingRuntime for SmolRuntime {
+    type Session = SmolBlockingSession;
+
+    fn new_session() -> Result<Self::Session, crate::error::Error> {
+        Ok(SmolBlockingSession::default())
+    }
+
+    fn block_on_session<F: Future>(
+        session: &Self::Session,
+        future: F,
+    ) -> Result<F::Output, crate::error::Error> {
+        if BLOCKING_DEPTH.with(std::cell::Cell::get) {
+            return Err(crate::error::BlockingRuntimeError::NestedSession.into());
+        }
+        BLOCKING_DEPTH.with(|depth| depth.set(true));
+        struct DepthGuard;
+        impl Drop for DepthGuard {
+            fn drop(&mut self) {
+                BLOCKING_DEPTH.with(|depth| depth.set(false));
+            }
+        }
+        let _depth_guard = DepthGuard;
+        let _guard = session
+            .0
+            .lock()
+            .map_err(|_| crate::error::BlockingRuntimeError::SessionPoisoned)?;
         Ok(smol::block_on(future))
     }
 }
@@ -460,6 +498,43 @@ mod tests {
         use crate::runtime::RuntimeCompletion;
         let result = SmolRuntime::block_on(async { 42 }).unwrap();
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn blocking_session_rejects_nested_calls() {
+        use crate::runtime::BlockingRuntime;
+        let session = SmolRuntime::new_session().unwrap();
+        let nested_session = session.clone();
+        let result = SmolRuntime::block_on_session(&session, async move {
+            SmolRuntime::block_on_session(&nested_session, async { 42 })
+        })
+        .unwrap();
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::BlockingRuntime(
+                crate::error::BlockingRuntimeError::NestedSession
+            ))
+        ));
+    }
+
+    #[test]
+    fn blocking_session_reports_poisoned_lock() {
+        use crate::runtime::BlockingRuntime;
+        let session = SmolRuntime::new_session().unwrap();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = SmolRuntime::block_on_session(&session, async {
+                panic!("poison blocking session");
+            });
+        }));
+        assert!(poisoned.is_err());
+
+        let result = SmolRuntime::block_on_session(&session, async { 42 });
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::BlockingRuntime(
+                crate::error::BlockingRuntimeError::SessionPoisoned
+            ))
+        ));
     }
 
     #[test]

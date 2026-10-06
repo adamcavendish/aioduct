@@ -3,7 +3,7 @@ use aioduct::TokioClient;
 
 fn main() -> Result<(), aioduct::Error> {
     let engine = TokioClient::builder().build().unwrap();
-    let client = BlockingTokioClient::new(engine);
+    let client = BlockingTokioClient::new(engine).unwrap();
 
     // Synchronous GET
     let resp = client.get("https://httpbin.org/get")?.send()?;

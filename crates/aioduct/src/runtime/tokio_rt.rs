@@ -8,10 +8,14 @@ use std::time::Duration;
 use hyper::rt::{self, Read, Write};
 use pin_project_lite::pin_project;
 
-use super::{ConnectorLocal, RuntimeCompletion, RuntimePoll};
+use super::{BlockingRuntime, ConnectorLocal, RuntimeCompletion, RuntimePoll};
 
 /// Tokio async runtime implementation.
 pub struct TokioRuntime;
+
+#[derive(Clone)]
+/// Persistent Tokio runtime used by the blocking client.
+pub struct TokioBlockingSession(std::sync::Arc<(tokio::runtime::Runtime, std::sync::Mutex<()>)>);
 
 // ── New trait impls (v0.2) ──────────────────────────────────────────────────
 
@@ -26,15 +30,43 @@ impl RuntimeCompletion for TokioRuntime {
 
     fn block_on<F: Future>(future: F) -> Result<F::Output, crate::error::Error> {
         if tokio::runtime::Handle::try_current().is_ok() {
-            return Err(crate::error::Error::Other(
-                "blocking client cannot be used from within an async runtime".into(),
-            ));
+            return Err(crate::error::BlockingRuntimeError::InAsyncRuntime.into());
         }
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(crate::error::Error::Io)?;
         Ok(rt.block_on(future))
+    }
+}
+
+impl BlockingRuntime for TokioRuntime {
+    type Session = TokioBlockingSession;
+
+    fn new_session() -> Result<Self::Session, crate::error::Error> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(crate::error::Error::Io)?;
+        Ok(TokioBlockingSession(std::sync::Arc::new((
+            runtime,
+            std::sync::Mutex::new(()),
+        ))))
+    }
+
+    fn block_on_session<F: Future>(
+        session: &Self::Session,
+        future: F,
+    ) -> Result<F::Output, crate::error::Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(crate::error::BlockingRuntimeError::InAsyncRuntime.into());
+        }
+        let _guard = session
+            .0
+            .1
+            .lock()
+            .map_err(|_| crate::error::BlockingRuntimeError::SessionPoisoned)?;
+        Ok(session.0.0.block_on(future))
     }
 }
 
@@ -521,9 +553,32 @@ mod tests {
     async fn block_on_inside_runtime_returns_error() {
         use crate::runtime::RuntimeCompletion;
         let result = TokioRuntime::block_on(async { 42 });
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("blocking client cannot be used from within an async runtime"));
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::BlockingRuntime(
+                crate::error::BlockingRuntimeError::InAsyncRuntime
+            ))
+        ));
+    }
+
+    #[test]
+    fn blocking_session_reports_poisoned_lock() {
+        use crate::runtime::BlockingRuntime;
+        let session = TokioRuntime::new_session().unwrap();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = TokioRuntime::block_on_session(&session, async {
+                panic!("poison blocking session");
+            });
+        }));
+        assert!(poisoned.is_err());
+
+        let result = TokioRuntime::block_on_session(&session, async { 42 });
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::BlockingRuntime(
+                crate::error::BlockingRuntimeError::SessionPoisoned
+            ))
+        ));
     }
 
     // ── TokioIo read/write edge cases ──────────────────────────────────
