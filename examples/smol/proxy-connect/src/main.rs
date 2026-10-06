@@ -1,8 +1,12 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::env;
 
 use aioduct::{EnvCredentialResolver, ProxyConfig, ProxySettings, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         let args = env::args().skip(1).collect::<Vec<_>>();
         if args.len() != 2 {

@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
@@ -87,6 +90,7 @@ fn bad_gateway(error: aioduct::Error) -> Response<Full<Bytes>> {
 }
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         let upstream = start_upstream().await;
         let broker = start_broker(upstream).await;

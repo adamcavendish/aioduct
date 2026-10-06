@@ -1,7 +1,11 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::time::Duration;
 
 use aioduct::SmolClient;
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         let client = SmolClient::builder()
             .max_download_speed(5_000_000) // 5 MB/s shared across all parallel chunks

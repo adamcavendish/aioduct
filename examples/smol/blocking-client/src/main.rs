@@ -1,7 +1,11 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use aioduct::BlockingSmolClient;
 use aioduct::SmolClient;
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     let engine = SmolClient::builder().build().unwrap();
     let client = BlockingSmolClient::new(engine).unwrap();
 

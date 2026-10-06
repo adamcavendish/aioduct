@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::env;
 
 use aioduct::{EnvCredentialResolver, NoProxy, ProxyConfig, ProxySettings, SmolClient};
@@ -8,6 +11,7 @@ fn parse_proxy(value: &str) -> Result<ProxyConfig, aioduct::Error> {
 }
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         let args = env::args().skip(1).collect::<Vec<_>>();
         if !(3..=4).contains(&args.len()) {

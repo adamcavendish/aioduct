@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -52,6 +55,7 @@ where
 }
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // Tower connector layer wraps the underlying TCP/TLS connector.
         // This is useful for adding logging, metrics, or custom

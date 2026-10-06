@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::time::Duration;
 
 use aioduct::SmolClient;
@@ -278,6 +281,7 @@ impl RequestObserver for TracingObserver {
 }
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         tracing_subscriber::fmt()
             .with_env_filter("example_observer_tracing=trace")

@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -56,6 +59,7 @@ impl CacheStore for LoggingCacheStore {
 }
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         let store = LoggingCacheStore::new();
         let cache = HttpCache::with_store(store);

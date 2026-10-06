@@ -1,5 +1,9 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use aioduct::SmolClient;
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // Enable gzip, brotli, zstd, and deflate decompression
         // The client automatically sends Accept-Encoding and decompresses responses

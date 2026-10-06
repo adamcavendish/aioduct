@@ -1,5 +1,9 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use aioduct::SmolClient;
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // Set default headers on the client
         let mut default_headers = http::HeaderMap::new();

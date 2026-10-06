@@ -1,8 +1,12 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::time::Duration;
 
 use aioduct::{RedirectAction, RedirectPolicy, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // Default: follow up to 10 redirects
         let client = SmolClient::builder()

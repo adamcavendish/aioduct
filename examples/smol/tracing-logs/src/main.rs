@@ -1,6 +1,10 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use aioduct::{SmolClient, TracingMiddleware};
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // Initialize tracing subscriber
         tracing_subscriber::fmt()

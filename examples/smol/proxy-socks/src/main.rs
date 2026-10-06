@@ -1,6 +1,10 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use aioduct::{NoProxy, ProxyConfig, ProxySettings, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // HTTP proxy
         println!("=== Proxy Configuration Examples ===\n");
