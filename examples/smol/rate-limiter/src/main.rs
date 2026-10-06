@@ -1,8 +1,12 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::time::Duration;
 
 use aioduct::{RateLimiter, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // Rate limit to 5 requests per second
         let client = SmolClient::builder()

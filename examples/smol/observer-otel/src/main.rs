@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::time::Duration;
 
 use aioduct::SmolClient;
@@ -338,6 +341,7 @@ where
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    smol_threads::configure();
     smol::block_on(async {
         // Set up OTel with stdout exporter (JSON spans printed to terminal)
         let exporter = opentelemetry_stdout::SpanExporter::default();

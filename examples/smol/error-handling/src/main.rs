@@ -1,6 +1,10 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use aioduct::{Error, SmolClient};
 
 fn main() {
+    smol_threads::configure();
     smol::block_on(async {
         let client = SmolClient::builder().build().unwrap();
 

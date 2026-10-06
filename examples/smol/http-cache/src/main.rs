@@ -1,6 +1,10 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use aioduct::{HttpCache, SmolClient};
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // Create an in-memory HTTP cache
         let cache = HttpCache::new();

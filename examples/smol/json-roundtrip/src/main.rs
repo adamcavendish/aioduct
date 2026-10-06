@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use aioduct::SmolClient;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +19,7 @@ struct PostResponse {
 }
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         let client = SmolClient::builder().build().unwrap();
 

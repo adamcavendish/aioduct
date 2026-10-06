@@ -1,7 +1,11 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::time::Duration;
 
 use aioduct::{OtelMiddleware, SmolClient};
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         // Set up OpenTelemetry with stdout exporter for demo purposes
         let exporter = opentelemetry_stdout::SpanExporter::default();

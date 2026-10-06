@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
@@ -75,6 +78,7 @@ async fn start_h2_ws_upstream() -> SocketAddr {
 }
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     // Tokio runtime for test server infrastructure
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();

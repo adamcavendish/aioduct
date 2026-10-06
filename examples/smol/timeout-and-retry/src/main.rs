@@ -1,3 +1,6 @@
+#[path = "../../smol_threads.rs"]
+mod smol_threads;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -18,6 +21,7 @@ fn observed_retries(attempts: Arc<AtomicU32>) -> RetryConfig {
 }
 
 fn main() -> Result<(), aioduct::Error> {
+    smol_threads::configure();
     smol::block_on(async {
         let client = SmolClient::builder()
             // Connection timeout: max time to establish TCP + TLS
