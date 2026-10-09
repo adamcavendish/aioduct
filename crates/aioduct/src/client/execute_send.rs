@@ -335,11 +335,18 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     );
             }
 
+            let selected_protocol_hint = super::auto_tune::select_protocol(
+                self.core.auto_tune.as_ref(),
+                version,
+                protocol_hint,
+                &request,
+            );
+
             let resp = match self
                 .execute_single_with_hint_send(
                     request,
                     &current_uri,
-                    protocol_hint,
+                    selected_protocol_hint,
                     replay_bytes_for_stale,
                     connect_timeout,
                     write_timeout,
@@ -394,7 +401,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     connect_timeout,
                     write_timeout,
                     force_addr,
-                    protocol_hint,
+                    selected_protocol_hint,
                     finalized_request,
                 )
                 .await?;

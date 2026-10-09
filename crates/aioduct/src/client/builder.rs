@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use http::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 
+use crate::auto_tune::AutoTuneConfig;
 use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
 use crate::error::BuilderError;
@@ -60,6 +61,7 @@ pub struct HttpEngineBuilder<R, C> {
     pub(super) resolver: Option<Arc<dyn Resolve>>,
     pub(super) static_resolves:
         Option<std::collections::HashMap<String, Vec<std::net::SocketAddr>>>,
+    pub(super) auto_tune: Option<AutoTuneConfig>,
     pub(super) http2: Option<Http2Config>,
     pub(super) middleware: MiddlewareStack,
     pub(super) rate_limiter: Option<crate::throttle::RateLimiter>,
@@ -143,6 +145,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
             proxy_chain: None,
             resolver: None,
             static_resolves: None,
+            auto_tune: None,
             http2: None,
             middleware: MiddlewareStack::new(),
             rate_limiter: None,

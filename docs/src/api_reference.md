@@ -34,6 +34,7 @@ let client = TokioClient::builder()
     .pool_max_idle_per_host(10)
     .pool_max_active_per_host(64)
     .pool_max_active_streams_per_connection(100)
+    .auto_tune(aioduct::AutoTuneConfig::default())
     .build()?;
 ```
 
@@ -87,6 +88,7 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `system_proxy()`        | —           | Read proxy from HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars |
 | `proxy_settings(ProxySettings)` | None | Fine-grained HTTP/HTTPS proxy with bypass rules |
 | `http2(Http2Config)`    | None   | Configure HTTP/2 parameters (window sizes, keepalive, frame size) |
+| `auto_tune(AutoTuneConfig)` | Off | Use HTTP/1.1 for known request bodies at or above the configured threshold |
 | `middleware(impl Middleware)` | None | Add a middleware layer that can inspect/modify requests and responses |
 | `automatic_content_digest(bool)` | false | Insert SHA-256 `Content-Digest` for buffered native request bodies before automatic signing |
 | `message_signature(config, signer)` | None | Sync automatic RFC 9421 request signing for finalized native requests |
@@ -96,6 +98,20 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `cookie_jar(CookieJar)` | None       | Enable automatic cookie management   |
 | `rate_limiter(RateLimiter)` | None   | Token-bucket rate limiter for outgoing requests |
 | `cache(HttpCache)`      | None        | Enable in-memory HTTP response caching |
+
+`auto_tune(AutoTuneConfig)` is opt-in and deterministic. A request with an
+exact body size at or above `large_body_threshold` (16 MiB by default) uses
+HTTP/1.1. Unknown-length
+streaming bodies and smaller bodies retain the normal `Auto` protocol choice;
+explicit request protocol settings take precedence. The policy does not buffer,
+split, retry, or duplicate request bodies. CONNECT and Upgrade requests bypass
+this rule. Middleware changes to the finalized request version also take
+precedence. It applies to native request execution; `forward()` and platform-managed
+Wasm/WASI transports retain their existing protocol behavior. The endpoint must
+accept HTTP/1.1: a protocol rejection is returned without an auto-tune fallback.
+
+To change the threshold, use
+`AutoTuneConfig::default().large_body_threshold(64 * 1024 * 1024)`.
 
 > `base_url(&str)` returns `Result` because it validates the URL eagerly; the
 > other setters return `Self`. When a base URL is set, a relative request URL

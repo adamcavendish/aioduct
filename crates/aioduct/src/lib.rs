@@ -41,10 +41,13 @@ compile_error!(
 
 /// Address-family preference for DNS-resolved connections.
 pub mod address_family;
+/// Deterministic request transport selection.
+pub mod auto_tune;
 /// Token-bucket bandwidth limiter for throttling download throughput.
 pub mod bandwidth;
 /// Request and response body types.
 pub mod body;
+pub use auto_tune::AutoTuneConfig;
 /// HTTP response caching with conditional validation.
 pub mod cache;
 mod clock;
