@@ -1,3 +1,4 @@
+mod auto_tune;
 mod builder;
 mod builder_build_local;
 mod builder_build_send;
@@ -114,6 +115,7 @@ pub struct HttpEngineCore<B> {
     pub(crate) proxy: Option<ProxySettings>,
     pub(crate) proxy_chain: Option<ProxyChain>,
     pub(crate) resolver: Option<Arc<dyn Resolve>>,
+    pub(crate) auto_tune: Option<crate::auto_tune::AutoTuneConfig>,
     pub(crate) http2: Option<Http2Config>,
     pub(crate) middleware: MiddlewareStack,
     pub(crate) rate_limiter: Option<crate::throttle::RateLimiter>,
@@ -168,6 +170,7 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
             proxy: self.proxy.clone(),
             proxy_chain: self.proxy_chain.clone(),
             resolver: self.resolver.clone(),
+            auto_tune: self.auto_tune,
             http2: self.http2.clone(),
             middleware: self.middleware.clone(),
             rate_limiter: self.rate_limiter.clone(),

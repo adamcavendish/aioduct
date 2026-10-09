@@ -306,6 +306,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                         self_.resolver.or_else(|| Self::default_resolver())
                     }
                 },
+                auto_tune: self_.auto_tune,
                 http2: self_.http2,
                 middleware: self_.middleware,
                 rate_limiter: self_.rate_limiter,

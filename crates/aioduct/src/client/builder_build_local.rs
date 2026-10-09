@@ -215,6 +215,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
                         self.resolver.or_else(|| Self::default_local_resolver())
                     }
                 },
+                auto_tune: self.auto_tune,
                 http2: self.http2,
                 middleware: self.middleware,
                 rate_limiter: self.rate_limiter,

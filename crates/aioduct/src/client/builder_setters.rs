@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use http::header::{HeaderMap, HeaderValue, USER_AGENT};
 
+use crate::auto_tune::AutoTuneConfig;
 use crate::error::BuilderError;
 use crate::http2::Http2Config;
 use crate::middleware::Middleware;
@@ -425,6 +426,18 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// Configure HTTP/2 connection parameters (window sizes, keepalive, frame size).
     pub fn http2(mut self, config: Http2Config) -> Self {
         self.http2 = Some(config);
+        self
+    }
+
+    /// Enable deterministic transport selection for known large request bodies.
+    ///
+    /// Requests with an exact body size at or above the configured threshold
+    /// use HTTP/1.1. Unknown-length bodies and smaller bodies keep the normal
+    /// automatic protocol selection. Explicit request protocol settings,
+    /// including middleware changes to the finalized request version, take
+    /// precedence.
+    pub fn auto_tune(mut self, config: AutoTuneConfig) -> Self {
+        self.auto_tune = Some(config);
         self
     }
 

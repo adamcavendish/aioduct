@@ -336,6 +336,13 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     );
             }
 
+            let selected_protocol_hint = super::auto_tune::select_protocol(
+                self.core.auto_tune.as_ref(),
+                version,
+                protocol_hint,
+                &request,
+            );
+
             let resp = match self
                 .execute_single_local(
                     request,
@@ -345,7 +352,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     write_timeout,
                     None,
                     force_addr,
-                    protocol_hint,
+                    selected_protocol_hint,
                     true,
                     body_replayability,
                 )
@@ -397,7 +404,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     connect_timeout,
                     write_timeout,
                     force_addr,
-                    protocol_hint,
+                    selected_protocol_hint,
                     finalized_request,
                 )
                 .await?;
