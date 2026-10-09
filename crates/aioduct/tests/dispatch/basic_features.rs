@@ -69,42 +69,6 @@ async fn cookie_jar_stores_and_sends() {
     );
 }
 
-// ── 3. Middleware injection ──────────────────────────────────────────────────
-
-#[tokio::test]
-async fn middleware_injects_header() {
-    let (addr, _counter) = h1_server_with(|req| async move {
-        let val = req
-            .headers()
-            .get("x-middleware")
-            .map(|v| v.to_str().unwrap().to_string())
-            .unwrap_or_default();
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(val))))
-    })
-    .await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                req.headers_mut().insert(
-                    http::header::HeaderName::from_static("x-middleware"),
-                    http::header::HeaderValue::from_static("dispatch-test"),
-                );
-            },
-        )
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("http://{addr}/"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.text().await.unwrap(), "dispatch-test");
-}
-
 // ── 4. Observer receives events ──────────────────────────────────────────────
 
 #[derive(Default, Clone)]

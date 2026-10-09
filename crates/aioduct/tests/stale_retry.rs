@@ -170,20 +170,25 @@ async fn h2_refused_stream_retries_reproducible_post() {
                         assert_eq!(request.method(), http::Method::POST);
                         respond.send_reset(h2::Reason::REFUSED_STREAM);
                     } else {
-                        let mut body = request.into_body();
-                        let mut bytes = Vec::new();
-                        while let Some(chunk) = body.data().await {
-                            bytes.extend_from_slice(&chunk.unwrap());
-                        }
-                        if !bytes.is_empty() {
-                            uploaded.lock().unwrap().push(bytes);
-                        }
-                        respond
-                            .send_response(
-                                http::Response::builder().status(200).body(()).unwrap(),
-                                true,
-                            )
-                            .unwrap();
+                        // Keep polling the connection while the handler waits for DATA.
+                        // DATA can arrive after accept() yields the request headers.
+                        let uploaded = Arc::clone(&uploaded);
+                        tokio::spawn(async move {
+                            let mut body = request.into_body();
+                            let mut bytes = Vec::new();
+                            while let Some(chunk) = body.data().await {
+                                bytes.extend_from_slice(&chunk.unwrap());
+                            }
+                            if !bytes.is_empty() {
+                                uploaded.lock().unwrap().push(bytes);
+                            }
+                            respond
+                                .send_response(
+                                    http::Response::builder().status(200).body(()).unwrap(),
+                                    true,
+                                )
+                                .unwrap();
+                        });
                     }
                     request_index += 1;
                 }
@@ -470,42 +475,6 @@ async fn retry_put_buffered() {
         .await
         .expect("PUT with buffered body must be retried on stale connection");
     assert_eq!(resp.status(), 200);
-}
-
-#[tokio::test]
-async fn middleware_replaced_body_is_not_reconstructed_from_original_bytes() {
-    let (addr, counter) = aioduct_test_server::stale::h1_rst_on_reuse().await;
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(5))
-        .middleware(
-            |request: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                if request.method() == http::Method::PUT {
-                    *request.body_mut() =
-                        http_body_util::Full::new(Bytes::from_static(b"middleware body"))
-                            .map_err(|never| match never {})
-                            .boxed_unsync();
-                    request.headers_mut().insert(
-                        "content-encoding",
-                        HeaderValue::from_static("middleware-test"),
-                    );
-                }
-            },
-        )
-        .build()
-        .unwrap();
-    let url = format!("http://{addr}/");
-
-    let response = client.get(&url).unwrap().send().await.unwrap();
-    let _ = response.bytes().await.unwrap();
-
-    let result = client.put(&url).unwrap().body("original body").send().await;
-    assert!(
-        result.is_err(),
-        "a middleware-replaced body must not be rebuilt from the original bytes"
-    );
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(counter.connections(), 1);
 }
 
 /// POST with a streaming body must not be retried after the pooled H1

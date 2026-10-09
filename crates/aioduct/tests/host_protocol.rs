@@ -9,7 +9,7 @@ use aioduct::{
 };
 use aioduct_test_server::tls::{make_client_config, tls_server_with};
 use bytes::Bytes;
-use http::{Request, Response, Version};
+use http::{Response, Version};
 use http_body_util::Full;
 
 #[tokio::test]
@@ -87,7 +87,7 @@ async fn negotiated_host_fields_survive_reuse_and_redirects() {
 }
 
 #[tokio::test]
-async fn explicit_and_middleware_host_are_preserved() {
+async fn explicit_host_is_preserved() {
     for alpn in [b"h2".as_slice(), b"http/1.1".as_slice()] {
         let (addr, cert, _) = tls_server_with(&[alpn], |req| async move {
             Ok::<_, Infallible>(Response::new(Full::new(Bytes::copy_from_slice(
@@ -100,30 +100,17 @@ async fn explicit_and_middleware_host_are_preserved() {
                 &cert,
             )))
             .timeout(Duration::from_secs(5))
-            .middleware(
-                |req: &mut Request<aioduct::body::RequestBodySend>, _: &http::Uri| {
-                    if req.uri().path() == "/middleware" {
-                        req.headers_mut()
-                            .insert("host", "middleware.test".parse().unwrap());
-                    }
-                },
-            )
             .build()
             .unwrap();
-        for (path, expected) in [
-            ("/explicit", "caller.test"),
-            ("/middleware", "middleware.test"),
-        ] {
-            let response = client
-                .get(&format!("https://localhost:{}{path}", addr.port()))
-                .unwrap()
-                .header_str("host", "caller.test")
-                .unwrap()
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.text().await.unwrap(), expected);
-        }
+        let response = client
+            .get(&format!("https://localhost:{}/explicit", addr.port()))
+            .unwrap()
+            .header_str("host", "caller.test")
+            .unwrap()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "caller.test");
     }
 }
 

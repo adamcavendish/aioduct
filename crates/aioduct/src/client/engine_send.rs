@@ -207,10 +207,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         self.core.retry.as_ref()
     }
 
-    pub(crate) fn middleware(&self) -> &crate::middleware::MiddlewareStack {
-        &self.core.middleware
-    }
-
     /// Returns the bandwidth limiter if one was configured.
     pub fn bandwidth_limiter(&self) -> Option<&crate::bandwidth::BandwidthLimiter> {
         self.core.bandwidth_limiter.as_ref()

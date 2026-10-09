@@ -233,8 +233,8 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
     /// Override automatic `Content-Digest` generation for this request.
     ///
     /// When enabled, dispatch inserts a SHA-256 `Content-Digest` header for a
-    /// buffered body that does not already have one. Streaming or
-    /// middleware-replaced bodies are not buffered; set `Content-Digest`
+    /// buffered body that does not already have one. Streaming
+    /// bodies are not buffered; set `Content-Digest`
     /// explicitly for those requests.
     pub fn automatic_content_digest(mut self, enable: bool) -> Self {
         self.automatic_content_digest = Some(enable);
@@ -537,8 +537,6 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         let automatic_content_digest = self
             .automatic_content_digest
             .unwrap_or(self.client.core.automatic_content_digest);
-        let method = self.method.clone();
-        let uri = self.uri.clone();
 
         let execute_fut = self.client.execute_local(
             self.method,
@@ -557,7 +555,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             None,
         );
 
-        let result = match effective_timeout {
+        match effective_timeout {
             Some(duration) => {
                 Timeout::WithTimeout {
                     future: execute_fut,
@@ -566,16 +564,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                 .await
             }
             None => execute_fut.await,
-        };
-        if let Err(ref error) = result
-            && !self.client.core.middleware.is_empty()
-        {
-            self.client
-                .core
-                .middleware
-                .apply_error(error, &uri, &method);
         }
-        result
     }
 
     async fn send_with_retry(
@@ -705,14 +694,6 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                             config.max_retries,
                             retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt)),
                         );
-                        if !self.client.core.middleware.is_empty() {
-                            self.client.core.middleware.apply_retry(
-                                &error,
-                                &wire_uri,
-                                &wire_method,
-                                next_attempt,
-                            );
-                        }
                         attempt = next_attempt;
                         continue;
                     }
@@ -763,18 +744,9 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                             config.max_retries,
                             config.delay_for_attempt(attempt),
                         );
-                        if !self.client.core.middleware.is_empty() {
-                            self.client.core.middleware.apply_retry(
-                                &error,
-                                &wire_uri,
-                                &wire_method,
-                                next_attempt,
-                            );
-                        }
                         attempt = next_attempt;
                         continue;
                     }
-                    self.apply_error_middleware(&wire_method, &wire_uri, &error);
                     return Err(error);
                 }
             }
@@ -818,12 +790,6 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                 },
                 at: observer::Instant::now(),
             });
-        }
-    }
-
-    fn apply_error_middleware(&self, method: &Method, uri: &Uri, error: &Error) {
-        if !self.client.core.middleware.is_empty() {
-            self.client.core.middleware.apply_error(error, uri, method);
         }
     }
 }

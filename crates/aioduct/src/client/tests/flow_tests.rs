@@ -475,42 +475,6 @@ fn process_redirect_missing_location_returns_error() {
     }
 }
 
-#[test]
-fn process_redirect_middleware_notified() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    struct TrackingMiddleware {
-        called: Arc<AtomicBool>,
-    }
-    impl crate::middleware::Middleware for TrackingMiddleware {
-        fn on_redirect(&self, _status: StatusCode, _from: &Uri, _to: &Uri) {
-            self.called.store(true, Ordering::SeqCst);
-        }
-    }
-
-    let called = Arc::new(AtomicBool::new(false));
-    let core = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(TrackingMiddleware {
-            called: called.clone(),
-        })
-        .build()
-        .unwrap()
-        .core;
-
-    let resp = make_redirect_response(StatusCode::FOUND, "http://origin.com/new");
-    let uri: Uri = "http://origin.com/old".parse().unwrap();
-    let mut headers = HeaderMap::new();
-
-    let _ = core
-        .process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
-        .unwrap();
-    assert!(
-        called.load(Ordering::SeqCst),
-        "middleware on_redirect should be called"
-    );
-}
-
 // ── prepare_request_headers tests ───────────────────────────────────
 
 #[test]
@@ -973,4 +937,29 @@ async fn hsts_include_subdomains_end_to_end() {
         sub_requested.load(Ordering::SeqCst),
         "sub.localhost should have been requested (via HTTPS upgrade)"
     );
+}
+
+#[test]
+fn trace_header_sensitivity_uses_scheme_and_effective_port() {
+    let core = make_test_core();
+    let uri: Uri = "http://origin.com/old".parse().unwrap();
+    for (target, preserved) in [
+        ("http://origin.com:80/new", true),
+        ("http://origin.com:81/new", false),
+        ("https://origin.com/new", false),
+    ] {
+        let resp = make_redirect_response(StatusCode::FOUND, target);
+        let mut headers = HeaderMap::new();
+        let mut sensitive = http::HeaderValue::from_static("private-context");
+        sensitive.set_sensitive(true);
+        headers.insert("baggage", sensitive);
+        headers.insert(
+            "traceparent",
+            http::HeaderValue::from_static("public-context"),
+        );
+        core.process_redirect(&resp, &uri, Method::GET, None, &mut headers, None)
+            .unwrap();
+        assert_eq!(headers.contains_key("baggage"), preserved, "{target}");
+        assert!(headers.contains_key("traceparent"));
+    }
 }

@@ -1,6 +1,6 @@
 # Request Forwarding
 
-aioduct includes a built-in request forwarding builder for reverse proxy and API gateway use cases. It strips hop-by-hop headers, rewrites the URI to target an upstream, streams the body without buffering, and bypasses all client middleware (redirects, cookies, cache, decompression).
+aioduct includes a built-in request forwarding builder for reverse proxy and API gateway use cases. It strips hop-by-hop headers, rewrites the URI to target an upstream, streams the body without buffering, and bypasses client response processing (redirects, cookies, cache, decompression).
 
 The runnable [`forward-multipart`](https://github.com/adamcavendish/aioduct/tree/main/examples/tokio/forward-multipart)
 example receives a real `Request<hyper::body::Incoming>` in a Hyper handler and
@@ -416,7 +416,7 @@ let client = TokioClient::builder()
 ## What Forward Builders Do NOT Do
 
 - **No request body buffering** — the incoming request body streams through as-is
-- **No middleware** — redirects, cookies, cache, and decompression are all bypassed
+- **Direct forwarding** — redirects, cookies, cache, and decompression are all bypassed
 - **No streaming response digesting** — response `Content-Digest` generation uses bounded full-body buffering, not trailers
 - **No automatic trailer finalization** — response signing does not synthesize digest or signature trailers while streaming downstream bodies
 - **No WebSocket framing** — aioduct is transport-level; use a WS library for frame parsing

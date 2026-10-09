@@ -4,9 +4,7 @@ use http::{Method, StatusCode, Uri};
 use http_body_util::BodyExt;
 use std::time::Duration;
 
-use super::replay::{
-    FinalizedCacheState, FinalizedRequestSnapshot, RetryEligibilityPermit, audit_send_body,
-};
+use super::replay::{FinalizedCacheState, FinalizedRequestSnapshot, RetryEligibilityPermit};
 use super::{BodyReplayability, FinalizedRequestState, HttpEngineSend};
 use crate::body::{RequestBody, RequestBodySend};
 use crate::digest_fields::ContentDigestBody;
@@ -89,7 +87,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 mut request,
                 body_for_replay,
                 body_replayability,
-                body_audit,
                 replay_bytes_for_snapshot,
                 mut cache_entry,
                 stale_if_error,
@@ -143,7 +140,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     request,
                     body_for_replay,
                     snapshot.body_replayability(),
-                    None,
                     replay_bytes_for_snapshot,
                     cache_entry,
                     stale_if_error,
@@ -163,7 +159,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     &mut current_headers,
                 );
 
-                let (req_body, mut body_for_replay, mut digest_body, mut body_replayability) =
+                let (req_body, body_for_replay, digest_body, body_replayability) =
                     match current_body.take() {
                         Some(RequestBody::Buffered(body)) => {
                             let body_clone = RequestBody::Buffered(body.clone());
@@ -220,32 +216,10 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                         .extensions_mut()
                         .insert(super::replay::AppliedCookieHeader(applied_cookie_header));
                 }
-                let middleware_replay_body = match body_for_replay.as_ref() {
+                let replay_bytes_for_snapshot = match body_for_replay.as_ref() {
                     Some(RequestBody::Buffered(body)) => Some(body.clone()),
                     _ => None,
                 };
-                let replay_bytes_for_snapshot = middleware_replay_body.clone();
-                let mut body_audit = None;
-                if !self.core.middleware.is_empty() {
-                    self.core
-                        .middleware
-                        .apply_request(&mut request, &current_uri);
-                    digest_body = ContentDigestBody::Unavailable;
-                    body_for_replay = None;
-                    if let Some(expected) = middleware_replay_body {
-                        let placeholder = http_body_util::Full::new(Bytes::new())
-                            .map_err(|never| match never {})
-                            .boxed_unsync();
-                        let body = std::mem::replace(request.body_mut(), placeholder);
-                        let (body, audit) = audit_send_body(body, expected);
-                        *request.body_mut() = body;
-                        body_audit = Some(audit);
-                        body_replayability = BodyReplayability::OneShot;
-                    } else {
-                        body_replayability =
-                            BodyReplayability::after_middleware(body_replayability, request.body());
-                    }
-                }
                 current_method = request.method().clone();
                 if let Some(finalized_request) = finalized_request {
                     finalized_request
@@ -270,9 +244,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 let cache_entry = match cache_state {
                     CacheLookupOutcome::Fresh(response) => {
                         let mut response = *response;
-                        if !self.core.middleware.is_empty() {
-                            response.apply_middleware(&self.core.middleware, &current_uri);
-                        }
                         self.core
                             .attach_observer(&mut response, &current_method, &current_uri);
                         response.set_fragment(original_fragment.clone());
@@ -293,7 +264,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                     request,
                     body_for_replay,
                     body_replayability,
-                    body_audit,
                     replay_bytes_for_snapshot,
                     cache_entry,
                     stale_if_error,
@@ -320,7 +290,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 &current_uri,
                 replay_bytes_for_snapshot,
                 body_replayability,
-                body_audit,
                 finalized_cache_state,
                 original_fragment.clone(),
             );
@@ -488,9 +457,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         let Some(snapshot) = snapshot else {
             return Ok(resp);
         };
-        if !snapshot.is_replayable() {
-            return Ok(resp);
-        }
 
         let challenge_headers = resp.headers().clone();
         let Some(challenge) = digest.prepare(&challenge_headers) else {
@@ -530,14 +496,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
                 backoff: Duration::ZERO,
             },
         );
-        if !self.core.middleware.is_empty() {
-            self.core.middleware.apply_retry(
-                &retry_reason,
-                snapshot.effective_uri(),
-                snapshot.method(),
-                attempt,
-            );
-        }
 
         let authenticated = snapshot.with_digest_authorization(auth_value, challenge);
         let replay_for_stale = authenticated.stale_replay_bytes();
@@ -606,10 +564,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         #[cfg(all(feature = "http3", feature = "rustls"))]
         if self.core.h3_endpoint.is_some() {
             self.core.cache_alt_svc(&uri, resp.headers());
-        }
-        let mut resp = resp;
-        if !self.core.middleware.is_empty() {
-            resp.apply_middleware(&self.core.middleware, &uri);
         }
 
         let resp = if !no_decompression && !self.core.accept_encoding.is_empty() {

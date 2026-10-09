@@ -70,7 +70,7 @@ Native clients can also generate SHA-256 `Content-Digest` for buffered request
 bodies before signing. Native automatic request signing supports sync signers
 plus async send-runtime signers for tokio/smol and async local-runtime signing
 futures for compio. It runs after default headers, cookies, cache validators,
-middleware, digest-auth retry headers, forwarding request rewrites, framing
+digest-auth retry headers, forwarding request rewrites, framing
 cleanup, and digest insertion have finalized each request attempt. Native forward
 builders can also buffer downstream responses up to a caller cap to generate
 `Content-Digest` before signing downstream responses after response cleanup and
@@ -296,21 +296,6 @@ not integrated into `WasmClient` or `WasiClient` — neither client has a retry
 loop. Native runtimes integrate retry in the client engine
 (`#[cfg(not(target_arch = "wasm32"))]`).
 
-### Middleware
-
-| Feature | tokio | smol | compio | wasm | wasi-p2 |
-|---------|-------|------|--------|------|---------|
-| `on_request` | ✓ | ✓ | ✓ | ✗ | ✗ |
-| `on_response` | ✓ | ✓ | ✓ | ✗ | ✗ |
-| `on_error` | ✓ | ✓ | ✓ | ✗ | ✗ |
-| `on_redirect` | ✓ | ✓ | ✓ | ✗ | ✗ |
-| `on_retry` | ✓ | ✓ | ✓ | ✗ | ✗ |
-
-WASM + WASI-P2: The `Middleware` trait and `MiddlewareStack` (`middleware.rs`)
-are portable and compile on all targets. However, they are not integrated into
-`WasmClient` or `WasiClient` — neither client exposes a middleware push API or
-applies the stack during request/response processing.
-
 ### Compression
 
 | Feature | tokio | smol | compio | wasm | wasi-p2 |
@@ -422,7 +407,7 @@ full networking stack.
 |-----------------|---------------------------|----------------|---------|
 | Request/response basics | Fully supported | Fully supported | Fully supported |
 | Streaming body | Full async streaming | Response streaming via ReadableStream | Sync-only body stream |
-| Redirect, cookie, retry, middleware | Integrated | Not applicable / platform-managed | Types available, not integrated |
+| Redirect, cookie, retry | Integrated | Not applicable / platform-managed | Types available, not integrated |
 | TLS, DNS, pooling, HTTP version | Configurable | Host-managed | WASI runtime-managed |
 | Proxy | Full support | Not available | Not available |
 | Compression | Per-codec cfg features | Host-managed | Not integrated |

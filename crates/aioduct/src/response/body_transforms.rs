@@ -1,4 +1,3 @@
-use http::Uri;
 use http_body_util::BodyExt;
 
 use crate::body::RequestBodySend;
@@ -6,26 +5,6 @@ use crate::body::RequestBodySend;
 use super::{Response, ResponseBodySend};
 
 impl Response {
-    pub(crate) fn apply_middleware(
-        &mut self,
-        stack: &crate::middleware::MiddlewareStack,
-        uri: &Uri,
-    ) {
-        let (parts, body) = std::mem::replace(
-            &mut self.inner,
-            http::Response::new(ResponseBodySend::from_boxed(
-                http_body_util::Empty::new()
-                    .map_err(|never| match never {})
-                    .boxed_unsync(),
-            )),
-        )
-        .into_parts();
-        let mut boxed_resp = http::Response::from_parts(parts, body.into_boxed());
-        stack.apply_response(&mut boxed_resp, uri);
-        let (parts, boxed_body) = boxed_resp.into_parts();
-        self.inner = http::Response::from_parts(parts, ResponseBodySend::from_boxed(boxed_body));
-    }
-
     pub(crate) fn decompress(self, accept: &crate::decompress::AcceptEncoding) -> Self {
         let (mut parts, body) = self.inner.into_parts();
         let boxed = body.into_boxed();

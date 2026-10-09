@@ -234,11 +234,7 @@ let data: serde_json::Value = resp.json()?;</code></pre>
                             <span class="feature-name">tracing</span>
                             <span class="feature-desc">Structured logging</span>
                         </label>
-                        <label class="feature-checkbox">
-                            <input type="checkbox" name="feature" value="otel">
-                            <span class="feature-name">otel</span>
-                            <span class="feature-desc">OpenTelemetry spans</span>
-                        </label>
+
                         <label class="feature-checkbox">
                             <input type="checkbox" name="feature" value="charset">
                             <span class="feature-name">charset</span>
@@ -447,15 +443,14 @@ let client = reqwest::Client::new();
                     <div class="panel-side">
                         <h4>aioduct</h4>
                         <pre><code>let client = TokioClient::builder()
-    .middleware(TracingMiddleware)
-    .middleware(OtelMiddleware::default())
-    .build();
+    .request_observer(MyObserver)
+    .build()?;
 
-// Every request automatically emits:
-// - tracing spans (method, url, status, duration)
-// - OpenTelemetry spans (Jaeger/Zipkin/OTLP)
-let resp = client.get(url)?.send().await?;</code></pre>
-                        <span class="panel-highlight">Built-in tracing + OpenTelemetry middleware</span>
+// Implement RequestObserver for your logging or metrics backend.
+// Inject trace context through request headers in the application.
+let resp = client.get(url)?.send().await?;
+let body = resp.bytes().await?;</code></pre>
+                        <span class="panel-highlight">Request and connection observers; optional transport diagnostics</span>
                     </div>
                     <div class="panel-side panel-alt">
                         <h4>reqwest</h4>

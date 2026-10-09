@@ -125,7 +125,7 @@ async fn main() -> Result<(), aioduct::Error> {
                 .unwrap();
             println!(
                 "  sent: {msg:?} → received: {:?}",
-                &String::from_utf8_lossy(&buf[..n])
+                String::from_utf8_lossy(&buf[..n])
             );
         }
 

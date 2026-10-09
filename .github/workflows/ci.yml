@@ -98,10 +98,10 @@ jobs:
       matrix:
         include:
           - crypto: ring
-            features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2,wasmtime"
+            features: "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,wasm,wasi-p2,wasmtime"
             filter: ""
           - crypto: aws-lc-rs
-            features: "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2,wasmtime"
+            features: "json,charset,rustls,rustls-aws-lc-rs,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,wasm,wasi-p2,wasmtime"
             filter: ""
           - crypto: wasmtime-smol-ring
             features: "wasmtime,smol,rustls,rustls-ring"
@@ -135,7 +135,7 @@ jobs:
           shared-key: coverage
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
-      - run: cargo llvm-cov nextest -p aioduct --features "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,otel,wasm,wasi-p2,wasmtime" --lcov --output-path lcov.info
+      - run: cargo llvm-cov nextest -p aioduct --features "json,charset,rustls,rustls-ring,rustls-native-roots,hickory-dns,blocking,tokio,smol,compio,http3,gzip,brotli,zstd,deflate,tower,tracing,wasm,wasi-p2,wasmtime" --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v6
         with:
           files: lcov.info

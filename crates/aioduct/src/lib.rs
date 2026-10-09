@@ -72,11 +72,9 @@ pub mod link;
 mod message_framing;
 /// RFC 9421 HTTP Message Signatures helpers.
 pub mod message_signatures;
-/// Request/response middleware trait and stack.
-pub mod middleware;
 /// Multipart/form-data request body builder.
 pub mod multipart;
-/// Netrc credential file parsing and middleware.
+/// Netrc credential file parsing and authentication.
 pub mod netrc;
 /// Real-time request lifecycle observer for load testing and tracing.
 pub mod observer;
@@ -162,16 +160,6 @@ pub mod wasi_p2;
 #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 pub mod wasmtime;
 
-#[cfg(feature = "tracing")]
-mod tracing_middleware;
-#[cfg(feature = "tracing")]
-pub use tracing_middleware::TracingMiddleware;
-
-#[cfg(feature = "otel")]
-mod otel_middleware;
-#[cfg(feature = "otel")]
-pub use otel_middleware::OtelMiddleware;
-
 #[cfg(all(feature = "http3", feature = "rustls"))]
 mod alt_svc;
 #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -207,9 +195,8 @@ pub use message_signatures::{
     MessageSignatureSigner, MessageSignatureVerificationInput, MessageSignatureVerificationPolicy,
     MessageSignatureVerifier,
 };
-pub use middleware::Middleware;
 pub use multipart::{Multipart, Part};
-pub use netrc::{Netrc, NetrcMiddleware};
+pub use netrc::Netrc;
 pub use observer::{
     ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
     RequestObserver, RequestPhase, RetryKind, TransferDirection,

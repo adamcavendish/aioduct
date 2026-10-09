@@ -1,7 +1,7 @@
 #[path = "../../smol_threads.rs"]
 mod smol_threads;
 
-use aioduct::{SmolClient, TracingMiddleware};
+use aioduct::SmolClient;
 
 fn main() -> Result<(), aioduct::Error> {
     smol_threads::configure();
@@ -14,11 +14,12 @@ fn main() -> Result<(), aioduct::Error> {
         tracing::info!("starting tracing example");
 
         let client = SmolClient::builder()
-            .middleware(TracingMiddleware)
+            .request_observer(TraceObserver)
             .build()
             .unwrap();
 
-        // Each request will emit tracing spans and events
+        // The observer emits request events; the tracing feature adds
+        // transport diagnostics.
         let resp = client.get("https://httpbin.org/get")?.send().await?;
 
         tracing::info!(status = %resp.status(), "received response");
@@ -40,4 +41,15 @@ fn main() -> Result<(), aioduct::Error> {
 
         Ok(())
     })
+}
+
+struct TraceObserver;
+
+impl aioduct::RequestObserver for TraceObserver {
+    fn on_event(&self, event: &aioduct::RequestEvent) {
+        tracing::debug!(method = %event.method, host = event.uri.host().unwrap_or(""), phase = ?event.phase, "http.request.event");
+    }
+    fn on_connection_event(&self, event: &aioduct::ConnectionEvent) {
+        tracing::trace!(phase = ?event.phase, "http.connection.event");
+    }
 }

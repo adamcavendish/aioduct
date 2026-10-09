@@ -26,7 +26,6 @@
 - [Response Decompression](decompression.md)
 - [Proxy Support](proxy.md)
 - [HTTP/2 Tuning](http2_tuning.md)
-- [Middleware](middleware.md)
 - [Digest Authentication](digest_auth.md)
 - [Bandwidth Limiting](bandwidth.md)
 - [Netrc Support](netrc.md)

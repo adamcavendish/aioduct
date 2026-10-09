@@ -1,41 +1,50 @@
 use std::time::Duration;
 
-use aioduct::{OtelMiddleware, TokioClient};
+use aioduct::TokioClient;
+use opentelemetry::propagation::TextMapPropagator;
+use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer, TracerProvider};
+use opentelemetry::{Context, KeyValue};
+use opentelemetry_http::HeaderInjector;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
+
 #[tokio::main]
 async fn main() -> Result<(), aioduct::Error> {
-    // Set up OpenTelemetry with stdout exporter for demo purposes
-    let exporter = opentelemetry_stdout::SpanExporter::default();
     let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_simple_exporter(exporter)
+        .with_simple_exporter(opentelemetry_stdout::SpanExporter::default())
         .build();
+    let tracer = provider.tracer("example-tokio-otel-spans");
+    let span = tracer
+        .span_builder("HTTP GET")
+        .with_kind(SpanKind::Client)
+        .start(&tracer);
+    let context = Context::current_with_span(span);
 
-    opentelemetry::global::set_tracer_provider(provider.clone());
-
+    // Capture and inject context in the application before handing off the request.
+    // No thread-local span guard is held across an await.
+    let mut headers = http::HeaderMap::new();
+    TraceContextPropagator::new().inject_context(&context, &mut HeaderInjector(&mut headers));
     let client = TokioClient::builder()
-        .middleware(OtelMiddleware::new())
         .timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
-
-    // Each request creates an OpenTelemetry span with HTTP semantic conventions
-    let resp = client.get("https://httpbin.org/get")?.send().await?;
-
-    println!("Status: {}", resp.status());
-    let _ = resp.text().await?;
-
-    // Spans include: http.method, http.url, http.status_code, etc.
-    let resp = client
-        .post("https://httpbin.org/post")?
-        .body("hello otel")
-        .send()
-        .await?;
-
-    println!("POST status: {}", resp.status());
-
-    // Shut down the provider to flush spans
+        .build()?;
+    let result = async {
+        let response = client
+            .get("https://httpbin.org/get")?
+            .headers(headers)
+            .send()
+            .await?;
+        context.span().set_attribute(KeyValue::new(
+            "http.response.status_code",
+            response.status().as_u16() as i64,
+        ));
+        println!("Status: {}", response.status());
+        response.text().await
+    }
+    .await;
+    if let Err(error) = &result {
+        context.span().set_status(Status::error(error.to_string()));
+    }
+    // Application owns the span, including body consumption and errors.
+    context.span().end();
     let _ = provider.shutdown();
-
-    println!("\nCheck stdout for exported OpenTelemetry spans");
-
-    Ok(())
+    result.map(|_| ())
 }

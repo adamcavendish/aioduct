@@ -507,13 +507,13 @@ async fn stale_retry_works_for_get_empty_body() {
     assert_eq!(resp.text().await.unwrap(), "ok");
 }
 
-/// #207: Middleware-applied headers must survive stale-connection retry.
+/// #207: Configured headers must survive stale-connection retry.
 ///
-/// A middleware adds `X-Auth: secret-token`. The server RSTs the pooled
+/// Client defaults add `X-Auth: secret-token`. The server RSTs the pooled
 /// connection on reuse, triggering transparent retry on a fresh connection.
-/// The retry request MUST still carry the middleware-added header.
+/// The retry request MUST still carry the configured header.
 #[tokio::test]
-async fn stale_retry_preserves_middleware_headers() {
+async fn stale_retry_preserves_configured_headers() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -572,14 +572,10 @@ async fn stale_retry_preserves_middleware_headers() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                req.headers_mut().insert(
-                    "x-auth",
-                    http::header::HeaderValue::from_static("secret-token"),
-                );
-            },
-        )
+        .default_headers(http::HeaderMap::from_iter([(
+            http::header::HeaderName::from_static("x-auth"),
+            http::HeaderValue::from_static("secret-token"),
+        )]))
         .build()
         .unwrap();
 
@@ -591,13 +587,13 @@ async fn stale_retry_preserves_middleware_headers() {
     let _ = resp.text().await.unwrap();
 
     // Second request: stale connection triggers retry.
-    // The retry MUST carry the middleware-added X-Auth header.
+    // The retry MUST carry the configured X-Auth header.
     let resp = client.get(&url).unwrap().send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(
         body, "auth-present",
-        "middleware-added X-Auth header was lost on stale connection retry"
+        "configured X-Auth header was lost on stale connection retry"
     );
 }
 

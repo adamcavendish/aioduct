@@ -499,12 +499,6 @@ fn default_retry_accessor_none() {
     assert!(client.default_retry().is_none());
 }
 
-#[test]
-fn middleware_accessor() {
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
-    assert!(client.middleware().is_empty());
-}
-
 #[tokio::test]
 async fn execute_rejects_http_when_https_only() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()

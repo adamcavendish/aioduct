@@ -22,16 +22,16 @@ default
 
 The file is typically located at `~/.netrc` (or `%USERPROFILE%\_netrc` on Windows). The `$NETRC` environment variable overrides the default path.
 
-## Using NetrcMiddleware
+## Configuring a Native Client
 
-The simplest approach is to add `NetrcMiddleware` to your client. It reads the netrc file once and injects Basic Auth headers for matching hosts:
+Load credentials explicitly, then configure the native client with `.netrc(netrc)`. The client never reads a credential file automatically:
 
 ```rust,no_run
 use aioduct::TokioClient;
-use aioduct::NetrcMiddleware;
+use aioduct::Netrc;
 
 let client = TokioClient::builder()
-    .middleware(NetrcMiddleware::from_default().unwrap())
+    .netrc(Netrc::load_default()?)
     .build()?;
 
 // Requests to api.example.com automatically get Basic Auth
@@ -45,14 +45,14 @@ let resp = client
 
 ```rust,no_run
 use std::path::Path;
-use aioduct::NetrcMiddleware;
+use aioduct::Netrc;
 
-let middleware = NetrcMiddleware::from_path(Path::new("/etc/netrc")).unwrap();
+let netrc = Netrc::load(Path::new("/etc/netrc"))?;
 ```
 
 ## Parsing Directly
 
-You can also use the `Netrc` type directly for credential lookup without middleware:
+You can also use the `Netrc` type directly for credential lookup:
 
 ```rust,no_run
 use aioduct::Netrc;
@@ -65,8 +65,15 @@ let netrc = Netrc::parse(
 
 ## Behavior
 
-- If a request already has an `Authorization` header, the middleware does not overwrite it.
+- If a request already has an `Authorization` header, netrc does not overwrite it.
 - Machine names are matched exactly against the request URI's host.
 - The `default` entry matches any host not explicitly listed.
 - Both `password` and `passwd` keywords are accepted.
 - The `account` and `macdef` keywords are recognized and skipped.
+
+- Credentials are sent only over HTTPS or loopback HTTP.
+- Cross-origin redirects clear the old Authorization field before matching the new destination.
+- Same-target retries reuse prepared authentication; Digest authentication is not overwritten.
+- Native Tokio, smol, compio and their blocking wrappers share this configuration.
+  Fetch and WASI guest clients have no automatic netrc integration; applications can use
+  the portable parser/lookup with their existing request authentication methods.

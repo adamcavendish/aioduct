@@ -17,9 +17,8 @@ pub(super) fn select_protocol<B: Body>(
     };
     if explicit_hint != ProtocolHint::Auto
         || explicit_version.is_some()
-        // Middleware can set the finalized request version after the builder
-        // arguments have been captured. Preserve every non-default version as
-        // an explicit transport choice too.
+        // Preserve every non-default finalized version as an explicit
+        // transport choice too.
         || request.version() != Version::HTTP_11
     {
         return explicit_hint;

@@ -1,7 +1,7 @@
 #[path = "chunk_download.rs"]
 mod chunk_download;
-#[path = "retry_middleware.rs"]
-mod retry_middleware;
+#[path = "retry_errors.rs"]
+mod retry_errors;
 use super::*;
 // ── 73. Forward strip_prefix exercises path rewriting ────────────────────────
 
@@ -512,45 +512,6 @@ async fn not_modified_304_is_not_treated_as_redirect() {
     assert_eq!(resp.status(), http::StatusCode::NOT_MODIFIED);
 }
 
-// ── 91. Middleware on_response callback applies via finalize ──────────────────
-
-struct ResponseInjectMiddleware;
-
-impl aioduct::Middleware for ResponseInjectMiddleware {
-    fn on_response(
-        &self,
-        response: &mut http::Response<aioduct::body::RequestBodySend>,
-        _uri: &http::Uri,
-    ) {
-        response.headers_mut().insert(
-            http::header::HeaderName::from_static("x-resp-mw"),
-            http::header::HeaderValue::from_static("applied"),
-        );
-    }
-}
-
-#[tokio::test]
-async fn middleware_on_response_applies_in_finalize() {
-    let (addr, _counter) = h1_server().await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(ResponseInjectMiddleware)
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("http://{addr}/"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(
-        resp.headers().get("x-resp-mw").unwrap().to_str().unwrap(),
-        "applied"
-    );
-}
-
 // ── 92. Cache invalidation on POST request (variant) ─────────────────────────
 
 #[tokio::test]
@@ -878,26 +839,6 @@ async fn host_header_auto_injected() {
     );
 }
 
-// ── 99. No-op middleware (empty stack) still works ───────────────────────────
-
-#[tokio::test]
-async fn empty_middleware_stack_works() {
-    let (addr, _counter) = h1_server().await;
-
-    // Default client has no middleware
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::new();
-
-    let resp = client
-        .get(&format!("http://{addr}/"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), http::StatusCode::OK);
-    assert_eq!(resp.text().await.unwrap(), "hello aioduct");
-}
-
 // ── 100. Chunk download debug format includes url ────────────────────────────
 
 #[tokio::test]
@@ -1125,10 +1066,8 @@ async fn cache_staleness_with_expired_max_age() {
     assert_eq!(body, "body-1");
 }
 
-// ── 108. Retry on status with budget exhaustion + middleware ──────────────────
-
 #[tokio::test]
-async fn retry_on_status_budget_exhaustion_with_middleware() {
+async fn retry_on_status_budget_exhaustion() {
     let request_count = Arc::new(AtomicU32::new(0));
     let request_count_clone = request_count.clone();
 
@@ -1146,30 +1085,9 @@ async fn retry_on_status_budget_exhaustion_with_middleware() {
     })
     .await;
 
-    let retry_count = Arc::new(AtomicU32::new(0));
-    let retry_count_clone = retry_count.clone();
-
-    struct StatusRetryMw {
-        retry_count: Arc<AtomicU32>,
-    }
-    impl aioduct::Middleware for StatusRetryMw {
-        fn on_retry(
-            &self,
-            _error: &aioduct::Error,
-            _uri: &http::Uri,
-            _method: &http::Method,
-            _attempt: u32,
-        ) {
-            self.retry_count.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
     // Budget of 1: allows one retry, then exhausted
     let budget = aioduct::RetryBudget::new(1, 0);
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(StatusRetryMw {
-            retry_count: retry_count_clone,
-        })
         .build()
         .unwrap();
 
@@ -1193,10 +1111,5 @@ async fn retry_on_status_budget_exhaustion_with_middleware() {
         request_count.load(Ordering::SeqCst),
         2,
         "should make original + 1 retry before budget exhaustion"
-    );
-    assert_eq!(
-        retry_count.load(Ordering::SeqCst),
-        1,
-        "on_retry should be called once"
     );
 }

@@ -27,8 +27,7 @@ aioduct uses feature flags to control runtime, TLS, and serialization dependenci
 | `doh`   | hickory-resolver (https)            | Stable       | DNS-over-HTTPS (implies `hickory-dns`) |
 | `dot`   | hickory-resolver (tls)              | Stable       | DNS-over-TLS (implies `hickory-dns`)   |
 | `tower`  | tower-service, tower-layer        | Stable       | Tower Service/Layer integration      |
-| `tracing`| tracing                           | Stable       | Tracing spans for HTTP requests      |
-| `otel`   | opentelemetry, opentelemetry-http | Stable       | OpenTelemetry middleware             |
+| `tracing`| tracing                           | Stable       | Transport tracing diagnostics      |
 | `precise-timing` | none                       | Stable       | Use `std::time::Instant` instead of the default coarse clock for sub-millisecond observer and timeout measurements |
 | `http3`  | [h3](https://crates.io/crates/h3), quinn | Experimental | HTTP/3 transport; currently requires Tokio, `rustls`, and one rustls provider |
 
@@ -74,8 +73,8 @@ aioduct = { version = "0.2.6", features = ["tokio", "rustls", "rustls-ring", "js
 # Blocking client (select one native runtime; Tokio shown)
 aioduct = { version = "0.2.6", features = ["tokio", "rustls", "rustls-ring", "blocking"] }
 
-# With tracing and OpenTelemetry
-aioduct = { version = "0.2.6", features = ["tokio", "rustls", "rustls-ring", "tracing", "otel"] }
+# With transport tracing diagnostics
+aioduct = { version = "0.2.6", features = ["tokio", "rustls", "rustls-ring", "tracing"] }
 
 # With tower integration
 aioduct = { version = "0.2.6", features = ["tokio", "rustls", "rustls-ring", "tower"] }

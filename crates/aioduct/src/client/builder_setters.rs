@@ -10,7 +10,6 @@ use http::header::{HeaderMap, HeaderValue, USER_AGENT};
 use crate::auto_tune::AutoTuneConfig;
 use crate::error::BuilderError;
 use crate::http2::Http2Config;
-use crate::middleware::Middleware;
 use crate::proxy::{ProxyConfig, ProxySettings};
 use crate::redirect::RedirectPolicy;
 use crate::retry::RetryConfig;
@@ -433,8 +432,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
     ///
     /// Requests with an exact body size at or above the configured threshold
     /// use HTTP/1.1. Unknown-length bodies and smaller bodies keep the normal
-    /// automatic protocol selection. Explicit request protocol settings,
-    /// including middleware changes to the finalized request version, take
+    /// automatic protocol selection. Explicit request protocol settings take
     /// precedence.
     pub fn auto_tune(mut self, config: AutoTuneConfig) -> Self {
         self.auto_tune = Some(config);
@@ -546,9 +544,12 @@ impl<R, C> HttpEngineBuilder<R, C> {
         self
     }
 
-    /// Add a middleware layer that can inspect or modify requests and responses.
-    pub fn middleware(mut self, middleware: impl Middleware) -> Self {
-        self.middleware.push(Arc::new(middleware));
+    /// Apply explicitly loaded netrc credentials to matching request hosts.
+    ///
+    /// Existing Authorization fields take precedence. Credentials are only sent
+    /// over HTTPS or loopback HTTP. No credential file is loaded automatically.
+    pub fn netrc(mut self, netrc: crate::netrc::Netrc) -> Self {
+        self.netrc = Some(netrc);
         self
     }
 
@@ -606,7 +607,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// Enable automatic RFC 9421 request signing for native requests.
     ///
     /// The signer runs after default headers, cookies, cache validators,
-    /// middleware, and digest-auth retry headers have finalized each request
+    /// and digest-auth retry headers have finalized each request
     /// attempt. When configured, it owns and replaces only its configured label
     /// in `Signature-Input` and `Signature` on every dispatch.
     pub fn message_signature(
@@ -625,9 +626,9 @@ impl<R, C> HttpEngineBuilder<R, C> {
     ///
     /// When enabled, native dispatch inserts `Content-Digest: sha-256=:...:`
     /// for buffered request bodies that do not already have a `Content-Digest`
-    /// header. The digest is inserted after middleware and before automatic
+    /// header. The digest is inserted before automatic
     /// message signing, so signatures that cover `content-digest` cover the
-    /// generated value. Streaming or middleware-replaced bodies are never
+    /// generated value. Streaming bodies are never
     /// buffered automatically; set `Content-Digest` explicitly for those
     /// requests.
     pub fn automatic_content_digest(mut self, enable: bool) -> Self {

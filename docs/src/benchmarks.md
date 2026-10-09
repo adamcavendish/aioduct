@@ -245,7 +245,7 @@ Read a 64 KB response frame-by-frame vs collected as bytes (aioduct only).
 
 ## Analysis
 
-- **aioduct** is the fastest or tied for fastest in most benchmarks, sitting close to raw hyper-util while providing a much higher-level API (connection pooling, redirects, cookies, middleware, retry, etc.).
+- **aioduct** is the fastest or tied for fastest in most benchmarks, sitting close to raw hyper-util while providing a much higher-level API (connection pooling, redirects, cookies, retry, etc.).
 - **hyper-util** (`legacy::Client`) is close to aioduct in H1 but struggles in H2 due to default flow-control window sizes.
 - **reqwest** is 3–31% slower than aioduct in most scenarios. The gap widens for concurrent workloads and multipart uploads.
 - **isahc** is 43–112% slower due to the libcurl FFI boundary and curl's internal buffering.
@@ -271,4 +271,4 @@ Read a 64 KB response frame-by-frame vs collected as bytes (aioduct only).
 | `runtime` | `benches/bench_main/e2e_runtime.rs` | Tokio, smol, and compio runtime comparisons |
 | `micro_pool` | `benches/bench_main/micro_pool.rs` | Pool checkout/check-in and coalescing scans |
 | `micro_cookie` | `benches/bench_main/micro_cookie.rs` | Cookie request application and response storage |
-| `micro_body` | `benches/bench_main/micro_body.rs` | Body frame polling through middleware layers |
+| `micro_body` | `benches/bench_main/micro_body.rs` | Body frame polling through transport wrappers |
