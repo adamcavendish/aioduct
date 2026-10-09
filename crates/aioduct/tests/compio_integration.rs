@@ -546,41 +546,6 @@ fn test_compio_cookie_jar() {
 }
 
 #[test]
-fn test_compio_middleware() {
-    let addr = start_server_with_tokio(|req| async move {
-        let custom = req
-            .headers()
-            .get("x-middleware")
-            .map(|v| v.to_str().unwrap_or("").to_owned())
-            .unwrap_or_default();
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(custom))))
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .middleware(
-                |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                    req.headers_mut().insert(
-                        "x-middleware",
-                        http::header::HeaderValue::from_static("injected"),
-                    );
-                },
-            )
-            .build_local()
-            .unwrap();
-
-        let resp = client
-            .get_local(&format!("http://{addr}/"))
-            .unwrap()
-            .send()
-            .await
-            .unwrap();
-        let body = resp.text().await.unwrap();
-        assert_eq!(body, "injected");
-    });
-}
-
-#[test]
 fn test_compio_read_timeout_fires() {
     let addr = start_server_with_tokio(|_req| async {
         Ok::<_, Infallible>(

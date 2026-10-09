@@ -397,7 +397,7 @@ fn response_has_no_content(request_method: &http::Method, status: http::StatusCo
 ///
 /// Created via [`HttpEngineSend::forward`]. Strips hop-by-hop headers, rewrites the URI
 /// to target the upstream, and streams the body through without buffering.
-/// Skips all client middleware (redirects, cookies, cache, decompression).
+/// Bypasses client response processing (redirects, cookies, cache, decompression).
 pub struct ForwardBuilderSend<'a, R: RuntimePoll, C: ConnectorSend, B> {
     client: &'a HttpEngineSend<R, C>,
     request: http::Request<B>,

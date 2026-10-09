@@ -14,7 +14,6 @@ use crate::cache::HttpCache;
 use crate::cookie::CookieJar;
 use crate::error::BuilderError;
 use crate::http2::Http2Config;
-use crate::middleware::MiddlewareStack;
 use crate::proxy::{ProxyChain, ProxySettings};
 use crate::redirect::RedirectPolicy;
 use crate::retry::RetryConfig;
@@ -63,7 +62,7 @@ pub struct HttpEngineBuilder<R, C> {
         Option<std::collections::HashMap<String, Vec<std::net::SocketAddr>>>,
     pub(super) auto_tune: Option<AutoTuneConfig>,
     pub(super) http2: Option<Http2Config>,
-    pub(super) middleware: MiddlewareStack,
+    pub(super) netrc: Option<crate::netrc::Netrc>,
     pub(super) rate_limiter: Option<crate::throttle::RateLimiter>,
     pub(super) bandwidth_limiter: Option<crate::bandwidth::BandwidthLimiter>,
     pub(super) digest_auth: Option<crate::digest_auth::DigestAuth>,
@@ -147,7 +146,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
             static_resolves: None,
             auto_tune: None,
             http2: None,
-            middleware: MiddlewareStack::new(),
+            netrc: None,
             rate_limiter: None,
             bandwidth_limiter: None,
             digest_auth: None,

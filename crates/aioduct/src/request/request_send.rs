@@ -248,8 +248,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     /// Override automatic `Content-Digest` generation for this request.
     ///
     /// When enabled, dispatch inserts a SHA-256 `Content-Digest` header for a
-    /// buffered body that does not already have one. Streaming or
-    /// middleware-replaced bodies are not buffered; set `Content-Digest`
+    /// buffered body that does not already have one. Streaming
+    /// bodies are not buffered; set `Content-Digest`
     /// explicitly for those requests.
     pub fn automatic_content_digest(mut self, enable: bool) -> Self {
         self.automatic_content_digest = Some(enable);
@@ -594,8 +594,6 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         let automatic_content_digest = self
             .automatic_content_digest
             .unwrap_or(self.client.core.automatic_content_digest);
-        let method = self.method.clone();
-        let uri = self.uri.clone();
         let execute_fut = self.client.execute_send(
             self.method,
             self.uri,
@@ -613,7 +611,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             None,
         );
 
-        let result = match effective_timeout {
+        match effective_timeout {
             Some(duration) => {
                 Timeout::WithTimeout {
                     future: execute_fut,
@@ -627,15 +625,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 }
                 .await
             }
-        };
-
-        if let Err(ref e) = result {
-            let mw = self.client.middleware();
-            if !mw.is_empty() {
-                mw.apply_error(e, &uri, &method);
-            }
         }
-        result
     }
 
     async fn send_with_retry(self, config: RetryConfig) -> Result<Response, Error> {
@@ -786,11 +776,6 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                                 at: observer::Instant::now(),
                             });
                         }
-
-                        let mw = self.client.middleware();
-                        if !mw.is_empty() {
-                            mw.apply_retry(&err, &wire_uri, &wire_method, next_attempt);
-                        }
                         attempt = next_attempt;
                         continue;
                     }
@@ -855,17 +840,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                                 at: observer::Instant::now(),
                             });
                         }
-
-                        let mw = self.client.middleware();
-                        if !mw.is_empty() {
-                            mw.apply_retry(&e, &wire_uri, &wire_method, next_attempt);
-                        }
                         attempt = next_attempt;
                         continue;
-                    }
-                    let mw = self.client.middleware();
-                    if !mw.is_empty() {
-                        mw.apply_error(&e, &wire_uri, &wire_method);
                     }
                     return Err(e);
                 }

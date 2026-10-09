@@ -453,30 +453,6 @@ fn into_boxed_from_incoming_variant() {
 }
 
 #[test]
-fn apply_middleware_modifies_response_headers() {
-    use std::sync::Arc;
-    let mut stack = crate::middleware::MiddlewareStack::new();
-    stack.push(Arc::new(
-        |_req: &mut http::Request<RequestBodySend>, _uri: &Uri| {},
-    ));
-    // Add a middleware that modifies responses
-    struct HeaderAdder;
-    impl crate::middleware::Middleware for HeaderAdder {
-        fn on_response(&self, resp: &mut http::Response<RequestBodySend>, _uri: &Uri) {
-            resp.headers_mut()
-                .insert("x-modified", http::header::HeaderValue::from_static("yes"));
-        }
-    }
-    let mut stack = crate::middleware::MiddlewareStack::new();
-    stack.push(Arc::new(HeaderAdder));
-
-    let uri: Uri = "http://example.com".parse().unwrap();
-    let mut resp = make_response(200);
-    resp.apply_middleware(&stack, &uri);
-    assert_eq!(resp.headers().get("x-modified").unwrap(), "yes");
-}
-
-#[test]
 fn decompress_passthrough_no_encoding() {
     let body = ResponseBodySend::from_boxed(
         http_body_util::Full::new(bytes::Bytes::from("raw"))

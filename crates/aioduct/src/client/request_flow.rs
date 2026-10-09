@@ -221,6 +221,10 @@ impl<B> HttpEngineCore<B> {
         site_for_cookies: Option<&str>,
         headers: &mut HeaderMap,
     ) -> Option<HeaderValue> {
+        if let Some(netrc) = &self.netrc {
+            netrc.apply(headers, uri);
+        }
+
         let applied_cookie_header = if let Some(jar) = &self.cookie_jar
             && let Some(authority) = uri.authority()
         {
@@ -367,11 +371,6 @@ impl<B> HttpEngineCore<B> {
                 },
                 at: crate::observer::Instant::now(),
             });
-        }
-
-        if !self.middleware.is_empty() {
-            self.middleware
-                .apply_redirect(status, current_uri, &next_uri);
         }
 
         let (next_method, next_body) = match status {

@@ -36,7 +36,6 @@ zstd = ["dep:zstd"]
 deflate = ["dep:flate2"]
 tower = ["dep:tower-service", "dep:tower-layer"]
 tracing = ["dep:tracing"]
-otel = ["dep:opentelemetry", "dep:opentelemetry-http"]
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 wasi-p2 = ["dep:wasi"]
 wasmtime = [
@@ -79,8 +78,6 @@ hyper = { workspace = true, features = ["client", "http1", "http2"] }
 js-sys = { workspace = true, optional = true }
 memchr.workspace = true
 mime = { workspace = true, optional = true }
-opentelemetry = { workspace = true, features = ["trace"], optional = true }
-opentelemetry-http = { workspace = true, optional = true }
 percent-encoding.workspace = true
 pin-project-lite.workspace = true
 quinn = { workspace = true, optional = true }
@@ -163,7 +160,6 @@ features = [
     "deflate",
     "tower",
     "tracing",
-    "otel",
     "wasm",
     "wasi-p2",
     "wasmtime",

@@ -35,7 +35,7 @@ fn fail_signing(_: &[u8]) -> Result<Vec<u8>, MessageSignatureError> {
 }
 
 #[tokio::test]
-async fn automatic_signing_adds_headers_after_middleware() {
+async fn automatic_signing_covers_configured_headers() {
     let bases = Arc::new(Mutex::new(Vec::new()));
     let signer_bases = bases.clone();
     let signer = move |base: &[u8]| -> Result<Vec<u8>, MessageSignatureError> {
@@ -71,12 +71,10 @@ async fn automatic_signing_adds_headers_after_middleware() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                req.headers_mut()
-                    .insert("x-final", http::HeaderValue::from_static("middleware"));
-            },
-        )
+        .default_headers(http::HeaderMap::from_iter([(
+            http::header::HeaderName::from_static("x-final"),
+            http::HeaderValue::from_static("configured"),
+        )]))
         .message_signature(config, signer)
         .build()
         .unwrap();
@@ -94,11 +92,11 @@ async fn automatic_signing_adds_headers_after_middleware() {
     let bases = bases.lock().unwrap();
     assert_eq!(bases.len(), 1);
     assert!(bases[0].contains(r#""@request-target": /resource?x=1"#));
-    assert!(bases[0].contains(r#""x-final": middleware"#));
+    assert!(bases[0].contains(r#""x-final": configured"#));
 }
 
 #[tokio::test]
-async fn async_automatic_signing_adds_headers_after_middleware() {
+async fn async_automatic_signing_covers_configured_headers() {
     let bases = Arc::new(Mutex::new(Vec::new()));
     let signer_bases = bases.clone();
     let signer = move |base: MessageSignatureBase| {
@@ -135,12 +133,10 @@ async fn async_automatic_signing_adds_headers_after_middleware() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                req.headers_mut()
-                    .insert("x-final", http::HeaderValue::from_static("middleware"));
-            },
-        )
+        .default_headers(http::HeaderMap::from_iter([(
+            http::header::HeaderName::from_static("x-final"),
+            http::HeaderValue::from_static("configured"),
+        )]))
         .message_signature_async(config, signer)
         .build()
         .unwrap();
@@ -158,7 +154,7 @@ async fn async_automatic_signing_adds_headers_after_middleware() {
     let bases = bases.lock().unwrap();
     assert_eq!(bases.len(), 1);
     assert!(bases[0].contains(r#""@request-target": /resource?x=1"#));
-    assert!(bases[0].contains(r#""x-final": middleware"#));
+    assert!(bases[0].contains(r#""x-final": configured"#));
 }
 
 #[tokio::test]
@@ -632,38 +628,6 @@ async fn automatic_content_digest_accepts_streaming_body_with_explicit_helper_va
 }
 
 #[tokio::test]
-async fn automatic_content_digest_rejects_middleware_replaced_body_without_manual_digest() {
-    let (addr, _counter) = h1_server_with(|req| async move {
-        let _ = req.into_body().collect().await.unwrap().to_bytes();
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("unexpected"))))
-    })
-    .await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .automatic_content_digest(true)
-        .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                *req.body_mut() = Full::new(Bytes::from_static(b"changed"))
-                    .map_err(|never| match never {})
-                    .boxed_unsync();
-            },
-        )
-        .build()
-        .unwrap();
-    let err = client
-        .post(&format!("http://{addr}/digest"))
-        .unwrap()
-        .body("hello")
-        .send()
-        .await
-        .unwrap_err();
-
-    assert!(
-        matches!(err.into_error(), Error::Unsupported(message) if message.contains("automatic Content-Digest"))
-    );
-}
-
-#[tokio::test]
 async fn forwarding_signature_covers_rewritten_upstream_request() {
     let bases = Arc::new(Mutex::new(Vec::new()));
     let signer_bases = bases.clone();
@@ -825,4 +789,42 @@ async fn stale_connection_replay_is_resigned() {
     let second = client.get(&url).unwrap().send().await.unwrap();
     assert_eq!(second.status(), http::StatusCode::OK);
     assert_eq!(sign_count.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn signing_covers_netrc_credentials_and_application_trace_headers() {
+    let config = MessageSignatureConfig::new("sig1")
+        .unwrap()
+        .component(MessageSignatureComponent::header(AUTHORIZATION))
+        .component(MessageSignatureComponent::header(HeaderName::from_static(
+            "traceparent",
+        )));
+    let (addr, _) = h1_server_with(|request| async move {
+        assert_eq!(request.headers()["authorization"], "Basic dXNlcjpwYXNz");
+        assert_eq!(request.headers()["traceparent"], "application-context");
+        assert!(request.headers().contains_key("signature"));
+        Ok::<_, Infallible>(Response::new(Full::new(Bytes::new())))
+    })
+    .await;
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
+        .netrc(aioduct::Netrc::parse(
+            "machine 127.0.0.1 login user password pass",
+        ))
+        .message_signature(config, |base: &[u8]| {
+            let base = std::str::from_utf8(base).unwrap();
+            assert!(base.contains("\"authorization\": Basic dXNlcjpwYXNz"));
+            assert!(base.contains("\"traceparent\": application-context"));
+            Ok::<_, MessageSignatureError>(b"signed".to_vec())
+        })
+        .build()
+        .unwrap();
+    let response = client
+        .get(&format!("http://{addr}/"))
+        .unwrap()
+        .header_str("traceparent", "application-context")
+        .unwrap()
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
 }

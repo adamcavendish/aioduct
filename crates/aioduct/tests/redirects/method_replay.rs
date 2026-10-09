@@ -90,7 +90,7 @@ async fn redirect_307_preserves_get() {
 }
 
 #[tokio::test]
-async fn redirect_uses_method_finalized_by_middleware() {
+async fn redirect_uses_configured_method() {
     let (addr, _counter) = h1_server_with(|req| async move {
         assert_eq!(req.method(), http::Method::POST);
         Ok::<_, Infallible>(
@@ -110,17 +110,10 @@ async fn redirect_uses_method_finalized_by_middleware() {
             *seen_method.lock().unwrap() = Some(method.clone());
             aioduct::RedirectAction::Stop
         }))
-        .middleware(
-            |request: &mut http::Request<aioduct::body::RequestBodySend>, uri: &http::Uri| {
-                if uri.path() == "/start" {
-                    *request.method_mut() = http::Method::POST;
-                }
-            },
-        )
         .build()
         .unwrap();
     let response = client
-        .get(&format!("http://{addr}/start"))
+        .post(&format!("http://{addr}/start"))
         .unwrap()
         .send()
         .await
@@ -203,13 +196,13 @@ async fn redirect_307_preserves_post_with_body() {
 }
 
 #[tokio::test]
-async fn redirect_307_preserves_buffered_body_after_header_only_middleware() {
+async fn redirect_307_preserves_buffered_body_with_configured_headers() {
     let (addr, _counter) = h1_server_with(|req| async move {
         assert_eq!(req.method(), http::Method::POST);
-        assert_eq!(req.headers()["x-middleware"], "applied");
+        assert_eq!(req.headers()["x-request"], "applied");
         let path = req.uri().path().to_owned();
         let body = req.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "middleware-safe payload");
+        assert_eq!(body, "buffered payload");
 
         Ok::<_, Infallible>(if path == "/start" {
             Response::builder()
@@ -225,20 +218,16 @@ async fn redirect_307_preserves_buffered_body_after_header_only_middleware() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(
-            |request: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                request.headers_mut().insert(
-                    http::header::HeaderName::from_static("x-middleware"),
-                    http::HeaderValue::from_static("applied"),
-                );
-            },
-        )
+        .default_headers(http::HeaderMap::from_iter([(
+            http::header::HeaderName::from_static("x-request"),
+            http::HeaderValue::from_static("applied"),
+        )]))
         .build()
         .unwrap();
     let response = client
         .post(&format!("http://{addr}/start"))
         .unwrap()
-        .body("middleware-safe payload")
+        .body("buffered payload")
         .send()
         .await
         .unwrap();

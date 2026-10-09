@@ -36,7 +36,7 @@ aioduct fills this gap: a production-quality HTTP client that uses hyper 1.x **t
 | SSE streaming       | No (manual)                   | Built-in                      |
 | Rate limiting       | No                            | Built-in                      |
 | HTTP caching        | No                            | Built-in                      |
-| Middleware          | Via tower                     | Built-in + tower              |
+| Connector layers    | Via tower                     | Via tower                     |
 | Happy Eyeballs     | No                            | RFC 6555                      |
 | Digest auth        | No                            | Built-in                      |
 | Bandwidth limiter  | No                            | Built-in                      |

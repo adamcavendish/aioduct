@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased — 0.3 middleware removal
+
+### Changed
+- Replace netrc middleware with explicit native client `.netrc(Netrc)` configuration.
+- Keep request/connection observation separate from request header preparation;
+  trace propagation is performed by applications through existing headers.
+- Preserve decompression configuration and per-request `no_decompression()`.
+
+### Fixed
+- Upgrade async-trait to 0.1.92 and remove a redundant formatting borrow for
+  Rust 1.99 Clippy compatibility.
+
+### Removed
+- Remove `Middleware`, `.middleware(...)`, `TracingMiddleware`, `OtelMiddleware`,
+  and `NetrcMiddleware`, including middleware-only body proxies and replay audits.
+- Remove the `otel` feature. Keep `tracing` for transport diagnostic events.
+
+This entry describes the middleware change, not completion of the entire 0.3
+observability redesign.
+
 ## [0.2.6] - 2026-09-28
 
 ### Fixed

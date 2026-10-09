@@ -447,50 +447,6 @@ async fn decompression_gzip() {
     assert_eq!(body, "hello compressed world");
 }
 
-// ── Middleware Tests ───────────────────────────────────────────────────
-
-#[tokio::test]
-async fn middleware_modifies_request() {
-    let (addr, _) = aioduct_test_server::h1::h1_server_with(|req| async move {
-        let custom = req
-            .headers()
-            .get("x-custom")
-            .map(|v| v.to_str().unwrap_or("").to_string())
-            .unwrap_or_default();
-        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(format!(
-            "x-custom={custom}"
-        )))))
-    })
-    .await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(
-            |req: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                req.headers_mut().insert(
-                    http::header::HeaderName::from_static("x-custom"),
-                    http::header::HeaderValue::from_static("injected"),
-                );
-            },
-        )
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    let resp = client
-        .get(&format!("http://{addr}/"))
-        .unwrap()
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), 200);
-    let body = resp.text().await.unwrap();
-    assert!(
-        body.contains("x-custom=injected"),
-        "middleware should inject header, got: {body}"
-    );
-}
-
 // ── Form POST Test ─────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -14,7 +14,6 @@ Async-native Rust HTTP client built directly on **hyper 1.x** — no hyper-util,
 
 This release fixes HTTP/2 stream resets from google.com by generating automatic
 `Host` only for HTTP/1. Explicit and signed Host fields remain supported.
-Middleware that needs destination authority should read its full URI argument.
 See the [changelog](CHANGELOG.md#026---2026-09-28) for the `Vary: Host` cache
 compatibility change and other release notes.
 
@@ -38,7 +37,6 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Retry** — configurable exponential backoff with retry budgets, Retry-After header support, 429 Too Many Requests retry, and custom retry classification
 - **Decompression** — automatic gzip, brotli, zstd, deflate response decompression
 - **Proxy** — HTTP CONNECT tunneling, HTTPS proxy, SOCKS4/SOCKS4a, SOCKS5 (local DNS), SOCKS5h (remote DNS), proxy chaining up to 2 hops, URI-embedded credentials, credential resolver, system proxy detection (HTTP_PROXY/HTTPS_PROXY/NO_PROXY)
-- **Middleware** — pluggable request/response interceptors via trait or closure
 - **Rate limiting** — token-bucket rate limiter for outgoing requests
 - **Caching** — in-memory HTTP cache with immutable responses, stale-while-revalidate, stale-if-error (fallback on 5xx/connection failure); pluggable `CacheStore` trait for custom backends
 - **HSTS** — automatic HTTP-to-HTTPS upgrade for Strict-Transport-Security domains
@@ -63,12 +61,12 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Happy Eyeballs** — RFC 6555 connection racing, interleaves IPv6/IPv4 with 250ms stagger
 - **Digest auth** — automatic HTTP Digest authentication with 401 retry (RFC 7616, MD5)
 - **Bandwidth limiter** — token-bucket byte-rate throttle for download speed limiting
-- **Netrc** — `.netrc` file parser and middleware for automatic credential injection
+- **Netrc** — explicit `.netrc` loading and client authentication configuration
 - **Auth helpers** — bearer token, basic auth
 - **Form data** — URL-encoded form bodies
 - **Query parameters** — with percent-encoding
 - **Default headers** — automatic User-Agent, configurable defaults
-- **Observability** — optional tracing spans and OpenTelemetry middleware
+- **Observability** — request/connection observers and optional transport tracing diagnostics
 - **Tower integration** — use aioduct as a tower `Service`
 - **Link headers** — RFC 8288 Link header parsing for pagination and discovery
 - **Forwarded header** — RFC 7239 Forwarded header builder and parser
@@ -150,8 +148,7 @@ let resp = client.get("https://httpbin.org/get")?.send().await?;
 | `doh`     | DNS-over-HTTPS (implies `hickory-dns`)  | Stable       |
 | `dot`     | DNS-over-TLS (implies `hickory-dns`)    | Stable       |
 | `tower`   | Tower `Service` and `Layer` integration | Stable      |
-| `tracing` | Tracing spans for requests             | Stable       |
-| `otel`    | OpenTelemetry middleware               | Stable       |
+| `tracing` | Transport tracing diagnostics         | Stable       |
 | `precise-timing` | Use `std::time::Instant` for sub-millisecond timing | Stable |
 | `http3`   | HTTP/3 via upstream [h3](https://crates.io/crates/h3) and quinn; requires Tokio, `rustls`, and one rustls provider | Experimental |
 
@@ -432,7 +429,7 @@ Both tools are workspace members (`publish = false`) and serve as real-world int
 ```
 HttpEngineSend<R: RuntimePoll, C: ConnectorSend>  ← tokio, smol (Send futures)
 HttpEngineLocal<R: RuntimeLocal, C: ConnectorLocal>  ← compio (completion-based, !Send)
-  ├── HttpEngineCore<B>       ← shared config (pool, timeouts, middleware, etc.)
+  ├── HttpEngineCore<B>       ← shared config (pool, timeouts, netrc, etc.)
   ├── RequestBuilderSend / RequestBuilderLocal
   │                           ← fluent APIs (headers, body, auth, query, timeout)
   ├── ConnectionPool          ← keyed by origin, protocol, route, address, H3 endpoint
@@ -518,7 +515,7 @@ pub trait Resolve: Send + Sync + 'static {
 | HSTS | No | Built-in |
 | Link headers | No | Built-in |
 | Problem Details | No | Built-in |
-| Middleware | Via tower | Built-in + tower |
+| Connector layers | Via tower | Via tower |
 | Happy Eyeballs | No | RFC 6555 |
 | Digest auth | No | Built-in |
 | Bandwidth limiter | No | Built-in |

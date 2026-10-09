@@ -85,11 +85,11 @@ All methods return `Result<RequestBuilderSend>` (or `Result<RequestBuilderLocal>
 | `tls(RustlsConnector)`  | None        | Custom rustls configuration, including caller-built ECH configs |
 | `danger_accept_invalid_certs()` | —  | Accept any TLS certificate (INSECURE) |
 | `no_decompression()`    | —           | Disable automatic response decompression |
+| `netrc(Netrc)` | None | Apply explicitly loaded credentials to matching native request hosts |
 | `system_proxy()`        | —           | Read proxy from HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars |
 | `proxy_settings(ProxySettings)` | None | Fine-grained HTTP/HTTPS proxy with bypass rules |
 | `http2(Http2Config)`    | None   | Configure HTTP/2 parameters (window sizes, keepalive, frame size) |
 | `auto_tune(AutoTuneConfig)` | Off | Use HTTP/1.1 for known request bodies at or above the configured threshold |
-| `middleware(impl Middleware)` | None | Add a middleware layer that can inspect/modify requests and responses |
 | `automatic_content_digest(bool)` | false | Insert SHA-256 `Content-Digest` for buffered native request bodies before automatic signing |
 | `message_signature(config, signer)` | None | Sync automatic RFC 9421 request signing for finalized native requests |
 | `message_signature_async(config, signer)` | None | Send-runtime async automatic RFC 9421 request signing |
@@ -105,8 +105,7 @@ HTTP/1.1. Unknown-length
 streaming bodies and smaller bodies retain the normal `Auto` protocol choice;
 explicit request protocol settings take precedence. The policy does not buffer,
 split, retry, or duplicate request bodies. CONNECT and Upgrade requests bypass
-this rule. Middleware changes to the finalized request version also take
-precedence. It applies to native request execution; `forward()` and platform-managed
+this rule. It applies to native request execution; `forward()` and platform-managed
 Wasm/WASI transports retain their existing protocol behavior. The endpoint must
 accept HTTP/1.1: a protocol rejection is returned without an auto-tune fallback.
 
@@ -352,7 +351,7 @@ let client = TokioClient::builder()
 ```
 
 Automatic signing runs after default headers, cookies, cache validators,
-middleware, digest-auth retry headers, forwarding request rewrites, and framing
+digest-auth retry headers, forwarding request rewrites, and framing
 cleanup. When configured, it replaces only its configured label in
 `Signature-Input` and `Signature` on every native dispatch attempt.
 
@@ -379,10 +378,10 @@ preserved without buffering, bodyless responses such as `HEAD`, `204`, `205`, an
 
 Use `automatic_content_digest(true)` on the client builder or a request builder
 to insert `Content-Digest: sha-256=:...:` for buffered native request bodies that
-do not already have `Content-Digest`. The header is generated after middleware
+do not already have `Content-Digest`. The header is generated after request preparation
 and before automatic signing, so signatures covering `content-digest` cover the
 generated value. Requests without a configured body are left unchanged. Streaming
-and middleware-replaced bodies are not buffered; provide `Content-Digest`
+bodies are not buffered; provide `Content-Digest`
 explicitly for those requests. Use `sha256_content_digest_value(...)` for an
 in-memory body, or `sha256_content_digest_value_from_digest(...)` after hashing a
 streaming body out-of-band.

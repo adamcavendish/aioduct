@@ -16,7 +16,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
     /// Enable async automatic RFC 9421 request signing for native send requests.
     ///
     /// The signer runs after default headers, cookies, cache validators,
-    /// middleware, automatic `Content-Digest`, and digest-auth retry headers
+    /// automatic `Content-Digest`, and digest-auth retry headers
     /// have finalized each request attempt. It receives an owned signature base,
     /// so request and header borrows do not cross the signer await boundary.
     ///
@@ -308,7 +308,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 },
                 auto_tune: self_.auto_tune,
                 http2: self_.http2,
-                middleware: self_.middleware,
+                netrc: self_.netrc,
                 rate_limiter: self_.rate_limiter,
                 bandwidth_limiter: self_.bandwidth_limiter,
                 digest_auth: self_.digest_auth,

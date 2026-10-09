@@ -69,7 +69,6 @@ use crate::cookie::CookieJar;
 use crate::error::Error;
 use crate::h2c_probe::H2cProbeCache;
 use crate::http2::Http2Config;
-use crate::middleware::MiddlewareStack;
 use crate::pool::ConnectionPool;
 use crate::proxy::{ProxyChain, ProxySettings};
 use crate::redirect::RedirectPolicy;
@@ -80,7 +79,7 @@ const DEFAULT_USER_AGENT: &str = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
 
 /// Shared configuration for HTTP engines.
 ///
-/// Contains connection pooling, TLS, timeouts, headers, proxy, middleware, and
+/// Contains connection pooling, TLS, timeouts, headers, proxy, authentication, and
 /// other settings shared between [`HttpEngineSend`] and [`HttpEngineLocal`].
 ///
 /// Generic over `B`, the body type stored in the connection pool:
@@ -117,7 +116,7 @@ pub struct HttpEngineCore<B> {
     pub(crate) resolver: Option<Arc<dyn Resolve>>,
     pub(crate) auto_tune: Option<crate::auto_tune::AutoTuneConfig>,
     pub(crate) http2: Option<Http2Config>,
-    pub(crate) middleware: MiddlewareStack,
+    pub(crate) netrc: Option<crate::netrc::Netrc>,
     pub(crate) rate_limiter: Option<crate::throttle::RateLimiter>,
     pub(crate) bandwidth_limiter: Option<crate::bandwidth::BandwidthLimiter>,
     pub(crate) digest_auth: Option<crate::digest_auth::DigestAuth>,
@@ -172,7 +171,7 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
             resolver: self.resolver.clone(),
             auto_tune: self.auto_tune,
             http2: self.http2.clone(),
-            middleware: self.middleware.clone(),
+            netrc: self.netrc.clone(),
             rate_limiter: self.rate_limiter.clone(),
             bandwidth_limiter: self.bandwidth_limiter.clone(),
             digest_auth: self.digest_auth.clone(),

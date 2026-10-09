@@ -40,7 +40,7 @@ A request in aioduct goes through these stages:
 client.get("http://example.com/path")?
   -> RequestBuilderSend (method, URI, headers, body, protocol, timeouts)
   -> RequestBuilderSend::send()
-    -> apply HSTS, default headers, cookies, middleware, and cache validators
+    -> apply HSTS, default headers, cookies, netrc, and cache validators
     -> classify body replayability and finalize digest/signature metadata
     -> capture the finalized request state used by eligible retries
     -> for each redirect, digest retry, or configured retry attempt:
@@ -51,14 +51,14 @@ client.get("http://example.com/path")?
          coordination, DNS, TCP/QUIC, proxy negotiation, TLS, and handshake
       -> send the request with evidence-gated stale-connection recovery
       -> supervise upload completion and return response headers
-    -> apply response middleware, redirects, cookies, cache policy,
+    -> apply redirects, cookies, cache policy,
        decompression, read timeout, and bandwidth limiting
   -> ResponseBodySend
 ```
 
 The Local engine follows the same policy with `RequestBuilderLocal`, local
 futures, and local connector/transport implementations. Forwarding bypasses
-ordinary client middleware but enters the same dispatch layer after its
+ordinary client response processing but enters the same dispatch layer after its
 upstream target, protocol, and hop-field policy have been finalized. See
 [Request Dispatch Guarantees](request_dispatch.md) for replay, proxy, timeout,
 and protocol boundaries.
@@ -83,7 +83,7 @@ The v0.2 architecture splits the client into two engine types to cleanly support
 - **`HttpEngineSend<R: RuntimePoll, C: ConnectorSend>`** — for runtimes where futures are `Send` (tokio, smol). The connector produces streams that are `Send`, enabling work-stealing schedulers.
 - **`HttpEngineLocal<R: RuntimeLocal, C: ConnectorLocal>`** — for thread-per-core runtimes (compio) where futures are `!Send`. The connector produces streams that stay on the local thread.
 
-Both share `HttpEngineCore<B>` for configuration state (pool settings, timeouts, middleware, TLS, etc.), minimizing code duplication.
+Both share `HttpEngineCore<B>` for configuration state (pool settings, timeouts, netrc, TLS, etc.), minimizing code duplication.
 
 ### Connector Abstraction
 

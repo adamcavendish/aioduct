@@ -4,20 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Clone)]
 struct LocalDigestRetryRecorder {
-    middleware_attempts: Arc<std::sync::Mutex<Vec<u32>>>,
     observer_attempts: Arc<std::sync::Mutex<Vec<(u32, u32)>>>,
-}
-
-impl aioduct::Middleware for LocalDigestRetryRecorder {
-    fn on_retry(
-        &self,
-        _error: &aioduct::Error,
-        _uri: &http::Uri,
-        _method: &http::Method,
-        attempt: u32,
-    ) {
-        self.middleware_attempts.lock().unwrap().push(attempt);
-    }
 }
 
 impl aioduct::RequestObserver for LocalDigestRetryRecorder {
@@ -138,7 +125,6 @@ fn local_digest_response_drain_failure_does_not_commit_retry_state() {
     let addr = addr_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     let budget = aioduct::RetryBudget::new(1, 0);
     let recorder = LocalDigestRetryRecorder {
-        middleware_attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
         observer_attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
@@ -168,7 +154,7 @@ fn local_digest_response_drain_failure_does_not_commit_retry_state() {
     });
 
     assert_eq!(budget.available(), 1);
-    assert!(recorder.middleware_attempts.lock().unwrap().is_empty());
+
     assert!(recorder.observer_attempts.lock().unwrap().is_empty());
     done_rx
         .recv_timeout(Duration::from_secs(1))
@@ -280,7 +266,6 @@ fn local_configured_retry_recovers_from_connection_error() {
     let resolutions = Arc::new(AtomicU32::new(0));
     let resolver_calls = resolutions.clone();
     let recorder = LocalDigestRetryRecorder {
-        middleware_attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
         observer_attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
@@ -294,7 +279,6 @@ fn local_configured_retry_recovers_from_connection_error() {
                         Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
                     >
             })
-            .middleware(recorder.clone())
             .request_observer(recorder.clone())
             .retry(
                 aioduct::RetryConfig::default()
@@ -315,66 +299,19 @@ fn local_configured_retry_recovers_from_connection_error() {
     });
 
     assert_eq!(resolutions.load(Ordering::SeqCst), 2);
-    assert_eq!(*recorder.middleware_attempts.lock().unwrap(), vec![1]);
+
     assert_eq!(*recorder.observer_attempts.lock().unwrap(), vec![(1, 1)]);
 }
 
 #[test]
-fn local_retry_uses_middleware_finalized_body_state() {
-    let attempts = Arc::new(AtomicU32::new(0));
-    let server_attempts = attempts.clone();
-    let addr = start_server_with_tokio(move |_req| {
-        let attempts = server_attempts.clone();
-        async move {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            Ok::<_, Infallible>(
-                Response::builder()
-                    .status(http::StatusCode::SERVICE_UNAVAILABLE)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap(),
-            )
-        }
-    });
-
-    compio_runtime::Runtime::new().unwrap().block_on(async {
-        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .middleware(
-                |request: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                    *request.body_mut() = Full::new(Bytes::from_static(b"middleware"))
-                        .map_err(|never| match never {})
-                        .boxed_unsync();
-                },
-            )
-            .retry(
-                aioduct::RetryConfig::default()
-                    .max_retries(1)
-                    .initial_backoff(Duration::ZERO)
-                    .classify(|_| aioduct::RetryDecision::Retry),
-            )
-            .build_local()
-            .unwrap();
-        let response = client
-            .post_local(&format!("http://{addr}/"))
-            .unwrap()
-            .body("original")
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
-    });
-    assert_eq!(attempts.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn local_header_only_middleware_preserves_buffered_body_replay() {
+fn local_configured_headers_preserves_buffered_body_replay() {
     let attempts = Arc::new(AtomicU32::new(0));
     let server_attempts = attempts.clone();
     let addr = start_server_with_tokio(move |request| {
         let attempts = server_attempts.clone();
         async move {
             let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(request.headers()["x-local-middleware"], "applied");
+            assert_eq!(request.headers()["x-local-request"], "applied");
             assert_eq!(
                 request.into_body().collect().await.unwrap().to_bytes(),
                 "local buffered payload"
@@ -387,21 +324,13 @@ fn local_header_only_middleware_preserves_buffered_body_replay() {
             )
         }
     });
-    let middleware_calls = Arc::new(AtomicU32::new(0));
-    let calls = middleware_calls.clone();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .middleware(
-                move |request: &mut http::Request<aioduct::body::RequestBodySend>,
-                      _uri: &http::Uri| {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    request.headers_mut().insert(
-                        http::header::HeaderName::from_static("x-local-middleware"),
-                        http::HeaderValue::from_static("applied"),
-                    );
-                },
-            )
+            .default_headers(http::HeaderMap::from_iter([(
+                http::header::HeaderName::from_static("x-local-request"),
+                http::HeaderValue::from_static("applied"),
+            )]))
             .retry(
                 aioduct::RetryConfig::default()
                     .max_retries(1)
@@ -421,11 +350,10 @@ fn local_header_only_middleware_preserves_buffered_body_replay() {
         assert_eq!(response.status(), http::StatusCode::OK);
     });
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    assert_eq!(middleware_calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn local_configured_retry_does_not_rerun_opaque_middleware() {
+fn local_configured_retry_preserves_configured_request() {
     let attempts = Arc::new(AtomicU32::new(0));
     let server_attempts = attempts.clone();
     let addr = start_server_with_tokio(move |request| {
@@ -453,28 +381,13 @@ fn local_configured_retry_does_not_rerun_opaque_middleware() {
             })
         }
     });
-    let middleware_calls = Arc::new(AtomicU32::new(0));
-    let calls = middleware_calls.clone();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .middleware(
-                move |request: &mut http::Request<aioduct::body::RequestBodySend>,
-                      _uri: &http::Uri| {
-                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                        *request.method_mut() = http::Method::PUT;
-                        request.headers_mut().insert(
-                            http::header::HeaderName::from_static("x-finalized-request"),
-                            http::header::HeaderValue::from_static("first"),
-                        );
-                    } else {
-                        *request.method_mut() = http::Method::POST;
-                        *request.body_mut() = Full::new(Bytes::from_static(b"different request"))
-                            .map_err(|never| match never {})
-                            .boxed_unsync();
-                    }
-                },
-            )
+            .default_headers(http::HeaderMap::from_iter([(
+                http::header::HeaderName::from_static("x-finalized-request"),
+                http::HeaderValue::from_static("first"),
+            )]))
             .retry(
                 aioduct::RetryConfig::default()
                     .max_retries(1)
@@ -483,7 +396,7 @@ fn local_configured_retry_does_not_rerun_opaque_middleware() {
             .build_local()
             .unwrap();
         let response = client
-            .get_local(&format!("http://{addr}/"))
+            .request_local(http::Method::PUT, &format!("http://{addr}/"))
             .unwrap()
             .send()
             .await
@@ -492,11 +405,10 @@ fn local_configured_retry_does_not_rerun_opaque_middleware() {
         assert_eq!(response.status(), http::StatusCode::OK);
     });
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    assert_eq!(middleware_calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn local_digest_retry_does_not_rerun_opaque_middleware() {
+fn local_digest_retry_preserves_configured_request() {
     let attempts = Arc::new(AtomicU32::new(0));
     let server_attempts = attempts.clone();
     let addr = start_server_with_tokio(move |request| {
@@ -531,33 +443,18 @@ fn local_digest_retry_does_not_rerun_opaque_middleware() {
             })
         }
     });
-    let middleware_calls = Arc::new(AtomicU32::new(0));
-    let calls = middleware_calls.clone();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .digest_auth("user", "pass")
-            .middleware(
-                move |request: &mut http::Request<aioduct::body::RequestBodySend>,
-                      _uri: &http::Uri| {
-                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                        *request.method_mut() = http::Method::POST;
-                        request.headers_mut().insert(
-                            http::header::HeaderName::from_static("x-finalized-request"),
-                            http::header::HeaderValue::from_static("first"),
-                        );
-                    } else {
-                        *request.method_mut() = http::Method::DELETE;
-                        *request.body_mut() = Full::new(Bytes::from_static(b"different request"))
-                            .map_err(|never| match never {})
-                            .boxed_unsync();
-                    }
-                },
-            )
+            .default_headers(http::HeaderMap::from_iter([(
+                http::header::HeaderName::from_static("x-finalized-request"),
+                http::HeaderValue::from_static("first"),
+            )]))
             .build_local()
             .unwrap();
         let response = client
-            .get_local(&format!("http://{addr}/"))
+            .post_local(&format!("http://{addr}/"))
             .unwrap()
             .send()
             .await
@@ -566,7 +463,6 @@ fn local_digest_retry_does_not_rerun_opaque_middleware() {
         assert_eq!(response.status(), http::StatusCode::OK);
     });
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    assert_eq!(middleware_calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -588,22 +484,13 @@ fn local_unsupported_digest_challenge_preserves_finalized_retry_state() {
             )
         }
     });
-    let middleware_calls = Arc::new(AtomicU32::new(0));
-    let calls = middleware_calls.clone();
+
     let classified_method = Arc::new(Mutex::new(None));
     let observed_method = classified_method.clone();
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .digest_auth("user", "pass")
-            .middleware(
-                move |request: &mut http::Request<aioduct::body::RequestBodySend>,
-                      _uri: &http::Uri| {
-                    if calls.fetch_add(1, Ordering::SeqCst) > 0 {
-                        *request.method_mut() = http::Method::POST;
-                    }
-                },
-            )
             .retry(
                 aioduct::RetryConfig::default()
                     .max_retries(1)
@@ -625,7 +512,7 @@ fn local_unsupported_digest_challenge_preserves_finalized_retry_state() {
         assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
     });
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    assert_eq!(middleware_calls.load(Ordering::SeqCst), 1);
+
     assert_eq!(*classified_method.lock().unwrap(), Some(http::Method::GET));
 }
 
@@ -754,14 +641,12 @@ fn local_digest_and_configured_retries_share_attempts_and_callbacks() {
         }
     });
     let recorder = LocalDigestRetryRecorder {
-        middleware_attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
         observer_attempts: Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .digest_auth("user", "pass")
-            .middleware(recorder.clone())
             .request_observer(recorder.clone())
             .retry(
                 aioduct::RetryConfig::default()
@@ -781,7 +666,7 @@ fn local_digest_and_configured_retries_share_attempts_and_callbacks() {
     });
 
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
-    assert_eq!(*recorder.middleware_attempts.lock().unwrap(), vec![1, 2]);
+
     assert_eq!(
         *recorder.observer_attempts.lock().unwrap(),
         vec![(1, 2), (2, 2)]
@@ -791,4 +676,93 @@ fn local_digest_and_configured_retries_share_attempts_and_callbacks() {
     assert!(authorizations[0].contains("nc=00000001"));
     assert!(authorizations[1].contains("nc=00000002"));
     assert_ne!(authorizations[0], authorizations[1]);
+}
+
+#[cfg(feature = "gzip")]
+#[test]
+fn local_netrc_and_no_decompression_survive_redirects() {
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(b"local decoded payload").unwrap();
+    let compressed = encoder.finish().unwrap();
+    let expected = compressed.clone();
+    let accepts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let capture = accepts.clone();
+    let addr = start_server_with_tokio(move |request| {
+        let compressed = compressed.clone();
+        let capture = capture.clone();
+        async move {
+            assert_eq!(request.headers()["authorization"], "Basic dXNlcjpwYXNz");
+            capture
+                .lock()
+                .unwrap()
+                .push(request.headers().get("accept-encoding").cloned());
+            Ok::<_, Infallible>(if request.uri().path() == "/start" {
+                Response::builder()
+                    .status(307)
+                    .header("location", "/final")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap()
+            } else {
+                Response::builder()
+                    .header("content-encoding", "gzip")
+                    .header("content-length", compressed.len())
+                    .body(Full::new(Bytes::from(compressed)))
+                    .unwrap()
+            })
+        }
+    });
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
+            .netrc(aioduct::Netrc::parse(
+                "machine 127.0.0.1 login user password pass",
+            ))
+            .build_local()
+            .unwrap();
+        let url = format!("http://{addr}/start");
+        let raw = client
+            .clone()
+            .get_local(&url)
+            .unwrap()
+            .no_decompression()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(raw.headers()["content-encoding"], "gzip");
+        assert_eq!(raw.headers()["content-length"], expected.len().to_string());
+        assert_eq!(raw.bytes().await.unwrap(), expected);
+        let decoded = client.get_local(&url).unwrap().send().await.unwrap();
+        assert!(!decoded.headers().contains_key("content-encoding"));
+        assert_eq!(decoded.text().await.unwrap(), "local decoded payload");
+        let raw = client
+            .get_local(&url)
+            .unwrap()
+            .header_str("accept-encoding", "gzip")
+            .unwrap()
+            .no_decompression()
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(raw.bytes().await.unwrap(), expected);
+    });
+    let accepts = accepts.lock().unwrap();
+    assert_eq!(accepts.len(), 6);
+    assert!(accepts[..2].iter().all(Option::is_none));
+    // Default negotiation may advertise every codec enabled by this build.
+    assert!(accepts[2..4].iter().all(|value| {
+        value
+            .as_ref()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(',')
+            .any(|coding| coding.trim() == "gzip")
+    }));
+    // Explicit negotiation remains unchanged even with decompression disabled.
+    assert!(
+        accepts[4..]
+            .iter()
+            .all(|value| value.as_ref().unwrap() == "gzip")
+    );
 }

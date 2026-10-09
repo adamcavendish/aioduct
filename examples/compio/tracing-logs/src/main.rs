@@ -1,4 +1,4 @@
-use aioduct::{CompioClient, TracingMiddleware};
+use aioduct::CompioClient;
 
 fn main() -> Result<(), aioduct::Error> {
     compio_runtime::Runtime::new().unwrap().block_on(async {
@@ -10,11 +10,12 @@ fn main() -> Result<(), aioduct::Error> {
         tracing::info!("starting tracing example");
 
         let client = CompioClient::builder()
-            .middleware(TracingMiddleware)
+            .request_observer(TraceObserver)
             .build_local()
             .unwrap();
 
-        // Each request will emit tracing spans and events
+        // The observer emits request events; the tracing feature adds
+        // transport diagnostics.
         let resp = client.get_local("https://httpbin.org/get")?.send().await?;
 
         tracing::info!(status = %resp.status(), "received response");
@@ -42,4 +43,15 @@ fn main() -> Result<(), aioduct::Error> {
 
         Ok(())
     })
+}
+
+struct TraceObserver;
+
+impl aioduct::RequestObserver for TraceObserver {
+    fn on_event(&self, event: &aioduct::RequestEvent) {
+        tracing::debug!(method = %event.method, host = event.uri.host().unwrap_or(""), phase = ?event.phase, "http.request.event");
+    }
+    fn on_connection_event(&self, event: &aioduct::ConnectionEvent) {
+        tracing::trace!(phase = ?event.phase, "http.connection.event");
+    }
 }

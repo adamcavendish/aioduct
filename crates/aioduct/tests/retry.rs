@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use http_body::Body as _;
 use http_body_util::{BodyExt, Full};
 use hyper::Response;
 use tokio::io::AsyncReadExt;
@@ -61,7 +60,7 @@ async fn test_retry_on_server_error() {
 }
 
 #[tokio::test]
-async fn retry_uses_method_after_middleware() {
+async fn retry_uses_configured_method() {
     let attempts = Arc::new(AtomicU32::new(0));
     let attempts_for_server = attempts.clone();
     let (addr, _counter) = h1_server_with(move |req| {
@@ -80,15 +79,10 @@ async fn retry_uses_method_after_middleware() {
     .await;
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(
-            |request: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                *request.method_mut() = http::Method::POST;
-            },
-        )
         .build()
         .unwrap();
     let response = client
-        .get(&format!("http://{addr}/"))
+        .post(&format!("http://{addr}/"))
         .unwrap()
         .retry(
             aioduct::RetryConfig::default()
@@ -603,133 +597,6 @@ async fn test_client_default_retry_with_recovery() {
 // ── Custom retry classifier ────────────────────────────────────────────────
 
 use aioduct::{RetryDecision, RetryOutcome};
-
-struct DelegatingBody {
-    inner: aioduct::body::RequestBodySend,
-}
-
-impl http_body::Body for DelegatingBody {
-    type Data = Bytes;
-    type Error = aioduct::Error;
-
-    fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        std::pin::Pin::new(&mut self.inner).poll_frame(cx)
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        self.inner.size_hint()
-    }
-}
-
-#[tokio::test]
-async fn byte_identical_middleware_wrapped_body_is_replayed_by_configured_retry() {
-    let attempts = Arc::new(AtomicU32::new(0));
-    let server_attempts = attempts.clone();
-    let (addr, _counter) = h1_server_with(move |req| {
-        let attempts = server_attempts.clone();
-        async move {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(
-                req.into_body().collect().await.unwrap().to_bytes(),
-                "payload"
-            );
-            let status = if attempts.load(Ordering::SeqCst) == 1 {
-                http::StatusCode::INTERNAL_SERVER_ERROR
-            } else {
-                http::StatusCode::OK
-            };
-            Ok::<_, Infallible>(
-                Response::builder()
-                    .status(status)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap(),
-            )
-        }
-    })
-    .await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(
-            |request: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                let placeholder = Full::new(Bytes::new())
-                    .map_err(|never| match never {})
-                    .boxed_unsync();
-                let inner = std::mem::replace(request.body_mut(), placeholder);
-                *request.body_mut() = DelegatingBody { inner }.boxed_unsync();
-            },
-        )
-        .build()
-        .unwrap();
-    let response = client
-        .post(&format!("http://{addr}/"))
-        .unwrap()
-        .body("payload")
-        .retry(
-            aioduct::RetryConfig::default()
-                .max_retries(1)
-                .initial_backoff(Duration::ZERO)
-                .classify(|_| RetryDecision::Retry),
-        )
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), http::StatusCode::OK);
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
-}
-
-#[tokio::test]
-async fn middleware_polled_body_is_not_replayed_by_configured_retry() {
-    let attempts = Arc::new(AtomicU32::new(0));
-    let server_attempts = attempts.clone();
-    let (addr, _counter) = h1_server_with(move |_req| {
-        let attempts = server_attempts.clone();
-        async move {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            Ok::<_, Infallible>(
-                Response::builder()
-                    .status(500)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap(),
-            )
-        }
-    })
-    .await;
-
-    let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .middleware(
-            |request: &mut http::Request<aioduct::body::RequestBodySend>, _uri: &http::Uri| {
-                let waker = std::task::Waker::noop();
-                let mut context = std::task::Context::from_waker(waker);
-                let _ = std::pin::Pin::new(request.body_mut()).poll_frame(&mut context);
-            },
-        )
-        .build()
-        .unwrap();
-    let response = client
-        .post(&format!("http://{addr}/"))
-        .unwrap()
-        .body("payload")
-        .retry(
-            aioduct::RetryConfig::default()
-                .max_retries(1)
-                .initial_backoff(Duration::ZERO)
-                .classify(|_| RetryDecision::Retry),
-        )
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(attempts.load(Ordering::SeqCst), 1);
-}
 
 /// A classifier can force a retry on a status the built-in rules treat as
 /// final (404), turning a normally non-retried response into a retried one.

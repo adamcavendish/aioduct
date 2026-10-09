@@ -14,7 +14,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
     /// Enable async automatic RFC 9421 request signing for native local requests.
     ///
     /// The signer runs after default headers, cookies, cache validators,
-    /// middleware, automatic `Content-Digest`, and digest-auth retry headers
+    /// automatic `Content-Digest`, and digest-auth retry headers
     /// have finalized each request attempt. It receives an owned signature base,
     /// so request and header borrows do not cross the signer await boundary.
     ///
@@ -217,7 +217,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
                 },
                 auto_tune: self.auto_tune,
                 http2: self.http2,
-                middleware: self.middleware,
+                netrc: self.netrc,
                 rate_limiter: self.rate_limiter,
                 bandwidth_limiter: self.bandwidth_limiter,
                 digest_auth: self.digest_auth,

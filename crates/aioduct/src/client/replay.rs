@@ -2,160 +2,8 @@ use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::{HeaderMap, Method, Uri};
 use http_body::Body;
-use http_body_util::BodyExt;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 
 use super::request_replay::ReplayableRequestHead;
-use crate::body::{RequestBodyLocal, RequestBodySend};
-
-#[derive(Clone)]
-pub(crate) struct BodyReplayAudit {
-    state: Arc<Mutex<BodyReplayAuditState>>,
-}
-
-struct BodyReplayAuditState {
-    expected: Bytes,
-    matched: usize,
-    valid: bool,
-    complete: bool,
-}
-
-impl BodyReplayAudit {
-    fn new<B: Body<Data = Bytes>>(expected: Bytes, body: &B) -> Self {
-        let complete = body.is_end_stream();
-        let valid = !complete || expected.is_empty();
-        Self {
-            state: Arc::new(Mutex::new(BodyReplayAuditState {
-                expected,
-                matched: 0,
-                valid,
-                complete,
-            })),
-        }
-    }
-
-    fn observe_data(&self, data: &Bytes) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let end = state.matched.saturating_add(data.len());
-        if end > state.expected.len() || state.expected.slice(state.matched..end) != *data {
-            state.valid = false;
-        }
-        state.matched = end;
-    }
-
-    fn invalidate(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .valid = false;
-    }
-
-    fn finish(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.complete = true;
-        if state.matched != state.expected.len() {
-            state.valid = false;
-        }
-    }
-
-    fn cancel(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if !state.complete {
-            state.valid = false;
-        }
-    }
-
-    fn matched(&self) -> bool {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.complete && state.valid
-    }
-}
-
-struct AuditedBody<B> {
-    inner: B,
-    audit: BodyReplayAudit,
-}
-
-impl<B> Drop for AuditedBody<B> {
-    fn drop(&mut self) {
-        self.audit.cancel();
-    }
-}
-
-impl<B> Body for AuditedBody<B>
-where
-    B: Body<Data = Bytes, Error = crate::error::Error> + Unpin,
-{
-    type Data = Bytes;
-    type Error = crate::error::Error;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        match Pin::new(&mut self.inner).poll_frame(context) {
-            Poll::Ready(Some(Ok(frame))) => {
-                if let Some(data) = frame.data_ref() {
-                    self.audit.observe_data(data);
-                } else {
-                    self.audit.invalidate();
-                }
-                // Some bodies report end-of-stream immediately after their
-                // final data frame, so Hyper need not poll them again for
-                // `None`. Complete the audit at that same boundary.
-                if self.inner.is_end_stream() {
-                    self.audit.finish();
-                }
-                Poll::Ready(Some(Ok(frame)))
-            }
-            Poll::Ready(Some(Err(error))) => {
-                self.audit.invalidate();
-                self.audit.finish();
-                Poll::Ready(Some(Err(error)))
-            }
-            Poll::Ready(None) => {
-                self.audit.finish();
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        self.inner.size_hint()
-    }
-}
-
-pub(crate) fn audit_send_body(
-    body: RequestBodySend,
-    expected: Bytes,
-) -> (RequestBodySend, BodyReplayAudit) {
-    let audit = BodyReplayAudit::new(expected, &body);
-    let body = AuditedBody {
-        inner: body,
-        audit: audit.clone(),
-    }
-    .boxed_unsync();
-    (body, audit)
-}
-
-pub(crate) fn audit_local_body(
-    body: RequestBodyLocal,
-    expected: Bytes,
-) -> (RequestBodyLocal, BodyReplayAudit) {
-    let audit = BodyReplayAudit::new(expected, &body);
-    let body = Box::pin(AuditedBody {
-        inner: body,
-        audit: audit.clone(),
-    });
-    (body, audit)
-}
 
 /// Whether the bytes in a request body can be reproduced for another dispatch.
 ///
@@ -180,7 +28,7 @@ pub(crate) struct FreshConnectionRequired;
 #[derive(Clone, Debug)]
 pub(crate) struct AppliedCookieHeader(pub(crate) HeaderValue);
 
-/// Replay-relevant state after middleware has finalized the wire request.
+/// Replay-relevant state after preparation has finalized the wire request.
 ///
 /// Retry policy and replay both use the method, body state, and immutable head
 /// that were actually dispatched. The retained builder is not replay input.
@@ -190,7 +38,6 @@ pub(crate) struct FinalizedRequestSnapshot {
     head: ReplayableRequestHead,
     body: Bytes,
     body_replayability: BodyReplayability,
-    body_audit: Option<BodyReplayAudit>,
     cache_state: FinalizedCacheState,
     fragment: Option<String>,
     digest_challenge: Option<crate::digest_auth::PreparedDigestChallenge>,
@@ -241,7 +88,6 @@ impl FinalizedRequestSnapshot {
         effective_uri: &Uri,
         replay_body: Option<Bytes>,
         body_replayability: BodyReplayability,
-        body_audit: Option<BodyReplayAudit>,
         cache_state: FinalizedCacheState,
         fragment: Option<String>,
     ) -> Option<Self>
@@ -256,7 +102,6 @@ impl FinalizedRequestSnapshot {
                 Bytes::new()
             }
             BodyReplayability::Replayable => replay_body?,
-            BodyReplayability::OneShot if body_audit.is_some() => replay_body?,
             BodyReplayability::Empty | BodyReplayability::OneShot => return None,
         };
         let body_replayability = if body.is_empty() {
@@ -270,7 +115,6 @@ impl FinalizedRequestSnapshot {
             head: ReplayableRequestHead::capture(request),
             body,
             body_replayability,
-            body_audit,
             cache_state,
             fragment,
             digest_challenge: None,
@@ -301,12 +145,6 @@ impl FinalizedRequestSnapshot {
         self.body_replayability
     }
 
-    pub(crate) fn is_replayable(&self) -> bool {
-        self.body_audit
-            .as_ref()
-            .is_none_or(BodyReplayAudit::matched)
-    }
-
     pub(crate) fn body_bytes(&self) -> Bytes {
         self.body.clone()
     }
@@ -324,8 +162,7 @@ impl FinalizedRequestSnapshot {
     }
 
     pub(crate) fn stale_replay_bytes(&self) -> Option<Bytes> {
-        (self.is_replayable() && self.body_replayability == BodyReplayability::Replayable)
-            .then(|| self.body.clone())
+        (self.body_replayability == BodyReplayability::Replayable).then(|| self.body.clone())
     }
 
     pub(crate) fn with_digest_authorization(
@@ -435,15 +272,12 @@ impl FinalizedRequestState {
     pub(crate) fn body(&self) -> BodyReplayability {
         self.snapshot
             .as_ref()
-            .filter(|snapshot| snapshot.is_replayable())
             .map(FinalizedRequestSnapshot::body_replayability)
             .unwrap_or(self.body)
     }
 
     pub(crate) fn has_replay_snapshot(&self) -> bool {
-        self.snapshot
-            .as_ref()
-            .is_some_and(FinalizedRequestSnapshot::is_replayable)
+        self.snapshot.is_some()
     }
 
     pub(crate) fn clear_replay_snapshot(&mut self) {
@@ -499,9 +333,6 @@ impl FinalizedRequestState {
     /// the next execute call. The retained builder is deliberately ignored.
     pub(crate) fn try_start_configured_retry(&mut self) -> Option<u32> {
         let snapshot = self.snapshot.as_ref()?;
-        if !snapshot.is_replayable() {
-            return None;
-        }
         let snapshot = snapshot.clone();
         let attempt = self.try_start_retry()?;
         self.pending_replay = Some(snapshot);
@@ -615,20 +446,6 @@ impl BodyReplayability {
         B: http_body::Body + ?Sized,
     {
         if body.is_end_stream() {
-            Self::Empty
-        } else {
-            Self::OneShot
-        }
-    }
-
-    /// Middleware can replace, wrap, or poll an opaque body. Preserve the
-    /// empty classification only when the pre-middleware request was empty and
-    /// the finalized body is still known to contain exactly zero bytes.
-    pub(crate) fn after_middleware<B>(before: Self, body: &B) -> Self
-    where
-        B: http_body::Body + ?Sized,
-    {
-        if before == Self::Empty && body.is_end_stream() && body.size_hint().exact() == Some(0) {
             Self::Empty
         } else {
             Self::OneShot
@@ -782,7 +599,6 @@ mod tests {
             &effective_uri,
             None,
             BodyReplayability::Empty,
-            None,
             FinalizedCacheState::new(None, None, HeaderMap::new()),
             None,
         )
@@ -818,7 +634,6 @@ mod tests {
             &Uri::from_static("http://example.test/"),
             None,
             BodyReplayability::OneShot,
-            None,
             FinalizedCacheState::new(None, None, HeaderMap::new()),
             None,
         );
