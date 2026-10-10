@@ -1018,11 +1018,15 @@ impl<B: 'static> ConnectionPool<B> {
     where
         B: Send,
     {
-        let inner = Arc::clone(&self.inner);
+        // A sleeping reaper must not keep the pool alive after its owners drop.
+        let inner = Arc::downgrade(&self.inner);
         let counters = Arc::clone(&self.counters);
         R::spawn_send(async move {
             loop {
                 let timeout = {
+                    let Some(inner) = inner.upgrade() else {
+                        return;
+                    };
                     let Ok(guard) = inner.lock() else {
                         return;
                     };
@@ -1030,6 +1034,9 @@ impl<B: 'static> ConnectionPool<B> {
                 };
                 R::sleep(timeout).await;
 
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
                 let Ok(mut guard) = inner.lock() else {
                     return;
                 };
@@ -1071,11 +1078,14 @@ impl<B: 'static> ConnectionPool<B> {
     }
 
     fn spawn_reaper_local<R: crate::runtime::RuntimeLocal>(&self) {
-        let inner = Arc::clone(&self.inner);
+        let inner = Arc::downgrade(&self.inner);
         let counters = Arc::clone(&self.counters);
         R::spawn_local(async move {
             loop {
                 let timeout = {
+                    let Some(inner) = inner.upgrade() else {
+                        return;
+                    };
                     let Ok(guard) = inner.lock() else {
                         return;
                     };
@@ -1083,6 +1093,9 @@ impl<B: 'static> ConnectionPool<B> {
                 };
                 R::sleep(timeout).await;
 
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
                 let Ok(mut guard) = inner.lock() else {
                     return;
                 };
@@ -1132,6 +1145,9 @@ mod tests_smol;
 
 #[cfg(all(test, feature = "compio"))]
 mod tests_compio;
+
+#[cfg(test)]
+mod tests_reaper_lifecycle;
 
 #[cfg(test)]
 mod tests_sync {

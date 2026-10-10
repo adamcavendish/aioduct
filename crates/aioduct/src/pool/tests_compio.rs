@@ -226,8 +226,23 @@ fn idle_timeout_eviction_on_checkout() {
     });
 }
 
-// Note: no reaper test for compio — CompioRuntime is completion-based and does
-// not implement RuntimePoll, which is required by ConnectionPool::ensure_reaper.
+#[test]
+fn local_reaper_removes_expired_connections() {
+    compio_runtime::Runtime::new().unwrap().block_on(async {
+        let pool =
+            ConnectionPool::<RequestBodyLocal>::new().with_idle_timeout(Duration::from_millis(50));
+        pool.ensure_reaper_local::<CompioRuntime>();
+        let k = key("example.com:80");
+        pool.checkin(k.clone(), make_h1_conn().await);
+
+        CompioRuntime::sleep(Duration::from_millis(150)).await;
+
+        assert!(
+            !pool.inner.lock().unwrap().idle.contains_key(&k),
+            "the local reaper should evict expired connections without checkout"
+        );
+    });
+}
 
 // --- max_active_per_host tests ---
 
