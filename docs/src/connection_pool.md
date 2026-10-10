@@ -32,6 +32,10 @@ Connections are evicted in three ways:
 - **On checkin**: When the per-host queue is full, the oldest connection is evicted.
 - **Background reaper**: A periodic background task runs at the idle timeout interval and removes all expired connections, preventing memory leaks from unused hosts.
 
+The reaper holds only a weak reference to the pool. Dropping the last pool owner
+releases the pool storage; a sleeping reaper exits at its next scheduled wakeup.
+This applies to both the Send and Local runtime paths.
+
 ### Limits
 
 `pool_max_idle_per_host(n)` controls how many idle handles are retained per pool key after requests complete. It does not limit the number of in-flight requests by itself.
