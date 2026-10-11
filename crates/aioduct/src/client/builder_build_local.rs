@@ -10,7 +10,9 @@ use crate::tls::TlsVersion;
 use super::builder::HttpEngineBuilder;
 use super::{HttpEngineCore, HttpEngineLocal};
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O: crate::observer::Observer>
+    HttpEngineBuilder<R, C, O>
+{
     /// Enable async automatic RFC 9421 request signing for native local requests.
     ///
     /// The signer runs after default headers, cookies, cache validators,
@@ -65,7 +67,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
     }
 
     /// Build the configured [`HttpEngineLocal`] for a completion-based runtime.
-    pub fn build_local(mut self) -> Result<HttpEngineLocal<R, C>, crate::error::Error> {
+    pub fn build_local(mut self) -> Result<HttpEngineLocal<R, C, O>, crate::error::Error> {
         if let Some(error) = self.builder_error.take() {
             return Err(error.into_error());
         }
@@ -231,7 +233,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
                     .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
                 connection_coalescing: self.connection_coalescing,
                 sensitive_headers: self.sensitive_headers,
-                observer: self.observer,
                 #[cfg(feature = "rustls")]
                 tls,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -242,6 +243,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineBuilder<R, C> {
                 alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             },
             connector: self.connector,
+            observer: std::rc::Rc::new(self.observer),
             #[cfg(feature = "tower")]
             tower_connector_local: self.tower_connector_local,
             _phantom: PhantomData,

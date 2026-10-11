@@ -531,23 +531,10 @@ async fn trailer_frame_passes_through_decompress() {
     use std::io::Write;
     use tokio::io::AsyncWriteExt;
 
-    use aioduct::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
-
     let content = "hello trailer decompress";
     let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(content.as_bytes()).unwrap();
     let compressed = encoder.finish().unwrap();
-
-    let events: Arc<Mutex<Vec<RequestPhase>>> = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = events.clone();
-
-    struct TrailerObserver(Arc<Mutex<Vec<RequestPhase>>>);
-    impl RequestObserver for TrailerObserver {
-        fn on_event(&self, event: &RequestEvent) {
-            self.0.lock().unwrap().push(event.phase.clone());
-        }
-        fn on_connection_event(&self, _event: &ConnectionEvent) {}
-    }
 
     let addr = raw_streaming_server(move |_req, mut stream| {
         let compressed = compressed.clone();
@@ -573,7 +560,6 @@ async fn trailer_frame_passes_through_decompress() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .timeout(Duration::from_secs(5))
-        .request_observer(TrailerObserver(events_clone))
         .build()
         .unwrap();
 
@@ -584,7 +570,7 @@ async fn trailer_frame_passes_through_decompress() {
         .await
         .unwrap();
 
-    // Use into_bytes_stream so the observer fires TrailersReceived.
+    // Trailers remain available as data, not as observation callbacks.
     let mut stream = resp.into_bytes_stream();
     let mut body = Vec::new();
     while let Some(chunk) = stream.next().await {
@@ -597,14 +583,9 @@ async fn trailer_frame_passes_through_decompress() {
         "decompressed body must match original"
     );
 
-    let captured = events.lock().unwrap();
-    let has_trailers = captured.iter().any(|p| {
-        matches!(p, RequestPhase::TrailersReceived { headers }
-            if headers.iter().any(|(k, v)| k == "x-response-time" && v == "42"))
-    });
-    assert!(
-        has_trailers,
-        "expected TrailersReceived with x-response-time: 42, got: {captured:?}"
+    assert_eq!(
+        stream.trailers().unwrap().get("x-response-time").unwrap(),
+        "42"
     );
 }
 

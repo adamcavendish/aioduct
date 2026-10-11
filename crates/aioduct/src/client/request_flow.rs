@@ -8,7 +8,6 @@ use super::HttpEngineCore;
 use crate::body::RequestBody;
 use crate::digest_fields::{self, ContentDigestBody};
 use crate::error::Error;
-use crate::observer::RequestPhase;
 use crate::redirect::RedirectAction;
 use crate::response::Response;
 
@@ -358,19 +357,6 @@ impl<B> HttpEngineCore<B> {
             == RedirectAction::Stop
         {
             return Ok(None);
-        }
-
-        if let Some(ref obs) = self.observer {
-            obs.on_event(&crate::observer::RequestEvent {
-                method: current_method.clone(),
-                uri: current_uri.clone(),
-                phase: RequestPhase::Redirected {
-                    status,
-                    from: current_uri.to_string(),
-                    to: next_uri.to_string(),
-                },
-                at: crate::observer::Instant::now(),
-            });
         }
 
         let (next_method, next_body) = match status {

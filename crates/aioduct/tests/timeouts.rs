@@ -10,7 +10,6 @@ mod request_timeout;
 mod write_timeout;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -19,61 +18,13 @@ use http_body_util::Full;
 use hyper::Response;
 
 use aioduct::HttpEngineSend;
-use aioduct::observer::{
-    ConnectionEvent, ConnectionPhase, RequestEvent, RequestObserver, RequestPhase,
-};
+#[path = "support/observation.rs"]
+mod observation_support;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
+use observation_support::TestObserver as RecordingObserver;
 
 use aioduct_test_server::h1::{h1_server, h1_server_with};
-
-#[derive(Default, Clone)]
-struct RecordingObserver {
-    events: Arc<Mutex<Vec<RequestPhase>>>,
-    connection_events: Arc<Mutex<Vec<ConnectionPhase>>>,
-}
-
-impl RequestObserver for RecordingObserver {
-    fn on_event(&self, event: &RequestEvent) {
-        self.events.lock().unwrap().push(event.phase.clone());
-    }
-
-    fn on_connection_event(&self, event: &ConnectionEvent) {
-        self.connection_events
-            .lock()
-            .unwrap()
-            .push(event.phase.clone());
-    }
-}
-
-impl RecordingObserver {
-    fn phases(&self) -> Vec<String> {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|p| match p {
-                RequestPhase::Started => "Started".into(),
-                RequestPhase::PoolCheckoutComplete { outcome, .. } => {
-                    format!("PoolCheckoutComplete({outcome:?})")
-                }
-                RequestPhase::DnsResolved { .. } => "DnsResolved".into(),
-                RequestPhase::TcpConnected { .. } => "TcpConnected".into(),
-                RequestPhase::TlsHandshakeComplete { .. } => "TlsHandshakeComplete".into(),
-                RequestPhase::RequestSent { .. } => "RequestSent".into(),
-                RequestPhase::ResponseStarted { .. } => "ResponseStarted".into(),
-                RequestPhase::ResponseComplete { .. } => "ResponseComplete".into(),
-                RequestPhase::Failed { .. } => "Failed".into(),
-                RequestPhase::BytesTransferred { .. } => "BytesTransferred".into(),
-                RequestPhase::TransferComplete { .. } => "TransferComplete".into(),
-                RequestPhase::TransferAborted { .. } => "TransferAborted".into(),
-                RequestPhase::Redirected { .. } => "Redirected".into(),
-                RequestPhase::Retrying { .. } => "Retrying".into(),
-                RequestPhase::TrailersReceived { .. } => "TrailersReceived".into(),
-            })
-            .collect()
-    }
-}
 
 #[tokio::test]
 async fn test_connect_timeout() {
@@ -830,7 +781,7 @@ async fn read_timeout_evicts_pooled_connection() {
         .pool_max_idle_per_host(5)
         .read_timeout(Duration::from_millis(100))
         .timeout(Duration::from_secs(10))
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .build()
         .unwrap();
 
@@ -861,11 +812,11 @@ async fn read_timeout_evicts_pooled_connection() {
     // Verify request 2 reused the pooled connection (no new TCP connect).
     let phases2 = obs.phases();
     assert!(
-        !phases2.contains(&"TcpConnected".to_string()),
+        !phases2.contains(&"Established".to_string()),
         "request 2 should reuse pooled connection, got phases: {phases2:?}"
     );
     assert!(
-        phases2.contains(&"PoolCheckoutComplete(Hit)".to_string()),
+        phases2.contains(&"PoolLookup(Hit)".to_string()),
         "request 2 should hit the pool, got phases: {phases2:?}"
     );
 
@@ -901,7 +852,7 @@ async fn read_timeout_evicts_pooled_connection() {
     // pooled connection was evicted.
     let phases = obs.phases();
     assert!(
-        phases.contains(&"TcpConnected".to_string()),
+        phases.contains(&"Established".to_string()),
         "third request should use a fresh TCP connection (stalled connection evicted), got phases: {phases:?}"
     );
 }

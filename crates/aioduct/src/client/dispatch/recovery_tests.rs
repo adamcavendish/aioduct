@@ -1,7 +1,10 @@
 use super::*;
 use crate::body::RequestBodySend;
 use crate::client::{BodyReplayability, HttpEngineSend};
-use crate::observer::{PoolOutcome, RequestEvent, RequestObserver, RequestPhase};
+use crate::observer::{
+    ConnectionAcquisitionEvent, Interest, NoopConnectionObservation, Observer, PoolLookupResult,
+    RequestInfo, RequestObservation,
+};
 use crate::pool::{PoolKey, PooledConnection, ProtocolHint, ProxyRoute};
 use crate::runtime::executor::poll_executor;
 use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
@@ -53,7 +56,13 @@ async fn pooled_h1_rejection_recovers_exact_unsent_request() {
         .unwrap();
     let uri = "http://example.com/upload".parse().unwrap();
 
-    let result = Core::try_send_on_pooled_connection(&mut pooled, request, uri).await;
+    let result = Core::try_send_on_pooled_connection(
+        &mut pooled,
+        request,
+        uri,
+        crate::observer::NoopAttemptStartObserver,
+    )
+    .await;
     assert_recovered_request(result, "/upload").await;
     assert_eq!(pooled.requests_served(), 0);
 }
@@ -88,7 +97,13 @@ async fn pooled_h2_rejection_recovers_exact_unsent_request() {
         .unwrap();
     let uri = "https://example.com/upload".parse().unwrap();
 
-    let result = Core::try_send_on_pooled_connection(&mut pooled, request, uri).await;
+    let result = Core::try_send_on_pooled_connection(
+        &mut pooled,
+        request,
+        uri,
+        crate::observer::NoopAttemptStartObserver,
+    )
+    .await;
     assert_recovered_request(result, "https://example.com/upload").await;
     assert_eq!(pooled.requests_served(), 0);
     server.abort();
@@ -127,7 +142,13 @@ async fn pooled_h1_failure_after_serialization_does_not_recover_request() {
         .unwrap();
     let uri = "http://example.com/upload".parse().unwrap();
 
-    let result = Core::try_send_on_pooled_connection(&mut pooled, request, uri).await;
+    let result = Core::try_send_on_pooled_connection(
+        &mut pooled,
+        request,
+        uri,
+        crate::observer::NoopAttemptStartObserver,
+    )
+    .await;
     match result {
         Err(PooledSendError::Failed(_)) => {}
         Err(PooledSendError::Recovered { .. }) => {
@@ -144,20 +165,34 @@ struct DropDispatchOnHit {
     dispatch: Mutex<Option<Box<dyn std::any::Any + Send>>>,
 }
 
-impl RequestObserver for DropDispatchOnHit {
-    fn on_event(&self, event: &RequestEvent) {
+impl Observer for DropDispatchOnHit {
+    type Context = ();
+    type Observation = Self;
+    type ConnectionObservation = NoopConnectionObservation;
+    fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self) {
+        (
+            Interest::CONNECTION_ACQUISITION,
+            Self {
+                dispatch: Mutex::new(self.dispatch.lock().unwrap().take()),
+            },
+        )
+    }
+    fn begin_connection(&self) -> (Interest, NoopConnectionObservation) {
+        (Interest::EMPTY, NoopConnectionObservation)
+    }
+}
+impl RequestObservation for DropDispatchOnHit {
+    fn on_connection_acquisition(&self, event: &ConnectionAcquisitionEvent<'_>) {
         if matches!(
-            event.phase,
-            RequestPhase::PoolCheckoutComplete {
-                outcome: PoolOutcome::Hit,
+            event,
+            ConnectionAcquisitionEvent::PoolLookup {
+                result: PoolLookupResult::Hit,
                 ..
             }
         ) {
             drop(self.dispatch.lock().unwrap().take());
         }
     }
-
-    fn on_connection_event(&self, _event: &crate::observer::ConnectionEvent) {}
 }
 
 #[tokio::test]
@@ -211,7 +246,7 @@ async fn exact_h1_recovery_dispatches_one_shot_body_fresh_once() {
         dispatch: Mutex::new(Some(Box::new((connection, server_io)))),
     };
     let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(observer)
+        .observer(observer)
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -238,6 +273,16 @@ async fn exact_h1_recovery_dispatches_one_shot_body_fresh_once() {
         .body(body)
         .unwrap();
 
+    let observation = crate::observer::SendRequestObservationHandle::new(
+        engine.observer.as_ref(),
+        RequestInfo {
+            method: request.method(),
+            initial_uri: &uri,
+        },
+        None,
+    )
+    .unwrap();
+    let attempt_observer = observation.attempt_observer().unwrap();
     let response = engine
         .execute_single_with_hint_send(
             request,
@@ -250,6 +295,7 @@ async fn exact_h1_recovery_dispatches_one_shot_body_fresh_once() {
             None,
             false,
             BodyReplayability::OneShot,
+            Some(&attempt_observer),
         )
         .await
         .unwrap();

@@ -175,7 +175,7 @@ async fn observer_fires_connection_metrics_on_checkin() {
     let obs = TestObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap();
@@ -193,9 +193,11 @@ async fn observer_fires_connection_metrics_on_checkin() {
         !conn_events.is_empty(),
         "observer should receive connection metrics events on checkin, got: {conn_events:?}"
     );
-    // Check the event contains "Metrics"
+    // Check the event contains "PoolEligibilityChanged"
     assert!(
-        conn_events.iter().any(|e| e.contains("Metrics")),
+        conn_events
+            .iter()
+            .any(|e| e.contains("PoolEligibilityChanged")),
         "expected Metrics connection event, got: {conn_events:?}"
     );
 }
@@ -214,7 +216,7 @@ async fn observer_fires_connection_metrics_on_h2_multiplex_clone() {
     let client = Arc::new(
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
             .pool_idle_timeout(Duration::from_secs(60))
-            .request_observer(obs.clone())
+            .observer(obs.clone())
             .build()
             .unwrap(),
     );
@@ -781,7 +783,7 @@ async fn observer_receives_stale_retry_event() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(5))
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .build()
         .unwrap();
 
@@ -805,10 +807,10 @@ async fn observer_receives_stale_retry_event() {
         .unwrap();
     let _ = resp.bytes().await.unwrap();
 
-    let phases = obs.phases.lock().unwrap();
+    let phases = obs.events.lock().unwrap();
     // Should see Failed with retry: StaleConnection, and PoolCheckoutComplete(StaleRetry)
     assert!(
-        phases.iter().any(|p| p.contains("PoolCheckoutComplete")),
+        phases.iter().any(|p| p.contains("PoolLookup")),
         "expected PoolCheckoutComplete phase, got: {phases:?}"
     );
 

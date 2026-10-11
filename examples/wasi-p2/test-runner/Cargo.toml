@@ -1,0 +1,12 @@
+[package]
+name = "example-wasi-p2-test-runner"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+hyper.workspace = true
+wasmtime = { workspace = true, features = ["async", "component-model", "cranelift"] }
+wasmtime-wasi = { workspace = true, features = ["p2"] }
+wasmtime-wasi-http = { workspace = true, features = ["p2"] }

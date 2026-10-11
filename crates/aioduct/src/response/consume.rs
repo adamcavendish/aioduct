@@ -1,24 +1,23 @@
-use crate::body::RequestBodySend;
-
 use super::Response;
 
 impl Response {
-    /// Consume the response and return the raw hyper body.
-    pub fn into_body(self) -> RequestBodySend {
-        self.inner.into_body().into_boxed()
+    /// Consume the response and return its fixed response-body carrier.
+    ///
+    /// The carrier keeps aioduct's private request continuation attached while
+    /// allowing callers to hold and poll the body without exposing an observer
+    /// type parameter.
+    pub fn into_body(self) -> super::ResponseBodySend {
+        self.inner.into_body()
     }
 
     /// Convert the response into an async byte stream.
     pub fn into_bytes_stream(self) -> crate::body::BodyStreamSend {
-        crate::body::BodyStreamSend::with_observer(
-            self.inner.into_body().into_boxed(),
-            self.observer_ctx,
-        )
+        crate::body::BodyStreamSend::from_response_body(self.inner.into_body())
     }
 
     /// Convert the response into a Server-Sent Events stream.
     pub fn into_sse_stream(self) -> crate::sse::SseStreamSend {
-        crate::sse::SseStreamSend::new(self.inner.into_body().into_boxed())
+        crate::sse::SseStreamSend::from_response_body(self.inner.into_body())
     }
 
     /// Perform an HTTP upgrade (e.g., WebSocket) on this response.
@@ -30,56 +29,8 @@ impl Response {
 
 #[cfg(all(test, feature = "tokio"))]
 mod tests {
-    use crate::error::Error;
-    use crate::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
-    use crate::response::{BodyObserverCtx, Response, ResponseBodySend};
+    use crate::response::{Response, ResponseBodySend};
     use http_body_util::BodyExt;
-    use std::sync::{Arc, Mutex};
-
-    struct RecordingObserver {
-        events: Arc<Mutex<Vec<RequestPhase>>>,
-    }
-
-    impl RequestObserver for RecordingObserver {
-        fn on_event(&self, event: &RequestEvent) {
-            self.events.lock().unwrap().push(event.phase.clone());
-        }
-        fn on_connection_event(&self, _event: &ConnectionEvent) {}
-    }
-
-    fn make_response_with_observer(
-        body_bytes: &[u8],
-        events: Arc<Mutex<Vec<RequestPhase>>>,
-    ) -> Response {
-        let body = http_body_util::Full::new(bytes::Bytes::from(body_bytes.to_vec()))
-            .map_err(|never| match never {})
-            .boxed_unsync();
-        let inner = http::Response::builder()
-            .status(200)
-            .body(ResponseBodySend::from_boxed(body))
-            .unwrap();
-        let mut resp = Response::new(inner, "http://example.com/".parse().unwrap());
-        resp.set_observer_ctx(BodyObserverCtx {
-            observer: Arc::new(RecordingObserver {
-                events: events.clone(),
-            }),
-            method: http::Method::GET,
-            uri: "http://example.com/".parse().unwrap(),
-            response_started: crate::clock::Instant::now(),
-        });
-        resp
-    }
-
-    #[tokio::test]
-    async fn bytes_success_fires_transfer_complete() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let resp = make_response_with_observer(b"hello world", events.clone());
-        let bytes = resp.bytes().await.unwrap();
-        assert_eq!(bytes, "hello world");
-        let captured = events.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert!(matches!(captured[0], RequestPhase::TransferComplete { .. }));
-    }
 
     #[tokio::test]
     async fn bytes_success_without_observer() {
@@ -93,50 +44,6 @@ mod tests {
         let resp = Response::new(inner, "http://example.com/".parse().unwrap());
         let bytes = resp.bytes().await.unwrap();
         assert_eq!(bytes, "no observer");
-    }
-
-    #[tokio::test]
-    async fn bytes_error_fires_transfer_aborted() {
-        use http_body::Body;
-        use std::pin::Pin;
-        use std::task::{Context, Poll};
-
-        struct ErrorBody;
-
-        impl Body for ErrorBody {
-            type Data = bytes::Bytes;
-            type Error = Error;
-
-            fn poll_frame(
-                self: Pin<&mut Self>,
-                _cx: &mut Context<'_>,
-            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-                Poll::Ready(Some(Err(Error::Other("test error".into()))))
-            }
-        }
-
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let boxed: crate::body::RequestBodySend = http_body_util::BodyExt::boxed_unsync(ErrorBody);
-        let inner = http::Response::builder()
-            .status(200)
-            .body(ResponseBodySend::from_boxed(boxed))
-            .unwrap();
-        let mut resp = Response::new(inner, "http://example.com/".parse().unwrap());
-        resp.set_observer_ctx(BodyObserverCtx {
-            observer: Arc::new(RecordingObserver {
-                events: events.clone(),
-            }),
-            method: http::Method::POST,
-            uri: "http://example.com/upload".parse().unwrap(),
-            response_started: crate::clock::Instant::now(),
-        });
-
-        let result = resp.bytes().await;
-        assert!(result.is_err());
-
-        let captured = events.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert!(matches!(captured[0], RequestPhase::TransferAborted { .. }));
     }
 
     #[tokio::test]

@@ -32,8 +32,16 @@ type ResponseHook = Box<dyn FnOnce(&mut Response)>;
 ///
 /// Created via [`HttpEngineLocal::forward_local`]. Mirrors [`super::ForwardBuilderSend`]
 /// for completion-based runtimes.
-pub struct ForwardBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B> {
-    client: &'a HttpEngineLocal<R, C>,
+pub struct ForwardBuilderLocal<
+    'a,
+    R: RuntimeLocal,
+    C: ConnectorLocal + Clone,
+    B,
+    O = crate::observer::NoopObserver,
+> where
+    O: crate::observer::Observer,
+{
+    client: &'a HttpEngineLocal<R, C, O>,
     request: http::Request<B>,
     upstream: Option<Uri>,
     strip_prefix: Option<String>,
@@ -55,14 +63,17 @@ pub struct ForwardBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B
     downstream_target_uri: Option<Uri>,
     response_content_digest_max_bytes: Option<usize>,
     response_message_signature: Option<AutomaticMessageSignature>,
+    observation_disabled: bool,
+    observation_context: Option<O::Context>,
 }
 
-impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B> ForwardBuilderLocal<'a, R, C, B>
+impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, B, O> ForwardBuilderLocal<'a, R, C, B, O>
 where
+    O: crate::observer::Observer + 'static,
     B: Body<Data = Bytes> + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    pub(crate) fn new(client: &'a HttpEngineLocal<R, C>, request: http::Request<B>) -> Self {
+    pub(crate) fn new(client: &'a HttpEngineLocal<R, C, O>, request: http::Request<B>) -> Self {
         let protocol_hint = request
             .extensions()
             .get::<ProtocolHint>()
@@ -91,6 +102,8 @@ where
             downstream_target_uri: None,
             response_content_digest_max_bytes: None,
             response_message_signature: None,
+            observation_disabled: false,
+            observation_context: None,
         }
     }
 
@@ -149,6 +162,18 @@ where
     /// Set a timeout for gaps while streaming the response body downstream.
     pub fn read_timeout(mut self, duration: Duration) -> Self {
         self.read_timeout = Some(duration);
+        self
+    }
+
+    /// Disable observation for this forwarded request.
+    pub fn disable_observation(mut self) -> Self {
+        self.observation_disabled = true;
+        self
+    }
+
+    /// Supply the observer context for this forwarded request.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.observation_context = Some(context);
         self
     }
 
@@ -400,6 +425,31 @@ where
         let response_request_method = request.method().clone();
         let on_response = self.on_response;
         let timeout = self.timeout.or(client.core.timeout);
+        let mut observation = if self.observation_disabled {
+            None
+        } else {
+            crate::observer::LocalRequestObservationHandle::new(
+                &*client.observer,
+                crate::observer::RequestInfo {
+                    method: &response_request_method,
+                    initial_uri: &full_uri,
+                },
+                self.observation_context,
+            )
+        };
+        let attempt_observer = observation
+            .as_ref()
+            .and_then(|observation| observation.attempt_observer());
+        if let Some(counter) = observation
+            .as_ref()
+            .and_then(|observation| observation.attempt_counter())
+        {
+            request.extensions_mut().insert(counter);
+        }
+        let response_observer = observation
+            .as_ref()
+            .map(|observation| observation.response_observer());
+        let response_request_method_for_observation = response_request_method.clone();
         let send_fut = Box::pin(async move {
             super::project_deferred_headers_for_signature(&mut request);
             if sign_final_request
@@ -410,7 +460,7 @@ where
                 let signature_headers = signature.sign_local().await?;
                 signature_headers.insert_into(request.headers_mut())?;
             }
-            let mut resp = client
+            let execution = client
                 .execute_single_local(
                     request,
                     &full_uri,
@@ -422,8 +472,21 @@ where
                     protocol_hint,
                     sign_final_request,
                     body_replayability,
+                    attempt_observer.clone(),
                 )
-                .await?;
+                .await;
+            if let (Err(error), Some(observer)) = (&execution, &attempt_observer) {
+                observer.failed(observer.current_attempt(), error);
+            }
+            let mut resp = execution?;
+
+            if let Some(observer) = response_observer.as_ref() {
+                observer.observe_headers(crate::observer::ResponseInfo {
+                    status: resp.status(),
+                    version: Some(resp.version()),
+                    source: crate::observer::ResponseSource::Transport,
+                });
+            }
 
             let upstream_response_version = resp.version();
             let upstream_response_status = resp.status();
@@ -509,13 +572,27 @@ where
         } else {
             send_fut.await
         };
-        let resp = result?;
-
-        if let Some(duration) = read_timeout {
-            Ok(resp.into_local_with_read_timeout::<R>(duration))
+        let resp = match result {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(observation) = &mut observation {
+                    observation.finish_failed(&error);
+                }
+                return Err(error);
+            }
+        };
+        let mut resp = if let Some(duration) = read_timeout {
+            resp.into_local_with_read_timeout::<R>(duration)
         } else {
-            Ok(resp.into_local())
+            resp.into_local()
+        };
+        if let Some(observation) = &mut observation {
+            let awaiting_handoff = resp.status() == http::StatusCode::SWITCHING_PROTOCOLS
+                || (response_request_method_for_observation == http::Method::CONNECT
+                    && resp.status().is_success());
+            observation.attach_to_local_response(&mut resp, awaiting_handoff);
         }
+        Ok(resp)
     }
 }
 

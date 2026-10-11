@@ -10,15 +10,18 @@ use crate::body::RequestBody;
 use crate::body::RequestBodyLocal;
 use crate::digest_fields::ContentDigestBody;
 use crate::error::Error;
-use crate::observer::RequestPhase;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
 use super::request_flow::{CacheLookupOutcome, PostExecuteAction};
+use super::{PendingResponse, ResponseProcessing};
 
 // ── Local path (RuntimeLocal + ConnectorLocal) ────────────────────────────────────
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O> HttpEngineLocal<R, C, O>
+where
+    O: crate::observer::Observer + 'static,
+{
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute_local(
         &self,
@@ -36,7 +39,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         automatic_content_digest: bool,
         mut original_fragment: Option<String>,
         finalized_request: Option<&std::sync::Mutex<FinalizedRequestState>>,
-    ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
+        counter: Option<&crate::observer::RequestAttemptCounter>,
+        attempt_observer: Option<&crate::observer::LocalAttemptObserver>,
+    ) -> Result<PendingResponse, Error> {
         let mut replay_snapshot = finalized_request.and_then(|state| {
             state
                 .lock()
@@ -244,11 +249,11 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 let cache_entry = match cache_state {
                     CacheLookupOutcome::Fresh(response) => {
                         let mut response = *response;
-                        self.core
-                            .attach_observer(&mut response, &current_method, &current_uri);
-                        let mut response = response.into_local();
                         response.set_fragment(original_fragment.clone());
-                        return Ok(response);
+                        return Ok(PendingResponse::ready(
+                            response,
+                            crate::observer::ResponseSource::CacheHit,
+                        ));
                     }
                     CacheLookupOutcome::Stale(entry) => Some(entry),
                     CacheLookupOutcome::Miss => None,
@@ -281,6 +286,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 signature_headers.insert_into(request.headers_mut())?;
             }
 
+            if let Some(counter) = counter {
+                request.extensions_mut().insert(counter.clone());
+            }
             current_method = request.method().clone();
             let replay_bytes_for_stale = match body_for_replay.as_ref() {
                 Some(RequestBody::Buffered(b)) => Some(b.clone()),
@@ -324,24 +332,47 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     selected_protocol_hint,
                     true,
                     body_replayability,
+                    attempt_observer.cloned(),
                 )
                 .await
             {
                 Ok(resp) => {
+                    let attempt = counter.map(crate::observer::RequestAttemptCounter::current);
                     if resp.status().is_server_error()
                         && let Some(sie_duration) = stale_if_error
                         && let Some(ref cached) = cache_entry
                         && cached.age <= sie_duration
                     {
-                        let _ = resp.bytes().await;
+                        if let Some(observer) = attempt_observer {
+                            observer.response_disposition(
+                                attempt.unwrap_or(0),
+                                crate::observer::ResponseInfo {
+                                    status: resp.status(),
+                                    version: Some(resp.version()),
+                                    source: crate::observer::ResponseSource::Transport,
+                                },
+                                crate::observer::ResponseDisposition::StaleIfError,
+                            );
+                        }
+                        let cleanup = attempt_observer.and_then(|observer| {
+                            observer.cleanup(
+                                counter.map_or(0, crate::observer::RequestAttemptCounter::current),
+                            )
+                        });
+                        let result = resp.bytes().await;
+                        if let Some(cleanup) = cleanup {
+                            cleanup.drained(&result);
+                        }
                         // SAFETY: cache_entry is guaranteed Some by the let-chain
                         // guard above. Use take() to move ownership out.
                         if let Some(cached) = cache_entry.take() {
                             let http_resp = cached.into_http_response();
-                            let mut response =
-                                Response::from_boxed(http_resp, current_uri).into_local();
+                            let mut response = Response::from_boxed(http_resp, current_uri);
                             response.set_fragment(original_fragment.clone());
-                            return Ok(response);
+                            return Ok(PendingResponse::ready(
+                                response,
+                                crate::observer::ResponseSource::CacheStaleIfError,
+                            ));
                         }
                         // Unreachable: if the guard matched, cache_entry was Some.
                         return Err(Error::Other(
@@ -351,15 +382,23 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     resp
                 }
                 Err(e) => {
+                    if let Some(observer) = attempt_observer {
+                        observer.failed(
+                            counter.map_or(0, crate::observer::RequestAttemptCounter::current),
+                            &e,
+                        );
+                    }
                     if let Some(sie_duration) = stale_if_error
                         && let Some(cached) = cache_entry
                         && cached.age <= sie_duration
                     {
                         let http_resp = cached.into_http_response();
-                        let mut response =
-                            Response::from_boxed(http_resp, current_uri).into_local();
+                        let mut response = Response::from_boxed(http_resp, current_uri);
                         response.set_fragment(original_fragment.clone());
-                        return Ok(response);
+                        return Ok(PendingResponse::ready(
+                            response,
+                            crate::observer::ResponseSource::CacheStaleIfError,
+                        ));
                     }
                     return Err(e);
                 }
@@ -375,6 +414,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     force_addr,
                     selected_protocol_hint,
                     finalized_request,
+                    counter,
+                    attempt_observer,
                 )
                 .await?;
             if let Some(value) = current_headers.get(AUTHORIZATION).cloned() {
@@ -398,24 +439,50 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     if resp.status() == StatusCode::NOT_MODIFIED
                         && let Some(cached) = cache_entry
                     {
+                        if let Some(observer) = attempt_observer {
+                            observer.response_disposition(
+                                counter.map_or(0, crate::observer::RequestAttemptCounter::current),
+                                crate::observer::ResponseInfo {
+                                    status: resp.status(),
+                                    version: Some(resp.version()),
+                                    source: crate::observer::ResponseSource::Transport,
+                                },
+                                crate::observer::ResponseDisposition::CacheRevalidation,
+                            );
+                        }
+                        if let Some(cleanup) = attempt_observer.and_then(|observer| {
+                            observer.cleanup(
+                                counter.map_or(0, crate::observer::RequestAttemptCounter::current),
+                            )
+                        }) {
+                            cleanup.finish(crate::observer::CleanupState::Stopped, None);
+                        }
+                        drop(resp);
                         let http_resp = cached.into_http_response();
-                        let mut final_resp =
-                            Response::from_boxed(http_resp, current_uri).into_local();
+                        let mut final_resp = Response::from_boxed(http_resp, current_uri);
                         final_resp.set_fragment(original_fragment);
-                        return Ok(final_resp);
+                        return Ok(PendingResponse::ready(
+                            final_resp,
+                            crate::observer::ResponseSource::CacheRevalidated,
+                        ));
                     }
-                    let mut final_resp = self
-                        .finalize_response_local(
-                            resp,
-                            &current_method,
-                            current_uri,
-                            &cache_request_headers,
+                    let mut final_resp = resp;
+                    final_resp.set_fragment(original_fragment);
+                    let awaiting_handoff = final_resp.status() == StatusCode::SWITCHING_PROTOCOLS
+                        || (current_method == Method::CONNECT && final_resp.status().is_success());
+                    return Ok(PendingResponse {
+                        response: final_resp,
+                        source: crate::observer::ResponseSource::Transport,
+                        processing_timeout: None,
+                        awaiting_handoff,
+                        processing: Some(ResponseProcessing {
+                            method: current_method,
+                            uri: current_uri,
+                            request_headers: cache_request_headers,
                             read_timeout,
                             no_decompression,
-                        )
-                        .await?;
-                    final_resp.set_fragment(original_fragment);
-                    return Ok(final_resp);
+                        }),
+                    });
                 }
                 PostExecuteAction::Redirect {
                     uri,
@@ -423,7 +490,26 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     body,
                     fragment,
                 } => {
-                    let _ = resp.bytes().await;
+                    if let Some(observer) = attempt_observer {
+                        observer.response_disposition(
+                            counter.map_or(0, crate::observer::RequestAttemptCounter::current),
+                            crate::observer::ResponseInfo {
+                                status: resp.status(),
+                                version: Some(resp.version()),
+                                source: crate::observer::ResponseSource::Transport,
+                            },
+                            crate::observer::ResponseDisposition::Redirect,
+                        );
+                    }
+                    let cleanup = attempt_observer.and_then(|observer| {
+                        observer.cleanup(
+                            counter.map_or(0, crate::observer::RequestAttemptCounter::current),
+                        )
+                    });
+                    let result = resp.bytes().await;
+                    if let Some(cleanup) = cleanup {
+                        cleanup.drained(&result);
+                    }
                     current_uri = uri;
                     current_method = method;
                     current_body = body;
@@ -448,6 +534,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         force_addr: Option<std::net::SocketAddr>,
         protocol_hint: crate::pool::ProtocolHint,
         finalized_request: Option<&std::sync::Mutex<FinalizedRequestState>>,
+        counter: Option<&crate::observer::RequestAttemptCounter>,
+        attempt_observer: Option<&crate::observer::LocalAttemptObserver>,
     ) -> Result<Response, Error> {
         let Some(ref digest) = self.core.digest_auth else {
             return Ok(resp);
@@ -457,6 +545,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         }
         let Some(snapshot) = snapshot else {
             return Ok(resp);
+        };
+
+        let digest_response = crate::observer::ResponseInfo {
+            status: resp.status(),
+            version: Some(resp.version()),
+            source: crate::observer::ResponseSource::Transport,
         };
 
         let challenge_headers = resp.headers().clone();
@@ -475,28 +569,30 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             None
         };
 
-        resp.bytes().await?;
+        if let Some(observer) = attempt_observer {
+            observer.response_disposition(
+                counter.map_or(0, crate::observer::RequestAttemptCounter::current),
+                digest_response,
+                crate::observer::ResponseDisposition::AuthenticationReplay,
+            );
+        }
+
+        let cleanup = attempt_observer.and_then(|observer| {
+            observer.cleanup(counter.map_or(0, crate::observer::RequestAttemptCounter::current))
+        });
+        let drained = resp.bytes().await;
+        if let Some(cleanup) = cleanup {
+            cleanup.drained(&drained);
+        }
+        drained?;
         let auth_value = digest
             .authorize_prepared(snapshot.method(), snapshot.request_uri(), &challenge)
             .ok_or_else(|| {
                 Error::Other("digest authorization failed after replay quiescence".into())
             })?;
-        let (attempt, max_retries) = match retry_eligibility {
-            Some(permit) => permit.commit(),
-            None => (1, 1),
-        };
-
-        let retry_reason = Error::Other("digest authentication challenge".into());
-        self.core.notify(
-            snapshot.method(),
-            snapshot.effective_uri(),
-            RequestPhase::Retrying {
-                reason: retry_reason.to_string(),
-                attempt,
-                max_retries,
-                backoff: Duration::ZERO,
-            },
-        );
+        if let Some(permit) = retry_eligibility {
+            permit.commit();
+        }
 
         let authenticated = snapshot.with_digest_authorization(auth_value, challenge);
         let replay_for_stale = authenticated.stale_replay_bytes();
@@ -549,11 +645,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             protocol_hint,
             true,
             body_replayability,
+            attempt_observer.cloned(),
         )
         .await
     }
 
-    pub(super) async fn finalize_response_local(
+    pub(crate) async fn finalize_response_local(
         &self,
         resp: Response,
         method: &Method,
@@ -561,7 +658,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         request_headers: &HeaderMap,
         read_timeout: Option<Duration>,
         no_decompression: bool,
-    ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
+    ) -> Result<(Response<crate::body::ResponseBodyLocal>, bool), Error> {
         let resp = if !no_decompression && !self.core.accept_encoding.is_empty() {
             resp.decompress(&self.core.accept_encoding)
         } else {
@@ -584,14 +681,17 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             let status = resp.status();
             let headers = resp.headers().clone();
             if crate::cache::is_response_cacheable(status, &headers) {
+                let fragment = resp.fragment().map(str::to_owned);
                 let body_bytes = resp.bytes().await?;
                 cache.store(method, &uri, status, &headers, &body_bytes, request_headers);
                 let cached_resp = super::boxed_response_from_bytes(status, &headers, body_bytes);
-                return Ok(Response::from_boxed(cached_resp, uri).into_local());
+                let mut response = Response::from_boxed(cached_resp, uri).into_local();
+                response.set_fragment(fragment);
+                return Ok((response, true));
             }
         }
 
-        Ok(resp)
+        Ok((resp, false))
     }
 }
 

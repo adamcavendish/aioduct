@@ -439,7 +439,7 @@ async fn socks5_no_acceptable_auth_methods_is_error() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::socks5(&format!("socks5://{socks_addr}")).unwrap())
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
 
@@ -569,7 +569,7 @@ async fn https_proxy_observer_reports_completed_phases_before_origin_tls_failure
             aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
                 .unwrap(),
         )
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .timeout(Duration::from_secs(2))
         .build()
         .unwrap();

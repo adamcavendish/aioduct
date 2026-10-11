@@ -518,9 +518,9 @@ mod tests {
         use http_body::Body;
         use http_body_util::BodyExt;
 
-        let local_body: crate::body::ResponseBodyLocal = Box::pin(
+        let local_body = crate::body::ResponseBodyLocal::from_inner(Box::pin(
             http_body_util::Full::new(Bytes::from("local data")).map_err(|never| match never {}),
-        );
+        ));
         let body = ReadTimeoutBody::<_, TokioRuntime>::new(local_body, Duration::from_secs(1));
         let mut boxed = Box::pin(body);
         let waker = std::task::Waker::noop();
@@ -555,7 +555,7 @@ mod tests {
             }
         }
 
-        let local_body: crate::body::ResponseBodyLocal = Box::pin(PendingLocalBody);
+        let local_body = crate::body::ResponseBodyLocal::from_inner(Box::pin(PendingLocalBody));
         let body = ReadTimeoutBody::<_, TokioRuntime>::new(local_body, Duration::from_millis(1));
         let mut boxed = Box::pin(body);
 

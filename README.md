@@ -70,7 +70,7 @@ aioduct uses hyper 1.x **the way it was intended** — as a protocol engine you 
 - **Tower integration** — use aioduct as a tower `Service`
 - **Link headers** — RFC 8288 Link header parsing for pagination and discovery
 - **Forwarded header** — RFC 7239 Forwarded header builder and parser
-- **Request timings** — per-phase timing via `RequestObserver` (DNS, TCP, TLS, TTFB, total)
+- **Request timings** — typed request and independent connection callbacks via `Observer` (DNS, TCP, TLS, headers, body finish)
 
 ## Quick Start
 

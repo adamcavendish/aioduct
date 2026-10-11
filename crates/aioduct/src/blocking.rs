@@ -6,7 +6,7 @@ use http::{HeaderMap, Method, StatusCode};
 
 use crate::error::Error;
 use crate::runtime::BlockingRuntime;
-use crate::traits::{ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt};
+use crate::traits::{HttpClient, RequestBuilderExt, ResponseExt, SseResponseExt, SseStreamExt};
 
 /// A blocking HTTP client that wraps any async [`HttpClient`] implementor.
 ///
@@ -216,6 +216,51 @@ impl<C: HttpClient, R: BlockingRuntime> BlockingRequestBuilder<C, R> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl<AR, AC, O, R> BlockingRequestBuilder<crate::client::HttpEngineSend<AR, AC, O>, R>
+where
+    AR: crate::runtime::RuntimePoll,
+    AC: crate::runtime::ConnectorSend,
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+    R: BlockingRuntime,
+{
+    /// Skip observation for this logical request, before `Observer::begin`.
+    pub fn disable_observation(mut self) -> Self {
+        self.inner = self.inner.disable_observation();
+        self
+    }
+
+    /// Supply request-scoped context to the configured observer.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.inner = self.inner.observation_context(context);
+        self
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<AR, AC, O, R> BlockingRequestBuilder<crate::client::HttpEngineLocal<AR, AC, O>, R>
+where
+    AR: crate::runtime::RuntimeLocal,
+    AC: crate::runtime::ConnectorLocal + Clone,
+    O: crate::observer::Observer,
+    R: BlockingRuntime,
+{
+    /// Skip observation for this logical request, before `Observer::begin`.
+    pub fn disable_observation(mut self) -> Self {
+        self.inner = self.inner.disable_observation();
+        self
+    }
+
+    /// Supply request-scoped context to the configured observer.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.inner = self.inner.observation_context(context);
+        self
+    }
+}
+
 /// A blocking HTTP response.
 pub struct BlockingResponse<Resp: ResponseExt, R: BlockingRuntime> {
     inner: Resp,
@@ -274,63 +319,46 @@ impl<Resp: ResponseExt, R: BlockingRuntime> BlockingResponse<Resp, R> {
     pub fn text(self) -> Result<String, Error> {
         R::block_on_session(&self.session, self.inner.text())?
     }
+}
 
-    /// Convert the response into a blocking Server-Sent Events stream.
-    pub fn into_sse_stream(self) -> BlockingSseStream<Resp::ByteStream, R> {
+impl<Resp: SseResponseExt, R: BlockingRuntime> BlockingResponse<Resp, R> {
+    /// Convert into a blocking view of the same associated SSE stream.
+    pub fn into_sse_stream(self) -> BlockingSseStream<Resp::SseStream, R> {
         BlockingSseStream {
-            body: self.inner.into_bytes_stream(),
-            buf: bytes::BytesMut::new(),
-            decoder: crate::SseDecoder::new(),
+            stream: self.inner.into_sse_stream(),
             session: self.session,
-            done: false,
         }
     }
 }
 
 /// Blocking Server-Sent Events stream backed by an async response body.
-pub struct BlockingSseStream<S: ByteStreamExt, R: BlockingRuntime> {
-    body: S,
-    buf: bytes::BytesMut,
-    decoder: crate::SseDecoder,
+pub struct BlockingSseStream<S: SseStreamExt, R: BlockingRuntime> {
+    // Drop the stream while the persistent runtime session is still alive.
+    stream: S,
     session: R::Session,
-    done: bool,
 }
 
-impl<S: ByteStreamExt, R: BlockingRuntime> std::fmt::Debug for BlockingSseStream<S, R> {
+impl<S: SseStreamExt, R: BlockingRuntime> std::fmt::Debug for BlockingSseStream<S, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlockingSseStream").finish()
     }
 }
 
-impl<S: ByteStreamExt, R: BlockingRuntime> BlockingSseStream<S, R> {
+impl<S: SseStreamExt, R: BlockingRuntime> BlockingSseStream<S, R> {
     /// Set the maximum payload size for each event. Pass `0` to disable it.
     pub fn with_max_payload_size(mut self, max: usize) -> Self {
-        self.decoder.set_max_payload_size(max);
+        self.stream = self.stream.with_max_payload_size(max);
         self
     }
 
     /// Returns the next SSE event, or `None` when the stream ends.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Result<crate::SseEvent, Error>> {
-        loop {
-            if let Some(event) = self.decoder.decode(&mut self.buf) {
-                return Some(event);
-            }
-            if self.done {
-                return None;
-            }
-            match R::block_on_session(&self.session, self.body.next()) {
-                Ok(Some(Ok(chunk))) => self.buf.extend_from_slice(&chunk),
-                Ok(Some(Err(error))) => return Some(Err(error)),
-                Ok(None) => {
-                    self.done = true;
-                    if let Some(event) = self.decoder.decode(&mut self.buf) {
-                        return Some(event);
-                    }
-                    return None;
-                }
-                Err(error) => return Some(Err(error)),
-            }
+        match R::block_on_session(&self.session, self.stream.next()) {
+            Ok(event) => event,
+            // Driver errors are not reclassified as body/parser errors and do
+            // not synthesize an additional observation callback.
+            Err(error) => Some(Err(error)),
         }
     }
 }

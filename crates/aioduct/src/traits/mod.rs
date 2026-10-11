@@ -141,8 +141,85 @@ pub trait ResponseExt {
 
 /// Async byte stream that yields chunks of body data.
 pub trait ByteStreamExt {
+    /// Future returned by [`next()`](ByteStreamExt::next).
+    ///
+    /// Generic callers that need a `Send` reading task can additionally require
+    /// `Self: Send` and `for<'a> Self::Next<'a>: Send`. Local streams need not
+    /// satisfy these bounds. The latter bound can require `'static` for streams
+    /// borrowing external data due to current compiler limitations.
+    type Next<'a>: Future<Output = Option<Result<Bytes, Error>>>
+    where
+        Self: 'a;
+
     /// Returns the next chunk of body data, or `None` when complete.
-    fn next(&mut self) -> impl Future<Output = Option<Result<Bytes, Error>>>;
+    fn next(&mut self) -> Self::Next<'_>;
+}
+
+/// Response capability for establishing an associated SSE stream.
+///
+/// Separate from `ResponseExt`: responses without SSE support need not invent
+/// a runtime unsupported fallback. Returned types do not carry Observer types.
+pub trait SseResponseExt: ResponseExt + Sized {
+    /// The associated SSE stream, including its private continuation.
+    type SseStream: SseStreamExt;
+    /// Establish the SSE path; no body read is required yet.
+    fn into_sse_stream(self) -> Self::SseStream;
+}
+
+/// SSE stream capability for generic async consumers, including Local streams.
+pub trait SseStreamExt: Sized {
+    /// Named future returned by `next`. Send callers may additionally require
+    /// `Self: Send` and `for<'a> Self::Next<'a>: Send`, as with `ByteStreamExt`.
+    /// This HRTB can imply `'static` for borrowed third-party streams on current Rust.
+    type Next<'a>: Future<Output = Option<Result<crate::sse::SseEvent, Error>>>
+    where
+        Self: 'a;
+    /// Return the next protocol event, or None when the SSE stream has ended.
+    fn next(&mut self) -> Self::Next<'_>;
+    /// Set the local event payload limit; zero disables it.
+    fn with_max_payload_size(self, max: usize) -> Self;
+}
+
+impl<B: http_body::Body<Data = Bytes, Error = Error> + Unpin> SseStreamExt
+    for crate::sse::SseStream<B>
+{
+    type Next<'a>
+        = crate::sse::SseNext<'a, B>
+    where
+        Self: 'a;
+    fn next(&mut self) -> Self::Next<'_> {
+        self.next()
+    }
+    fn with_max_payload_size(self, max: usize) -> Self {
+        self.with_max_payload_size(max)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SseStreamExt for crate::sse::SseStreamLocal {
+    type Next<'a> = crate::sse::SseNextLocal<'a>;
+    fn next(&mut self) -> Self::Next<'_> {
+        self.next()
+    }
+    fn with_max_payload_size(self, max: usize) -> Self {
+        self.with_max_payload_size(max)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SseResponseExt for crate::response::Response {
+    type SseStream = crate::sse::SseStreamSend;
+    fn into_sse_stream(self) -> Self::SseStream {
+        self.into_sse_stream()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SseResponseExt for crate::response::Response<crate::body::ResponseBodyLocal> {
+    type SseStream = crate::sse::SseStreamLocal;
+    fn into_sse_stream(self) -> Self::SseStream {
+        self.into_sse_stream()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

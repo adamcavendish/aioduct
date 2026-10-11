@@ -19,75 +19,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use aioduct::HttpEngineSend;
-use aioduct::observer::{
-    ConnectionEvent, ConnectionPhase, RequestEvent, RequestObserver, RequestPhase, RetryKind,
-};
+#[path = "support/observation.rs"]
+mod observation_support;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
+use observation_support::TestObserver as RecordingObserver;
 
 use aioduct_test_server::h1::h1_server_with;
 use aioduct_test_server::h2::h2_server_with;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Shared observer helper
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-#[derive(Default, Clone)]
-struct RecordingObserver {
-    events: Arc<Mutex<Vec<RequestPhase>>>,
-    connection_events: Arc<Mutex<Vec<ConnectionPhase>>>,
-}
-
-impl RequestObserver for RecordingObserver {
-    fn on_event(&self, event: &RequestEvent) {
-        self.events.lock().unwrap().push(event.phase.clone());
-    }
-
-    fn on_connection_event(&self, event: &ConnectionEvent) {
-        self.connection_events
-            .lock()
-            .unwrap()
-            .push(event.phase.clone());
-    }
-}
-
-impl RecordingObserver {
-    fn phases(&self) -> Vec<String> {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|p| match p {
-                RequestPhase::Started => "Started".into(),
-                RequestPhase::PoolCheckoutComplete { outcome, .. } => {
-                    format!("PoolCheckoutComplete({outcome:?})")
-                }
-                RequestPhase::DnsResolved { .. } => "DnsResolved".into(),
-                RequestPhase::TcpConnected { .. } => "TcpConnected".into(),
-                RequestPhase::TlsHandshakeComplete { .. } => "TlsHandshakeComplete".into(),
-                RequestPhase::RequestSent { .. } => "RequestSent".into(),
-                RequestPhase::ResponseStarted { .. } => "ResponseStarted".into(),
-                RequestPhase::ResponseComplete { .. } => "ResponseComplete".into(),
-                RequestPhase::Failed { .. } => "Failed".into(),
-                RequestPhase::BytesTransferred { .. } => "BytesTransferred".into(),
-                RequestPhase::TransferComplete { .. } => "TransferComplete".into(),
-                RequestPhase::TransferAborted { .. } => "TransferAborted".into(),
-                RequestPhase::TrailersReceived { .. } => "TrailersReceived".into(),
-                RequestPhase::Redirected { .. } => "Redirected".into(),
-                RequestPhase::Retrying { .. } => "Retrying".into(),
-            })
-            .collect()
-    }
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 1. Observer receives TcpConnected + TlsHandshakeComplete on HTTPS
-//    Exercises dispatch_send.rs:778-806 (TLS timing notifications).
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 4. Concurrent H2 requests exercise the multiplex checkout path
-//    Exercises dispatch_send.rs:849-858 (H2 concurrent multiplex).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test]
@@ -103,7 +45,7 @@ async fn concurrent_h2_multiplex_exercises_checkout_path() {
 
     let client = Arc::new(
         HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-            .request_observer(obs.clone())
+            .observer(obs.clone())
             .timeout(Duration::from_secs(5))
             .build()
             .unwrap(),
@@ -513,7 +455,7 @@ async fn observer_reports_stale_retry_on_rst() {
     let obs = RecordingObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -541,26 +483,11 @@ async fn observer_reports_stale_retry_on_rst() {
     // Verify observer captured the stale retry
     let phases = obs.phases();
 
-    // Should have a Failed event with retry: StaleConnection
-    let has_failed_retry = obs.events.lock().unwrap().iter().any(|p| {
-        matches!(
-            p,
-            RequestPhase::Failed {
-                retry: RetryKind::StaleConnection,
-                ..
-            }
-        )
-    });
     assert!(
-        has_failed_retry,
-        "observer should report Failed with retry: StaleConnection on stale connection, got: {phases:?}"
-    );
-
-    // Should have a PoolCheckoutComplete with StaleRetry outcome
-    let has_stale_retry = phases.iter().any(|p| p.contains("StaleRetry"));
-    assert!(
-        has_stale_retry,
-        "observer should report PoolCheckoutComplete(StaleRetry), got: {phases:?}"
+        phases
+            .iter()
+            .any(|fact| fact == "RetryScheduled(StaleConnection)"),
+        "stale retry was not observed: {phases:?}"
     );
 }
 
@@ -854,7 +781,7 @@ async fn connection_coalescing_reuses_h2_with_sans() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .connection_coalescing(true)
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -891,7 +818,7 @@ async fn connection_coalescing_reuses_h2_with_sans() {
             Arc::new(cfg2)
         }))
         .connection_coalescing(true)
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .resolver(move |host: &str, _port: u16| {
             let port = port;
             let _ = host;

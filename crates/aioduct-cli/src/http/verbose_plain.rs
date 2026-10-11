@@ -1,216 +1,90 @@
-use std::io::IsTerminal;
-
-use aioduct::observer::{RequestEvent, RequestPhase, RetryKind};
+use super::observer::CliEvent;
+use crate::util::duration_ms;
 use crossterm::style::{Color, Stylize};
+use std::io::IsTerminal;
 use tokio::sync::mpsc;
 
-use crate::util::duration_ms;
-
-pub async fn run(mut rx: mpsc::UnboundedReceiver<RequestEvent>) {
+pub async fn run(mut rx: mpsc::UnboundedReceiver<CliEvent>) {
     let use_color = std::io::stderr().is_terminal();
     while let Some(event) = rx.recv().await {
-        let line = format_phase(&event.phase);
+        let (line, failed) = format_event(&event);
         if use_color {
-            let colored = colorize(&event.phase, &line);
-            eprintln!("{colored}");
+            eprintln!(
+                "{}",
+                line.with(if failed { Color::Red } else { Color::DarkGrey })
+            );
         } else {
             eprintln!("{line}");
         }
     }
 }
 
-fn format_phase(phase: &RequestPhase) -> String {
-    match phase {
-        RequestPhase::Started => "* Starting request".into(),
-        RequestPhase::PoolCheckoutComplete {
-            outcome,
-            blocked_duration,
-        } => {
+fn format_event(event: &CliEvent) -> (String, bool) {
+    match event {
+        CliEvent::Started { method, uri } => (format!("* Starting {method} {uri}"), false),
+        CliEvent::ResponseHeaders { response, elapsed } => (
             format!(
-                "* Pool: {outcome:?} ({:.1}ms)",
-                duration_ms(blocked_duration)
-            )
-        }
-        RequestPhase::DnsResolved { addrs, duration } => {
-            let first = addrs.first().map(|a| a.to_string()).unwrap_or_default();
-            format!("* DNS: {first} ({:.1}ms)", duration_ms(duration))
-        }
-        RequestPhase::TcpConnected {
-            remote_addr,
-            duration,
-            protocol,
-        } => {
-            format!(
-                "* TCP: {remote_addr} {protocol:?} ({:.1}ms)",
-                duration_ms(duration)
-            )
-        }
-        RequestPhase::TlsHandshakeComplete {
-            duration,
-            alpn_protocol,
-            ..
-        } => {
-            let alpn = alpn_protocol.as_deref().unwrap_or("none");
-            format!("* TLS: ALPN={alpn} ({:.1}ms)", duration_ms(duration))
-        }
-        RequestPhase::RequestSent { duration, headers } => {
-            let mut s = format!(
-                "* Sent: {} headers ({:.1}ms)",
-                headers.len(),
-                duration_ms(duration)
-            );
-            for (name, value) in headers {
-                s.push_str(&format!("\n> {name}: {value}"));
-            }
-            s
-        }
-        RequestPhase::ResponseStarted { waiting_duration } => {
-            format!("* TTFB: {:.1}ms", duration_ms(waiting_duration))
-        }
-        RequestPhase::ResponseComplete {
-            status,
-            protocol,
-            total_duration,
-        } => {
-            format!(
-                "* Done: {status} {protocol:?} ({:.1}ms total)",
-                duration_ms(total_duration)
-            )
-        }
-        RequestPhase::Failed {
-            error,
-            retry,
-            elapsed,
-        } => {
-            let retry_str = match retry {
-                RetryKind::None => "",
-                RetryKind::StaleConnection => " (stale retry)",
-                RetryKind::Explicit => " (will retry)",
-            };
-            format!("* FAIL: {error}{retry_str} ({:.1}ms)", duration_ms(elapsed))
-        }
-        RequestPhase::BytesTransferred {
-            direction,
-            chunk_bytes,
-            cumulative_bytes,
-            ..
-        } => {
-            format!("* {direction:?}: +{chunk_bytes}B ({cumulative_bytes}B total)")
-        }
-        RequestPhase::TransferComplete {
-            direction,
-            total_bytes,
-            throughput_bytes_per_sec,
-            ..
-        } => {
-            format!("* {direction:?} complete: {total_bytes}B ({throughput_bytes_per_sec:.0} B/s)")
-        }
-        RequestPhase::TransferAborted {
-            direction,
-            bytes_transferred,
-            error,
-            ..
-        } => {
-            format!("* {direction:?} aborted after {bytes_transferred}B: {error}")
-        }
-        RequestPhase::Redirected { status, from, to } => {
-            format!("* Redirect: {status} {from} → {to}")
-        }
-        RequestPhase::Retrying {
+                "* Response headers: {} {} {:?} after {:.1}ms",
+                response.status,
+                response_version(response.version),
+                response.source,
+                duration_ms(elapsed)
+            ),
+            false,
+        ),
+        CliEvent::Finished {
             reason,
-            attempt,
-            max_retries,
-            backoff,
-        } => {
+            failed,
+            elapsed,
+            original_data_bytes,
+        } => (
             format!(
-                "* Retry #{attempt}/{max_retries} after {:.0}ms: {reason}",
-                duration_ms(backoff)
-            )
-        }
-        RequestPhase::TrailersReceived { headers } => {
-            let mut s = format!("* Trailers: {} fields", headers.len());
-            for (name, value) in headers {
-                s.push_str(&format!("\n  {name}: {value}"));
-            }
-            s
-        }
+                "* Request {reason} after {:.1}ms; original DATA bytes: {original_data_bytes:?}",
+                duration_ms(elapsed)
+            ),
+            *failed,
+        ),
+        CliEvent::Diagnostic {
+            label,
+            detail,
+            failed,
+        } => (format!("* {label}: {detail}"), *failed),
     }
 }
 
-fn colorize(phase: &RequestPhase, text: &str) -> String {
-    let color = match phase {
-        RequestPhase::Failed { .. } | RequestPhase::TransferAborted { .. } => Color::Red,
-        RequestPhase::ResponseComplete { status, .. } => {
-            if status.is_success() {
-                Color::Green
-            } else if status.is_redirection() {
-                Color::Yellow
-            } else {
-                Color::Red
-            }
-        }
-        RequestPhase::TlsHandshakeComplete { .. } => Color::Cyan,
-        RequestPhase::ResponseStarted { .. } => Color::Green,
-        _ => Color::DarkGrey,
-    };
-    format!("{}", text.with(color))
+fn response_version(version: Option<http::Version>) -> String {
+    version
+        .map(|version| format!("{version:?}"))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::time::Duration;
-
-    use aioduct::observer::NegotiatedProtocol;
-    use http::StatusCode;
-
     #[test]
-    fn format_dns_resolved() {
-        let phase = RequestPhase::DnsResolved {
-            addrs: vec![SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
-                443,
-            )],
-            duration: Duration::from_millis(12),
+    fn failure_retains_diagnostic() {
+        let event = CliEvent::Diagnostic {
+            label: "ATTEMPT",
+            detail: "connection reset".into(),
+            failed: true,
         };
-        let s = format_phase(&phase);
-        assert!(s.contains("93.184.216.34:443"));
-        assert!(s.contains("12.0ms"));
+        let (line, failed) = format_event(&event);
+        assert!(line.contains("connection reset"));
+        assert!(failed);
     }
-
     #[test]
-    fn format_response_complete_success() {
-        let phase = RequestPhase::ResponseComplete {
-            status: StatusCode::OK,
-            protocol: NegotiatedProtocol::Http2,
-            total_duration: Duration::from_millis(287),
+    fn headers_are_not_labelled_complete() {
+        let event = CliEvent::ResponseHeaders {
+            response: aioduct::ResponseInfo {
+                status: http::StatusCode::OK,
+                version: Some(http::Version::HTTP_2),
+                source: aioduct::ResponseSource::Transport,
+            },
+            elapsed: std::time::Duration::from_millis(287),
         };
-        let s = format_phase(&phase);
-        assert!(s.contains("200"));
-        assert!(s.contains("287.0ms"));
-    }
-
-    #[test]
-    fn format_failed() {
-        let phase = RequestPhase::Failed {
-            error: "connection reset".into(),
-            retry: RetryKind::StaleConnection,
-            elapsed: Duration::from_millis(50),
-        };
-        let s = format_phase(&phase);
-        assert!(s.contains("connection reset"));
-        assert!(s.contains("stale retry"));
-    }
-
-    #[test]
-    fn colorize_success_is_green() {
-        let phase = RequestPhase::ResponseComplete {
-            status: StatusCode::OK,
-            protocol: NegotiatedProtocol::Http2,
-            total_duration: Duration::from_millis(100),
-        };
-        let colored = colorize(&phase, "test");
-        assert!(colored.contains("test"));
+        let (line, _) = format_event(&event);
+        assert!(line.contains("200"));
+        assert!(line.contains("287.0ms"));
+        assert!(!line.contains("complete"));
     }
 }

@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 
+use super::observation::{Handoff, HandoffMetadata, LocalChannel, io_error};
 use crate::error::Error;
+use crate::observer::ChannelIoOperation;
 
 // ── UpgradedLocal — !Send upgrade path for compio ──────────────────────────────
 
@@ -17,6 +19,7 @@ pub struct UpgradedLocal {
     read_buf: bytes::Bytes,
     read_buf_pos: usize,
     _active_stream_permit: Option<crate::pool::ActiveStreamPermit>,
+    continuation: Option<Box<LocalChannel>>,
 }
 
 impl UpgradedLocal {
@@ -29,6 +32,7 @@ impl UpgradedLocal {
             read_buf,
             read_buf_pos: 0,
             _active_stream_permit: None,
+            continuation: None,
         }
     }
 }
@@ -44,9 +48,41 @@ impl hyper::rt::Read for UpgradedLocal {
             let to_copy = remaining.len().min(buf.remaining());
             buf.put_slice(&remaining[..to_copy]);
             self.read_buf_pos += to_copy;
+            if let Some(channel) = &mut self.continuation {
+                channel.read(buf.remaining() + to_copy, to_copy);
+            }
             return Poll::Ready(Ok(()));
         }
-        std::pin::Pin::new(&mut *self.io).poll_read(cx, buf)
+        if self.continuation.is_none() {
+            return std::pin::Pin::new(&mut *self.io).poll_read(cx, buf);
+        }
+        let available = buf.remaining();
+        // Reborrow unfilled memory, then commit only the successful initialized extent.
+        let result = unsafe {
+            let mut child = hyper::rt::ReadBuf::uninit(buf.as_mut());
+            match std::pin::Pin::new(&mut *self.io).poll_read(cx, child.unfilled()) {
+                Poll::Ready(Ok(())) => Poll::Ready(Ok(child.filled().len())),
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                Poll::Pending => Poll::Pending,
+            }
+        };
+        match result {
+            Poll::Ready(Ok(delivered)) => {
+                unsafe {
+                    buf.advance(delivered);
+                }
+                if let Some(channel) = &mut self.continuation {
+                    channel.read(available, delivered);
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(io_error(
+                &self.continuation,
+                ChannelIoOperation::Read,
+                error,
+            )),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -56,21 +92,54 @@ impl hyper::rt::Write for UpgradedLocal {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut *self.io).poll_write(cx, buf)
+        match std::pin::Pin::new(&mut *self.io).poll_write(cx, buf) {
+            Poll::Ready(Ok(accepted)) => {
+                if let Some(channel) = &mut self.continuation {
+                    channel.written(accepted);
+                }
+                Poll::Ready(Ok(accepted))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(io_error(
+                &self.continuation,
+                ChannelIoOperation::Write,
+                error,
+            )),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut *self.io).poll_flush(cx)
+        match std::pin::Pin::new(&mut *self.io).poll_flush(cx) {
+            Poll::Ready(Err(error)) => Poll::Ready(io_error(
+                &self.continuation,
+                ChannelIoOperation::Flush,
+                error,
+            )),
+            result => result,
+        }
     }
 
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut *self.io).poll_shutdown(cx)
+        match std::pin::Pin::new(&mut *self.io).poll_shutdown(cx) {
+            Poll::Ready(Ok(())) => {
+                if let Some(channel) = &mut self.continuation {
+                    channel.shutdown();
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(io_error(
+                &self.continuation,
+                ChannelIoOperation::Shutdown,
+                error,
+            )),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -156,26 +225,54 @@ pub(crate) async fn on_upgrade_local(
     response: &mut http::Response<crate::body::ResponseBodyLocal>,
     active_stream_permit: Option<crate::pool::ActiveStreamPermit>,
 ) -> Result<UpgradedLocal, Error> {
-    if response.extensions().get::<UpgradeHandleLocal>().is_some() {
-        let mut upgraded = on_upgrade_local_manual(response).await?;
-        upgraded._active_stream_permit = active_stream_permit;
-        return Ok(upgraded);
+    let mut handoff = response
+        .extensions_mut()
+        .remove::<HandoffMetadata>()
+        .and_then(|metadata| {
+            response
+                .body()
+                .channel_receiver()
+                .map(|receiver| Handoff::start(receiver, metadata))
+        });
+    let result = async {
+        let upgraded = if response.extensions().get::<UpgradeHandleLocal>().is_some() {
+            on_upgrade_local_manual(response).await?
+        } else if response
+            .extensions()
+            .get::<hyper::upgrade::OnUpgrade>()
+            .is_some()
+        {
+            let upgraded = hyper::upgrade::on(&mut *response)
+                .await
+                .map_err(|error| Error::Other(Box::new(error)))?;
+            UpgradedLocal::new(upgraded, bytes::Bytes::new())
+        } else {
+            on_upgrade_local_manual(response).await?
+        };
+        Ok::<_, Error>(upgraded)
     }
+    .await;
+    let mut upgraded = match result {
+        Ok(upgraded) => upgraded,
+        Err(error) => {
+            if let Some(handoff) = &mut handoff {
+                handoff.resolved();
+            }
+            response.body().finish_error(&error);
+            if let Some(handoff) = &mut handoff {
+                handoff.failed(&error);
+            }
+            return Err(error);
+        }
+    };
 
-    if response
-        .extensions()
-        .get::<hyper::upgrade::OnUpgrade>()
-        .is_some()
-    {
-        let upgraded = hyper::upgrade::on(response)
-            .await
-            .map_err(|error| Error::Other(Box::new(error)))?;
-        let mut upgraded = UpgradedLocal::new(upgraded, bytes::Bytes::new());
-        upgraded._active_stream_permit = active_stream_permit;
-        return Ok(upgraded);
+    // The HTTP body observation ends at a successful protocol handoff. Any
+    // subsequent read/write lifecycle belongs to the upgraded channel.
+    if let Some(handoff) = &mut handoff {
+        handoff.resolved();
     }
-
-    let mut upgraded = on_upgrade_local_manual(response).await?;
+    response.body_mut().finish_handoff();
+    upgraded.continuation = handoff.and_then(Handoff::succeeded);
     upgraded._active_stream_permit = active_stream_permit;
     Ok(upgraded)
 }

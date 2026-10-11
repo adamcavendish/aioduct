@@ -4,25 +4,34 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 #[derive(Clone)]
 struct LocalDigestRetryRecorder {
-    observer_attempts: Arc<std::sync::Mutex<Vec<(u32, u32)>>>,
+    observer_attempts: Arc<std::sync::Mutex<Vec<u64>>>,
 }
 
-impl aioduct::RequestObserver for LocalDigestRetryRecorder {
-    fn on_event(&self, event: &aioduct::RequestEvent) {
-        if let aioduct::RequestPhase::Retrying {
-            attempt,
-            max_retries,
-            ..
-        } = &event.phase
-        {
-            self.observer_attempts
-                .lock()
-                .unwrap()
-                .push((*attempt, *max_retries));
+impl aioduct::Observer for LocalDigestRetryRecorder {
+    type Context = ();
+    type Observation = Self;
+    type ConnectionObservation = aioduct::NoopConnectionObservation;
+    fn begin(&self, _: aioduct::RequestInfo<'_>, _: Option<()>) -> (aioduct::Interest, Self) {
+        (aioduct::Interest::ATTEMPT, self.clone())
+    }
+    fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
+        (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
+    }
+}
+impl aioduct::RequestObservation for LocalDigestRetryRecorder {
+    fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
+        match event {
+            aioduct::AttemptEvent::ResponseDisposition {
+                attempt,
+                disposition: aioduct::ResponseDisposition::AuthenticationReplay,
+                ..
+            }
+            | aioduct::AttemptEvent::RetryScheduled { attempt, .. } => {
+                self.observer_attempts.lock().unwrap().push(*attempt);
+            }
+            _ => {}
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::ConnectionEvent) {}
 }
 
 #[test]
@@ -131,7 +140,7 @@ fn local_digest_response_drain_failure_does_not_commit_retry_state() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .digest_auth("user", "password")
-            .request_observer(recorder.clone())
+            .observer(recorder.clone())
             .retry(
                 aioduct::RetryConfig::default()
                     .max_retries(2)
@@ -155,7 +164,9 @@ fn local_digest_response_drain_failure_does_not_commit_retry_state() {
 
     assert_eq!(budget.available(), 1);
 
-    assert!(recorder.observer_attempts.lock().unwrap().is_empty());
+    // The 401 was withheld for authentication cleanup, even though draining
+    // failed before the retry budget or another execution could be committed.
+    assert_eq!(*recorder.observer_attempts.lock().unwrap(), vec![1]);
     done_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("Local Digest server did not stop");
@@ -279,7 +290,7 @@ fn local_configured_retry_recovers_from_connection_error() {
                         Box<dyn std::future::Future<Output = std::io::Result<SocketAddr>> + Send>,
                     >
             })
-            .request_observer(recorder.clone())
+            .observer(recorder.clone())
             .retry(
                 aioduct::RetryConfig::default()
                     .max_retries(1)
@@ -300,7 +311,9 @@ fn local_configured_retry_recovers_from_connection_error() {
 
     assert_eq!(resolutions.load(Ordering::SeqCst), 2);
 
-    assert_eq!(*recorder.observer_attempts.lock().unwrap(), vec![(1, 1)]);
+    // Connection acquisition belongs to the first execution attempt, even
+    // though it failed before any HTTP bytes were serialized.
+    assert_eq!(*recorder.observer_attempts.lock().unwrap(), vec![1]);
 }
 
 #[test]
@@ -647,7 +660,7 @@ fn local_digest_and_configured_retries_share_attempts_and_callbacks() {
     compio_runtime::Runtime::new().unwrap().block_on(async {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .digest_auth("user", "pass")
-            .request_observer(recorder.clone())
+            .observer(recorder.clone())
             .retry(
                 aioduct::RetryConfig::default()
                     .max_retries(2)
@@ -667,10 +680,7 @@ fn local_digest_and_configured_retries_share_attempts_and_callbacks() {
 
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
 
-    assert_eq!(
-        *recorder.observer_attempts.lock().unwrap(),
-        vec![(1, 2), (2, 2)]
-    );
+    assert_eq!(*recorder.observer_attempts.lock().unwrap(), vec![1, 2]);
     let authorizations = authorizations.lock().unwrap();
     assert_eq!(authorizations.len(), 2);
     assert!(authorizations[0].contains("nc=00000001"));

@@ -3,7 +3,7 @@
 //! Integration tests targeting specific uncovered lines in:
 //! - client/execute_send.rs (stale-if-error, digest retry, HSTS, finalize_response)
 //! - client/execute_local.rs (mirrors execute_send)
-//! - client/connection_lifecycle.rs (connection_protocol, fire_connection_metrics, checkin)
+//! - client/connection_lifecycle.rs (connection_protocol, connection eligibility, checkin)
 //! - client/dispatch_send.rs (stale retry, pool hit, H2 multiplex)
 
 use std::convert::Infallible;
@@ -21,6 +21,8 @@ use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 
 use aioduct_test_server::h1::h1_server_with;
+#[path = "support/observation.rs"]
+mod observation_support;
 
 #[path = "execute_send_coverage/hsts_digest.rs"]
 mod hsts_digest;
@@ -215,26 +217,11 @@ async fn rate_limiter_sleep_path_in_dispatch() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 12. Observer receives connection metrics on pool checkin
-//     Exercises connection_lifecycle.rs:44-61 (fire_connection_metrics).
+//     Exercises connection_lifecycle.rs:44-61 (connection eligibility).
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 #[tokio::test]
 async fn observer_receives_connection_metrics() {
-    use std::sync::Mutex;
-
-    #[derive(Default, Clone)]
-    struct MetricsObserver {
-        conn_events: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl aioduct::observer::RequestObserver for MetricsObserver {
-        fn on_event(&self, _event: &aioduct::observer::RequestEvent) {}
-        fn on_connection_event(&self, event: &aioduct::observer::ConnectionEvent) {
-            let desc = format!("{:?}", event.phase);
-            self.conn_events.lock().unwrap().push(desc);
-        }
-    }
-
     let (addr, _counter) = aioduct_test_server::h1::h1_server_with(|_req| async move {
         Ok::<_, Infallible>(
             Response::builder()
@@ -245,9 +232,9 @@ async fn observer_receives_connection_metrics() {
     })
     .await;
 
-    let obs = MetricsObserver::default();
+    let obs = observation_support::TestObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -265,11 +252,11 @@ async fn observer_receives_connection_metrics() {
         !events.is_empty(),
         "observer should receive connection metrics events"
     );
-    // Connection metrics should contain Metrics phase
-    let has_metrics = events.iter().any(|e| e.contains("Metrics"));
+    // Connection metrics should contain pool eligibility
+    let has_metrics = events.iter().any(|e| e.contains("PoolEligibilityChanged"));
     assert!(
         has_metrics,
-        "connection events should include Metrics phase, got: {events:?}"
+        "connection events should include pool eligibility, got: {events:?}"
     );
 }
 
@@ -454,26 +441,6 @@ async fn stale_connection_retry_succeeds_on_fresh_connection() {
 
 #[tokio::test]
 async fn observer_reports_pool_hit_and_miss() {
-    use std::sync::Mutex;
-
-    #[derive(Default, Clone)]
-    struct PoolObserver {
-        phases: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl aioduct::observer::RequestObserver for PoolObserver {
-        fn on_event(&self, event: &aioduct::observer::RequestEvent) {
-            let name = match &event.phase {
-                aioduct::observer::RequestPhase::PoolCheckoutComplete { outcome, .. } => {
-                    format!("PoolCheckout:{outcome:?}")
-                }
-                _ => return,
-            };
-            self.phases.lock().unwrap().push(name);
-        }
-        fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
-    }
-
     let (addr, _counter) = aioduct_test_server::h1::h1_server_with(|_req| async move {
         Ok::<_, Infallible>(
             Response::builder()
@@ -484,9 +451,9 @@ async fn observer_reports_pool_hit_and_miss() {
     })
     .await;
 
-    let obs = PoolObserver::default();
+    let obs = observation_support::TestObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -509,7 +476,7 @@ async fn observer_reports_pool_hit_and_miss() {
         .unwrap();
     let _ = resp.bytes().await.unwrap();
 
-    let phases = obs.phases.lock().unwrap();
+    let phases = obs.events.lock().unwrap();
     let has_miss = phases.iter().any(|p| p.contains("Miss"));
     let has_hit = phases.iter().any(|p| p.contains("Hit"));
     assert!(

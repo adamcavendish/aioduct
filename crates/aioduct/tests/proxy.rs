@@ -57,20 +57,47 @@ fn ech_grease_connector() -> aioduct::tls::RustlsConnector {
 #[derive(Clone, Default)]
 struct ProxyPhaseObserver(Arc<std::sync::Mutex<Vec<&'static str>>>);
 
-impl aioduct::observer::RequestObserver for ProxyPhaseObserver {
-    fn on_event(&self, event: &aioduct::observer::RequestEvent) {
-        let phase = match &event.phase {
-            aioduct::observer::RequestPhase::DnsResolved { .. } => Some("dns"),
-            aioduct::observer::RequestPhase::TcpConnected { .. } => Some("tcp"),
-            aioduct::observer::RequestPhase::TlsHandshakeComplete { .. } => Some("tls"),
+impl aioduct::Observer for ProxyPhaseObserver {
+    type Context = ();
+    type Observation = Self;
+    type ConnectionObservation = Self;
+    fn begin(&self, _: aioduct::RequestInfo<'_>, _: Option<()>) -> (aioduct::Interest, Self) {
+        (aioduct::Interest::CONNECTION_ACQUISITION, self.clone())
+    }
+    fn begin_connection(&self) -> (aioduct::Interest, Self) {
+        (aioduct::Interest::CONNECTION_ESTABLISHMENT, self.clone())
+    }
+}
+impl aioduct::RequestObservation for ProxyPhaseObserver {
+    fn on_connection_acquisition(&self, event: &aioduct::ConnectionAcquisitionEvent<'_>) {
+        if matches!(
+            event,
+            aioduct::ConnectionAcquisitionEvent::PhaseCompleted {
+                phase: aioduct::ConnectionAcquisitionPhase::Dns,
+                ..
+            }
+        ) {
+            self.0.lock().unwrap().push("dns");
+        }
+    }
+}
+impl aioduct::ConnectionObservation for ProxyPhaseObserver {
+    fn on_connection(&self, event: &aioduct::ConnectionObservationEvent<'_>) {
+        let phase = match event {
+            aioduct::ConnectionObservationEvent::PhaseCompleted {
+                phase: aioduct::ConnectionEstablishmentPhase::TcpConnect,
+                ..
+            } => Some("tcp"),
+            aioduct::ConnectionObservationEvent::PhaseCompleted {
+                phase: aioduct::ConnectionEstablishmentPhase::TlsHandshake,
+                ..
+            } => Some("tls"),
             _ => None,
         };
         if let Some(phase) = phase {
             self.0.lock().unwrap().push(phase);
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
 }
 
 impl ProxyPhaseObserver {
@@ -81,54 +108,55 @@ impl ProxyPhaseObserver {
 
 #[cfg(feature = "rustls")]
 #[derive(Clone, Default)]
-struct TlsAlpnObserver(Arc<std::sync::Mutex<Vec<Option<String>>>>);
-
+struct TlsCompletionObserver(Arc<std::sync::Mutex<usize>>);
 #[cfg(feature = "rustls")]
-impl aioduct::observer::RequestObserver for TlsAlpnObserver {
-    fn on_event(&self, event: &aioduct::observer::RequestEvent) {
-        if let aioduct::observer::RequestPhase::TlsHandshakeComplete { alpn_protocol, .. } =
-            &event.phase
-        {
-            self.0.lock().unwrap().push(alpn_protocol.clone());
+crate::impl_connection_observer!(TlsCompletionObserver);
+#[cfg(feature = "rustls")]
+impl aioduct::ConnectionObservation for TlsCompletionObserver {
+    fn on_connection(&self, event: &aioduct::ConnectionObservationEvent<'_>) {
+        if matches!(
+            event,
+            aioduct::ConnectionObservationEvent::PhaseCompleted {
+                phase: aioduct::ConnectionEstablishmentPhase::TlsHandshake,
+                ..
+            }
+        ) {
+            *self.0.lock().unwrap() += 1;
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
 }
-
 #[cfg(feature = "rustls")]
-impl TlsAlpnObserver {
-    fn negotiated_protocols(&self) -> Vec<Option<String>> {
-        self.0.lock().unwrap().clone()
+impl TlsCompletionObserver {
+    fn completions(&self) -> usize {
+        *self.0.lock().unwrap()
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum LiveProxyPhase {
-    Tcp(aioduct::NegotiatedProtocol),
-    Tls(Option<String>),
+    Tcp,
+    Tls,
 }
-
 #[derive(Clone)]
 struct LiveProxyPhaseObserver(tokio::sync::mpsc::UnboundedSender<LiveProxyPhase>);
-
-impl aioduct::observer::RequestObserver for LiveProxyPhaseObserver {
-    fn on_event(&self, event: &aioduct::observer::RequestEvent) {
-        let phase = match &event.phase {
-            aioduct::observer::RequestPhase::TcpConnected { protocol, .. } => {
-                Some(LiveProxyPhase::Tcp(*protocol))
-            }
-            aioduct::observer::RequestPhase::TlsHandshakeComplete { alpn_protocol, .. } => {
-                Some(LiveProxyPhase::Tls(alpn_protocol.clone()))
-            }
+crate::impl_connection_observer!(LiveProxyPhaseObserver);
+impl aioduct::ConnectionObservation for LiveProxyPhaseObserver {
+    fn on_connection(&self, event: &aioduct::ConnectionObservationEvent<'_>) {
+        let phase = match event {
+            aioduct::ConnectionObservationEvent::PhaseCompleted {
+                phase: aioduct::ConnectionEstablishmentPhase::TcpConnect,
+                ..
+            } => Some(LiveProxyPhase::Tcp),
+            aioduct::ConnectionObservationEvent::PhaseCompleted {
+                phase: aioduct::ConnectionEstablishmentPhase::TlsHandshake,
+                ..
+            } => Some(LiveProxyPhase::Tls),
             _ => None,
         };
         if let Some(phase) = phase {
             let _ = self.0.send(phase);
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
 }
 
 async fn silent_h2c_then_h1_origin() -> SocketAddr {
@@ -181,7 +209,7 @@ async fn proxy_tcp_observer_phase_fires_while_connect_is_stalled() {
     let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .request_observer(LiveProxyPhaseObserver(phase_tx))
+        .observer(LiveProxyPhaseObserver(phase_tx))
         .connect_timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -198,10 +226,7 @@ async fn proxy_tcp_observer_phase_fires_while_connect_is_stalled() {
         .await
         .expect("proxy TCP observer event was buffered behind CONNECT")
         .unwrap();
-    assert_eq!(
-        phase,
-        LiveProxyPhase::Tcp(aioduct::NegotiatedProtocol::Http1)
-    );
+    assert_eq!(phase, LiveProxyPhase::Tcp);
     assert!(
         !request.is_finished(),
         "request completed before CONNECT resumed"
@@ -430,7 +455,7 @@ async fn https_proxy_tcp_observer_fires_before_proxy_tls_stalls() {
             aioduct::ProxyConfig::https(&format!("https://127.0.0.1:{}", proxy_addr.port()))
                 .unwrap(),
         )
-        .request_observer(LiveProxyPhaseObserver(phase_tx))
+        .observer(LiveProxyPhaseObserver(phase_tx))
         .connect_timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -447,10 +472,7 @@ async fn https_proxy_tcp_observer_fires_before_proxy_tls_stalls() {
         .await
         .expect("proxy TCP observer event was buffered behind proxy TLS")
         .unwrap();
-    assert_eq!(
-        phase,
-        LiveProxyPhase::Tcp(aioduct::NegotiatedProtocol::Http1)
-    );
+    assert_eq!(phase, LiveProxyPhase::Tcp);
     assert!(
         !request.is_finished(),
         "request completed before proxy TLS resumed"
@@ -493,7 +515,7 @@ async fn proxy_tls_observer_phase_fires_while_connect_is_stalled() {
             aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
                 .unwrap(),
         )
-        .request_observer(LiveProxyPhaseObserver(phase_tx))
+        .observer(LiveProxyPhaseObserver(phase_tx))
         .connect_timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -510,7 +532,7 @@ async fn proxy_tls_observer_phase_fires_while_connect_is_stalled() {
         let mut phases = Vec::new();
         loop {
             let phase = phase_rx.recv().await.unwrap();
-            let done = matches!(phase, LiveProxyPhase::Tls(_));
+            let done = matches!(phase, LiveProxyPhase::Tls);
             phases.push(phase);
             if done {
                 break phases;
@@ -519,13 +541,7 @@ async fn proxy_tls_observer_phase_fires_while_connect_is_stalled() {
     })
     .await
     .expect("proxy TLS observer event was buffered behind CONNECT");
-    assert_eq!(
-        proxy_phases,
-        [
-            LiveProxyPhase::Tcp(aioduct::NegotiatedProtocol::Http1),
-            LiveProxyPhase::Tls(Some("http/1.1".to_owned())),
-        ]
-    );
+    assert_eq!(proxy_phases, [LiveProxyPhase::Tcp, LiveProxyPhase::Tls,]);
     assert!(
         !request.is_finished(),
         "request completed before CONNECT resumed"
@@ -596,7 +612,7 @@ async fn proxy_establishment_reports_dns_and_tcp_observer_phases() {
             .unwrap(),
         )
         .resolve("observer-proxy.test", proxy_addr)
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
 
@@ -637,7 +653,7 @@ async fn proxy_establishment_reports_origin_tls_observer_phase() {
         .add_root_certificates(&[certificate])
         .danger_accept_invalid_hostnames(true)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
 
@@ -673,11 +689,11 @@ async fn proxied_origin_tls_observer_preserves_missing_alpn() {
     aioduct_test_server::tls::install_crypto_provider();
     let (target_addr, cert_der, _) = aioduct_test_server::tls::tls_h1_server(&[]).await;
     let (proxy_addr, _) = connect_proxy().await;
-    let observer = TlsAlpnObserver::default();
+    let observer = TlsCompletionObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .add_root_certificates(&[aioduct::tls::Certificate::from_der(cert_der.to_vec())])
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
 
@@ -690,8 +706,9 @@ async fn proxied_origin_tls_observer_preserves_missing_alpn() {
         .send()
         .await
         .unwrap();
+    assert_eq!(response.version(), http::Version::HTTP_11);
     assert_eq!(response.text().await.unwrap(), "hello tls");
-    assert_eq!(observer.negotiated_protocols(), [None]);
+    assert_eq!(observer.completions(), 1);
 }
 
 #[cfg(feature = "rustls")]
@@ -718,11 +735,11 @@ async fn proxied_origin_tls_observer_fires_before_http_handshake_failure() {
     });
 
     let (proxy_addr, _) = connect_proxy().await;
-    let observer = TlsAlpnObserver::default();
+    let observer = TlsCompletionObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .add_root_certificates(&[aioduct::tls::Certificate::from_der(cert_der.to_vec())])
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
 
@@ -737,8 +754,8 @@ async fn proxied_origin_tls_observer_fires_before_http_handshake_failure() {
         .unwrap_err();
 
     assert_eq!(
-        observer.negotiated_protocols(),
-        [Some("http/1.1".to_owned())],
+        observer.completions(),
+        1,
         "origin TLS completion must be observable even when HTTP setup fails"
     );
 }
@@ -758,7 +775,7 @@ async fn https_proxy_establishment_reports_proxy_tls_observer_phase() {
             aioduct::ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port()))
                 .unwrap(),
         )
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
 
@@ -1621,7 +1638,7 @@ async fn h2c_prior_knowledge_survives_connect_tunnel() {
     let (phase_tx, mut phase_rx) = tokio::sync::mpsc::unbounded_channel();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .request_observer(LiveProxyPhaseObserver(phase_tx))
+        .observer(LiveProxyPhaseObserver(phase_tx))
         .build()
         .unwrap();
 
@@ -1635,10 +1652,7 @@ async fn h2c_prior_knowledge_survives_connect_tunnel() {
 
     assert_eq!(response.version(), http::Version::HTTP_2);
     assert_eq!(response.text().await.unwrap(), "hello aioduct");
-    assert_eq!(
-        phase_rx.try_recv().unwrap(),
-        LiveProxyPhase::Tcp(aioduct::NegotiatedProtocol::Http1)
-    );
+    assert_eq!(phase_rx.try_recv().unwrap(), LiveProxyPhase::Tcp);
     assert!(phase_rx.try_recv().is_err());
 }
 
@@ -1859,11 +1873,11 @@ async fn adaptive_h2c_uses_normal_alpn_for_proxied_https_h2_origin() {
     let connector = aioduct::tls::RustlsConnector::new(
         aioduct_test_server::tls::make_client_config(&target_cert),
     );
-    let observer = TlsAlpnObserver::default();
+    let observer = TlsCompletionObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
 
@@ -1886,7 +1900,7 @@ async fn adaptive_h2c_uses_normal_alpn_for_proxied_https_h2_origin() {
         .unwrap();
 
     assert_eq!(response.text().await.unwrap(), "hello tls");
-    assert_eq!(observer.negotiated_protocols(), [Some("h2".to_owned())]);
+    assert_eq!(observer.completions(), 1);
     assert_eq!(proxy_connections.load(AtomicOrdering::SeqCst), 1);
 }
 
@@ -1898,11 +1912,11 @@ async fn required_h2_alpn_survives_https_origin_tunnel() {
     let connector = aioduct::tls::RustlsConnector::new(
         aioduct_test_server::tls::make_client_config(&target_cert),
     );
-    let observer = TlsAlpnObserver::default();
+    let observer = TlsCompletionObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
 
@@ -1919,7 +1933,7 @@ async fn required_h2_alpn_survives_https_origin_tunnel() {
 
     assert_eq!(response.version(), http::Version::HTTP_2);
     assert_eq!(response.text().await.unwrap(), "hello tls");
-    assert_eq!(observer.negotiated_protocols(), [Some("h2".to_owned())]);
+    assert_eq!(observer.completions(), 1);
 }
 
 #[cfg(feature = "rustls")]
@@ -3092,3 +3106,6 @@ async fn proxy_chain_socks_then_http_connect() {
         "second proxy did not CONNECT to the origin: {requests:?}"
     );
 }
+
+#[path = "support/observation.rs"]
+mod observation_support;

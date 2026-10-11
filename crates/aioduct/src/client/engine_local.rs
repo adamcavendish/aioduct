@@ -36,11 +36,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         HttpEngineBuilder::new(connector)
     }
 
-    /// Resolve a request input URL against the configured base URL, if any.
-    fn resolve_url(&self, uri: &str) -> Result<(Uri, Option<String>), Error> {
-        resolve_request_url(self.core.base_url.as_deref(), uri)
-    }
-
     /// Create a new client with default settings and a specific connector.
     #[allow(clippy::expect_used)]
     pub fn with_connector(connector: C) -> Self {
@@ -58,12 +53,20 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             .build_local()
             .expect("rustls build_local")
     }
+}
+
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O: crate::observer::Observer>
+    HttpEngineLocal<R, C, O>
+{
+    fn resolve_url(&self, uri: &str) -> Result<(Uri, Option<String>), Error> {
+        resolve_request_url(self.core.base_url.as_deref(), uri)
+    }
 
     /// Start a GET request to the given URL.
     pub fn get_local(
         &self,
         uri: &str,
-    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
+    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(crate::request::RequestBuilderLocal::new(
             self,
@@ -77,7 +80,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     pub fn post_local(
         &self,
         uri: &str,
-    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
+    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(crate::request::RequestBuilderLocal::new(
             self,
@@ -92,7 +95,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         &self,
         method: Method,
         uri: &str,
-    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C>, Error> {
+    ) -> Result<crate::request::RequestBuilderLocal<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(crate::request::RequestBuilderLocal::new(
             self, method, uri, fragment,
@@ -103,7 +106,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     pub fn chunk_download_local(
         &self,
         url: &str,
-    ) -> crate::chunk_download::ChunkDownloadLocal<R, C> {
+    ) -> crate::chunk_download::ChunkDownloadLocal<R, C, O> {
         crate::chunk_download::ChunkDownloadLocal::new(self.clone(), url.to_owned())
     }
 
@@ -129,7 +132,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     pub fn forward_local<B>(
         &self,
         request: http::Request<B>,
-    ) -> crate::forward::forward_local::ForwardBuilderLocal<'_, R, C, B>
+    ) -> crate::forward::forward_local::ForwardBuilderLocal<'_, R, C, B, O>
     where
         B: http_body::Body<Data = bytes::Bytes> + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,

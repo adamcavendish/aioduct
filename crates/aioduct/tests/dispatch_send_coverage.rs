@@ -17,7 +17,6 @@ use basic_features::TestObserver;
 
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -26,7 +25,8 @@ use http_body_util::Full;
 use hyper::{Request, Response};
 
 use aioduct::HttpEngineSend;
-use aioduct::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
+#[path = "support/observation.rs"]
+mod observation_support;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
 

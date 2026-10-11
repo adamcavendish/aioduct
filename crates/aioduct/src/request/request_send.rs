@@ -12,7 +12,6 @@ use crate::client::{
     BodyReplayability, FinalizedRequestState, HttpEngineSend, ReplayReason, RequestReplayPolicy,
 };
 use crate::error::{BuilderError, Error, SendError};
-use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::retry::RetryConfig;
@@ -23,8 +22,15 @@ use super::EngineRef;
 
 /// Builder for configuring and sending an HTTP request.
 #[must_use = "a RequestBuilder does nothing unless you call `.send()` or `.build()`"]
-pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
-    client: EngineRef<'a, HttpEngineSend<R, C>>,
+pub struct RequestBuilderSend<
+    'a,
+    R: RuntimePoll,
+    C: ConnectorSend,
+    O: crate::observer::Observer = crate::observer::NoopObserver,
+> {
+    client: EngineRef<'a, HttpEngineSend<R, C, O>>,
+    observation_disabled: bool,
+    observation_context: Option<O::Context>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -47,7 +53,9 @@ pub struct RequestBuilderSend<'a, R: RuntimePoll, C: ConnectorSend> {
     _runtime: PhantomData<(R, C)>,
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilderSend<'_, R, C> {
+impl<R: RuntimePoll, C: ConnectorSend, O: crate::observer::Observer> std::fmt::Debug
+    for RequestBuilderSend<'_, R, C, O>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RequestBuilderSend")
             .field("method", &self.method)
@@ -57,15 +65,23 @@ impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for RequestBuilderSend<'_
     }
 }
 
-impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
+impl<'a, R: RuntimePoll, C: ConnectorSend, O> RequestBuilderSend<'a, R, C, O>
+where
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
     pub(crate) fn new(
-        client: &'a HttpEngineSend<R, C>,
+        client: &'a HttpEngineSend<R, C, O>,
         method: Method,
         uri: Uri,
         fragment: Option<String>,
     ) -> Self {
         Self {
             client: EngineRef::Borrowed(client),
+            observation_disabled: false,
+            observation_context: None,
             method,
             uri,
             headers: HeaderMap::new(),
@@ -88,13 +104,15 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
     }
 
     pub(crate) fn new_owned(
-        client: HttpEngineSend<R, C>,
+        client: HttpEngineSend<R, C, O>,
         method: Method,
         uri: Uri,
         fragment: Option<String>,
     ) -> Self {
         Self {
             client: EngineRef::Owned(Box::new(client)),
+            observation_disabled: false,
+            observation_context: None,
             method,
             uri,
             headers: HeaderMap::new(),
@@ -114,6 +132,20 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             fragment,
             _runtime: PhantomData,
         }
+    }
+
+    /// Disable observation for this logical request, including retries and redirects.
+    /// The observer's `begin` method is not called.
+    pub fn disable_observation(mut self) -> Self {
+        self.observation_disabled = true;
+        self
+    }
+
+    /// Supply the observer's associated context before this request executes.
+    /// Omitting context does not disable observation.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.observation_context = Some(context);
+        self
     }
 
     /// Add a typed header to the request.
@@ -518,13 +550,18 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
 
     /// Clone this request builder if the body is cloneable (buffered).
     /// Returns `None` if the body is a non-cloneable stream.
-    pub fn try_clone(&self) -> Option<Self> {
+    pub fn try_clone(&self) -> Option<Self>
+    where
+        O::Context: Clone,
+    {
         let cloned_body = match &self.body {
             Some(b) => Some(b.try_clone()?),
             None => None,
         };
         Some(Self {
             client: self.client.try_clone_for_lifetime(),
+            observation_disabled: self.observation_disabled,
+            observation_context: self.observation_context.clone(),
             method: self.method.clone(),
             uri: self.uri.clone(),
             headers: self.headers.clone(),
@@ -561,6 +598,19 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         if let Some(error) = this.builder_error.take() {
             return Err(SendError::new(error.into_error(), url));
         }
+        let client = this.client.try_clone_for_lifetime();
+        let mut observation = if this.observation_disabled {
+            None
+        } else {
+            crate::observer::SendRequestObservationHandle::new(
+                &*client.observer,
+                crate::observer::RequestInfo {
+                    method: &this.method,
+                    initial_uri: &this.uri,
+                },
+                this.observation_context.take(),
+            )
+        };
         let self_ = this;
         let effective_retry = self_
             .retry
@@ -572,15 +622,87 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         // state machine grows. Callers commonly join many requests on one
         // executor stack, so embedding either complete path here can exhaust
         // that stack before any I/O is polled.
+        let counter = observation
+            .as_ref()
+            .and_then(|observation| observation.attempt_counter());
+        let attempt_observer = observation
+            .as_ref()
+            .and_then(|observation| observation.attempt_observer());
         let result = match effective_retry {
-            Some(config) => Box::pin(self_.send_with_retry(config)).await,
-            None => Box::pin(self_.send_once()).await,
+            Some(config) => {
+                Box::pin(self_.send_with_retry(config, counter, attempt_observer)).await
+            }
+            None => Box::pin(self_.send_once(counter, attempt_observer)).await,
         };
 
+        // The retry layer has selected the final response. Body processing is
+        // deliberately outside it: cache pre-reading must not broaden retry
+        // compared with consuming the same response without a cache.
+        let result = match result {
+            Ok(mut pending) => {
+                if let Some(observation) = &observation {
+                    observation.observe_headers(pending.info());
+                }
+                if let Some(observation) = &observation {
+                    pending.response = observation.count_original_data(pending.response);
+                }
+                let completion_timeout = pending.processing_timeout;
+                let awaiting_handoff = pending.awaiting_handoff;
+                let complete = async {
+                    match pending.processing {
+                        Some(processing) => {
+                            client
+                                .finalize_response_send(
+                                    pending.response,
+                                    &processing.method,
+                                    processing.uri,
+                                    &processing.request_headers,
+                                    processing.read_timeout,
+                                    processing.no_decompression,
+                                )
+                                .await
+                        }
+                        None => Ok((pending.response, false)),
+                    }
+                };
+                let completed = match completion_timeout {
+                    Some(duration) => {
+                        Timeout::WithTimeout {
+                            future: complete,
+                            sleep: R::sleep(duration),
+                        }
+                        .await
+                    }
+                    None => complete.await,
+                };
+                match completed {
+                    Ok((mut response, buffered)) => {
+                        if let Some(observation) = &mut observation {
+                            if buffered {
+                                observation.finish_ended();
+                            }
+                            // A completed HTTP body may still carry an independent
+                            // SSE receiver through the buffered replay conversion.
+                            observation.attach_to_send_response(&mut response, awaiting_handoff);
+                        }
+                        Ok(response)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        if let (Err(error), Some(observation)) = (&result, &mut observation) {
+            observation.finish_failed(error);
+        }
         result.map_err(|error| SendError::new(error, url))
     }
 
-    async fn send_once(self) -> Result<Response, Error> {
+    async fn send_once(
+        self,
+        counter: Option<crate::observer::RequestAttemptCounter>,
+        attempt_observer: Option<crate::observer::SendAttemptObserver>,
+    ) -> Result<crate::client::PendingResponse, Error> {
         let effective_timeout = if self.force_no_timeout {
             None
         } else {
@@ -594,6 +716,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
         let automatic_content_digest = self
             .automatic_content_digest
             .unwrap_or(self.client.core.automatic_content_digest);
+        let attempt_start = effective_timeout.map(|_| crate::clock::Instant::now());
         let execute_fut = self.client.execute_send(
             self.method,
             self.uri,
@@ -609,9 +732,11 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             automatic_content_digest,
             self.fragment,
             None,
+            counter.as_ref(),
+            attempt_observer.as_ref(),
         );
 
-        match effective_timeout {
+        let result = match effective_timeout {
             Some(duration) => {
                 Timeout::WithTimeout {
                     future: execute_fut,
@@ -625,11 +750,24 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 }
                 .await
             }
+        };
+        if let (Err(error), Some(observer)) = (&result, &attempt_observer) {
+            observer.failed(
+                counter
+                    .as_ref()
+                    .map_or(0, crate::observer::RequestAttemptCounter::current),
+                error,
+            );
         }
+        result.map(|pending| pending.with_remaining_timeout(effective_timeout, attempt_start))
     }
 
-    async fn send_with_retry(self, config: RetryConfig) -> Result<Response, Error> {
-        let retry_start = crate::clock::Instant::now();
+    async fn send_with_retry(
+        self,
+        config: RetryConfig,
+        counter: Option<crate::observer::RequestAttemptCounter>,
+        attempt_observer: Option<crate::observer::SendAttemptObserver>,
+    ) -> Result<crate::client::PendingResponse, Error> {
         let effective_timeout = if self.force_no_timeout {
             None
         } else {
@@ -663,7 +801,13 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 let delay = retry_after_delay
                     .take()
                     .unwrap_or_else(|| config.delay_for_attempt(attempt - 1));
+                let backoff = attempt_observer
+                    .as_ref()
+                    .and_then(|observer| observer.backoff(delay));
                 R::sleep(delay).await;
+                if let Some(backoff) = backoff {
+                    backoff.complete();
+                }
             }
 
             let body_for_attempt = match &mut body {
@@ -672,6 +816,7 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 None => None,
             };
 
+            let attempt_start = effective_timeout.map(|_| crate::clock::Instant::now());
             let execute_fut = self.client.execute_send(
                 self.method.clone(),
                 self.uri.clone(),
@@ -687,6 +832,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                 automatic_content_digest,
                 self.fragment.clone(),
                 Some(&finalized_request),
+                counter.as_ref(),
+                attempt_observer.as_ref(),
             );
 
             let result = match effective_timeout {
@@ -704,16 +851,12 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                     .await
                 }
             };
-            let (wire_method, wire_uri, replay_policy, has_replay_snapshot, current_attempt) = {
+            let (wire_method, replay_policy, has_replay_snapshot, current_attempt) = {
                 let finalized_request = finalized_request
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 (
                     finalized_request.method().clone(),
-                    finalized_request
-                        .effective_uri()
-                        .cloned()
-                        .unwrap_or_else(|| self.uri.clone()),
                     RequestReplayPolicy::new(finalized_request.method(), finalized_request.body()),
                     finalized_request.has_replay_snapshot(),
                     finalized_request.retry_attempt(),
@@ -721,6 +864,8 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
             };
             attempt = current_attempt;
 
+            let result = result
+                .map(|pending| pending.with_remaining_timeout(effective_timeout, attempt_start));
             match result {
                 Ok(resp) => {
                     let default_should_retry = config.retry_on_status
@@ -746,36 +891,36 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                     };
                     if let Some(next_attempt) = next_attempt {
                         retry_after_delay = crate::retry::parse_retry_after(resp.headers());
-                        let err = Error::Other(format!("server error: {}", resp.status()).into());
-
-                        if let Some(ref obs) = self.client.core.observer {
-                            obs.on_event(&RequestEvent {
-                                method: wire_method.clone(),
-                                uri: wire_uri.clone(),
-                                phase: RequestPhase::Failed {
-                                    error: err.to_string(),
-                                    retry: RetryKind::Explicit,
-                                    elapsed: retry_start.elapsed(),
+                        if let Some(observer) = &attempt_observer {
+                            let attempt = counter
+                                .as_ref()
+                                .map_or(0, crate::observer::RequestAttemptCounter::current);
+                            observer.response_disposition(
+                                attempt,
+                                crate::observer::ResponseInfo {
+                                    status: resp.status(),
+                                    version: Some(resp.response.version()),
+                                    source: crate::observer::ResponseSource::Transport,
                                 },
-                                at: observer::Instant::now(),
-                            });
+                                crate::observer::ResponseDisposition::Retry,
+                            );
+                            observer.retry_scheduled(
+                                attempt,
+                                attempt.saturating_add(1),
+                                crate::observer::RetryReason::ResponseStatus(resp.status()),
+                            );
                         }
 
-                        let backoff =
-                            retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt));
-                        if let Some(ref obs) = self.client.core.observer {
-                            obs.on_event(&RequestEvent {
-                                method: wire_method.clone(),
-                                uri: wire_uri.clone(),
-                                phase: RequestPhase::Retrying {
-                                    reason: err.to_string(),
-                                    attempt: next_attempt,
-                                    max_retries: config.max_retries,
-                                    backoff,
-                                },
-                                at: observer::Instant::now(),
-                            });
+                        if let Some(cleanup) = attempt_observer.as_ref().and_then(|observer| {
+                            observer.cleanup(
+                                counter
+                                    .as_ref()
+                                    .map_or(0, crate::observer::RequestAttemptCounter::current),
+                            )
+                        }) {
+                            cleanup.finish(crate::observer::CleanupState::Stopped, None);
                         }
+                        drop(resp);
                         attempt = next_attempt;
                         continue;
                     }
@@ -812,36 +957,28 @@ impl<'a, R: RuntimePoll, C: ConnectorSend> RequestBuilderSend<'a, R, C> {
                         None
                     };
                     if let Some(next_attempt) = next_attempt {
-                        if let Some(ref obs) = self.client.core.observer {
-                            obs.on_event(&RequestEvent {
-                                method: wire_method.clone(),
-                                uri: wire_uri.clone(),
-                                phase: RequestPhase::Failed {
-                                    error: e.to_string(),
-                                    retry: RetryKind::Explicit,
-                                    elapsed: retry_start.elapsed(),
-                                },
-                                at: observer::Instant::now(),
-                            });
+                        if let Some(observer) = &attempt_observer {
+                            let attempt = counter
+                                .as_ref()
+                                .map_or(0, crate::observer::RequestAttemptCounter::current);
+                            observer.failed(attempt, &e);
+                            observer.retry_scheduled(
+                                attempt,
+                                attempt.saturating_add(1),
+                                crate::observer::RetryReason::Error { error: &e },
+                            );
                         }
 
-                        let backoff =
-                            retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt));
-                        if let Some(ref obs) = self.client.core.observer {
-                            obs.on_event(&RequestEvent {
-                                method: wire_method.clone(),
-                                uri: wire_uri.clone(),
-                                phase: RequestPhase::Retrying {
-                                    reason: e.to_string(),
-                                    attempt: next_attempt,
-                                    max_retries: config.max_retries,
-                                    backoff,
-                                },
-                                at: observer::Instant::now(),
-                            });
-                        }
                         attempt = next_attempt;
                         continue;
+                    }
+                    if let Some(observer) = &attempt_observer {
+                        observer.failed(
+                            counter
+                                .as_ref()
+                                .map_or(0, crate::observer::RequestAttemptCounter::current),
+                            &e,
+                        );
                     }
                     return Err(e);
                 }

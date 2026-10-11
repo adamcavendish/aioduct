@@ -19,7 +19,7 @@ use crate::tls::TlsVersion;
 
 use super::builder::HttpEngineBuilder;
 
-impl<R, C> HttpEngineBuilder<R, C> {
+impl<R, C, O> HttpEngineBuilder<R, C, O> {
     /// Set a base URL that relative request URLs resolve against.
     ///
     /// When set, request URLs are resolved against this base per RFC 3986:
@@ -550,20 +550,6 @@ impl<R, C> HttpEngineBuilder<R, C> {
     /// over HTTPS or loopback HTTP. No credential file is loaded automatically.
     pub fn netrc(mut self, netrc: crate::netrc::Netrc) -> Self {
         self.netrc = Some(netrc);
-        self
-    }
-
-    /// Set a request observer for real-time phase transition callbacks.
-    ///
-    /// The observer fires at each connection phase (pool checkout, DNS, TCP,
-    /// TLS, request sent, response received) with monotonic timestamps and
-    /// diagnostic data. Useful for load testing frameworks, detailed performance
-    /// tracing, and custom instrumentation.
-    ///
-    /// Only one observer is supported per engine. Setting a new observer
-    /// replaces the previous one.
-    pub fn request_observer(mut self, observer: impl crate::observer::RequestObserver) -> Self {
-        self.observer = Some(Arc::new(observer));
         self
     }
 

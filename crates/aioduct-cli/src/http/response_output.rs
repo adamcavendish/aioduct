@@ -102,6 +102,19 @@ impl ResponseOutput for TuiOutput {
             }
         }
 
+        if let Some(trailers) = stream.trailers() {
+            self.tui.send_trailers(
+                trailers
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.to_string(),
+                            value.to_str().unwrap_or("<binary>").to_owned(),
+                        )
+                    })
+                    .collect(),
+            );
+        }
         if self.is_binary {
             self.tui.send_body_chunk(format!(
                 "[binary data — {} bytes, {}]\n",

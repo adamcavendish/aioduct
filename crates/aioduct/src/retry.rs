@@ -7,6 +7,12 @@ use http::{HeaderMap, StatusCode};
 use crate::error::Error;
 
 /// Configuration for automatic request retry with exponential backoff.
+///
+/// Retry applies to execution errors and response statuses before a final
+/// response is selected. After selection, body reads, decoding, and library
+/// processing (including eager cache pre-reading) do not re-enter retry, even
+/// when they make `send()` return an error. A custom classifier is not consulted
+/// for these errors. Returned streaming bodies are not retried or spliced.
 #[derive(Clone)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts.
@@ -45,9 +51,9 @@ impl std::fmt::Debug for RetryConfig {
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum RetryOutcome<'a> {
-    /// The server returned a final response with this status.
+    /// An attempt produced this response status before final selection.
     Status(StatusCode),
-    /// The attempt failed with a transport-level error before a full response.
+    /// Execution failed before a final response was selected.
     Error(&'a Error),
 }
 
@@ -155,6 +161,10 @@ impl RetryConfig {
     }
 
     /// Set a custom classifier consulted before the built-in retry rules.
+    ///
+    /// Only outcomes before final response selection are classified. Body
+    /// reading, decoding, and processing errors after selection bypass this
+    /// classifier, including errors encountered while pre-reading for cache.
     ///
     /// The closure receives a [`RetryContext`] describing the status or error,
     /// the request method, and the attempt counters. Return:

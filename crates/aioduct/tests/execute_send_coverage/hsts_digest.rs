@@ -227,25 +227,34 @@ async fn digest_auth_preserves_configured_request() {
 
 #[derive(Clone)]
 struct DigestRetryRecorder {
-    observer_attempts: Arc<std::sync::Mutex<Vec<(u32, u32)>>>,
+    observer_attempts: Arc<std::sync::Mutex<Vec<u64>>>,
 }
 
-impl aioduct::RequestObserver for DigestRetryRecorder {
-    fn on_event(&self, event: &aioduct::RequestEvent) {
-        if let aioduct::RequestPhase::Retrying {
-            attempt,
-            max_retries,
-            ..
-        } = &event.phase
-        {
-            self.observer_attempts
-                .lock()
-                .unwrap()
-                .push((*attempt, *max_retries));
+impl aioduct::Observer for DigestRetryRecorder {
+    type Context = ();
+    type Observation = Self;
+    type ConnectionObservation = aioduct::NoopConnectionObservation;
+    fn begin(&self, _: aioduct::RequestInfo<'_>, _: Option<()>) -> (aioduct::Interest, Self) {
+        (aioduct::Interest::ATTEMPT, self.clone())
+    }
+    fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
+        (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
+    }
+}
+impl aioduct::RequestObservation for DigestRetryRecorder {
+    fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
+        match event {
+            aioduct::AttemptEvent::ResponseDisposition {
+                attempt,
+                disposition: aioduct::ResponseDisposition::AuthenticationReplay,
+                ..
+            }
+            | aioduct::AttemptEvent::RetryScheduled { attempt, .. } => {
+                self.observer_attempts.lock().unwrap().push(*attempt);
+            }
+            _ => {}
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::ConnectionEvent) {}
 }
 
 #[tokio::test]
@@ -302,7 +311,7 @@ async fn digest_and_configured_retries_share_attempts_and_callbacks() {
     };
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("user", "pass")
-        .request_observer(recorder.clone())
+        .observer(recorder.clone())
         .build()
         .unwrap();
     let response = client
@@ -320,10 +329,7 @@ async fn digest_and_configured_retries_share_attempts_and_callbacks() {
     assert_eq!(response.status(), http::StatusCode::OK);
     assert_eq!(attempts.load(Ordering::SeqCst), 3);
 
-    assert_eq!(
-        *recorder.observer_attempts.lock().unwrap(),
-        vec![(1, 2), (2, 2)]
-    );
+    assert_eq!(*recorder.observer_attempts.lock().unwrap(), vec![1, 2]);
     let authorizations = authorizations.lock().unwrap();
     assert_eq!(authorizations.len(), 2);
     assert!(authorizations[0].contains("nc=00000001"));

@@ -8,13 +8,16 @@ impl Response {
     /// Convert to a `Response<ResponseBodyLocal>` for the Local runtime path.
     pub(crate) fn into_local(self) -> Response<crate::body::ResponseBodyLocal> {
         let (parts, body) = self.inner.into_parts();
-        let local_body: crate::body::ResponseBodyLocal = Box::pin(body);
+        let (body, owner) = body.into_parts();
+        let local_body = crate::body::ResponseBodyLocal::with_owner(
+            Box::pin(body),
+            owner.map(crate::body::LocalObservationHandle::from_send),
+        );
         Response {
             inner: http::Response::from_parts(parts, local_body),
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
-            observer_ctx: self.observer_ctx,
             fragment: self.fragment,
         }
     }
@@ -25,14 +28,17 @@ impl Response {
         duration: std::time::Duration,
     ) -> Response<crate::body::ResponseBodyLocal> {
         let (parts, body) = self.inner.into_parts();
+        let (body, owner) = body.into_parts();
         let timeout_body = crate::timeout::ReadTimeoutBody::<_, R>::new(body, duration);
-        let local_body: crate::body::ResponseBodyLocal = Box::pin(timeout_body);
+        let local_body = crate::body::ResponseBodyLocal::with_owner(
+            Box::pin(timeout_body),
+            owner.map(crate::body::LocalObservationHandle::from_send),
+        );
         Response {
             inner: http::Response::from_parts(parts, local_body),
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
-            observer_ctx: self.observer_ctx,
             fragment: self.fragment,
         }
     }
@@ -47,21 +53,21 @@ impl Response<crate::body::ResponseBodyLocal> {
         limiter: crate::bandwidth::BandwidthLimiter,
     ) -> Self {
         let (parts, body) = self.inner.into_parts();
+        let (body, owner) = body.into_parts();
         let wrapped = crate::bandwidth::BandwidthBody::<_, R>::new(body, limiter);
-        let local_body: crate::body::ResponseBodyLocal = Box::pin(wrapped);
+        let local_body = crate::body::ResponseBodyLocal::with_owner(Box::pin(wrapped), owner);
         Self {
             inner: http::Response::from_parts(parts, local_body),
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
-            observer_ctx: self.observer_ctx,
             fragment: self.fragment,
         }
     }
 
     /// Convert the response into an async byte stream.
     pub fn into_bytes_stream(self) -> crate::body::BodyStreamLocal {
-        crate::body::BodyStreamLocal::with_observer(self.inner.into_body(), self.observer_ctx)
+        crate::body::BodyStreamLocal::from_response_body(self.inner.into_body())
     }
 
     /// Convert the response into a Server-Sent Events stream.
@@ -86,7 +92,7 @@ mod tests {
     fn make_local_response(body_bytes: &[u8]) -> Response<ResponseBodyLocal> {
         let body = http_body_util::Full::new(bytes::Bytes::from(body_bytes.to_vec()))
             .map_err(|never| match never {});
-        let local_body: ResponseBodyLocal = Box::pin(body);
+        let local_body = ResponseBodyLocal::from_inner(Box::pin(body));
         let inner = http::Response::builder()
             .status(200)
             .body(local_body)
@@ -96,7 +102,6 @@ mod tests {
             url: "http://example.com/".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         }
     }
@@ -167,5 +172,31 @@ mod tests {
         let limited =
             resp.apply_bandwidth_limit_local::<CompioRuntime>(BandwidthLimiter::new(1024));
         assert_eq!(limited.status(), http::StatusCode::OK);
+    }
+
+    #[test]
+    fn local_owner_survives_body_transform_and_raw_handoff() {
+        let body = crate::body::ResponseBodyLocal::with_owner(
+            Box::pin(
+                http_body_util::Full::new(bytes::Bytes::from_static(b"owned"))
+                    .map_err(|never| match never {}),
+            ),
+            Some(crate::body::LocalObservationHandle::new_for_test()),
+        );
+        let inner = http::Response::builder().status(200).body(body).unwrap();
+        let response = Response {
+            inner,
+            url: "http://example.com/".parse().unwrap(),
+            remote_addr: None,
+            tls_info: None,
+            fragment: None,
+        }
+        .apply_bandwidth_limit_local::<CompioRuntime>(
+            crate::bandwidth::BandwidthLimiter::new(1024),
+        );
+
+        let body = response.into_http_response().into_body();
+        let (_inner, owner) = body.into_parts();
+        assert!(owner.is_some());
     }
 }

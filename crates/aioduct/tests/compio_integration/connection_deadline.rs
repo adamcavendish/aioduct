@@ -40,17 +40,19 @@ impl ConnectorLocal for PendingConnector {
 #[derive(Clone, Default)]
 struct DeadlineProxyObserver(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
 
-impl aioduct::observer::RequestObserver for DeadlineProxyObserver {
-    fn on_event(&self, event: &aioduct::observer::RequestEvent) {
+crate::impl_connection_observer!(DeadlineProxyObserver);
+impl aioduct::ConnectionObservation for DeadlineProxyObserver {
+    fn on_connection(&self, event: &aioduct::ConnectionObservationEvent<'_>) {
         if matches!(
-            event.phase,
-            aioduct::observer::RequestPhase::TcpConnected { .. }
+            event,
+            aioduct::ConnectionObservationEvent::PhaseCompleted {
+                phase: aioduct::ConnectionEstablishmentPhase::TcpConnect,
+                ..
+            }
         ) {
             self.0.lock().unwrap().push("tcp");
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
 }
 
 impl Resolve for PendingResolver {
@@ -339,7 +341,7 @@ fn local_connect_response_uses_the_connection_deadline() {
         let observer = DeadlineProxyObserver::default();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-            .request_observer(observer.clone())
+            .observer(observer.clone())
             .connect_timeout(Duration::from_millis(80))
             .timeout(Duration::from_secs(1))
             .build_local()

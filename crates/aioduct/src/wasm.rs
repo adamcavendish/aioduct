@@ -1,4 +1,10 @@
 use std::time::Duration;
+use std::{
+    future::Future,
+    pin::Pin,
+    rc::Rc,
+    task::{Context, Poll},
+};
 
 use bytes::{Bytes, BytesMut};
 use http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -6,6 +12,7 @@ use wasm_bindgen::{JsCast, JsValue, closure::Closure, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::error::{BuilderError, Error};
+use crate::observer::{HostRequestObservation, NoopObserver, Observer};
 use crate::sse::{SseDecoder, SseEvent};
 
 #[wasm_bindgen]
@@ -73,13 +80,13 @@ impl Drop for TimeoutRegistration<'_> {
 /// This client is only available on `wasm32` targets with the `wasm` feature.
 /// It delegates networking to the Fetch API supplied by a compatible browser
 /// or worker runtime.
-#[derive(Clone, Debug)]
-pub struct WasmClient {
+pub struct WasmClient<O = NoopObserver> {
     default_headers: HeaderMap,
     timeout: Option<Duration>,
+    observer: Rc<O>,
 }
 
-impl WasmClient {
+impl WasmClient<NoopObserver> {
     /// Create a new WASM client with default settings.
     #[allow(clippy::expect_used)]
     pub fn new() -> Self {
@@ -87,71 +94,104 @@ impl WasmClient {
     }
 
     /// Create a new builder for configuring the WASM client.
-    pub fn builder() -> WasmClientBuilder {
+    pub fn builder() -> WasmClientBuilder<NoopObserver> {
         WasmClientBuilder {
             default_headers: HeaderMap::new(),
             timeout: None,
             builder_error: None,
+            observer: NoopObserver,
         }
     }
+}
 
+impl<O: Observer> WasmClient<O> {
     /// Start a GET request.
-    pub fn get(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
+    pub fn get(&self, uri: &str) -> Result<WasmRequestBuilder<'_, O>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::GET, uri))
     }
 
     /// Start a HEAD request.
-    pub fn head(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
+    pub fn head(&self, uri: &str) -> Result<WasmRequestBuilder<'_, O>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::HEAD, uri))
     }
 
     /// Start a POST request.
-    pub fn post(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
+    pub fn post(&self, uri: &str) -> Result<WasmRequestBuilder<'_, O>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::POST, uri))
     }
 
     /// Start a PUT request.
-    pub fn put(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
+    pub fn put(&self, uri: &str) -> Result<WasmRequestBuilder<'_, O>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::PUT, uri))
     }
 
     /// Start a PATCH request.
-    pub fn patch(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
+    pub fn patch(&self, uri: &str) -> Result<WasmRequestBuilder<'_, O>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::PATCH, uri))
     }
 
     /// Start a DELETE request.
-    pub fn delete(&self, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
+    pub fn delete(&self, uri: &str) -> Result<WasmRequestBuilder<'_, O>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, Method::DELETE, uri))
     }
 
     /// Start a request with a custom method.
-    pub fn request(&self, method: Method, uri: &str) -> Result<WasmRequestBuilder<'_>, Error> {
+    pub fn request(&self, method: Method, uri: &str) -> Result<WasmRequestBuilder<'_, O>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasmRequestBuilder::new(self, method, uri))
     }
 }
 
-impl Default for WasmClient {
+impl Default for WasmClient<NoopObserver> {
     fn default() -> Self {
         Self::new()
     }
 }
 
+impl<O> std::fmt::Debug for WasmClient<O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmClient")
+            .field("default_headers", &self.default_headers)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+impl<O> Clone for WasmClient<O> {
+    fn clone(&self) -> Self {
+        Self {
+            default_headers: self.default_headers.clone(),
+            timeout: self.timeout,
+            observer: self.observer.clone(),
+        }
+    }
+}
+
 /// Builder for configuring a [`WasmClient`].
-pub struct WasmClientBuilder {
+pub struct WasmClientBuilder<O = NoopObserver> {
     default_headers: HeaderMap,
     timeout: Option<Duration>,
     builder_error: Option<BuilderError>,
+    observer: O,
 }
 
-impl WasmClientBuilder {
+impl<O> WasmClientBuilder<O> {
+    /// Configure the backend-neutral request observer.
+    pub fn observer<O2>(self, observer: O2) -> WasmClientBuilder<O2> {
+        WasmClientBuilder {
+            default_headers: self.default_headers,
+            timeout: self.timeout,
+            builder_error: self.builder_error,
+            observer,
+        }
+    }
+
     /// Set default headers for all requests.
     pub fn default_headers(mut self, headers: HeaderMap) -> Self {
         self.default_headers.extend(headers);
@@ -179,7 +219,10 @@ impl WasmClientBuilder {
     }
 
     /// Build the WASM client.
-    pub fn build(mut self) -> Result<WasmClient, crate::error::Error> {
+    pub fn build(mut self) -> Result<WasmClient<O>, crate::error::Error>
+    where
+        O: Observer,
+    {
         if let Some(error) = self.builder_error.take() {
             return Err(error.into_error());
         }
@@ -193,29 +236,35 @@ impl WasmClientBuilder {
         Ok(WasmClient {
             default_headers,
             timeout: self.timeout,
+            observer: Rc::new(self.observer),
         })
     }
 }
 
 /// A request builder for the WASM client.
-pub struct WasmRequestBuilder<'a> {
-    client: WasmClientRef<'a>,
+pub struct WasmRequestBuilder<'a, O = NoopObserver>
+where
+    O: Observer,
+{
+    client: WasmClientRef<'a, O>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Option<Bytes>,
     timeout: Option<Duration>,
     builder_error: Option<BuilderError>,
+    observation_context: Option<O::Context>,
+    observation_disabled: bool,
 }
 
-enum WasmClientRef<'a> {
-    Borrowed(&'a WasmClient),
-    Owned(WasmClient),
+enum WasmClientRef<'a, O> {
+    Borrowed(&'a WasmClient<O>),
+    Owned(WasmClient<O>),
 }
 
-impl std::ops::Deref for WasmClientRef<'_> {
-    type Target = WasmClient;
-    fn deref(&self) -> &WasmClient {
+impl<O> std::ops::Deref for WasmClientRef<'_, O> {
+    type Target = WasmClient<O>;
+    fn deref(&self) -> &WasmClient<O> {
         match self {
             WasmClientRef::Borrowed(r) => r,
             WasmClientRef::Owned(o) => o,
@@ -223,8 +272,8 @@ impl std::ops::Deref for WasmClientRef<'_> {
     }
 }
 
-impl<'a> WasmRequestBuilder<'a> {
-    fn new(client: &'a WasmClient, method: Method, uri: Uri) -> Self {
+impl<'a, O: Observer> WasmRequestBuilder<'a, O> {
+    fn new(client: &'a WasmClient<O>, method: Method, uri: Uri) -> Self {
         Self {
             client: WasmClientRef::Borrowed(client),
             method,
@@ -233,14 +282,16 @@ impl<'a> WasmRequestBuilder<'a> {
             body: None,
             timeout: None,
             builder_error: None,
+            observation_context: None,
+            observation_disabled: false,
         }
     }
 
     pub(crate) fn new_owned(
-        client: WasmClient,
+        client: WasmClient<O>,
         method: Method,
         uri: Uri,
-    ) -> WasmRequestBuilder<'static> {
+    ) -> WasmRequestBuilder<'static, O> {
         WasmRequestBuilder {
             client: WasmClientRef::Owned(client),
             method,
@@ -249,7 +300,23 @@ impl<'a> WasmRequestBuilder<'a> {
             body: None,
             timeout: None,
             builder_error: None,
+            observation_context: None,
+            observation_disabled: false,
         }
+    }
+
+    /// Skip request observation before `Observer::begin`.
+    pub fn disable_observation(mut self) -> Self {
+        self.observation_disabled = true;
+        self.observation_context = None;
+        self
+    }
+
+    /// Supply request-scoped context to the configured observer.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.observation_context = Some(context);
+        self.observation_disabled = false;
+        self
     }
 
     pub(crate) fn uri(&self) -> &Uri {
@@ -450,6 +517,30 @@ impl<'a> WasmRequestBuilder<'a> {
             return Err(error.into_error());
         }
 
+        let observation = (!self.observation_disabled).then(|| {
+            HostRequestObservation::begin(
+                self.client.observer.as_ref(),
+                &self.method,
+                &self.uri,
+                self.observation_context.take(),
+            )
+        });
+        let mut observation = observation.flatten();
+        match self.send_inner(&mut observation).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                if let Some(observation) = observation {
+                    observation.execution_failed(&error);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn send_inner(
+        self,
+        observation: &mut Option<HostRequestObservation>,
+    ) -> Result<WasmResponse, Error> {
         let url = self.uri.to_string();
 
         let opts = web_sys::RequestInit::new();
@@ -530,6 +621,9 @@ impl<'a> WasmRequestBuilder<'a> {
             None
         };
 
+        if let Some(observation) = observation.as_ref() {
+            observation.attempt_started();
+        }
         let fetch_result = match global.fetch_with_request(&request) {
             Ok(response_promise) => JsFuture::from(response_promise).await.map_err(|error| {
                 if abort_controller
@@ -567,6 +661,10 @@ impl<'a> WasmRequestBuilder<'a> {
         let status = StatusCode::from_u16(resp.status())
             .map_err(|e| Error::Other(format!("invalid status code: {e}").into()))?;
 
+        if let Some(observation) = observation.as_ref() {
+            observation.observe_headers(status);
+        }
+
         let mut resp_headers = HeaderMap::new();
         let header_entries = resp.headers();
         let iterator = js_sys::try_iter(&header_entries)
@@ -594,6 +692,7 @@ impl<'a> WasmRequestBuilder<'a> {
             headers: resp_headers,
             inner: resp,
             url: self.uri,
+            observation: observation.take(),
         })
     }
 }
@@ -604,6 +703,7 @@ pub struct WasmResponse {
     headers: HeaderMap,
     inner: web_sys::Response,
     url: Uri,
+    observation: Option<HostRequestObservation>,
 }
 
 impl std::fmt::Debug for WasmResponse {
@@ -633,16 +733,34 @@ impl WasmResponse {
     }
 
     /// Consume the response and return the body as bytes.
-    pub async fn bytes(self) -> Result<Bytes, Error> {
-        let body_promise = self
-            .inner
-            .array_buffer()
-            .map_err(|e| Error::Other(format!("arrayBuffer() failed: {e:?}").into()))?;
-        let body_value = JsFuture::from(body_promise)
-            .await
-            .map_err(|e| Error::Other(format!("body read failed: {e:?}").into()))?;
+    pub async fn bytes(mut self) -> Result<Bytes, Error> {
+        let observation = self.observation.take();
+        let body_promise = match self.inner.array_buffer() {
+            Ok(promise) => promise,
+            Err(error) => {
+                let error = Error::Other(format!("arrayBuffer() failed: {error:?}").into());
+                if let Some(observation) = observation {
+                    observation.body_failed(&error);
+                }
+                return Err(error);
+            }
+        };
+        let body_value = match JsFuture::from(body_promise).await {
+            Ok(value) => value,
+            Err(error) => {
+                let error = Error::Other(format!("body read failed: {error:?}").into());
+                if let Some(observation) = observation {
+                    observation.body_failed(&error);
+                }
+                return Err(error);
+            }
+        };
         let uint8_array = js_sys::Uint8Array::new(&body_value);
-        Ok(Bytes::from(uint8_array.to_vec()))
+        let bytes = Bytes::from(uint8_array.to_vec());
+        if let Some(observation) = observation {
+            observation.body_ended();
+        }
+        Ok(bytes)
     }
 
     /// Consume the response and return the body as a string.
@@ -660,7 +778,7 @@ impl WasmResponse {
     }
 
     /// Convert the response into a streaming byte reader.
-    pub fn into_bytes_stream(self) -> WasmBodyStream {
+    pub fn into_bytes_stream(mut self) -> WasmBodyStream {
         let reader = self.inner.body().and_then(|body| {
             body.get_reader()
                 .dyn_into::<web_sys::ReadableStreamDefaultReader>()
@@ -669,16 +787,23 @@ impl WasmResponse {
         WasmBodyStream {
             reader,
             done: false,
+            observation: self.observation.take(),
         }
     }
 
     /// Convert the response into a streaming Server-Sent Events reader.
     pub fn into_sse_stream(self) -> WasmSseStream {
+        let mut body = self.into_bytes_stream();
+        let observation = body.take_observation();
+        if let Some(observation) = observation.as_ref() {
+            observation.sse_started();
+        }
         WasmSseStream {
-            body: self.into_bytes_stream(),
+            body,
             buf: BytesMut::new(),
             decoder: SseDecoder::new(),
             done: false,
+            observation,
         }
     }
 
@@ -693,10 +818,19 @@ impl WasmResponse {
     }
 }
 
+impl Drop for WasmResponse {
+    fn drop(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.body_abandoned();
+        }
+    }
+}
+
 /// Async byte stream over a WASM `ReadableStream`.
 pub struct WasmBodyStream {
     reader: Option<web_sys::ReadableStreamDefaultReader>,
     done: bool,
+    observation: Option<HostRequestObservation>,
 }
 
 /// Async Server-Sent Events stream for browser and worker runtimes.
@@ -705,6 +839,15 @@ pub struct WasmSseStream {
     buf: BytesMut,
     decoder: SseDecoder,
     done: bool,
+    observation: Option<HostRequestObservation>,
+}
+
+/// Future returned by [`WasmSseStream::next`]. The pending JS read belongs to
+/// this future; dropping it preserves the existing Promise cancellation behavior.
+#[must_use = "futures do nothing unless polled or awaited"]
+pub struct WasmSseNext<'a> {
+    stream: &'a mut WasmSseStream,
+    read: Option<JsFuture>,
 }
 
 impl std::fmt::Debug for WasmSseStream {
@@ -721,23 +864,58 @@ impl WasmSseStream {
     }
 
     /// Returns the next SSE event, or `None` when the stream ends.
-    pub async fn next(&mut self) -> Option<Result<SseEvent, Error>> {
+    #[allow(clippy::should_implement_trait)] // Async protocol reading, not Iterator.
+    pub fn next(&mut self) -> WasmSseNext<'_> {
+        WasmSseNext {
+            stream: self,
+            read: None,
+        }
+    }
+}
+
+impl Future for WasmSseNext<'_> {
+    type Output = Option<Result<SseEvent, Error>>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let stream = &mut *this.stream;
         loop {
-            if let Some(event) = self.decoder.decode(&mut self.buf) {
-                return Some(event);
+            if let Some(event) = stream.decoder.decode(&mut stream.buf) {
+                if let Some(observation) = stream.observation.as_ref() {
+                    observation.sse_buffered(stream.buf.len());
+                }
+                if let Err(error) = &event
+                    && let Some(observation) = stream.observation.as_ref()
+                {
+                    observation.sse_error(error);
+                }
+                if let Some(observation) = stream.observation.as_ref()
+                    && let Ok(event) = &event
+                {
+                    observation.sse_event_delivered(event);
+                }
+                return Poll::Ready(Some(event));
             }
-            if self.done {
-                return None;
+            if stream.done {
+                if let Some(observation) = stream.observation.take() {
+                    observation.sse_ended();
+                }
+                return Poll::Ready(None);
             }
-            match self.body.next().await {
-                Some(Ok(chunk)) => self.buf.extend_from_slice(&chunk),
-                Some(Err(error)) => return Some(Err(error)),
-                None => {
-                    self.done = true;
-                    if let Some(event) = self.decoder.decode(&mut self.buf) {
-                        return Some(event);
+            match std::task::ready!(stream.body.poll_chunk(cx, &mut this.read)) {
+                Some(Ok(chunk)) => {
+                    stream.buf.extend_from_slice(&chunk);
+                    if let Some(observation) = stream.observation.as_ref() {
+                        observation.sse_buffered(stream.buf.len());
                     }
-                    return None;
+                }
+                Some(Err(error)) => {
+                    if let Some(observation) = stream.observation.take() {
+                        observation.sse_failed(&error);
+                    }
+                    return Poll::Ready(Some(Err(error)));
+                }
+                None => {
+                    stream.done = true;
                 }
             }
         }
@@ -752,28 +930,89 @@ impl std::fmt::Debug for WasmBodyStream {
     }
 }
 
+/// Future returned by [`WasmBodyStream::next`].
+///
+/// The pending JavaScript read belongs to this future, preserving the existing
+/// cancellation behavior: dropping it does not cancel the underlying Promise.
+/// Its fields and representation are implementation details.
+#[must_use = "futures do nothing unless polled or awaited"]
+pub struct WasmBodyNext<'a> {
+    stream: &'a mut WasmBodyStream,
+    read: Option<JsFuture>,
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod body_next_tests;
+
 impl WasmBodyStream {
+    fn take_observation(&mut self) -> Option<HostRequestObservation> {
+        self.observation.take()
+    }
+
+    fn observation_ended(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.body_ended();
+        }
+    }
+
+    fn observation_failed(&mut self, error: &Error) {
+        if let Some(observation) = self.observation.take() {
+            observation.body_failed(error);
+        }
+    }
+
     /// Returns the next chunk of body data, or `None` when complete.
-    pub async fn next(&mut self) -> Option<Result<Bytes, Error>> {
-        if self.done {
-            return None;
+    #[allow(clippy::should_implement_trait)] // Async reading, not Iterator::next.
+    pub fn next(&mut self) -> WasmBodyNext<'_> {
+        WasmBodyNext {
+            stream: self,
+            read: None,
+        }
+    }
+}
+
+impl Future for WasmBodyNext<'_> {
+    type Output = Option<Result<Bytes, Error>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        this.stream.poll_chunk(cx, &mut this.read)
+    }
+}
+
+impl WasmBodyStream {
+    fn poll_chunk(
+        &mut self,
+        cx: &mut Context<'_>,
+        read: &mut Option<JsFuture>,
+    ) -> Poll<Option<Result<Bytes, Error>>> {
+        let stream = self;
+        if stream.done {
+            stream.observation_ended();
+            return Poll::Ready(None);
         }
 
-        let reader = match &self.reader {
+        let reader = match &stream.reader {
             Some(r) => r,
             None => {
-                self.done = true;
-                return None;
+                stream.done = true;
+                stream.observation_ended();
+                return Poll::Ready(None);
             }
         };
 
-        let result = match JsFuture::from(reader.read()).await {
+        let future = read.get_or_insert_with(|| JsFuture::from(reader.read()));
+        let Poll::Ready(result) = Pin::new(future).poll(cx) else {
+            return Poll::Pending;
+        };
+        *read = None;
+        let result = match result {
             Ok(val) => val,
             Err(e) => {
-                self.done = true;
-                return Some(Err(Error::Other(
-                    format!("stream read failed: {e:?}").into(),
-                )));
+                stream.done = true;
+                let error = Error::Other(format!("stream read failed: {e:?}").into());
+                stream.observation_failed(&error);
+                return Poll::Ready(Some(Err(error)));
             }
         };
 
@@ -783,22 +1022,39 @@ impl WasmBodyStream {
             .unwrap_or(true);
 
         if done {
-            self.done = true;
-            return None;
+            stream.done = true;
+            stream.observation_ended();
+            return Poll::Ready(None);
         }
 
         let value = match js_sys::Reflect::get(&result, &"value".into()) {
             Ok(v) => v,
             Err(e) => {
-                self.done = true;
-                return Some(Err(Error::Other(
-                    format!("stream value read failed: {e:?}").into(),
-                )));
+                stream.done = true;
+                let error = Error::Other(format!("stream value read failed: {e:?}").into());
+                stream.observation_failed(&error);
+                return Poll::Ready(Some(Err(error)));
             }
         };
 
         let uint8_array = js_sys::Uint8Array::new(&value);
-        Some(Ok(Bytes::from(uint8_array.to_vec())))
+        Poll::Ready(Some(Ok(Bytes::from(uint8_array.to_vec()))))
+    }
+}
+
+impl Drop for WasmBodyStream {
+    fn drop(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.body_abandoned();
+        }
+    }
+}
+
+impl Drop for WasmSseStream {
+    fn drop(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.sse_abandoned();
+        }
     }
 }
 

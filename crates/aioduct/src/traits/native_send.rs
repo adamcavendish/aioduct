@@ -15,12 +15,42 @@ use crate::runtime::{ConnectorSend, RuntimePoll};
 /// Returned by [`HttpClient::request()`] on [`HttpEngineSend`]. Internally wraps
 /// a standard [`RequestBuilderSend`](crate::request::RequestBuilderSend) with an
 /// owned client reference.
-pub struct OwnedRequestBuilderSend<R: RuntimePoll, C: ConnectorSend> {
-    inner: crate::request::RequestBuilderSend<'static, R, C>,
+pub struct OwnedRequestBuilderSend<
+    R: RuntimePoll,
+    C: ConnectorSend,
+    O: crate::observer::Observer = crate::observer::NoopObserver,
+> {
+    inner: crate::request::RequestBuilderSend<'static, R, C, O>,
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> HttpClient for HttpEngineSend<R, C> {
-    type RequestBuilder = OwnedRequestBuilderSend<R, C>;
+impl<R: RuntimePoll, C: ConnectorSend, O> OwnedRequestBuilderSend<R, C, O>
+where
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
+    /// Skip observation for this logical request, before `Observer::begin`.
+    pub fn disable_observation(mut self) -> Self {
+        self.inner = self.inner.disable_observation();
+        self
+    }
+
+    /// Supply request-scoped context to the configured observer.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.inner = self.inner.observation_context(context);
+        self
+    }
+}
+
+impl<R: RuntimePoll, C: ConnectorSend, O> HttpClient for HttpEngineSend<R, C, O>
+where
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
+    type RequestBuilder = OwnedRequestBuilderSend<R, C, O>;
 
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {
         let (uri, fragment) =
@@ -36,7 +66,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpClient for HttpEngineSend<R, C> {
     }
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> RequestBuilderExt for OwnedRequestBuilderSend<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend, O> RequestBuilderExt for OwnedRequestBuilderSend<R, C, O>
+where
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
     type Response = Response;
 
     fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
@@ -134,7 +170,9 @@ impl ResponseExt for Response {
 }
 
 impl ByteStreamExt for BodyStreamSend {
-    async fn next(&mut self) -> Option<Result<Bytes, Error>> {
-        self.next().await
+    type Next<'a> = crate::body::BodyNextSend<'a>;
+
+    fn next(&mut self) -> Self::Next<'_> {
+        BodyStreamSend::next(self)
     }
 }

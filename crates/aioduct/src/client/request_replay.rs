@@ -8,6 +8,8 @@ use crate::pool::ProtocolHint;
 
 #[derive(Clone)]
 struct ReplayableRequestMetadata {
+    observation_attempt_counter: Option<crate::observer::RequestAttemptCounter>,
+    send_attempt_observer: Option<crate::observer::SendAttemptObserver>,
     automatic_host: Option<super::connection_lifecycle::AutomaticHost>,
     protocol_hint: Option<ProtocolHint>,
     extended_connect_protocol: Option<hyper::ext::Protocol>,
@@ -21,6 +23,12 @@ struct ReplayableRequestMetadata {
 impl ReplayableRequestMetadata {
     fn capture(extensions: &http::Extensions) -> Self {
         Self {
+            observation_attempt_counter: extensions
+                .get::<crate::observer::RequestAttemptCounter>()
+                .cloned(),
+            send_attempt_observer: extensions
+                .get::<crate::observer::SendAttemptObserver>()
+                .cloned(),
             automatic_host: extensions
                 .get::<super::connection_lifecycle::AutomaticHost>()
                 .cloned(),
@@ -45,6 +53,12 @@ impl ReplayableRequestMetadata {
     }
 
     fn restore(self, extensions: &mut http::Extensions) {
+        if let Some(counter) = self.observation_attempt_counter {
+            extensions.insert(counter);
+        }
+        if let Some(observer) = self.send_attempt_observer {
+            extensions.insert(observer);
+        }
         if let Some(host) = self.automatic_host {
             extensions.insert(host);
         }

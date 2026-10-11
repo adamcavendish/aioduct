@@ -28,7 +28,7 @@ async fn coalescing_dns_uses_the_connection_deadline() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
         .resolver(PendingResolver)
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .connect_timeout(Duration::from_millis(60))
         .timeout(Duration::from_secs(1))
         .build()
@@ -46,7 +46,7 @@ async fn coalescing_dns_uses_the_connection_deadline() {
         observer
             .phases()
             .iter()
-            .any(|phase| phase == "PoolCheckoutComplete(Miss)"),
+            .any(|phase| phase == "PoolLookup(Miss)"),
         "coalescing timeout must complete the pool checkout observer phase"
     );
 }

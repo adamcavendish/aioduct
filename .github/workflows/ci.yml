@@ -189,10 +189,11 @@ jobs:
         with:
           targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@wasmtime
+      - name: Build WASI-P2 test runner
+        run: cargo build -p example-wasi-p2-test-runner --release
       - name: Run WASI-P2 unit tests
         run: |
-          CARGO_TARGET_WASM32_WASIP2_RUNNER="wasmtime run --" \
+          CARGO_TARGET_WASM32_WASIP2_RUNNER="${{ github.workspace }}/target/release/example-wasi-p2-test-runner" \
             cargo test -p aioduct --target wasm32-wasip2 --features wasi-p2,json --lib
 
   snippet-check:

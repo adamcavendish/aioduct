@@ -95,6 +95,15 @@ pub(in crate::client) enum ProxyAttemptError {
 }
 
 impl ProxyAttemptError {
+    pub(in crate::client) fn error(&self) -> &Error {
+        match self {
+            Self::Fatal(error)
+            | Self::AdaptiveH2cRejected(error)
+            | Self::FirstProxyEndpoint { source: error, .. }
+            | Self::LocalTarget { source: error, .. } => error,
+        }
+    }
+
     pub(in crate::client) fn local_target(hop: usize, source: io::Error) -> Self {
         Self::local_target_error(hop, Error::Io(source))
     }

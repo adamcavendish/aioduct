@@ -1,727 +1,862 @@
-//! Real-time request lifecycle observer for load testing and tracing.
+//! Backend-neutral request observations.
 //!
-//! The [`RequestObserver`] trait fires at each connection phase transition
-//! with monotonic timestamps and diagnostic data. Use it to implement
-//! detailed per-phase tracing, load testing metrics, or custom instrumentation.
-
-use std::net::SocketAddr;
-use std::time::Duration;
+//! Configure an [`Observer`] on the engine builder. Aioduct calls
+//! [`Observer::begin`] once when a logical request actually executes, and keeps
+//! the returned [`RequestObservation`] alive internally through the response
+//! body. Returned response and stream types do not depend on the observer type.
+//! Exporting to tracing, OTLP, or multiple backends is the user's responsibility.
+//!
+//! The native 0.3 implementation covers start, selected headers, typed attempt
+//! facts, low-frequency connection acquisition, independent channel and
+//! connection ownership, finish, and original DATA byte summaries. Upload,
+//! remaining acquisition phases and protocol/runtime validation remain in
+//! migration. The 0.2 request observer API has been replaced, without a
+//! compatibility adapter.
+//! Native SSE lifecycle and selected protocol statistics are delivered
+//! independently of the HTTP request's terminal summary.
+//!
+//! ```no_run
+//! # #[cfg(all(feature = "tokio", not(target_arch = "wasm32")))]
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! use aioduct::{Interest, NoopConnectionObservation, Observer,
+//!               RequestObservation, RequestInfo, RequestFinish, TokioClient};
+//!
+//! struct Metrics;
+//! struct RequestMetrics { request_id: Option<u64> }
+//! impl Observer for Metrics {
+//!     type Context = u64;
+//!     type Observation = RequestMetrics;
+//!     type ConnectionObservation = NoopConnectionObservation;
+//!
+//!     fn begin(&self, _: RequestInfo<'_>, context: Option<u64>)
+//!         -> (Interest, RequestMetrics)
+//!     {
+//!         (Interest::REQUEST_FINISH | Interest::RESPONSE_BODY_BYTES,
+//!          RequestMetrics { request_id: context })
+//!     }
+//!     fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
+//!         (Interest::EMPTY, NoopConnectionObservation)
+//!     }
+//! }
+//! impl RequestObservation for RequestMetrics {
+//!     fn on_request_finish(&self, event: &RequestFinish<'_>) {
+//!         // Record event.reason, event.response, event.attempt_count,
+//!         // event.original_data_bytes and self.request_id in your backend.
+//!     }
+//! }
+//!
+//! let client = TokioClient::builder().observer(Metrics).build()?;
+//! let response: aioduct::Response = client.get("https://example.com/")?
+//!     .observation_context(42).send().await?;
+//! let bytes = response.bytes().await?; // Finish follows reliable body completion.
+//! let response = client.get("https://example.com/")?
+//!     .disable_observation().send().await?; // Skips begin entirely.
+//! # Ok(())
+//! # }
+//! ```
 
 use http::{Method, StatusCode, Uri};
+use std::net::SocketAddr;
+
+mod channel;
+pub use channel::{
+    ChannelDetachReason, ChannelHandoffInfo, ChannelHandoffMode, ChannelIoEvent,
+    ChannelIoOperation, ConnectionAssociation, ResponseChannelHandoffEvent,
+};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod original_data;
 
 #[cfg(not(feature = "precise-timing"))]
 pub use coarsetime::Instant;
 #[cfg(feature = "precise-timing")]
 pub use std::time::Instant;
 
-#[cfg(feature = "json")]
-mod serde_status_code {
-    use http::StatusCode;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+// ── 0.3 request-level observer contract ─────────────────────────────────────
 
-    pub fn serialize<S: Serializer>(status: &StatusCode, s: S) -> Result<S::Ok, S::Error> {
-        status.as_u16().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<StatusCode, D::Error> {
-        let code = u16::deserialize(d)?;
-        StatusCode::from_u16(code).map_err(serde::de::Error::custom)
-    }
-}
-
-/// How the connection was obtained for this request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-pub enum PoolOutcome {
-    /// Exact pool key match — connection reused.
-    Hit,
-    /// RFC 7540 §9.1.1 connection coalescing (SAN match on TLS cert).
-    Coalesced,
-    /// No pooled connection available; opening a fresh connection.
-    Miss,
-    /// Pool hit returned a stale connection; retrying on fresh.
-    StaleRetry,
-}
-
-/// Why a failed request will (or won't) be retried.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-pub enum RetryKind {
-    /// No retry — the request has definitively failed.
-    None,
-    /// Transparent stale-connection retry (internal to dispatch).
-    StaleConnection,
-    /// Explicit retry via RetryConfig (server error, timeout, IO error, etc.).
-    Explicit,
-}
-
-/// The HTTP protocol negotiated on the connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-pub enum NegotiatedProtocol {
-    /// HTTP/1.0 or HTTP/1.1.
-    Http1,
-    /// HTTP/2 (h2 or h2c).
-    Http2,
-    /// HTTP/3 (QUIC).
-    Http3,
-}
-
-/// Direction of data transfer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-pub enum TransferDirection {
-    /// Client → Server (request body, WebSocket send).
-    Upload,
-    /// Server → Client (response body, WebSocket receive).
-    Download,
-}
-
-/// Events fired during HTTP request execution, carrying diagnostic data.
+/// The observation categories a request may explicitly subscribe to.
 ///
-/// Each variant represents a phase transition in the request lifecycle.
-/// Phases that are skipped (e.g., DNS for pool hits, TLS for plain HTTP)
-/// simply don't fire.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-pub enum RequestPhase {
-    /// Request execution has started (after rate limiting, if any).
-    Started,
+/// This is intentionally represented by one `u32`: selecting a summary does
+/// not implicitly enable a high-frequency callback, and an empty interest must
+/// not create request state in the execution path.
+///
+/// During the 0.3 migration, native delivery exists for request start, selected
+/// response headers, attempt facts, the initial connection-acquisition phases
+/// and acquired-resource facts, request finish, original DATA summaries, and
+/// SSE lifecycle/statistics. Other categories remain reserved for their typed
+/// callbacks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Interest(u32);
 
-    /// Pool checkout phase completed.
-    PoolCheckoutComplete {
-        /// Whether the pool had a usable connection.
-        outcome: PoolOutcome,
-        /// Time spent blocked waiting for / checking the pool.
-        blocked_duration: Duration,
-    },
+impl Interest {
+    /// No request-level facts are collected.
+    pub const EMPTY: Self = Self(0);
+    /// The logical request start callback.
+    pub const REQUEST_START: Self = Self(1 << 0);
+    /// The selected response headers callback.
+    pub const RESPONSE_HEADERS: Self = Self(1 << 1);
+    /// The logical request finish callback.
+    pub const REQUEST_FINISH: Self = Self(1 << 2);
+    /// Attempt diagnostics.
+    pub const ATTEMPT: Self = Self(1 << 3);
+    /// Request/attempt connection acquisition diagnostics.
+    pub const CONNECTION_ACQUISITION: Self = Self(1 << 4);
+    /// Request upload diagnostics.
+    pub const REQUEST_BODY: Self = Self(1 << 5);
+    /// Explicit response-body lifecycle/progress diagnostics.
+    pub const RESPONSE_BODY: Self = Self(1 << 6);
+    /// Response-body original DATA byte summary.
+    pub const RESPONSE_BODY_BYTES: Self = Self(1 << 7);
+    /// SSE establishment, original errors, reliable end, and abandonment.
+    pub const SSE_LIFECYCLE: Self = Self(1 << 8);
+    /// Response-to-channel handoff diagnostics.
+    pub const RESPONSE_CHANNEL_HANDOFF: Self = Self(1 << 9);
+    /// Post-handoff channel lifecycle and byte summaries.
+    pub const CHANNEL_LIFECYCLE: Self = Self(1 << 10);
+    /// SSE protocol statistics, delivered on existing lifecycle events.
+    /// Internally enables `SSE_LIFECYCLE`, not per-message callbacks.
+    pub const SSE_STATISTICS: Self = Self(1 << 11);
+    /// Selected cumulative channel delivery/acceptance at lifecycle events.
+    /// Internally enables `CHANNEL_LIFECYCLE`, never per-operation callbacks.
+    pub const CHANNEL_BYTES: Self = Self(1 << 12);
+    /// Shared-connection lifecycle facts.
+    pub const CONNECTION_LIFECYCLE: Self = Self(1 << 13);
+    /// Connection-establishment diagnostics.
+    pub const CONNECTION_ESTABLISHMENT: Self = Self(1 << 14);
 
-    /// DNS resolution completed.
-    DnsResolved {
-        /// All resolved addresses (may be multiple for Happy Eyeballs).
-        addrs: Vec<SocketAddr>,
-        /// Time spent in DNS resolution.
-        duration: Duration,
-    },
+    /// Returns the raw interest bits.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
 
-    /// TCP connection established.
-    TcpConnected {
-        /// Remote address selected (after Happy Eyeballs, if applicable).
-        remote_addr: SocketAddr,
-        /// Time spent in TCP connect.
-        duration: Duration,
-        /// Protocol negotiated on this connection.
-        protocol: NegotiatedProtocol,
-    },
+    /// Returns whether all bits in `other` are selected.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
 
-    /// TLS handshake completed (only fired for HTTPS connections).
-    TlsHandshakeComplete {
-        /// Time spent in TLS negotiation.
-        duration: Duration,
-        /// ALPN protocol negotiated (e.g. "h2", "http/1.1").
-        alpn_protocol: Option<String>,
-        /// DER-encoded peer certificate, if available.
-        peer_certificate_der: Option<Vec<u8>>,
-    },
+    /// Returns whether any bit in `other` is selected.
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
 
-    /// Request headers and body have been fully sent.
-    RequestSent {
-        /// Time spent sending.
-        duration: Duration,
-        /// Actual wire headers sent with the request.
-        headers: Vec<(String, String)>,
-    },
+    /// Returns the union of two interest sets.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
 
-    /// First response byte received (TTFB).
-    ResponseStarted {
-        /// Time waiting for the server to respond after send completed.
-        waiting_duration: Duration,
-    },
+    /// Returns whether no category is selected.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 
-    /// Response headers fully received.
-    ResponseComplete {
-        /// HTTP status code.
-        #[cfg_attr(feature = "json", serde(with = "serde_status_code"))]
-        status: StatusCode,
-        /// Protocol used for the response.
-        protocol: NegotiatedProtocol,
-        /// Total request duration (start to response headers complete).
-        total_duration: Duration,
-    },
+    fn with_dependencies(self) -> Self {
+        let mut interest = self;
+        if interest.contains(Self::RESPONSE_BODY_BYTES) {
+            interest = interest.union(Self::REQUEST_FINISH);
+        }
+        if interest.contains(Self::SSE_STATISTICS) {
+            interest = interest.union(Self::SSE_LIFECYCLE);
+        }
+        if interest.contains(Self::CHANNEL_BYTES) {
+            interest = interest.union(Self::CHANNEL_LIFECYCLE);
+        }
+        interest
+    }
+}
 
-    /// A redirect was followed.
-    Redirected {
-        /// HTTP status code that triggered the redirect.
-        #[cfg_attr(feature = "json", serde(with = "serde_status_code"))]
-        status: StatusCode,
-        /// URI being redirected from.
-        from: String,
-        /// URI being redirected to.
-        to: String,
-    },
+impl std::ops::BitOr for Interest {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        self.union(rhs)
+    }
+}
 
-    /// A retry is about to be attempted after a backoff delay.
-    Retrying {
-        /// Reason for the retry (error message or status code string).
-        reason: String,
-        /// 1-based retry attempt number (1 = first retry).
-        attempt: u32,
-        /// Maximum retries allowed.
-        max_retries: u32,
-        /// Backoff duration before this retry.
-        backoff: Duration,
-    },
+impl std::ops::BitOrAssign for Interest {
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = self.union(rhs);
+    }
+}
 
-    /// Request failed with an error.
+/// The request facts available when an observation begins.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestInfo<'a> {
+    /// The method of the logical request.
+    pub method: &'a Method,
+    /// The initial URI after base-URL resolution.
+    pub initial_uri: &'a Uri,
+}
+
+/// The logical request start milestone, collected only when subscribed.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestStart<'a> {
+    /// The method of the logical request.
+    pub method: &'a Method,
+    /// The initial URI after base-URL resolution.
+    pub initial_uri: &'a Uri,
+    /// The time at which request execution began.
+    pub at: Instant,
+}
+
+/// The execution branch that supplied the selected response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResponseSource {
+    /// The response was selected from the transport execution path.
+    Transport,
+    /// The response was selected directly from aioduct's HTTP cache.
+    CacheHit,
+    /// A 304 revalidation selected the cached response.
+    CacheRevalidated,
+    /// A stale-if-error branch selected the cached response.
+    CacheStaleIfError,
+}
+
+/// The low-cost identity of the selected final response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseInfo {
+    /// The HTTP status code.
+    pub status: StatusCode,
+    /// The HTTP version used by the selected response, when the execution
+    /// backend can observe it. Host-managed fetch/WASI paths may leave it
+    /// unknown.
+    pub version: Option<http::Version>,
+    /// The execution branch that selected the response.
+    pub source: ResponseSource,
+}
+
+/// The response-headers milestone for a logical request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseHeaders {
+    /// The selected response identity.
+    pub response: ResponseInfo,
+    /// The time at which the milestone occurred.
+    pub at: Instant,
+}
+
+/// The terminal fact for a logical request.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum RequestFinishReason<'a> {
+    /// The selected body and library processing ended reliably.
+    Ended,
+    /// A real aioduct error ended the request.
     Failed {
-        /// Error description.
-        error: String,
-        /// Whether and how this failure will be retried.
-        retry: RetryKind,
-        /// Duration from start to failure.
-        elapsed: Duration,
+        /// The original aioduct error; it is borrowed and not cloned.
+        error: &'a crate::error::Error,
     },
-
-    /// Bytes transferred (fires per chunk, bidirectional for WebSocket).
-    BytesTransferred {
-        /// Direction of this transfer.
-        direction: TransferDirection,
-        /// Bytes in this chunk.
-        chunk_bytes: u64,
-        /// Cumulative bytes in this direction for this request/connection.
-        cumulative_bytes: u64,
-        /// Time since transfer started.
-        elapsed: Duration,
-    },
-
-    /// Transfer complete in one direction.
-    TransferComplete {
-        /// Direction of the completed transfer.
-        direction: TransferDirection,
-        /// Total bytes transferred.
-        total_bytes: u64,
-        /// Total transfer duration.
-        transfer_duration: Duration,
-        /// Observed throughput in bytes/sec.
-        throughput_bytes_per_sec: f32,
-    },
-
-    /// Transfer aborted due to an error before completion.
-    TransferAborted {
-        /// Direction of the aborted transfer.
-        direction: TransferDirection,
-        /// Bytes successfully transferred before the error.
-        bytes_transferred: u64,
-        /// Time elapsed since transfer started.
-        elapsed: Duration,
-        /// Error that caused the abort.
-        error: String,
-    },
-
-    /// HTTP trailers received after the body (chunked transfer encoding).
-    TrailersReceived {
-        /// Trailer header fields.
-        headers: Vec<(String, String)>,
-    },
+    /// A returned but not reliably completed body was released.
+    ConsumerAbandoned,
+    /// Execution ended before a response was handed to the caller.
+    ExecutionAbandoned,
+    /// An accepted upgrade or tunnel was successfully handed off.
+    HandedOff,
 }
 
-/// Event fired at each phase transition during request execution.
-#[derive(Debug, Clone)]
-pub struct RequestEvent {
-    /// HTTP method of the request.
-    pub method: Method,
-    /// Target URI of the request.
-    pub uri: Uri,
-    /// The phase that just completed.
-    pub phase: RequestPhase,
-    /// Monotonic timestamp when this phase completed.
+/// The low-frequency terminal summary for a logical request.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestFinish<'a> {
+    /// The typed terminal reason.
+    pub reason: RequestFinishReason<'a>,
+    /// The selected final response, if one exists.
+    pub response: Option<ResponseInfo>,
+    /// The number of HTTP attempts that actually started.
+    pub attempt_count: u64,
+    /// Original DATA bytes, when `RESPONSE_BODY_BYTES` was selected and the
+    /// response body was applicable.
+    pub original_data_bytes: Option<u64>,
+    /// The time at which the terminal fact occurred.
     pub at: Instant,
 }
 
-/// Observer for real-time HTTP request lifecycle events.
-///
-/// Implementors receive callbacks at each connection/request phase with
-/// monotonic timestamps and diagnostic data. The observer is shared across
-/// all concurrent requests on an [`crate::HttpEngineSend`], so `on_event` takes `&self`.
-///
-/// # Thread Safety
-///
-/// `on_event` may be called concurrently from multiple async tasks.
-/// Implementations must be internally synchronized (e.g., using atomics
-/// or channels).
-///
-/// # Performance
-///
-/// `on_event` must be non-blocking. Heavy processing should be deferred
-/// (e.g., send events to a channel for async processing).
-pub trait RequestObserver: Send + Sync + 'static {
-    /// Called at each phase transition during request execution.
-    fn on_event(&self, event: &RequestEvent);
-
-    /// Called for connection-level lifecycle events (not tied to a specific request).
-    fn on_connection_event(&self, event: &ConnectionEvent);
+/// A phase of a physical connection's establishment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConnectionEstablishmentPhase {
+    /// Name resolution for the connection's endpoint.
+    Dns,
+    /// A TCP connection attempt.
+    TcpConnect,
+    /// A QUIC connection attempt.
+    QuicConnect,
+    /// TLS handshake and protocol negotiation.
+    TlsHandshake,
+    /// An internal proxy CONNECT negotiation.
+    ProxyConnect,
 }
 
-/// Connection-level event (not tied to a specific request).
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
-pub enum ConnectionPhase {
-    /// Connection-level metrics (fires at pool checkin or connection close).
-    Metrics {
-        /// Remote address of the connection.
-        remote_addr: SocketAddr,
-        /// Protocol version.
-        protocol: NegotiatedProtocol,
-        /// Approximate bytes sent (from body size hints). Exact counts
-        /// are available via per-request `TransferComplete` events.
-        bytes_sent: u64,
-        /// Approximate bytes received (from Content-Length header). Exact
-        /// counts are available via per-request `TransferComplete` events.
-        bytes_received: u64,
-        /// Connection lifetime.
-        connection_age: Duration,
-        /// Number of requests served by this connection.
-        requests_served: u32,
-        /// Whether the connection was closed (vs returned to pool).
-        closed: bool,
+/// The transport used by one connection-local connect attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TransportKind {
+    /// A TCP connection, including a TCP connection later wrapped in TLS.
+    Tcp,
+    /// A QUIC connection used by HTTP/3.
+    Quic,
+}
+
+/// The stable facts identifying one candidate connection attempt.
+///
+/// `sequence` is local to one physical connection establishment and is not an
+/// HTTP attempt number or a process-wide identifier. The address is a
+/// diagnostic attribute, not a connection identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectAttempt {
+    /// The candidate's ordinal within one connection establishment.
+    pub sequence: u32,
+    /// The underlying transport used for this candidate.
+    pub kind: TransportKind,
+    /// The resolved remote address targeted by this candidate.
+    pub remote_addr: SocketAddr,
+}
+
+/// A low-frequency fact belonging to one physical connection observation.
+///
+/// The connection owner is independent from every request and stream using
+/// the connection.  All callback data is borrowed for the duration of the
+/// synchronous callback; aioduct does not retain user-owned errors.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum ConnectionObservationEvent<'a> {
+    /// A resolved address candidate began its underlying connection attempt.
+    ConnectAttemptStarted {
+        /// The candidate facts.
+        attempt: ConnectAttempt,
+        /// The monotonic time at which the candidate began.
+        at: Instant,
+    },
+    /// A candidate's underlying TCP/QUIC connection succeeded.
+    ///
+    /// This does not by itself mean that TLS or the HTTP protocol handshake
+    /// succeeded; `Established` remains the usable-connection milestone.
+    ConnectAttemptSucceeded {
+        /// The candidate facts.
+        attempt: ConnectAttempt,
+        /// The monotonic time at which the underlying connect succeeded.
+        at: Instant,
+    },
+    /// A candidate's underlying connection attempt failed.
+    ConnectAttemptFailed {
+        /// The candidate facts.
+        attempt: ConnectAttempt,
+        /// The original aioduct error for this candidate.
+        error: &'a crate::error::Error,
+        /// The monotonic time at which the candidate failed.
+        at: Instant,
+    },
+    /// A candidate was released before its underlying connect completed.
+    ///
+    /// In a Happy Eyeballs race this normally means another candidate won;
+    /// it does not mean that the complete connection establishment was
+    /// cancelled.
+    ConnectAttemptCancelled {
+        /// The candidate facts.
+        attempt: ConnectAttempt,
+        /// The monotonic time at which the candidate was cancelled.
+        at: Instant,
+    },
+    /// A visible connection-establishment phase began.
+    PhaseStarted {
+        /// The establishment phase that began.
+        phase: ConnectionEstablishmentPhase,
+        /// The monotonic time at which the phase began.
+        at: Instant,
+    },
+    /// A visible connection-establishment phase completed.
+    PhaseCompleted {
+        /// The establishment phase that completed.
+        phase: ConnectionEstablishmentPhase,
+        /// The monotonic time at which the phase completed.
+        at: Instant,
+    },
+    /// The connection could not become usable.
+    EstablishmentFailed {
+        /// The original aioduct error.
+        error: &'a crate::error::Error,
+        /// The monotonic time at which establishment failed.
+        at: Instant,
+    },
+    /// Establishment was cancelled before a usable connection existed.
+    EstablishmentCancelled {
+        /// The monotonic time at which establishment was cancelled.
+        at: Instant,
+    },
+    /// The connection became usable and received its stable association.
+    Established {
+        /// The stable identity assigned to the physical connection.
+        connection: ConnectionAssociation,
+        /// The negotiated HTTP version.
+        version: http::Version,
+        /// The monotonic time at which the connection became usable.
+        at: Instant,
+    },
+    /// The connection's eligibility for new requests changed.
+    PoolEligibilityChanged {
+        /// Whether the pool may offer this connection to new requests.
+        reusable: bool,
+        /// Monotonically increasing connection-state revision.
+        revision: u64,
+        /// The monotonic time at which eligibility changed.
+        at: Instant,
+    },
+    /// The managed connection ended with an optional original error.
+    Closed {
+        /// The original aioduct error, when closure was error-driven.
+        error: Option<&'a crate::error::Error>,
+        /// The monotonic time at which the connection closed.
+        at: Instant,
+    },
+    /// The connection left aioduct's managed I/O path without proof of close.
+    Detached {
+        /// The monotonic time at which the connection detached.
+        at: Instant,
     },
 }
 
-/// Event fired for connection-level lifecycle transitions.
-#[derive(Debug, Clone)]
-pub struct ConnectionEvent {
-    /// The phase that completed.
-    pub phase: ConnectionPhase,
-    /// Monotonic timestamp.
-    pub at: Instant,
+/// Internal projection used by the transport race to report candidate facts
+/// without exposing connection-owner state to the runtime connector.
+pub(crate) trait ConnectAttemptObserver {
+    fn connect_attempt_started(&self, attempt: ConnectAttempt);
+    fn connect_attempt_succeeded(&self, attempt: ConnectAttempt);
+    fn connect_attempt_failed(&self, attempt: ConnectAttempt, error: &crate::error::Error);
+    fn connect_attempt_cancelled(&self, attempt: ConnectAttempt);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A connection-level observation owned by the pool/connection layer.
+pub trait ConnectionObservation: 'static {
+    /// Reports one low-frequency physical connection fact.
+    fn on_connection(&self, _event: &ConnectionObservationEvent<'_>) {}
+}
 
-    #[test]
-    fn pool_outcome_debug() {
-        assert_eq!(format!("{:?}", PoolOutcome::Hit), "Hit");
-        assert_eq!(format!("{:?}", PoolOutcome::StaleRetry), "StaleRetry");
+#[cfg(not(target_arch = "wasm32"))]
+mod connection_owner;
+#[cfg(any(target_arch = "wasm32", feature = "wasm", feature = "wasi-p2"))]
+mod host;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod transport;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use connection_owner::{
+    ConnectionObservationOwner, EligibilityChange, LocalConnectionObservationOwner,
+};
+#[cfg(any(target_arch = "wasm32", feature = "wasm", feature = "wasi-p2"))]
+pub(crate) use host::HostRequestObservation;
+
+/// A request-level observation created by [`Observer::begin`].
+///
+/// Callback methods are synchronous and receive `&self`. Exporters, queues,
+/// locking, and fan-out remain the observer implementation's responsibility.
+/// Aioduct releases its internal locks before calling these methods. Panics
+/// propagate normally; callbacks should be short and non-blocking.
+pub trait RequestObservation: 'static {
+    /// Reports the logical request start when `Interest::REQUEST_START` is set.
+    fn on_request_start(&self, _event: &RequestStart<'_>) {}
+
+    /// Reports the selected response before aioduct's body processing begins.
+    fn on_response_headers(&self, _event: &ResponseHeaders) {}
+
+    /// Reports the logical request's single terminal summary.
+    fn on_request_finish(&self, _event: &RequestFinish<'_>) {}
+
+    /// Reports attempt execution and intermediate-response disposition.
+    fn on_attempt(&self, _event: &AttemptEvent<'_>) {}
+
+    /// Reports request/attempt connection acquisition facts.
+    fn on_connection_acquisition(&self, _event: &ConnectionAcquisitionEvent<'_>) {}
+
+    /// Reports low-frequency request upload facts.
+    fn on_request_body(&self, _event: &RequestBodyEvent<'_>) {}
+
+    /// Reports low-frequency response-body terminal facts.
+    fn on_response_body(&self, _event: &ResponseBodyEvent<'_>) {}
+
+    /// Reports independent SSE lifecycle facts, not successful reads/messages.
+    /// Errors and statistics are borrowed only for this synchronous callback.
+    fn on_response_sse(&self, _event: ResponseSseEvent<'_>) {}
+
+    /// Reports actual acquisition of an accepted response's channel.
+    fn on_response_channel_handoff(&self, _event: &ResponseChannelHandoffEvent<'_>) {}
+
+    /// Reports independent channel errors, EOF, shutdown and detachment.
+    fn on_channel_io(&self, _event: &ChannelIoEvent<'_>) {}
+}
+
+/// Selected SSE protocol statistics, not application or network-wire metrics.
+///
+/// Counts saturate at `u64::MAX`. Buffer lengths describe pending parser input,
+/// not capacity, delivered message sizes, or total memory usage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SseStatisticsSnapshot {
+    /// Successfully returned Message events, including empty/custom messages.
+    pub messages_delivered: u64,
+    /// Comment lines actually recognized by the parser; discarded input is excluded.
+    pub comment_lines_parsed: u64,
+    /// Retry fields successfully parsed as representable intervals, not HTTP retries.
+    pub retry_fields_accepted: u64,
+    /// Input bytes still held for parsing, including unclosed trailing input.
+    pub buffered_input_bytes: usize,
+    /// Maximum pending input length within this SSE lifecycle.
+    pub peak_buffered_input_bytes: usize,
+}
+
+/// A low-frequency SSE fact with its own lifetime, independent of HTTP finish.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum ResponseSseEvent<'a> {
+    /// The associated SSE stream was established, before any read is needed.
+    Started,
+    /// An original error was returned; this does not terminate the SSE stream.
+    Error {
+        /// The same aioduct error that is returned to the caller, without cloning.
+        error: &'a crate::error::Error,
+        /// Selected statistics, or None when statistics were not collected.
+        statistics: Option<&'a SseStatisticsSnapshot>,
+    },
+    /// The stream reliably confirmed there is no next event.
+    Ended {
+        /// Final selected statistics, including unprocessed trailing input.
+        statistics: Option<&'a SseStatisticsSnapshot>,
+    },
+    /// The stream was released before reliable SSE end was confirmed.
+    Abandoned {
+        /// Selected statistics at release; remaining input need not be malformed.
+        statistics: Option<&'a SseStatisticsSnapshot>,
+    },
+}
+
+/// The reason an intermediate response was not delivered to the caller.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum ResponseDisposition {
+    Retry,
+    Redirect,
+    AuthenticationReplay,
+    CacheRevalidation,
+    StaleIfError,
+}
+
+/// Why an attempt became eligible for another execution.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum RetryReason<'a> {
+    ResponseStatus(StatusCode),
+    Error { error: &'a crate::error::Error },
+    StaleConnection,
+    Policy,
+}
+
+/// The actual state of an inter-attempt wait, independently of scheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BackoffState {
+    /// The configured wait has begun.
+    Started,
+    /// The wait completed; this does not mean another attempt has begun.
+    Completed,
+    /// Execution was released while waiting.
+    Cancelled,
+}
+
+/// Admission by the configured request rate limiter, independently of the pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RateLimitState {
+    /// This attempt began trying to obtain execution eligibility.
+    Started,
+    /// The limiter admitted execution, possibly without a wait.
+    Admitted,
+    /// Execution was released before admission.
+    Cancelled,
+}
+
+/// The result of internal disposal of an intermediate response body.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum CleanupState<'a> {
+    /// The body reached a reliable end.
+    Drained,
+    /// Aioduct stopped reading, including cancellation of a drain.
+    Stopped,
+    /// Internal reading failed, independently of the disposition decision.
+    Failed {
+        /// The original error, borrowed for the callback only.
+        error: &'a crate::error::Error,
+    },
+}
+
+/// The low-frequency facts belonging to one logical HTTP attempt.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum AttemptEvent<'a> {
+    Started {
+        attempt: u64,
+        method: &'a Method,
+        uri: &'a Uri,
+        at: Instant,
+    },
+    /// One admission operation, not each rejected check or internal sleep.
+    RateLimit {
+        attempt: u64,
+        state: RateLimitState,
+        at: Instant,
+    },
+    ResponseDisposition {
+        attempt: u64,
+        disposition: ResponseDisposition,
+        response: ResponseInfo,
+        at: Instant,
+    },
+    Failed {
+        attempt: u64,
+        error: &'a crate::error::Error,
+        at: Instant,
+    },
+    RetryScheduled {
+        attempt: u64,
+        next_attempt: u64,
+        reason: RetryReason<'a>,
+        at: Instant,
+    },
+    Backoff {
+        attempt: u64,
+        delay: std::time::Duration,
+        state: BackoffState,
+        at: Instant,
+    },
+    CleanupStarted {
+        attempt: u64,
+        at: Instant,
+    },
+    Cleanup {
+        attempt: u64,
+        state: CleanupState<'a>,
+        /// Successfully collected body bytes, when known; not wire bytes.
+        bytes: Option<u64>,
+        at: Instant,
+    },
+}
+
+/// The phase of request-side connection acquisition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum ConnectionAcquisitionPhase {
+    PoolLookup,
+    PoolWait,
+    Dns,
+    TcpConnect,
+    QuicConnect,
+    TlsHandshake,
+    ProxyConnect,
+    StreamAcquire,
+}
+
+/// Why a connection-acquisition phase did not occur for this request path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum PhaseSkipReason {
+    NotApplicable,
+    BypassedByConfiguration,
+    Unsupported,
+}
+
+/// The resource that a request actually obtained from connection management.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum ConnectionAcquisitionResource {
+    /// An HTTP/1 connection that is used exclusively by this request.
+    Connection,
+    /// A stream obtained from a multiplexed HTTP/2 or HTTP/3 connection.
+    Stream,
+}
+
+/// The result of looking for a reusable connection before a request attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum PoolLookupResult {
+    Hit,
+    Coalesced,
+    Miss,
+}
+
+/// The request-level connection acquisition facts.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum ConnectionAcquisitionEvent<'a> {
+    /// A pool lookup completed with its actual candidate result.
+    PoolLookup {
+        /// The owning HTTP execution attempt, not a physical address candidate.
+        attempt: u64,
+        result: PoolLookupResult,
+        at: Instant,
+    },
+    PhaseStarted {
+        /// The owning HTTP execution attempt, not a physical address candidate.
+        attempt: u64,
+        phase: ConnectionAcquisitionPhase,
+        at: Instant,
+    },
+    PhaseCompleted {
+        /// The owning HTTP execution attempt, not a physical address candidate.
+        attempt: u64,
+        phase: ConnectionAcquisitionPhase,
+        at: Instant,
+    },
+    Failed {
+        /// The owning HTTP execution attempt, not a physical address candidate.
+        attempt: u64,
+        phase: ConnectionAcquisitionPhase,
+        error: &'a crate::error::Error,
+        at: Instant,
+    },
+    Cancelled {
+        /// The owning HTTP execution attempt, not a physical address candidate.
+        attempt: u64,
+        phase: ConnectionAcquisitionPhase,
+        at: Instant,
+    },
+    PhaseSkipped {
+        /// The owning HTTP execution attempt, not a physical address candidate.
+        attempt: u64,
+        phase: ConnectionAcquisitionPhase,
+        reason: PhaseSkipReason,
+    },
+    /// The request obtained a usable connection or multiplexed stream.
+    ///
+    /// The association identifies the shared physical connection. It is
+    /// allocated lazily only when this acquisition event is subscribed to;
+    /// it is not a handle and does not extend the connection lifetime.
+    ConnectionAcquired {
+        /// The owning HTTP execution attempt, not a physical address candidate.
+        attempt: u64,
+        resource: ConnectionAcquisitionResource,
+        connection: super::ConnectionAssociation,
+        version: http::Version,
+        at: Instant,
+    },
+}
+
+/// Low-frequency request upload facts.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum RequestBodyEvent<'a> {
+    Ended {
+        /// The logical-request attempt whose source reached the end.
+        attempt: u64,
+        bytes: Option<u64>,
+        at: Instant,
+    },
+    Failed {
+        /// The logical-request attempt whose source returned the error.
+        attempt: u64,
+        error: &'a crate::error::Error,
+        at: Instant,
+    },
+}
+
+/// Low-frequency response-body facts. This excludes per-frame progress.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+#[allow(missing_docs)]
+pub enum ResponseBodyEvent<'a> {
+    Ended {
+        at: Instant,
+    },
+    Failed {
+        error: &'a crate::error::Error,
+        at: Instant,
+    },
+    Abandoned {
+        at: Instant,
+    },
+    HandedOff {
+        at: Instant,
+    },
+}
+
+/// A backend-neutral provider for request-level observations.
+///
+/// The client/engine selects this type with a default [`NoopObserver`]. The
+/// associated context and observation types stay attached to the observer;
+/// they do not become additional public response or stream type parameters.
+pub trait Observer: 'static {
+    /// Per-request context supplied by the caller before execution.
+    type Context: 'static;
+    /// Request-level observation state owned by aioduct after `begin`.
+    type Observation: RequestObservation;
+    /// Connection-level observation state owned by aioduct's pool/connection
+    /// layer. It is independent of `type Observation` and of request disable.
+    type ConnectionObservation: ConnectionObservation;
+
+    /// Create the request observation and choose the facts to collect.
+    ///
+    /// Called before cache lookup, once across retries and redirects. An absent
+    /// context still permits observation; `disable_observation()` skips this
+    /// method. An empty interest drops the returned observation immediately
+    /// without creating a continuation, clock, guard, or background task.
+    fn begin(
+        &self,
+        request: RequestInfo<'_>,
+        context: Option<Self::Context>,
+    ) -> (Interest, Self::Observation);
+
+    /// Create a physical-connection observation when a new managed connection
+    /// starts establishment. The returned interest uses
+    /// `CONNECTION_LIFECYCLE` and/or `CONNECTION_ESTABLISHMENT`.
+    fn begin_connection(&self) -> (Interest, Self::ConnectionObservation);
+}
+
+/// The default zero-sized observer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopObserver;
+
+/// The default zero-sized request context.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopContext;
+
+/// The default zero-sized request observation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopRequestObservation;
+
+/// The default zero-sized connection observation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopConnectionObservation;
+
+impl RequestObservation for NoopRequestObservation {}
+impl ConnectionObservation for NoopConnectionObservation {}
+
+impl Observer for NoopObserver {
+    type Context = NoopContext;
+    type Observation = NoopRequestObservation;
+    type ConnectionObservation = NoopConnectionObservation;
+
+    #[inline]
+    fn begin(
+        &self,
+        _request: RequestInfo<'_>,
+        _context: Option<Self::Context>,
+    ) -> (Interest, Self::Observation) {
+        (Interest::EMPTY, NoopRequestObservation)
     }
 
-    #[test]
-    fn negotiated_protocol_debug() {
-        assert_eq!(format!("{:?}", NegotiatedProtocol::Http1), "Http1");
-        assert_eq!(format!("{:?}", NegotiatedProtocol::Http2), "Http2");
-        assert_eq!(format!("{:?}", NegotiatedProtocol::Http3), "Http3");
-    }
-
-    #[test]
-    fn transfer_direction_debug() {
-        assert_eq!(format!("{:?}", TransferDirection::Upload), "Upload");
-        assert_eq!(format!("{:?}", TransferDirection::Download), "Download");
-    }
-
-    #[test]
-    fn request_phase_variants_are_constructible() {
-        let _ = RequestPhase::Started;
-        let _ = RequestPhase::PoolCheckoutComplete {
-            outcome: PoolOutcome::Hit,
-            blocked_duration: Duration::from_millis(5),
-        };
-        let _ = RequestPhase::DnsResolved {
-            addrs: vec!["127.0.0.1:80".parse().unwrap()],
-            duration: Duration::from_millis(10),
-        };
-        let _ = RequestPhase::TcpConnected {
-            remote_addr: "127.0.0.1:80".parse().unwrap(),
-            duration: Duration::from_millis(20),
-            protocol: NegotiatedProtocol::Http1,
-        };
-        let _ = RequestPhase::TlsHandshakeComplete {
-            duration: Duration::from_millis(30),
-            alpn_protocol: Some("h2".into()),
-            peer_certificate_der: None,
-        };
-        let _ = RequestPhase::RequestSent {
-            duration: Duration::from_millis(1),
-            headers: vec![("host".into(), "example.com".into())],
-        };
-        let _ = RequestPhase::ResponseStarted {
-            waiting_duration: Duration::from_millis(50),
-        };
-        let _ = RequestPhase::ResponseComplete {
-            status: StatusCode::OK,
-            protocol: NegotiatedProtocol::Http2,
-            total_duration: Duration::from_millis(100),
-        };
-        let _ = RequestPhase::Failed {
-            error: "timeout".into(),
-            retry: RetryKind::None,
-            elapsed: Duration::from_secs(5),
-        };
-        let _ = RequestPhase::BytesTransferred {
-            direction: TransferDirection::Download,
-            chunk_bytes: 1024,
-            cumulative_bytes: 4096,
-            elapsed: Duration::from_millis(200),
-        };
-        let _ = RequestPhase::TransferComplete {
-            direction: TransferDirection::Upload,
-            total_bytes: 8192,
-            transfer_duration: Duration::from_millis(500),
-            throughput_bytes_per_sec: 16384.0,
-        };
-        let _ = RequestPhase::TransferAborted {
-            direction: TransferDirection::Download,
-            bytes_transferred: 2048,
-            elapsed: Duration::from_millis(100),
-            error: "connection reset".into(),
-        };
-        let _ = ConnectionPhase::Metrics {
-            remote_addr: "10.0.0.1:443".parse().unwrap(),
-            protocol: NegotiatedProtocol::Http2,
-            bytes_sent: 1024,
-            bytes_received: 65536,
-            connection_age: Duration::from_secs(30),
-            requests_served: 5,
-            closed: false,
-        };
-    }
-
-    #[test]
-    fn request_event_is_constructible() {
-        let event = RequestEvent {
-            method: Method::GET,
-            uri: "http://example.com/".parse().unwrap(),
-            phase: RequestPhase::Started,
-            at: Instant::now(),
-        };
-        assert_eq!(event.method, Method::GET);
-    }
-
-    use std::sync::{Arc, Mutex};
-
-    struct RecordingObserver {
-        events: Arc<Mutex<Vec<RequestPhase>>>,
-    }
-
-    impl RequestObserver for RecordingObserver {
-        fn on_event(&self, event: &RequestEvent) {
-            self.events.lock().unwrap().push(event.phase.clone());
-        }
-
-        fn on_connection_event(&self, _event: &ConnectionEvent) {}
-    }
-
-    #[test]
-    fn recording_observer_captures_events() {
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let observer = RecordingObserver {
-            events: events.clone(),
-        };
-        observer.on_event(&RequestEvent {
-            method: Method::POST,
-            uri: "http://localhost/api".parse().unwrap(),
-            phase: RequestPhase::Started,
-            at: Instant::now(),
-        });
-        observer.on_event(&RequestEvent {
-            method: Method::POST,
-            uri: "http://localhost/api".parse().unwrap(),
-            phase: RequestPhase::ResponseComplete {
-                status: StatusCode::CREATED,
-                protocol: NegotiatedProtocol::Http1,
-                total_duration: Duration::from_millis(42),
-            },
-            at: Instant::now(),
-        });
-        let captured = events.lock().unwrap();
-        assert_eq!(captured.len(), 2);
-        assert!(matches!(captured[0], RequestPhase::Started));
-        assert!(matches!(captured[1], RequestPhase::ResponseComplete { .. }));
-    }
-
-    #[test]
-    fn request_event_fields_accessible() {
-        let event = RequestEvent {
-            method: Method::PUT,
-            uri: "https://api.example.com/resource/42".parse().unwrap(),
-            phase: RequestPhase::RequestSent {
-                duration: Duration::from_millis(15),
-                headers: vec![("content-type".into(), "application/json".into())],
-            },
-            at: Instant::now(),
-        };
-        assert_eq!(event.method, Method::PUT);
-        assert_eq!(event.uri, "https://api.example.com/resource/42");
-        assert!(matches!(event.phase, RequestPhase::RequestSent { .. }));
-    }
-
-    #[test]
-    fn connection_event_is_constructible() {
-        let event = ConnectionEvent {
-            phase: ConnectionPhase::Metrics {
-                remote_addr: "192.168.1.1:8080".parse().unwrap(),
-                protocol: NegotiatedProtocol::Http1,
-                bytes_sent: 512,
-                bytes_received: 2048,
-                connection_age: Duration::from_secs(60),
-                requests_served: 10,
-                closed: true,
-            },
-            at: Instant::now(),
-        };
-        match &event.phase {
-            ConnectionPhase::Metrics {
-                remote_addr,
-                protocol,
-                bytes_sent,
-                bytes_received,
-                connection_age,
-                requests_served,
-                closed,
-            } => {
-                assert_eq!(*remote_addr, "192.168.1.1:8080".parse().unwrap());
-                assert_eq!(*protocol, NegotiatedProtocol::Http1);
-                assert_eq!(*bytes_sent, 512);
-                assert_eq!(*bytes_received, 2048);
-                assert_eq!(*connection_age, Duration::from_secs(60));
-                assert_eq!(*requests_served, 10);
-                assert!(*closed);
-            }
-        }
-    }
-
-    #[test]
-    fn connection_event_debug() {
-        let event = ConnectionEvent {
-            phase: ConnectionPhase::Metrics {
-                remote_addr: "10.0.0.1:443".parse().unwrap(),
-                protocol: NegotiatedProtocol::Http2,
-                bytes_sent: 0,
-                bytes_received: 0,
-                connection_age: Duration::from_millis(100),
-                requests_served: 0,
-                closed: false,
-            },
-            at: Instant::now(),
-        };
-        let debug = format!("{:?}", event);
-        assert!(debug.contains("Metrics"));
-        assert!(debug.contains("10.0.0.1:443"));
-    }
-
-    #[test]
-    fn connection_phase_metrics_clone_and_eq() {
-        let phase = ConnectionPhase::Metrics {
-            remote_addr: "127.0.0.1:80".parse().unwrap(),
-            protocol: NegotiatedProtocol::Http1,
-            bytes_sent: 100,
-            bytes_received: 200,
-            connection_age: Duration::from_secs(5),
-            requests_served: 3,
-            closed: false,
-        };
-        let cloned = phase.clone();
-        assert_eq!(phase, cloned);
-    }
-
-    #[test]
-    fn request_event_clone() {
-        let event = RequestEvent {
-            method: Method::DELETE,
-            uri: "http://example.com/item/1".parse().unwrap(),
-            phase: RequestPhase::Failed {
-                error: "connection refused".into(),
-                retry: RetryKind::StaleConnection,
-                elapsed: Duration::from_secs(2),
-            },
-            at: Instant::now(),
-        };
-        let cloned = event.clone();
-        assert_eq!(cloned.method, Method::DELETE);
-        assert_eq!(cloned.phase, event.phase);
-    }
-
-    #[test]
-    fn connection_event_clone() {
-        let event = ConnectionEvent {
-            phase: ConnectionPhase::Metrics {
-                remote_addr: "10.0.0.5:443".parse().unwrap(),
-                protocol: NegotiatedProtocol::Http3,
-                bytes_sent: 4096,
-                bytes_received: 65536,
-                connection_age: Duration::from_secs(120),
-                requests_served: 50,
-                closed: true,
-            },
-            at: Instant::now(),
-        };
-        let cloned = event.clone();
-        assert_eq!(cloned.phase, event.phase);
-    }
-
-    #[test]
-    fn observer_on_connection_event_is_called() {
-        struct ConnRecorder {
-            phases: Arc<Mutex<Vec<ConnectionPhase>>>,
-        }
-        impl RequestObserver for ConnRecorder {
-            fn on_event(&self, _event: &RequestEvent) {}
-            fn on_connection_event(&self, event: &ConnectionEvent) {
-                self.phases.lock().unwrap().push(event.phase.clone());
-            }
-        }
-
-        let phases = Arc::new(Mutex::new(Vec::new()));
-        let observer = ConnRecorder {
-            phases: phases.clone(),
-        };
-        observer.on_connection_event(&ConnectionEvent {
-            phase: ConnectionPhase::Metrics {
-                remote_addr: "1.2.3.4:443".parse().unwrap(),
-                protocol: NegotiatedProtocol::Http2,
-                bytes_sent: 256,
-                bytes_received: 1024,
-                connection_age: Duration::from_secs(10),
-                requests_served: 2,
-                closed: false,
-            },
-            at: Instant::now(),
-        });
-        let captured = phases.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert!(matches!(captured[0], ConnectionPhase::Metrics { .. }));
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn request_phase_serde_roundtrip_started() {
-        let phase = RequestPhase::Started;
-        let json = serde_json::to_string(&phase).unwrap();
-        let deserialized: RequestPhase = serde_json::from_str(&json).unwrap();
-        assert_eq!(phase, deserialized);
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn request_phase_serde_roundtrip_response_complete() {
-        let phase = RequestPhase::ResponseComplete {
-            status: StatusCode::NOT_FOUND,
-            protocol: NegotiatedProtocol::Http2,
-            total_duration: Duration::from_millis(250),
-        };
-        let json = serde_json::to_string(&phase).unwrap();
-        let deserialized: RequestPhase = serde_json::from_str(&json).unwrap();
-        assert_eq!(phase, deserialized);
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn request_phase_serde_roundtrip_failed() {
-        let phase = RequestPhase::Failed {
-            error: "timeout".into(),
-            retry: RetryKind::StaleConnection,
-            elapsed: Duration::from_secs(30),
-        };
-        let json = serde_json::to_string(&phase).unwrap();
-        let deserialized: RequestPhase = serde_json::from_str(&json).unwrap();
-        assert_eq!(phase, deserialized);
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn request_phase_serde_roundtrip_bytes_transferred() {
-        let phase = RequestPhase::BytesTransferred {
-            direction: TransferDirection::Upload,
-            chunk_bytes: 4096,
-            cumulative_bytes: 16384,
-            elapsed: Duration::from_millis(500),
-        };
-        let json = serde_json::to_string(&phase).unwrap();
-        let deserialized: RequestPhase = serde_json::from_str(&json).unwrap();
-        assert_eq!(phase, deserialized);
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn request_phase_serde_roundtrip_transfer_complete() {
-        let phase = RequestPhase::TransferComplete {
-            direction: TransferDirection::Download,
-            total_bytes: 1048576,
-            transfer_duration: Duration::from_secs(2),
-            throughput_bytes_per_sec: 524288.0,
-        };
-        let json = serde_json::to_string(&phase).unwrap();
-        let deserialized: RequestPhase = serde_json::from_str(&json).unwrap();
-        assert_eq!(phase, deserialized);
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn request_phase_serde_roundtrip_transfer_aborted() {
-        let phase = RequestPhase::TransferAborted {
-            direction: TransferDirection::Download,
-            bytes_transferred: 512,
-            elapsed: Duration::from_millis(100),
-            error: "connection reset".into(),
-        };
-        let json = serde_json::to_string(&phase).unwrap();
-        let deserialized: RequestPhase = serde_json::from_str(&json).unwrap();
-        assert_eq!(phase, deserialized);
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn connection_phase_metrics_serde_roundtrip() {
-        let phase = ConnectionPhase::Metrics {
-            remote_addr: "10.0.0.1:443".parse().unwrap(),
-            protocol: NegotiatedProtocol::Http2,
-            bytes_sent: 1024,
-            bytes_received: 65536,
-            connection_age: Duration::from_secs(30),
-            requests_served: 5,
-            closed: false,
-        };
-        let json = serde_json::to_string(&phase).unwrap();
-        let deserialized: ConnectionPhase = serde_json::from_str(&json).unwrap();
-        assert_eq!(phase, deserialized);
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn pool_outcome_serde_roundtrip() {
-        for outcome in [
-            PoolOutcome::Hit,
-            PoolOutcome::Coalesced,
-            PoolOutcome::Miss,
-            PoolOutcome::StaleRetry,
-        ] {
-            let json = serde_json::to_string(&outcome).unwrap();
-            let deserialized: PoolOutcome = serde_json::from_str(&json).unwrap();
-            assert_eq!(outcome, deserialized);
-        }
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn negotiated_protocol_serde_roundtrip() {
-        for proto in [
-            NegotiatedProtocol::Http1,
-            NegotiatedProtocol::Http2,
-            NegotiatedProtocol::Http3,
-        ] {
-            let json = serde_json::to_string(&proto).unwrap();
-            let deserialized: NegotiatedProtocol = serde_json::from_str(&json).unwrap();
-            assert_eq!(proto, deserialized);
-        }
-    }
-
-    #[cfg(feature = "json")]
-    #[test]
-    fn transfer_direction_serde_roundtrip() {
-        for dir in [TransferDirection::Upload, TransferDirection::Download] {
-            let json = serde_json::to_string(&dir).unwrap();
-            let deserialized: TransferDirection = serde_json::from_str(&json).unwrap();
-            assert_eq!(dir, deserialized);
-        }
+    #[inline]
+    fn begin_connection(&self) -> (Interest, NoopConnectionObservation) {
+        (Interest::EMPTY, NoopConnectionObservation)
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod continuation;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use continuation::{
+    AcquisitionPhases, AttemptStartObserver, LocalAttemptObserver, LocalRequestObservationHandle,
+    NoopAttemptStartObserver, RequestAttemptCounter, SendAttemptObserver,
+    SendRequestObservationHandle,
+};

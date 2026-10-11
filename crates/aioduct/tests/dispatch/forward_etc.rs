@@ -339,7 +339,7 @@ async fn observer_receives_connection_metrics() {
     let obs = TestObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .pool_idle_timeout(Duration::from_secs(60))
         .build()
         .unwrap();
@@ -360,7 +360,9 @@ async fn observer_receives_connection_metrics() {
         !conn_events.is_empty(),
         "observer should receive connection metric events"
     );
-    let metrics_event = conn_events.iter().any(|e| e.contains("Metrics"));
+    let metrics_event = conn_events
+        .iter()
+        .any(|e| e.contains("PoolEligibilityChanged"));
     assert!(
         metrics_event,
         "should have received a Metrics connection event, got: {conn_events:?}"

@@ -1,6 +1,8 @@
 use std::task::Poll;
 
+use super::observation::{Handoff, HandoffMetadata, SendChannel, io_error};
 use crate::error::Error;
+use crate::observer::{ChannelDetachReason, ChannelIoOperation};
 
 /// A bidirectional IO stream from an HTTP upgrade on a `Send` runtime.
 ///
@@ -10,6 +12,82 @@ use crate::error::Error;
 pub struct UpgradedSend {
     inner: hyper::upgrade::Upgraded,
     _active_stream_permit: Option<crate::pool::ActiveStreamPermit>,
+    continuation: Option<Box<SendChannel>>,
+}
+
+/// The fixed raw upgraded transport returned by [`UpgradedSend::into_inner`].
+///
+/// It keeps aioduct's private transport wrapper out of the caller's type
+/// selection while preserving hyper's original `downcast::<T>()` contract.
+pub struct RawUpgraded {
+    inner: hyper::upgrade::Upgraded,
+}
+
+/// Parts returned when a [`RawUpgraded`] is downcast successfully.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct RawUpgradedParts<T> {
+    /// The original transport.
+    pub io: T,
+    /// Bytes read by hyper before the protocol handoff.
+    pub read_buf: bytes::Bytes,
+}
+
+impl RawUpgraded {
+    /// Downcast to the original transport type, preserving hyper's exact
+    /// type-based extraction behavior across aioduct's private wrapper.
+    pub fn downcast<T: hyper::rt::Read + hyper::rt::Write + Unpin + 'static>(
+        self,
+    ) -> Result<RawUpgradedParts<T>, Self> {
+        let RawUpgraded { inner } = self;
+        match inner.downcast::<T>() {
+            Ok(parts) => Ok(RawUpgradedParts {
+                io: parts.io,
+                read_buf: parts.read_buf,
+            }),
+            Err(inner) => match inner.downcast::<crate::observer::transport::SendObservedIo<T>>() {
+                Ok(parts) => {
+                    let io = parts.io.into_inner();
+                    Ok(RawUpgradedParts {
+                        io,
+                        read_buf: parts.read_buf,
+                    })
+                }
+                Err(inner) => Err(Self { inner }),
+            },
+        }
+    }
+}
+
+impl hyper::rt::Read for RawUpgraded {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+impl hyper::rt::Write for RawUpgraded {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 impl UpgradedSend {
@@ -17,13 +95,17 @@ impl UpgradedSend {
         Self {
             inner,
             _active_stream_permit: None,
+            continuation: None,
         }
     }
 
     /// Consume the upgraded connection, returning the underlying
     /// `hyper::upgrade::Upgraded`.
-    pub fn into_inner(self) -> hyper::upgrade::Upgraded {
-        self.inner
+    pub fn into_inner(mut self) -> RawUpgraded {
+        if let Some(channel) = &mut self.continuation {
+            channel.detach(ChannelDetachReason::IntoInner);
+        }
+        RawUpgraded { inner: self.inner }
     }
 }
 
@@ -37,9 +119,39 @@ impl hyper::rt::Read for UpgradedSend {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-        buf: hyper::rt::ReadBufCursor<'_>,
+        mut buf: hyper::rt::ReadBufCursor<'_>,
     ) -> Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+        if self.continuation.is_none() {
+            return std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        }
+        let available = buf.remaining();
+        // The child cursor borrows the caller's unfilled memory. Only a
+        // successful read's initialized extent is committed to its parent.
+        let result = unsafe {
+            let mut child = hyper::rt::ReadBuf::uninit(buf.as_mut());
+            match std::pin::Pin::new(&mut self.inner).poll_read(cx, child.unfilled()) {
+                Poll::Ready(Ok(())) => Poll::Ready(Ok(child.filled().len())),
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                Poll::Pending => Poll::Pending,
+            }
+        };
+        match result {
+            Poll::Ready(Ok(delivered)) => {
+                unsafe {
+                    buf.advance(delivered);
+                }
+                if let Some(channel) = &mut self.continuation {
+                    channel.read(available, delivered);
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(io_error(
+                &self.continuation,
+                ChannelIoOperation::Read,
+                error,
+            )),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -49,21 +161,54 @@ impl hyper::rt::Write for UpgradedSend {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+        match std::pin::Pin::new(&mut self.inner).poll_write(cx, buf) {
+            Poll::Ready(Ok(accepted)) => {
+                if let Some(channel) = &mut self.continuation {
+                    channel.written(accepted);
+                }
+                Poll::Ready(Ok(accepted))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(io_error(
+                &self.continuation,
+                ChannelIoOperation::Write,
+                error,
+            )),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+        match std::pin::Pin::new(&mut self.inner).poll_flush(cx) {
+            Poll::Ready(Err(error)) => Poll::Ready(io_error(
+                &self.continuation,
+                ChannelIoOperation::Flush,
+                error,
+            )),
+            result => result,
+        }
     }
 
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+        match std::pin::Pin::new(&mut self.inner).poll_shutdown(cx) {
+            Poll::Ready(Ok(())) => {
+                if let Some(channel) = &mut self.continuation {
+                    channel.shutdown();
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(io_error(
+                &self.continuation,
+                ChannelIoOperation::Shutdown,
+                error,
+            )),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -82,16 +227,16 @@ impl tokio::io::AsyncRead for UpgradedSend {
     ) -> Poll<std::io::Result<()>> {
         let n = unsafe {
             let mut hbuf = hyper::rt::ReadBuf::uninit(buf.unfilled_mut());
-            match hyper::rt::Read::poll_read(
-                std::pin::Pin::new(&mut self.inner),
-                cx,
-                hbuf.unfilled(),
-            ) {
+            match hyper::rt::Read::poll_read(std::pin::Pin::new(&mut *self), cx, hbuf.unfilled()) {
                 Poll::Ready(Ok(())) => hbuf.filled().len(),
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }
         };
+        // `unfilled_mut` exposes Tokio's uninitialized tail, while the
+        // Hyper cursor tracks initialization independently.  Publish the
+        // bytes as initialized before advancing Tokio's logical fill cursor.
+        unsafe { buf.assume_init(n) };
         buf.advance(n);
         Poll::Ready(Ok(()))
     }
@@ -104,21 +249,21 @@ impl tokio::io::AsyncWrite for UpgradedSend {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        hyper::rt::Write::poll_write(std::pin::Pin::new(&mut self.inner), cx, buf)
+        hyper::rt::Write::poll_write(std::pin::Pin::new(&mut *self), cx, buf)
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        hyper::rt::Write::poll_flush(std::pin::Pin::new(&mut self.inner), cx)
+        hyper::rt::Write::poll_flush(std::pin::Pin::new(&mut *self), cx)
     }
 
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
-        hyper::rt::Write::poll_shutdown(std::pin::Pin::new(&mut self.inner), cx)
+        hyper::rt::Write::poll_shutdown(std::pin::Pin::new(&mut *self), cx)
     }
 }
 
@@ -126,11 +271,41 @@ pub(crate) async fn on_upgrade(
     response: &mut http::Response<crate::response::ResponseBodySend>,
     active_stream_permit: Option<crate::pool::ActiveStreamPermit>,
 ) -> Result<UpgradedSend, Error> {
-    let on_upgrade = hyper::upgrade::on(response);
-    let upgraded = on_upgrade.await.map_err(|e| Error::Other(Box::new(e)))?;
+    let mut handoff = response
+        .extensions_mut()
+        .remove::<HandoffMetadata>()
+        .and_then(|metadata| {
+            response
+                .body()
+                .channel_receiver()
+                .map(|receiver| Handoff::start(receiver, metadata))
+        });
+    let on_upgrade = hyper::upgrade::on(&mut *response);
+    let upgraded = match on_upgrade.await {
+        Ok(upgraded) => upgraded,
+        Err(source) => {
+            let error = Error::Other(Box::new(source));
+            if let Some(handoff) = &mut handoff {
+                handoff.resolved();
+            }
+            response.body().finish_error(&error);
+            if let Some(handoff) = &mut handoff {
+                handoff.failed(&error);
+            }
+            return Err(error);
+        }
+    };
+    // HTTP observation ends at a successful protocol handoff. The upgraded
+    // channel has its own independent lifecycle.
+    if let Some(handoff) = &mut handoff {
+        handoff.resolved();
+    }
+    response.body_mut().finish_handoff();
+    let continuation = handoff.and_then(Handoff::succeeded);
     Ok(UpgradedSend {
         inner: upgraded,
         _active_stream_permit: active_stream_permit,
+        continuation,
     })
 }
 

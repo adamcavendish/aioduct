@@ -1,320 +1,108 @@
 #[path = "../../smol_threads.rs"]
 mod smol_threads;
 
-use std::time::Duration;
-
 use aioduct::SmolClient;
-use aioduct::observer::{
-    ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
-    RequestObserver, RequestPhase, TransferDirection,
-};
 use opentelemetry::KeyValue;
 use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer, TracerProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
+use std::time::Duration;
 
-/// Observer that records per-phase OTel span events with semantic HTTP attributes.
-///
-/// Attaches events to the currently-active span context, giving sub-request
-/// visibility that middleware-level instrumentation cannot provide.
+/// The application chooses and owns its OTel integration.
 struct OtelObserver;
+struct OtelRequestObservation(opentelemetry::Context);
+struct OtelConnectionObservation(opentelemetry::Context);
 
-impl OtelObserver {
-    fn protocol_str(p: &NegotiatedProtocol) -> &'static str {
-        match p {
-            NegotiatedProtocol::Http1 => "1.1",
-            NegotiatedProtocol::Http2 => "2",
-            NegotiatedProtocol::Http3 => "3",
+impl aioduct::Observer for OtelObserver {
+    type Context = opentelemetry::Context;
+    type Observation = OtelRequestObservation;
+    type ConnectionObservation = OtelConnectionObservation;
+    fn begin(
+        &self,
+        _: aioduct::RequestInfo<'_>,
+        context: Option<Self::Context>,
+    ) -> (aioduct::Interest, Self::Observation) {
+        (
+            aioduct::Interest::REQUEST_START
+                | aioduct::Interest::RESPONSE_HEADERS
+                | aioduct::Interest::REQUEST_FINISH
+                | aioduct::Interest::RESPONSE_BODY_BYTES
+                | aioduct::Interest::ATTEMPT
+                | aioduct::Interest::CONNECTION_ACQUISITION,
+            OtelRequestObservation(context.unwrap_or_else(opentelemetry::Context::current)),
+        )
+    }
+    fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
+        // Physical connections outlive requests and do not borrow a request span.
+        let tracer = opentelemetry::global::tracer("aioduct-connection-example");
+        let span = tracer.start_with_context("aioduct.connection", &opentelemetry::Context::new());
+        (
+            aioduct::Interest::CONNECTION_LIFECYCLE | aioduct::Interest::CONNECTION_ESTABLISHMENT,
+            OtelConnectionObservation(opentelemetry::Context::new().with_span(span)),
+        )
+    }
+}
+impl aioduct::RequestObservation for OtelRequestObservation {
+    fn on_request_start(&self, event: &aioduct::RequestStart<'_>) {
+        self.0.span().add_event(
+            "request.start",
+            vec![KeyValue::new(
+                "http.request.method",
+                event.method.to_string(),
+            )],
+        );
+    }
+    fn on_response_headers(&self, event: &aioduct::ResponseHeaders) {
+        self.0.span().add_event(
+            "response.headers",
+            vec![KeyValue::new(
+                "http.response.status_code",
+                event.response.status.as_u16() as i64,
+            )],
+        );
+    }
+    fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
+        self.0.span().add_event(
+            "request.attempt",
+            vec![KeyValue::new("event", format!("{event:?}"))],
+        );
+    }
+    fn on_connection_acquisition(&self, event: &aioduct::ConnectionAcquisitionEvent<'_>) {
+        self.0.span().add_event(
+            "connection.acquisition",
+            vec![KeyValue::new("event", format!("{event:?}"))],
+        );
+    }
+    fn on_request_finish(&self, event: &aioduct::RequestFinish<'_>) {
+        self.0.span().add_event(
+            "request.finish",
+            vec![KeyValue::new("event", format!("{event:?}"))],
+        );
+        if let aioduct::RequestFinishReason::Failed { error } = event.reason {
+            self.0.span().record_error(error);
+            self.0.span().set_status(Status::error(error.to_string()));
         }
     }
-
-    fn pool_outcome_str(o: &PoolOutcome) -> &'static str {
-        match o {
-            PoolOutcome::Hit => "hit",
-            PoolOutcome::Coalesced => "coalesced",
-            PoolOutcome::Miss => "miss",
-            PoolOutcome::StaleRetry => "stale_retry",
-        }
-    }
-
-    fn direction_str(d: &TransferDirection) -> &'static str {
-        match d {
-            TransferDirection::Upload => "upload",
-            TransferDirection::Download => "download",
+}
+impl aioduct::ConnectionObservation for OtelConnectionObservation {
+    fn on_connection(&self, event: &aioduct::ConnectionObservationEvent<'_>) {
+        self.0.span().add_event(
+            "connection.event",
+            vec![KeyValue::new("event", format!("{event:?}"))],
+        );
+        if matches!(
+            event,
+            aioduct::ConnectionObservationEvent::Closed { .. }
+                | aioduct::ConnectionObservationEvent::Detached { .. }
+                | aioduct::ConnectionObservationEvent::EstablishmentFailed { .. }
+                | aioduct::ConnectionObservationEvent::EstablishmentCancelled { .. }
+        ) {
+            self.0.span().end();
         }
     }
 }
 
-impl RequestObserver for OtelObserver {
-    fn on_event(&self, event: &RequestEvent) {
-        let cx = opentelemetry::Context::current();
-        let span = cx.span();
-
-        match &event.phase {
-            RequestPhase::Started => {
-                span.add_event(
-                    "http.request.start",
-                    vec![
-                        KeyValue::new("http.request.method", event.method.to_string()),
-                        KeyValue::new("url.full", event.uri.to_string()),
-                    ],
-                );
-            }
-
-            RequestPhase::PoolCheckoutComplete {
-                outcome,
-                blocked_duration,
-            } => {
-                span.add_event(
-                    "http.connection.pool_checkout",
-                    vec![
-                        KeyValue::new("pool.outcome", Self::pool_outcome_str(outcome)),
-                        KeyValue::new(
-                            "pool.blocked_duration_ms",
-                            blocked_duration.as_secs_f64() * 1000.0,
-                        ),
-                    ],
-                );
-            }
-
-            RequestPhase::DnsResolved { addrs, duration } => {
-                span.add_event(
-                    "dns.resolve",
-                    vec![
-                        KeyValue::new("dns.resolved_count", addrs.len() as i64),
-                        KeyValue::new(
-                            "dns.resolved_addrs",
-                            addrs
-                                .iter()
-                                .map(|a| a.to_string())
-                                .collect::<Vec<_>>()
-                                .join(","),
-                        ),
-                        KeyValue::new("dns.duration_ms", duration.as_secs_f64() * 1000.0),
-                    ],
-                );
-            }
-
-            RequestPhase::TcpConnected {
-                remote_addr,
-                duration,
-                protocol,
-            } => {
-                span.add_event(
-                    "net.connect",
-                    vec![
-                        KeyValue::new("net.peer.addr", remote_addr.ip().to_string()),
-                        KeyValue::new("net.peer.port", remote_addr.port() as i64),
-                        KeyValue::new("net.connect_duration_ms", duration.as_secs_f64() * 1000.0),
-                        KeyValue::new("http.flavor", Self::protocol_str(protocol)),
-                    ],
-                );
-            }
-
-            RequestPhase::TlsHandshakeComplete {
-                duration,
-                alpn_protocol,
-                peer_certificate_der,
-            } => {
-                let mut attrs = vec![
-                    KeyValue::new("tls.handshake_duration_ms", duration.as_secs_f64() * 1000.0),
-                    KeyValue::new("tls.established", true),
-                ];
-                if let Some(alpn) = alpn_protocol {
-                    attrs.push(KeyValue::new("tls.alpn_protocol", alpn.clone()));
-                }
-                if let Some(cert) = peer_certificate_der {
-                    attrs.push(KeyValue::new(
-                        "tls.peer_certificate_size",
-                        cert.len() as i64,
-                    ));
-                }
-                span.add_event("tls.handshake", attrs);
-            }
-
-            RequestPhase::RequestSent { duration, .. } => {
-                span.add_event(
-                    "http.request.sent",
-                    vec![KeyValue::new(
-                        "http.send_duration_ms",
-                        duration.as_secs_f64() * 1000.0,
-                    )],
-                );
-            }
-
-            RequestPhase::ResponseStarted { waiting_duration } => {
-                span.add_event(
-                    "http.response.first_byte",
-                    vec![KeyValue::new(
-                        "http.time_to_first_byte_ms",
-                        waiting_duration.as_secs_f64() * 1000.0,
-                    )],
-                );
-            }
-
-            RequestPhase::ResponseComplete {
-                status,
-                protocol,
-                total_duration,
-            } => {
-                span.add_event(
-                    "http.response.complete",
-                    vec![
-                        KeyValue::new("http.response.status_code", status.as_u16() as i64),
-                        KeyValue::new("http.flavor", Self::protocol_str(protocol)),
-                        KeyValue::new(
-                            "http.total_duration_ms",
-                            total_duration.as_secs_f64() * 1000.0,
-                        ),
-                    ],
-                );
-            }
-
-            RequestPhase::Failed {
-                error,
-                retry,
-                elapsed,
-            } => {
-                span.add_event(
-                    "http.request.error",
-                    vec![
-                        KeyValue::new("error.type", error.clone()),
-                        KeyValue::new("http.retry", format!("{retry:?}")),
-                        KeyValue::new("http.elapsed_ms", elapsed.as_secs_f64() * 1000.0),
-                    ],
-                );
-                span.set_status(Status::error(error.clone()));
-            }
-
-            RequestPhase::Redirected { status, from, to } => {
-                span.add_event(
-                    "http.redirect",
-                    vec![
-                        KeyValue::new("http.status_code", status.as_u16() as i64),
-                        KeyValue::new("http.redirect.from", from.clone()),
-                        KeyValue::new("http.redirect.to", to.clone()),
-                    ],
-                );
-            }
-
-            RequestPhase::Retrying {
-                reason,
-                attempt,
-                max_retries,
-                backoff,
-            } => {
-                span.add_event(
-                    "http.retry",
-                    vec![
-                        KeyValue::new("http.retry.reason", reason.clone()),
-                        KeyValue::new("http.retry.attempt", *attempt as i64),
-                        KeyValue::new("http.retry.max_retries", *max_retries as i64),
-                        KeyValue::new("http.retry.backoff_ms", backoff.as_secs_f64() * 1000.0),
-                    ],
-                );
-            }
-
-            RequestPhase::BytesTransferred {
-                direction,
-                chunk_bytes,
-                cumulative_bytes,
-                elapsed,
-            } => {
-                span.add_event(
-                    "http.transfer.chunk",
-                    vec![
-                        KeyValue::new("transfer.direction", Self::direction_str(direction)),
-                        KeyValue::new("transfer.chunk_bytes", *chunk_bytes as i64),
-                        KeyValue::new("transfer.cumulative_bytes", *cumulative_bytes as i64),
-                        KeyValue::new("transfer.elapsed_ms", elapsed.as_secs_f64() * 1000.0),
-                    ],
-                );
-            }
-
-            RequestPhase::TransferComplete {
-                direction,
-                total_bytes,
-                transfer_duration,
-                throughput_bytes_per_sec,
-            } => {
-                span.add_event(
-                    "http.transfer.complete",
-                    vec![
-                        KeyValue::new("transfer.direction", Self::direction_str(direction)),
-                        KeyValue::new("transfer.total_bytes", *total_bytes as i64),
-                        KeyValue::new(
-                            "transfer.duration_ms",
-                            transfer_duration.as_secs_f64() * 1000.0,
-                        ),
-                        KeyValue::new(
-                            "transfer.throughput_bytes_per_sec",
-                            *throughput_bytes_per_sec as f64,
-                        ),
-                    ],
-                );
-            }
-
-            RequestPhase::TransferAborted {
-                direction,
-                bytes_transferred,
-                elapsed,
-                error,
-            } => {
-                span.add_event(
-                    "http.transfer.aborted",
-                    vec![
-                        KeyValue::new("transfer.direction", Self::direction_str(direction)),
-                        KeyValue::new("transfer.bytes_transferred", *bytes_transferred as i64),
-                        KeyValue::new("transfer.elapsed_ms", elapsed.as_secs_f64() * 1000.0),
-                        KeyValue::new("error.type", error.clone()),
-                    ],
-                );
-                span.set_status(Status::error(error.clone()));
-            }
-
-            RequestPhase::TrailersReceived { headers } => {
-                let fields: Vec<KeyValue> = headers
-                    .iter()
-                    .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
-                    .collect();
-                span.add_event("http.trailers", fields);
-            }
-        }
-    }
-
-    fn on_connection_event(&self, event: &ConnectionEvent) {
-        let cx = opentelemetry::Context::current();
-        let span = cx.span();
-
-        match &event.phase {
-            ConnectionPhase::Metrics {
-                remote_addr,
-                protocol,
-                bytes_sent,
-                bytes_received,
-                connection_age,
-                requests_served,
-                closed,
-            } => {
-                span.add_event(
-                    "http.connection.metrics",
-                    vec![
-                        KeyValue::new("net.peer.addr", remote_addr.to_string()),
-                        KeyValue::new("http.flavor", Self::protocol_str(protocol)),
-                        KeyValue::new("connection.bytes_sent", *bytes_sent as i64),
-                        KeyValue::new("connection.bytes_received", *bytes_received as i64),
-                        KeyValue::new("connection.age_ms", connection_age.as_secs_f64() * 1000.0),
-                        KeyValue::new("connection.requests_served", *requests_served as i64),
-                        KeyValue::new("connection.closed", *closed),
-                    ],
-                );
-            }
-        }
-    }
-}
-
-/// Helper to execute a request inside a named OTel span.
 async fn traced_request<T>(
-    client: &SmolClient,
+    client: &SmolClient<OtelObserver>,
     tracer: &T,
     span_name: &str,
     url: &str,
@@ -354,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let client = SmolClient::builder()
             .tls(aioduct::tls::RustlsConnector::with_webpki_roots())
-            .request_observer(OtelObserver)
+            .observer(OtelObserver)
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap();
@@ -376,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-        // 3. POST with body — shows bytes_sent in ConnectionMetrics
+        // 3. POST with body — reports final byte summaries
         println!("\n3. POST with body:");
         {
             let span = tracer
@@ -447,7 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("Check stdout above for JSON-formatted OTel spans with per-phase events.");
         println!(
-            "Each span contains timeline events: pool → dns → tcp → tls → send → ttfb → complete."
+            "Each span contains timeline events: acquisition → headers → request finish; independent connection events."
         );
 
         Ok(())

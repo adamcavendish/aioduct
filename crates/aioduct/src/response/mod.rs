@@ -9,16 +9,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::clock::Instant;
-
 use bytes::{Bytes, BytesMut};
 use http::header::{CONTENT_LENGTH, HeaderMap, SET_COOKIE};
-use http::{Method, StatusCode, Uri, Version};
+use http::{StatusCode, Uri, Version};
 use http_body_util::BodyExt;
 
 use crate::body::RequestBodySend;
 use crate::error::Error;
-use crate::observer::RequestObserver;
 
 struct BufferedBody {
     data: Option<Bytes>,
@@ -65,36 +62,86 @@ impl http_body::Body for BufferedBody {
 }
 
 pin_project_lite::pin_project! {
-    #[project = ResponseBodySendProj]
     /// `Send`-safe response body for poll-based runtimes (tokio, smol).
     ///
     /// Holds either a raw hyper `Incoming` body (avoids boxing) or a type-erased
     /// boxed body after transformations (decompression, read timeout, bandwidth limiting).
     /// This is the default body type for [`Response`].
-    pub enum ResponseBodySend {
-        #[allow(missing_docs)]
-        Incoming { #[pin] body: http_body_util::combinators::MapErr<hyper::body::Incoming, fn(hyper::Error) -> Error> },
-        #[allow(missing_docs)]
-        Boxed { #[pin] body: RequestBodySend },
+    pub struct ResponseBodySend {
+        #[pin]
+        inner: SendBodyInner,
+        owner: Option<crate::body::SendObservationHandle>,
+    }
+}
+
+pin_project_lite::pin_project! {
+    #[project = SendBodyInnerProj]
+    enum SendBodyInner {
+        Incoming {
+            #[pin]
+            body: http_body_util::combinators::MapErr<hyper::body::Incoming, fn(hyper::Error) -> Error>,
+        },
+        Boxed {
+            #[pin]
+            body: RequestBodySend,
+        },
     }
 }
 
 impl ResponseBodySend {
+    pub(crate) fn channel_receiver(&self) -> Option<Arc<dyn crate::body::SendBodyObserver>> {
+        self.owner.as_ref()?.channel_receiver()
+    }
+    pub(crate) fn take_owner(&mut self) -> Option<crate::body::SendObservationHandle> {
+        self.owner.take()
+    }
     pub(crate) fn from_incoming(incoming: hyper::body::Incoming) -> Self {
-        ResponseBodySend::Incoming {
-            body: incoming.map_err(Error::Hyper as fn(hyper::Error) -> Error),
+        Self {
+            inner: SendBodyInner::Incoming {
+                body: incoming.map_err(Error::Hyper as fn(hyper::Error) -> Error),
+            },
+            owner: None,
         }
     }
 
     pub(crate) fn from_boxed(body: RequestBodySend) -> Self {
-        ResponseBodySend::Boxed { body }
+        Self::with_owner(body, None)
     }
 
-    pub(crate) fn into_boxed(self) -> RequestBodySend {
-        match self {
-            ResponseBodySend::Incoming { body } => body.boxed_unsync(),
-            ResponseBodySend::Boxed { body } => body,
+    pub(crate) fn with_owner(
+        body: RequestBodySend,
+        owner: Option<crate::body::SendObservationHandle>,
+    ) -> Self {
+        Self {
+            inner: SendBodyInner::Boxed { body },
+            owner,
         }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (RequestBodySend, Option<crate::body::SendObservationHandle>) {
+        match self.inner {
+            SendBodyInner::Incoming { body } => (body.boxed_unsync(), self.owner),
+            SendBodyInner::Boxed { body } => (body, self.owner),
+        }
+    }
+
+    pub(crate) fn finish_handoff(&mut self) {
+        if let Some(owner) = &self.owner {
+            owner.handoff();
+        }
+    }
+
+    pub(crate) fn finish_error(&self, error: &Error) {
+        if let Some(owner) = &self.owner {
+            owner.fail(error);
+        }
+    }
+
+    pub(crate) fn set_owner(&mut self, owner: crate::body::SendObservationHandle) {
+        debug_assert!(self.owner.is_none(), "response body owner was already set");
+        self.owner = Some(owner);
     }
 }
 
@@ -106,23 +153,73 @@ impl http_body::Body for ResponseBodySend {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        match self.project() {
-            ResponseBodySendProj::Incoming { body } => body.poll_frame(cx),
-            ResponseBodySendProj::Boxed { body } => body.poll_frame(cx),
+        let this = self.project();
+        let owner = this.owner;
+        let mut inner = this.inner;
+        let result = match inner.as_mut().project() {
+            SendBodyInnerProj::Incoming { body } => body.poll_frame(cx),
+            SendBodyInnerProj::Boxed { body } => body.poll_frame(cx),
+        };
+        match &result {
+            Poll::Ready(Some(Err(error))) => {
+                if let Some(owner) = owner.as_ref() {
+                    owner.fail(error);
+                }
+            }
+            Poll::Ready(None) => {
+                if let Some(owner) = owner.as_ref() {
+                    owner.finish(crate::body::BodyEnd::Complete);
+                }
+            }
+            Poll::Ready(Some(Ok(_))) => {
+                if let Some(owner) = owner.as_ref()
+                    && inner.is_end_stream()
+                {
+                    owner.finish(crate::body::BodyEnd::Complete);
+                }
+            }
+            Poll::Pending => {}
         }
+        result
     }
 
     fn is_end_stream(&self) -> bool {
-        match self {
-            ResponseBodySend::Incoming { body } => body.is_end_stream(),
-            ResponseBodySend::Boxed { body } => body.is_end_stream(),
+        match &self.inner {
+            SendBodyInner::Incoming { body } => body.is_end_stream(),
+            SendBodyInner::Boxed { body } => body.is_end_stream(),
         }
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
+        match &self.inner {
+            SendBodyInner::Incoming { body } => body.size_hint(),
+            SendBodyInner::Boxed { body } => body.size_hint(),
+        }
+    }
+}
+
+impl http_body::Body for SendBodyInner {
+    type Data = Bytes;
+    type Error = Error;
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, Error>>> {
+        match self.project() {
+            SendBodyInnerProj::Incoming { body } => body.poll_frame(cx),
+            SendBodyInnerProj::Boxed { body } => body.poll_frame(cx),
+        }
+    }
+    fn is_end_stream(&self) -> bool {
         match self {
-            ResponseBodySend::Incoming { body } => body.size_hint(),
-            ResponseBodySend::Boxed { body } => body.size_hint(),
+            Self::Incoming { body } => body.is_end_stream(),
+            Self::Boxed { body } => body.is_end_stream(),
+        }
+    }
+    fn size_hint(&self) -> http_body::SizeHint {
+        match self {
+            Self::Incoming { body } => body.size_hint(),
+            Self::Boxed { body } => body.size_hint(),
         }
     }
 }
@@ -137,16 +234,7 @@ pub struct Response<B = ResponseBodySend> {
     url: Uri,
     remote_addr: Option<SocketAddr>,
     tls_info: Option<crate::tls::TlsInfo>,
-    observer_ctx: Option<BodyObserverCtx>,
     fragment: Option<String>,
-}
-
-#[derive(Clone)]
-pub(crate) struct BodyObserverCtx {
-    pub(crate) observer: Arc<dyn RequestObserver>,
-    pub(crate) method: Method,
-    pub(crate) uri: Uri,
-    pub(crate) response_started: Instant,
 }
 
 struct DispatchOwnedExtensions {
@@ -199,7 +287,6 @@ impl Response {
             url,
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         }
     }
@@ -211,7 +298,6 @@ impl Response {
             url,
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         }
     }
@@ -239,7 +325,6 @@ impl<B> Response<B> {
             url: self.url,
             remote_addr: self.remote_addr,
             tls_info: self.tls_info,
-            observer_ctx: self.observer_ctx,
             fragment: self.fragment,
         }
     }
@@ -257,10 +342,6 @@ impl<B> Response<B> {
 
     pub(crate) fn set_tls_info(&mut self, info: Option<crate::tls::TlsInfo>) {
         self.tls_info = info;
-    }
-
-    pub(crate) fn set_observer_ctx(&mut self, ctx: BodyObserverCtx) {
-        self.observer_ctx = Some(ctx);
     }
 
     /// Returns the final URL of this response, after any redirects.
@@ -304,6 +385,10 @@ impl<B> Response<B> {
     /// Returns a mutable reference to the response headers.
     pub fn headers_mut(&mut self) -> &mut HeaderMap {
         self.inner.headers_mut()
+    }
+
+    pub(crate) fn body_mut(&mut self) -> &mut B {
+        self.inner.body_mut()
     }
 
     /// Returns a reference to the response extensions.
@@ -395,7 +480,6 @@ impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
             url,
             remote_addr,
             tls_info,
-            observer_ctx,
             fragment,
         } = self;
         let (parts, body) = inner.into_parts();
@@ -408,7 +492,6 @@ impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
             url,
             remote_addr,
             tls_info,
-            observer_ctx,
             fragment,
         })
     }
@@ -423,14 +506,11 @@ impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
             url,
             remote_addr,
             tls_info,
-            observer_ctx,
             fragment,
         } = self;
-        let response_started = observer_ctx.as_ref().map(|ctx| ctx.response_started);
         let (parts, body) = inner.into_parts();
         let mut body = std::pin::pin!(body);
         let mut buf = BytesMut::new();
-        let mut cumulative_bytes: u64 = 0;
         let mut trailers: Option<HeaderMap> = None;
 
         loop {
@@ -447,7 +527,6 @@ impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
                                 "{operation} response body exceeds the configured buffer limit of {max_bytes} bytes"
                             )));
                         }
-                        cumulative_bytes += data.len() as u64;
                         buf.extend_from_slice(&data);
                     }
                     Err(frame) => {
@@ -460,44 +539,10 @@ impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
                     }
                 },
                 Some(Err(error)) => {
-                    if let Some(ctx) = &observer_ctx {
-                        ctx.observer.on_event(&crate::observer::RequestEvent {
-                            method: ctx.method.clone(),
-                            uri: ctx.uri.clone(),
-                            phase: crate::observer::RequestPhase::TransferAborted {
-                                direction: crate::observer::TransferDirection::Download,
-                                bytes_transferred: cumulative_bytes,
-                                elapsed: response_started.map(|t| t.elapsed()).unwrap_or_default(),
-                                error: error.to_string(),
-                            },
-                            at: crate::observer::Instant::now(),
-                        });
-                    }
                     return Err(error);
                 }
                 None => {
                     let body_bytes = buf.freeze();
-                    if let Some(ctx) = &observer_ctx {
-                        let total_bytes = body_bytes.len() as u64;
-                        let transfer_duration = ctx.response_started.elapsed();
-                        let throughput = if transfer_duration.as_secs_f64() > 0.0 {
-                            (total_bytes as f64 / transfer_duration.as_secs_f64()) as f32
-                        } else {
-                            0.0
-                        };
-                        ctx.observer.on_event(&crate::observer::RequestEvent {
-                            method: ctx.method.clone(),
-                            uri: ctx.uri.clone(),
-                            phase: crate::observer::RequestPhase::TransferComplete {
-                                direction: crate::observer::TransferDirection::Download,
-                                total_bytes,
-                                transfer_duration,
-                                throughput_bytes_per_sec: throughput,
-                            },
-                            at: crate::observer::Instant::now(),
-                        });
-                    }
-
                     let buffered_body =
                         BufferedBody::new(body_bytes.clone(), trailers).boxed_unsync();
                     let response = Response {
@@ -508,7 +553,6 @@ impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
                         url,
                         remote_addr,
                         tls_info,
-                        observer_ctx: None,
                         fragment,
                     };
                     return Ok((response, body_bytes));
@@ -521,60 +565,18 @@ impl<B: http_body::Body<Data = Bytes, Error = Error>> Response<B> {
     pub async fn bytes(self) -> Result<Bytes, Error> {
         use http_body_util::BodyExt;
 
-        let observer_ctx = self.observer_ctx;
-        let response_started = observer_ctx.as_ref().map(|c| c.response_started);
         let mut body = std::pin::pin!(self.inner.into_body());
         let mut buf = bytes::BytesMut::new();
-        let mut cumulative_bytes: u64 = 0;
 
         loop {
             match body.as_mut().frame().await {
                 Some(Ok(frame)) => {
                     if let Ok(data) = frame.into_data() {
-                        cumulative_bytes += data.len() as u64;
                         buf.extend_from_slice(&data);
                     }
                 }
-                Some(Err(e)) => {
-                    if let Some(ctx) = &observer_ctx {
-                        ctx.observer.on_event(&crate::observer::RequestEvent {
-                            method: ctx.method.clone(),
-                            uri: ctx.uri.clone(),
-                            phase: crate::observer::RequestPhase::TransferAborted {
-                                direction: crate::observer::TransferDirection::Download,
-                                bytes_transferred: cumulative_bytes,
-                                elapsed: response_started.map(|t| t.elapsed()).unwrap_or_default(),
-                                error: e.to_string(),
-                            },
-                            at: crate::observer::Instant::now(),
-                        });
-                    }
-                    return Err(e);
-                }
-                None => {
-                    let bytes = buf.freeze();
-                    if let Some(ctx) = &observer_ctx {
-                        let total_bytes = bytes.len() as u64;
-                        let transfer_duration = ctx.response_started.elapsed();
-                        let throughput = if transfer_duration.as_secs_f64() > 0.0 {
-                            (total_bytes as f64 / transfer_duration.as_secs_f64()) as f32
-                        } else {
-                            0.0
-                        };
-                        ctx.observer.on_event(&crate::observer::RequestEvent {
-                            method: ctx.method.clone(),
-                            uri: ctx.uri.clone(),
-                            phase: crate::observer::RequestPhase::TransferComplete {
-                                direction: crate::observer::TransferDirection::Download,
-                                total_bytes,
-                                transfer_duration,
-                                throughput_bytes_per_sec: throughput,
-                            },
-                            at: crate::observer::Instant::now(),
-                        });
-                    }
-                    return Ok(bytes);
-                }
+                Some(Err(e)) => return Err(e),
+                None => return Ok(buf.freeze()),
             }
         }
     }

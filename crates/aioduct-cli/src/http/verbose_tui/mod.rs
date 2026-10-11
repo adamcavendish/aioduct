@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::io::{self, IsTerminal, stdout};
 use std::time::{Duration, Instant};
 
+use super::observer::CliEvent;
 use aioduct::PoolStats;
-use aioduct::observer::{RequestEvent, RequestPhase, RetryKind, TransferDirection};
 
 use crate::common::copy_to_clipboard;
 use crate::util::{
@@ -13,6 +13,7 @@ use crate::util::{
 pub enum TuiMessage {
     ResponseHeaders(Vec<(String, String)>),
     BodyChunk(String),
+    Trailers(Vec<(String, String)>),
     BodyDone,
     FatalError(String),
     PoolStats(PoolStats),
@@ -47,7 +48,7 @@ pub struct VerboseTui {
 
 impl VerboseTui {
     pub fn start(
-        rx: mpsc::UnboundedReceiver<RequestEvent>,
+        rx: mpsc::UnboundedReceiver<CliEvent>,
         cancel_tx: tokio::sync::watch::Sender<bool>,
     ) -> Self {
         if !stdout().is_terminal() {
@@ -74,6 +75,12 @@ impl VerboseTui {
     pub async fn wait(&mut self) {
         if let Some(handle) = self.handle.take() {
             let _ = handle.await;
+        }
+    }
+
+    pub fn send_trailers(&self, headers: Vec<(String, String)>) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(TuiMessage::Trailers(headers));
         }
     }
 
@@ -266,312 +273,91 @@ impl TuiState {
         }
     }
 
-    fn apply(&mut self, event: &RequestEvent) {
-        self.method_label = event.method.to_string();
-        self.target_label = event.uri.to_string();
-        match &event.phase {
-            RequestPhase::Started => {
-                self.log_event("start request", Color::DarkGray);
-                self.phases.push(PhaseEntry {
-                    label: "START".into(),
-                    duration_ms: 0.0,
-                    cumulative_ms: 0.0,
-                    color: Color::DarkGray,
-                });
+    fn apply(&mut self, event: &CliEvent) {
+        let (label, detail, color, elapsed) = match event {
+            CliEvent::Started { method, uri } => {
+                self.method_label = method.clone();
+                self.target_label = uri.clone();
+                ("START", "start request".to_owned(), Color::DarkGray, None)
             }
-            RequestPhase::DnsResolved { duration, addrs } => {
-                let d = duration_ms(duration);
-                self.phase_cumulative_ms += d;
-                let addr = addrs
-                    .first()
-                    .map(|a| a.ip().to_string())
-                    .unwrap_or_default();
-                self.log_event(format!("dns resolved {addr} in {d:.1}ms"), Color::Blue);
-                self.phases.push(PhaseEntry {
-                    label: format!("DNS  {addr}"),
-                    duration_ms: d,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::Blue,
-                });
-            }
-            RequestPhase::TcpConnected {
-                duration,
-                remote_addr,
-                protocol,
-            } => {
-                let d = duration_ms(duration);
-                self.phase_cumulative_ms += d;
-                self.remote_label = remote_addr.to_string();
-                self.protocol_label = format!("{protocol:?}");
-                self.status_line = format!("{remote_addr} | {protocol:?}");
-                self.log_event(
-                    format!("tcp connected {remote_addr} via {protocol:?} in {d:.1}ms"),
-                    Color::Blue,
-                );
-                self.phases.push(PhaseEntry {
-                    label: "TCP".into(),
-                    duration_ms: d,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::Blue,
-                });
-            }
-            RequestPhase::TlsHandshakeComplete {
-                duration,
-                alpn_protocol,
-                ..
-            } => {
-                let d = duration_ms(duration);
-                self.phase_cumulative_ms += d;
-                let alpn = alpn_protocol.as_deref().unwrap_or("");
-                if !alpn.is_empty() {
-                    self.status_line.push_str(&format!(" | ALPN={alpn}"));
-                }
-                self.log_event(format!("tls handshake {alpn} in {d:.1}ms"), Color::Cyan);
-                self.phases.push(PhaseEntry {
-                    label: "TLS".into(),
-                    duration_ms: d,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::Cyan,
-                });
-            }
-            RequestPhase::RequestSent { duration, headers } => {
-                self.request_headers = redact_headers(headers);
-                let cumulative = duration_ms(duration);
-                let per_phase = (cumulative - self.phase_cumulative_ms).max(0.0);
-                self.phase_cumulative_ms = cumulative;
-                self.log_event(
-                    format!("request sent, {} headers, {per_phase:.1}ms", headers.len()),
-                    Color::Yellow,
-                );
-                self.phases.push(PhaseEntry {
-                    label: "REQ".into(),
-                    duration_ms: per_phase,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::Yellow,
-                });
-            }
-            RequestPhase::ResponseStarted { waiting_duration } => {
-                let d = duration_ms(waiting_duration);
-                self.phase_cumulative_ms += d;
-                self.log_event(
-                    format!("first response byte after {d:.1}ms"),
-                    Color::Magenta,
-                );
-                self.phases.push(PhaseEntry {
-                    label: "WAIT".into(),
-                    duration_ms: d,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::Magenta,
-                });
-            }
-            RequestPhase::ResponseComplete {
-                status,
-                protocol,
-                total_duration,
-            } => {
-                let total = duration_ms(total_duration);
-                let per_phase = (total - self.phase_cumulative_ms).max(0.0);
-                self.phase_cumulative_ms = total;
-                self.total_duration_ms = Some(total);
-                self.status_label = status.to_string();
-                self.protocol_label = format!("{protocol:?}");
-                self.final_status_is_error = status.is_client_error() || status.is_server_error();
-                let color = if status.is_success() {
-                    Color::Green
-                } else if status.is_redirection() {
-                    Color::Yellow
-                } else {
-                    Color::Red
-                };
-                self.phases.push(PhaseEntry {
-                    label: format!("RESP {status}"),
-                    duration_ms: per_phase,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color,
-                });
-                self.status_line = format!(
-                    "{status} | {protocol:?} | {:.0}ms | {}",
-                    total, self.status_line
-                );
-                self.log_event(
-                    format!("response {status} {protocol:?} in {total:.1}ms"),
-                    color,
-                );
-                self.done = true;
-            }
-            RequestPhase::Failed {
-                error,
-                elapsed,
-                retry,
-            } => {
-                let total = duration_ms(elapsed);
-                let per_phase = (total - self.phase_cumulative_ms).max(0.0);
-                let retry_label = match retry {
-                    RetryKind::None => "final",
-                    RetryKind::StaleConnection => "stale retry",
-                    RetryKind::Explicit => "will retry",
-                };
-                self.log_event(format!("failure ({retry_label}): {error}"), Color::Red);
-                self.phases.push(PhaseEntry {
-                    label: format!("FAIL {error}"),
-                    duration_ms: per_phase,
-                    cumulative_ms: total,
-                    color: Color::Red,
-                });
-                self.status_line = format!("FAILED: {error}");
-                self.status_label = "failed".into();
-                self.final_status_is_error = true;
-                self.done = matches!(retry, RetryKind::None);
-            }
-            RequestPhase::PoolCheckoutComplete {
-                outcome,
-                blocked_duration,
-            } => {
-                let d = duration_ms(blocked_duration);
-                self.phase_cumulative_ms += d;
-                self.log_event(
-                    format!("pool checkout {outcome:?} in {d:.1}ms"),
-                    Color::DarkGray,
-                );
-                self.phases.push(PhaseEntry {
-                    label: format!("POOL {outcome:?}"),
-                    duration_ms: d,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::DarkGray,
-                });
-            }
-            RequestPhase::BytesTransferred {
-                direction,
-                cumulative_bytes,
-                elapsed,
-                ..
-            } => {
-                let dir = match direction {
-                    TransferDirection::Download => "DOWN",
-                    TransferDirection::Upload => "UP",
-                };
-                let label = format!("{dir}  {}", human_bytes(*cumulative_bytes));
-                let color = Color::Blue;
-                if let Some(idx) = self.transfer_idx {
-                    self.phases[idx].label = label;
-                    self.phases[idx].duration_ms = duration_ms(elapsed);
-                } else {
-                    self.transfer_start_at = Some(Instant::now());
-                    self.transfer_idx = Some(self.phases.len());
-                    self.phases.push(PhaseEntry {
-                        label,
-                        duration_ms: duration_ms(elapsed),
-                        cumulative_ms: 0.0,
-                        color,
-                    });
-                }
-            }
-            RequestPhase::TransferComplete {
-                direction,
-                total_bytes,
-                transfer_duration,
-                throughput_bytes_per_sec,
-            } => {
-                self.transfer_idx = None;
-                self.transfer_end_at = Some(Instant::now());
-                let dir = match direction {
-                    TransferDirection::Download => "DOWN",
-                    TransferDirection::Upload => "UP",
-                };
-                let label = format!(
-                    "{dir}  {}  {:.0}B/s",
-                    human_bytes(*total_bytes),
-                    throughput_bytes_per_sec
-                );
-                self.log_event(
+            CliEvent::ResponseHeaders { response, elapsed } => {
+                self.status_label = response.status.to_string();
+                self.protocol_label = response_version(response.version);
+                self.final_status_is_error =
+                    response.status.is_client_error() || response.status.is_server_error();
+                // Headers are a milestone, not a completed response body.
+                (
+                    "HEADERS",
                     format!(
-                        "{dir} complete: {} in {:.1}ms at {}",
-                        human_bytes(*total_bytes),
-                        duration_ms(transfer_duration),
-                        human_speed(*throughput_bytes_per_sec as f64)
+                        "response {} {} {:?}",
+                        response.status,
+                        response_version(response.version),
+                        response.source
                     ),
                     Color::Green,
-                );
-                self.phases.push(PhaseEntry {
-                    label,
-                    duration_ms: duration_ms(transfer_duration),
-                    cumulative_ms: 0.0,
-                    color: Color::Green,
-                });
+                    Some(*elapsed),
+                )
             }
-            RequestPhase::TransferAborted {
-                direction,
-                bytes_transferred,
-                elapsed,
-                error,
-            } => {
-                self.transfer_idx = None;
-                let dir = match direction {
-                    TransferDirection::Download => "DOWN",
-                    TransferDirection::Upload => "UP",
-                };
-                self.phases.push(PhaseEntry {
-                    label: format!("{dir}  {}  ERR {error}", human_bytes(*bytes_transferred)),
-                    duration_ms: duration_ms(elapsed),
-                    cumulative_ms: 0.0,
-                    color: Color::Red,
-                });
-                self.log_event(
-                    format!(
-                        "{dir} aborted after {}: {error}",
-                        human_bytes(*bytes_transferred)
-                    ),
-                    Color::Red,
-                );
-            }
-            RequestPhase::Redirected { status, from, to } => {
-                self.redirects
-                    .push((status.to_string(), from.clone(), to.clone()));
-                self.log_event(format!("redirect {status}: {from} -> {to}"), Color::Yellow);
-                self.phases.push(PhaseEntry {
-                    label: format!("REDIR {status}"),
-                    duration_ms: 0.0,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::Yellow,
-                });
-                self.done = false;
-            }
-            RequestPhase::Retrying {
+            CliEvent::Finished {
                 reason,
-                attempt,
-                max_retries,
-                backoff,
+                failed,
+                elapsed,
+                original_data_bytes,
             } => {
-                let retry = format!(
-                    "retry #{attempt}/{max_retries} after {:.0}ms: {reason}",
-                    duration_ms(backoff)
-                );
-                self.retries.push(retry.clone());
-                self.log_event(retry, Color::Yellow);
-                self.phases.push(PhaseEntry {
-                    label: format!("RETRY #{attempt} {}", reason),
-                    duration_ms: duration_ms(backoff),
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::Yellow,
-                });
-                self.done = false;
+                self.done = true;
+                self.total_duration_ms = Some(duration_ms(elapsed));
+                if *failed {
+                    self.status_label = "failed".into();
+                    self.final_status_is_error = true;
+                }
+                (
+                    "FINISH",
+                    format!("{reason}; original DATA bytes: {original_data_bytes:?}"),
+                    if *failed { Color::Red } else { Color::DarkGray },
+                    Some(*elapsed),
+                )
             }
-
-            RequestPhase::TrailersReceived { headers } => {
-                let trailers = redact_headers(headers);
-                let trailer_count = trailers.len();
-                let event_text = trailers_event_text(&trailers);
-                self.trailers_observable = true;
-                self.trailers = trailers;
-                self.log_event(event_text, Color::Cyan);
-                self.phases.push(PhaseEntry {
-                    label: format!("TRAILERS {trailer_count}"),
-                    duration_ms: 0.0,
-                    cumulative_ms: self.phase_cumulative_ms,
-                    color: Color::Cyan,
-                });
+            CliEvent::Diagnostic {
+                label,
+                detail,
+                failed,
+            } => {
+                if detail.contains("RetryScheduled") {
+                    self.retries.push(detail.clone());
+                }
+                (
+                    *label,
+                    detail.clone(),
+                    if *failed { Color::Red } else { Color::Blue },
+                    None,
+                )
             }
+        };
+        if let Some(elapsed) = elapsed {
+            self.phase_cumulative_ms = duration_ms(&elapsed);
         }
+        self.status_line = detail.clone();
+        self.log_event(detail, color);
+        self.phases.push(PhaseEntry {
+            label: label.into(),
+            duration_ms: 0.0,
+            cumulative_ms: elapsed.map_or(0.0, |value| duration_ms(&value)),
+            color,
+        });
+    }
+
+    // Trailers come from the consumed byte stream, not observer callbacks.
+    fn apply_trailers(&mut self, headers: &[(String, String)]) {
+        let trailers = redact_headers(headers);
+        self.trailers_observable = true;
+        self.log_event(trailers_event_text(&trailers), Color::Cyan);
+        self.phases.push(PhaseEntry {
+            label: format!("TRAILERS {}", trailers.len()),
+            duration_ms: 0.0,
+            cumulative_ms: self.phase_cumulative_ms,
+            color: Color::Cyan,
+        });
+        self.trailers = trailers;
     }
 
     fn log_event(&mut self, text: impl Into<String>, color: Color) {
@@ -777,8 +563,14 @@ impl TuiState {
     }
 }
 
+fn response_version(version: Option<http::Version>) -> String {
+    version
+        .map(|version| format!("{version:?}"))
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 async fn run_tui(
-    mut rx: mpsc::UnboundedReceiver<RequestEvent>,
+    mut rx: mpsc::UnboundedReceiver<CliEvent>,
     mut msg_rx: mpsc::UnboundedReceiver<TuiMessage>,
     cancel_tx: tokio::sync::watch::Sender<bool>,
 ) {
@@ -788,7 +580,7 @@ async fn run_tui(
 }
 
 async fn run_tui_inner(
-    rx: &mut mpsc::UnboundedReceiver<RequestEvent>,
+    rx: &mut mpsc::UnboundedReceiver<CliEvent>,
     msg_rx: &mut mpsc::UnboundedReceiver<TuiMessage>,
     cancel_tx: tokio::sync::watch::Sender<bool>,
 ) -> io::Result<()> {
@@ -828,6 +620,7 @@ async fn run_tui_inner(
                         );
                     }
                 }
+                TuiMessage::Trailers(headers) => state.apply_trailers(&headers),
                 TuiMessage::BodyChunk(text) => state.apply_body_chunk(&text, tick_time),
                 TuiMessage::BodyDone => state.apply_body_done(),
                 TuiMessage::PoolStats(stats) => state.pool_stats = Some(stats),

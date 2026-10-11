@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use aioduct::observer::RequestObserver;
+use super::observer::CliObserver;
 use aioduct::{NoProxy, ProxyChain, ProxySettings, RedirectPolicy, RetryConfig, TokioClient};
 use clap::Args;
 
@@ -184,13 +184,9 @@ impl HttpArgs {
 
     pub fn to_client(
         &self,
-        observer: Option<impl RequestObserver>,
-    ) -> Result<TokioClient, aioduct::Error> {
-        let mut builder = TokioClient::builder();
-
-        if let Some(obs) = observer {
-            builder = builder.request_observer(obs);
-        }
+        observer: Option<CliObserver>,
+    ) -> Result<TokioClient<CliObserver>, aioduct::Error> {
+        let mut builder = TokioClient::builder().observer(observer.unwrap_or_default());
 
         if let Some(ref ua) = self.user_agent {
             builder = builder.user_agent(ua);
@@ -410,18 +406,10 @@ mod tests {
 
     // ── to_client proxy tests ──
 
-    use aioduct::observer::RequestObserver;
-
-    struct NoopObserver;
-    impl RequestObserver for NoopObserver {
-        fn on_event(&self, _event: &aioduct::observer::RequestEvent) {}
-        fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
-    }
-
     #[test]
     fn to_client_single_proxy() {
         let cli = parse(&["test", "-x", "http://proxy:8080", "http://example.com"]);
-        let client = cli.to_client(Some(NoopObserver));
+        let client = cli.to_client(Some(CliObserver::default()));
         assert!(client.is_ok());
     }
 
@@ -435,7 +423,7 @@ mod tests {
             "socks5://p2:1080",
             "http://example.com",
         ]);
-        let client = cli.to_client(Some(NoopObserver));
+        let client = cli.to_client(Some(CliObserver::default()));
         assert!(client.is_ok());
     }
 
@@ -449,7 +437,7 @@ mod tests {
             "admin:secret",
             "http://example.com",
         ]);
-        let client = cli.to_client(Some(NoopObserver));
+        let client = cli.to_client(Some(CliObserver::default()));
         assert!(client.is_ok());
     }
 
@@ -463,14 +451,14 @@ mod tests {
             "localhost,127.0.0.1",
             "http://example.com",
         ]);
-        let client = cli.to_client(Some(NoopObserver));
+        let client = cli.to_client(Some(CliObserver::default()));
         assert!(client.is_ok());
     }
 
     #[test]
     fn to_client_system_proxy() {
         let cli = parse(&["test", "--system-proxy", "http://example.com"]);
-        let client = cli.to_client(Some(NoopObserver));
+        let client = cli.to_client(Some(CliObserver::default()));
         assert!(client.is_ok());
     }
 
@@ -483,7 +471,7 @@ mod tests {
             "localhost",
             "http://example.com",
         ]);
-        let client = cli.to_client(Some(NoopObserver));
+        let client = cli.to_client(Some(CliObserver::default()));
         assert!(client.is_ok());
     }
 
@@ -498,7 +486,7 @@ mod tests {
         ]);
         // -x takes priority over --system-proxy, so proxy should have 1 entry
         assert_eq!(cli.proxy.len(), 1);
-        let client = cli.to_client(Some(NoopObserver));
+        let client = cli.to_client(Some(CliObserver::default()));
         assert!(client.is_ok());
     }
 
@@ -514,14 +502,14 @@ mod tests {
             "user:pass",
             "http://example.com",
         ]);
-        let client = cli.to_client(Some(NoopObserver));
+        let client = cli.to_client(Some(CliObserver::default()));
         assert!(client.is_ok());
     }
 
     #[test]
     fn to_client_no_observer() {
         let cli = parse(&["test", "http://example.com"]);
-        let client = cli.to_client(None::<NoopObserver>);
+        let client = cli.to_client(None);
         assert!(client.is_ok());
     }
 }

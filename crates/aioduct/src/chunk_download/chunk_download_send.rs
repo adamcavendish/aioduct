@@ -13,14 +13,14 @@ use crate::runtime::{ConnectorSend, RuntimePoll};
 use super::ChunkDownloadResult;
 
 /// Parallel range-request downloader for large files.
-pub struct ChunkDownloadSend<R: RuntimePoll, C: ConnectorSend> {
-    client: HttpEngineSend<R, C>,
+pub struct ChunkDownloadSend<R: RuntimePoll, C: ConnectorSend, O = crate::observer::NoopObserver> {
+    client: HttpEngineSend<R, C, O>,
     url: String,
     chunks: usize,
     _runtime: PhantomData<(R, C)>,
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for ChunkDownloadSend<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend, O> std::fmt::Debug for ChunkDownloadSend<R, C, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChunkDownloadSend")
             .field("url", &self.url)
@@ -28,8 +28,14 @@ impl<R: RuntimePoll, C: ConnectorSend> std::fmt::Debug for ChunkDownloadSend<R, 
     }
 }
 
-impl<R: RuntimePoll, C: ConnectorSend> ChunkDownloadSend<R, C> {
-    pub(crate) fn new(client: HttpEngineSend<R, C>, url: String) -> Self {
+impl<R: RuntimePoll, C: ConnectorSend, O> ChunkDownloadSend<R, C, O>
+where
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
+    pub(crate) fn new(client: HttpEngineSend<R, C, O>, url: String) -> Self {
         Self {
             client,
             url,

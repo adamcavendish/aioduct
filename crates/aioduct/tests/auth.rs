@@ -19,22 +19,37 @@ use aioduct_test_server::h1::{h1_server, h1_server_with};
 
 #[derive(Clone, Default)]
 struct DigestRetryObserver {
-    retries: Arc<Mutex<Vec<(u32, u32)>>>,
+    dispositions: Arc<Mutex<Vec<u64>>>,
+    scheduled: Arc<Mutex<Vec<u64>>>,
 }
 
-impl aioduct::RequestObserver for DigestRetryObserver {
-    fn on_event(&self, event: &aioduct::RequestEvent) {
-        if let aioduct::RequestPhase::Retrying {
-            attempt,
-            max_retries,
-            ..
-        } = &event.phase
-        {
-            self.retries.lock().unwrap().push((*attempt, *max_retries));
+impl aioduct::Observer for DigestRetryObserver {
+    type Context = ();
+    type Observation = Self;
+    type ConnectionObservation = aioduct::NoopConnectionObservation;
+    fn begin(&self, _: aioduct::RequestInfo<'_>, _: Option<()>) -> (aioduct::Interest, Self) {
+        (aioduct::Interest::ATTEMPT, self.clone())
+    }
+    fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
+        (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
+    }
+}
+impl aioduct::RequestObservation for DigestRetryObserver {
+    fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
+        match event {
+            aioduct::AttemptEvent::ResponseDisposition {
+                attempt,
+                disposition: aioduct::ResponseDisposition::AuthenticationReplay,
+                ..
+            } => {
+                self.dispositions.lock().unwrap().push(*attempt);
+            }
+            aioduct::AttemptEvent::RetryScheduled { attempt, .. } => {
+                self.scheduled.lock().unwrap().push(*attempt);
+            }
+            _ => {}
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::ConnectionEvent) {}
 }
 
 #[tokio::test]
@@ -172,7 +187,7 @@ async fn digest_response_drain_failure_does_not_commit_retry_state() {
     let observer = DigestRetryObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .digest_auth("user", "password")
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .retry(
             aioduct::RetryConfig::default()
                 .max_retries(2)
@@ -191,7 +206,8 @@ async fn digest_response_drain_failure_does_not_commit_retry_state() {
 
     assert!(error.to_string().contains("body"), "{error}");
     assert_eq!(budget.available(), 1);
-    assert!(observer.retries.lock().unwrap().is_empty());
+    assert_eq!(*observer.dispositions.lock().unwrap(), vec![1]);
+    assert!(observer.scheduled.lock().unwrap().is_empty());
     server.await.unwrap();
 }
 #[tokio::test]

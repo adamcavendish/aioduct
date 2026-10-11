@@ -40,6 +40,35 @@ pub(crate) struct H2PeerSettingsConfirmation {
 }
 
 impl H2PeerSettingsConfirmation {
+    pub(crate) async fn accept_with_driver<R, D>(self, driver: &mut D) -> Result<(), crate::Error>
+    where
+        R: crate::runtime::RuntimeCompletion,
+        D: std::future::Future<Output = Result<(), hyper::Error>> + Unpin,
+    {
+        use crate::Error;
+        use std::future::Future;
+        let mut confirmation = std::pin::pin!(self.confirmed_within::<R>());
+        std::future::poll_fn(|cx| {
+            if let Poll::Ready(confirmed) = confirmation.as_mut().poll(cx) {
+                return Poll::Ready(if confirmed {
+                    Ok(())
+                } else {
+                    Err(Error::Other(
+                        "HTTP/2 peer did not send a SETTINGS preface".into(),
+                    ))
+                });
+            }
+            if let Poll::Ready(result) = Pin::new(&mut *driver).poll(cx) {
+                return Poll::Ready(Err(match result {
+                    Err(error) => Error::from(error),
+                    Ok(()) => Error::Other("HTTP/2 connection ended before peer SETTINGS".into()),
+                }));
+            }
+            Poll::Pending
+        })
+        .await
+    }
+
     pub(crate) async fn confirmed(self) -> bool {
         self.receiver.await.unwrap_or(false)
     }

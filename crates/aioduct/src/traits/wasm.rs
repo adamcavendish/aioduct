@@ -3,17 +3,42 @@ use http::Method;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use std::time::Duration;
 
-use super::{ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt};
+use super::{
+    ByteStreamExt, HttpClient, RequestBuilderExt, ResponseExt, SseResponseExt, SseStreamExt,
+};
 use crate::error::{Error, SendError};
 use crate::wasm::{WasmBodyStream, WasmClient, WasmResponse};
 
-/// An owned request builder for the WASM client.
-pub struct OwnedWasmRequestBuilder {
-    inner: crate::wasm::WasmRequestBuilder<'static>,
+impl SseResponseExt for WasmResponse {
+    type SseStream = crate::wasm::WasmSseStream;
+    fn into_sse_stream(self) -> Self::SseStream {
+        self.into_sse_stream()
+    }
 }
 
-impl HttpClient for WasmClient {
-    type RequestBuilder = OwnedWasmRequestBuilder;
+impl SseStreamExt for crate::wasm::WasmSseStream {
+    type Next<'a> = crate::wasm::WasmSseNext<'a>;
+    fn next(&mut self) -> Self::Next<'_> {
+        self.next()
+    }
+    fn with_max_payload_size(self, max: usize) -> Self {
+        self.with_max_payload_size(max)
+    }
+}
+
+/// An owned request builder for the WASM client.
+pub struct OwnedWasmRequestBuilder<O = crate::observer::NoopObserver>
+where
+    O: crate::observer::Observer,
+{
+    inner: crate::wasm::WasmRequestBuilder<'static, O>,
+}
+
+impl<O> HttpClient for WasmClient<O>
+where
+    O: crate::observer::Observer,
+{
+    type RequestBuilder = OwnedWasmRequestBuilder<O>;
 
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {
         let uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
@@ -23,7 +48,27 @@ impl HttpClient for WasmClient {
     }
 }
 
-impl RequestBuilderExt for OwnedWasmRequestBuilder {
+impl<O> OwnedWasmRequestBuilder<O>
+where
+    O: crate::observer::Observer,
+{
+    /// Skip observation for this logical request.
+    pub fn disable_observation(mut self) -> Self {
+        self.inner = self.inner.disable_observation();
+        self
+    }
+
+    /// Supply request-scoped context to the configured observer.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.inner = self.inner.observation_context(context);
+        self
+    }
+}
+
+impl<O> RequestBuilderExt for OwnedWasmRequestBuilder<O>
+where
+    O: crate::observer::Observer,
+{
     type Response = WasmResponse;
 
     fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
@@ -122,14 +167,45 @@ impl ResponseExt for WasmResponse {
 }
 
 impl ByteStreamExt for WasmBodyStream {
-    async fn next(&mut self) -> Option<Result<Bytes, Error>> {
-        self.next().await
+    type Next<'a> = crate::wasm::WasmBodyNext<'a>;
+
+    fn next(&mut self) -> Self::Next<'_> {
+        WasmBodyStream::next(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestObserver;
+    struct TestRequestObservation;
+
+    impl crate::observer::RequestObservation for TestRequestObservation {}
+
+    impl crate::observer::Observer for TestObserver {
+        type Context = u8;
+        type Observation = TestRequestObservation;
+        type ConnectionObservation = crate::observer::NoopConnectionObservation;
+
+        fn begin(
+            &self,
+            _: crate::observer::RequestInfo<'_>,
+            _: Option<Self::Context>,
+        ) -> (crate::observer::Interest, Self::Observation) {
+            (
+                crate::observer::Interest::REQUEST_FINISH,
+                TestRequestObservation,
+            )
+        }
+
+        fn begin_connection(&self) -> (crate::observer::Interest, Self::ConnectionObservation) {
+            (
+                crate::observer::Interest::EMPTY,
+                crate::observer::NoopConnectionObservation,
+            )
+        }
+    }
 
     fn assert_http_client<C: HttpClient>() {}
 
@@ -165,5 +241,18 @@ mod tests {
             .unwrap()
             .form(&[("a", "1")]);
         // Actual behavior is tested in wasm::tests.
+    }
+
+    #[test]
+    fn wasm_client_observer_is_configured_at_the_builder_boundary() {
+        let client = WasmClient::builder()
+            .observer(TestObserver)
+            .build()
+            .unwrap();
+        let _ = client
+            .get("https://example.com")
+            .unwrap()
+            .observation_context(7)
+            .disable_observation();
     }
 }

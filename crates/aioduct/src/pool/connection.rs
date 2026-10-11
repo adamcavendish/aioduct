@@ -14,17 +14,125 @@ use crate::clock::Instant;
 /// values, not per-clone values. H1 connections also use this type but never
 /// share the `Arc` (each H1 handle owns its own).
 pub(crate) struct ConnectionMetrics {
+    association: std::sync::OnceLock<crate::observer::ConnectionAssociation>,
+    pub(crate) observation: Option<crate::observer::ConnectionObservationOwner>,
+    local_observation: std::sync::OnceLock<crate::observer::ConnectionAssociation>,
+    local_interest: AtomicU32,
     pub(crate) requests_served: AtomicU32,
     pub(crate) bytes_sent: AtomicU64,
     pub(crate) bytes_received: AtomicU64,
 }
 
 impl ConnectionMetrics {
-    fn new() -> Self {
+    pub(super) fn new(observation: Option<crate::observer::ConnectionObservationOwner>) -> Self {
         Self {
+            association: std::sync::OnceLock::new(),
+            observation,
+            local_observation: std::sync::OnceLock::new(),
+            local_interest: AtomicU32::new(0),
             requests_served: AtomicU32::new(0),
             bytes_sent: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn association(&self) -> crate::observer::ConnectionAssociation {
+        *self
+            .association
+            .get_or_init(crate::observer::ConnectionAssociation::allocate)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_local_observation(
+        &self,
+        connection: crate::observer::ConnectionAssociation,
+        observation: crate::observer::LocalConnectionObservationOwner,
+    ) {
+        let _ = self.association.set(connection);
+        let _ = self.local_observation.set(connection);
+        self.local_interest
+            .store(observation.interest().bits(), Ordering::Relaxed);
+        observation.register(connection);
+    }
+
+    fn interested_in(&self, interest: crate::observer::Interest) -> bool {
+        self.observation
+            .as_ref()
+            .is_some_and(|owner| owner.interest().intersects(interest))
+            || self.local_interest.load(Ordering::Relaxed) & interest.bits() != 0
+    }
+
+    fn emit(&self, event: &crate::observer::ConnectionObservationEvent<'_>) {
+        if let Some(owner) = self.observation.as_ref() {
+            owner.emit(event);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(connection) = self.local_observation.get().copied() {
+            crate::observer::LocalConnectionObservationOwner::emit_registered(connection, event);
+        }
+    }
+
+    fn observe_established(&mut self, version: http::Version) {
+        if !self.interested_in(
+            crate::observer::Interest::CONNECTION_LIFECYCLE
+                | crate::observer::Interest::CONNECTION_ESTABLISHMENT,
+        ) {
+            return;
+        }
+        let connection = self.association();
+        self.emit(&crate::observer::ConnectionObservationEvent::Established {
+            connection,
+            version,
+            at: crate::observer::Instant::now(),
+        });
+        if let Some(owner) = &self.observation
+            && !owner
+                .interest()
+                .contains(crate::observer::Interest::CONNECTION_LIFECYCLE)
+        {
+            self.observation.take();
+        }
+        if let Some(connection) = self.local_observation.get().copied()
+            && self.local_interest.load(Ordering::Relaxed)
+                & crate::observer::Interest::CONNECTION_LIFECYCLE.bits()
+                == 0
+        {
+            crate::observer::LocalConnectionObservationOwner::unregister(connection);
+            self.local_interest.store(0, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn observe_closed(&self, error: Option<crate::error::Error>) {
+        if !self.interested_in(crate::observer::Interest::CONNECTION_LIFECYCLE) {
+            return;
+        }
+        if let Some(owner) = self.observation.as_ref() {
+            owner.closed(error);
+        } else if let Some(connection) = self.local_observation.get().copied() {
+            crate::observer::LocalConnectionObservationOwner::close_registered(connection, error);
+        }
+    }
+
+    pub(crate) fn reserve_eligibility(
+        &self,
+        reusable: bool,
+    ) -> Option<crate::observer::EligibilityChange> {
+        if !self.interested_in(crate::observer::Interest::CONNECTION_LIFECYCLE) {
+            return None;
+        }
+        if let Some(owner) = &self.observation {
+            owner.reserve_eligibility(reusable)
+        } else {
+            self.local_observation.get().copied().and_then(|connection| crate::observer::LocalConnectionObservationOwner::reserve_registered_eligibility(connection, reusable))
+        }
+    }
+}
+
+impl Drop for ConnectionMetrics {
+    fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(connection) = self.local_observation.get().copied() {
+            crate::observer::LocalConnectionObservationOwner::unregister(connection);
         }
     }
 }
@@ -86,6 +194,14 @@ impl Drop for ActiveStreamPermit {
 }
 
 impl<B> PooledConnection<B> {
+    /// Establishment completes before sharing metadata with the driver/pool.
+    /// Drop an establishment-only receiver here without retaining it for reuse.
+    pub(crate) fn observe_established(&mut self) {
+        let version = self.version();
+        Arc::get_mut(&mut self.metrics)
+            .unwrap_or_else(|| unreachable!("connection metadata shared before establishment"))
+            .observe_established(version);
+    }
     /// HTTP version selected by this established transport.
     pub(crate) fn version(&self) -> http::Version {
         match &self.conn {
@@ -101,18 +217,47 @@ impl<B> PooledConnection<B> {
         if !self.is_h2_or_h3() {
             return;
         }
-        self.multiplex_retired.store(true, Ordering::Release);
+        let mut changes = Vec::new();
+        let removed;
         if let (Some(pool), Some(key)) = (self.pool.upgrade(), self.key.as_ref())
             && let Ok(mut inner) = pool.lock()
         {
-            inner.idle.remove(key);
+            self.multiplex_retired.store(true, Ordering::Release);
+            if let Some(change) = self.metrics.reserve_eligibility(false) {
+                changes.push(change);
+            }
+            removed = inner.idle.remove(key);
+            if let Some(queue) = &removed {
+                for entry in queue {
+                    if let Some(change) = entry.connection.metrics.reserve_eligibility(false) {
+                        changes.push(change);
+                    }
+                }
+            }
+        } else {
+            self.multiplex_retired.store(true, Ordering::Release);
+            if let Some(change) = self.metrics.reserve_eligibility(false) {
+                changes.push(change);
+            }
+            removed = None;
         }
         self.pool = Weak::new();
         self.key = None;
+        for change in changes {
+            change.dispatch();
+        }
+        drop(removed);
     }
 
     /// Wrap an HTTP/1.1 connection.
     pub(crate) fn new_h1(sender: hyper::client::conn::http1::SendRequest<B>) -> Self {
+        Self::new_h1_with_observation(sender, None)
+    }
+
+    pub(crate) fn new_h1_with_observation(
+        sender: hyper::client::conn::http1::SendRequest<B>,
+        observation: Option<crate::observer::ConnectionObservationOwner>,
+    ) -> Self {
         Self {
             conn: HttpConnection::H1(sender),
             remote_addr: None,
@@ -120,7 +265,7 @@ impl<B> PooledConnection<B> {
             tls_handshake_duration: None,
             sans: Arc::from([]),
             created_at: Instant::now(),
-            metrics: Arc::new(ConnectionMetrics::new()),
+            metrics: Arc::new(ConnectionMetrics::new(observation)),
             is_multiplex_clone: false,
             active_streams: None,
             multiplex_retired: Arc::new(AtomicBool::new(false)),
@@ -133,6 +278,13 @@ impl<B> PooledConnection<B> {
 
     /// Wrap an HTTP/2 connection.
     pub(crate) fn new_h2(sender: hyper::client::conn::http2::SendRequest<B>) -> Self {
+        Self::new_h2_with_observation(sender, None)
+    }
+
+    pub(crate) fn new_h2_with_observation(
+        sender: hyper::client::conn::http2::SendRequest<B>,
+        observation: Option<crate::observer::ConnectionObservationOwner>,
+    ) -> Self {
         Self {
             conn: HttpConnection::H2(sender),
             remote_addr: None,
@@ -140,7 +292,7 @@ impl<B> PooledConnection<B> {
             tls_handshake_duration: None,
             sans: Arc::from([]),
             created_at: Instant::now(),
-            metrics: Arc::new(ConnectionMetrics::new()),
+            metrics: Arc::new(ConnectionMetrics::new(observation)),
             is_multiplex_clone: false,
             active_streams: Some(Arc::new(AtomicUsize::new(0))),
             multiplex_retired: Arc::new(AtomicBool::new(false)),
@@ -151,9 +303,11 @@ impl<B> PooledConnection<B> {
         }
     }
 
-    /// Wrap an HTTP/3 connection.
     #[cfg(all(feature = "http3", feature = "rustls"))]
-    pub(crate) fn new_h3(sender: crate::h3_transport::H3Connection) -> Self {
+    pub(crate) fn new_h3_with_observation(
+        sender: crate::h3_transport::H3Connection,
+        observation: Option<crate::observer::ConnectionObservationOwner>,
+    ) -> Self {
         Self {
             conn: HttpConnection::H3(sender),
             remote_addr: None,
@@ -161,7 +315,7 @@ impl<B> PooledConnection<B> {
             tls_handshake_duration: None,
             sans: Arc::from([]),
             created_at: Instant::now(),
-            metrics: Arc::new(ConnectionMetrics::new()),
+            metrics: Arc::new(ConnectionMetrics::new(observation)),
             is_multiplex_clone: false,
             active_streams: Some(Arc::new(AtomicUsize::new(0))),
             multiplex_retired: Arc::new(AtomicBool::new(false)),
@@ -299,16 +453,22 @@ impl<B> PooledConnection<B> {
     }
 
     /// Return cumulative requests served on this transport.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn requests_served(&self) -> u32 {
         self.metrics.requests_served.load(Ordering::Relaxed)
     }
 
     /// Return cumulative bytes sent on this transport.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn bytes_sent(&self) -> u64 {
         self.metrics.bytes_sent.load(Ordering::Relaxed)
     }
 
     /// Return cumulative bytes received on this transport.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn bytes_received(&self) -> u64 {
         self.metrics.bytes_received.load(Ordering::Relaxed)
     }
@@ -368,5 +528,35 @@ impl<B: 'static> PooledConnection<B> {
             pool: self.pool.clone(),
             key: self.key.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod association_tests {
+    use super::*;
+    #[test]
+    fn lazy_association_is_one_value_across_64_threads_and_shared_metadata() {
+        let metadata = Arc::new(ConnectionMetrics::new(None));
+        assert!(metadata.association.get().is_none());
+        let barrier = Arc::new(std::sync::Barrier::new(64));
+        let threads: Vec<_> = (0..64)
+            .map(|_| {
+                let metadata = metadata.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    metadata.association()
+                })
+            })
+            .collect();
+        let values: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert!(values.iter().all(|value| *value == metadata.association()));
+        assert_ne!(
+            metadata.association(),
+            ConnectionMetrics::new(None).association()
+        );
     }
 }
