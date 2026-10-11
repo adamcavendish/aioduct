@@ -1,17 +1,6 @@
 use super::*;
-use aioduct::observer::{Instant, NegotiatedProtocol, RetryKind};
-use http::{Method, StatusCode, Uri};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use http::StatusCode;
 use std::time::Instant as StdInstant;
-
-fn make_event(phase: RequestPhase) -> RequestEvent {
-    RequestEvent {
-        method: Method::GET,
-        uri: Uri::from_static("http://example.com"),
-        phase,
-        at: Instant::now(),
-    }
-}
 
 fn key(code: KeyCode) -> crossterm::event::KeyEvent {
     crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
@@ -24,62 +13,72 @@ fn ctrl_key(code: KeyCode) -> crossterm::event::KeyEvent {
 #[test]
 fn state_tracks_phases() {
     let mut state = TuiState::new();
-    state.apply(&make_event(RequestPhase::Started));
-    state.apply(&make_event(RequestPhase::DnsResolved {
-        addrs: vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), 443)],
-        duration: Duration::from_millis(10),
-    }));
+    state.apply(&CliEvent::Started {
+        method: "GET".into(),
+        uri: "http://example.com".into(),
+    });
+    state.apply(&CliEvent::Diagnostic {
+        label: "ACQUIRE",
+        detail: "Dns completed".into(),
+        failed: false,
+    });
     assert_eq!(state.phases.len(), 2);
     assert!(!state.done);
 }
 
 #[test]
-fn state_marks_done_on_response_complete() {
+fn headers_do_not_mark_done() {
     let mut state = TuiState::new();
-    state.apply(&make_event(RequestPhase::ResponseComplete {
-        status: StatusCode::OK,
-        protocol: NegotiatedProtocol::Http2,
-        total_duration: Duration::from_millis(200),
-    }));
-    assert!(state.done);
+    state.apply(&CliEvent::ResponseHeaders {
+        response: aioduct::ResponseInfo {
+            status: StatusCode::OK,
+            version: Some(http::Version::HTTP_2),
+            source: aioduct::ResponseSource::Transport,
+        },
+        elapsed: Duration::from_millis(200),
+    });
+    assert!(!state.done);
     assert!(state.status_line.contains("200"));
+    state.apply(&CliEvent::Finished {
+        reason: "Ended".into(),
+        failed: false,
+        elapsed: Duration::from_millis(300),
+        original_data_bytes: Some(100),
+    });
+    assert!(state.done);
 }
 
 #[test]
 fn state_marks_done_on_failure() {
     let mut state = TuiState::new();
-    state.apply(&make_event(RequestPhase::Failed {
-        error: "timeout".into(),
-        retry: RetryKind::None,
-        elapsed: Duration::from_millis(5000),
-    }));
+    state.apply(&CliEvent::Finished {
+        reason: "timeout".into(),
+        failed: true,
+        elapsed: Duration::from_secs(5),
+        original_data_bytes: None,
+    });
     assert!(state.done);
     assert!(state.status_line.contains("timeout"));
 }
 
 #[test]
-fn request_headers_stored() {
+fn attempt_error_does_not_claim_final_failure() {
     let mut state = TuiState::new();
-    state.apply(&make_event(RequestPhase::RequestSent {
-        duration: Duration::from_millis(2),
-        headers: vec![
-            ("host".into(), "example.com".into()),
-            ("content-type".into(), "application/json".into()),
-        ],
-    }));
-    assert_eq!(state.request_headers.len(), 2);
+    state.apply(&CliEvent::Diagnostic {
+        label: "ATTEMPT",
+        detail: "connection reset".into(),
+        failed: true,
+    });
+    assert!(!state.done);
 }
 
 #[test]
 fn trailers_received_updates_headers_trace_and_events() {
     let mut state = TuiState::new();
-    state.apply(&make_event(RequestPhase::TrailersReceived {
-        headers: vec![
-            ("grpc-status".into(), "0".into()),
-            ("server-timing".into(), "app;dur=12".into()),
-        ],
-    }));
-
+    state.apply_trailers(&[
+        ("grpc-status".into(), "0".into()),
+        ("server-timing".into(), "app;dur=12".into()),
+    ]);
     assert!(state.trailers_observable);
     assert_eq!(state.trailers.len(), 2);
     assert_eq!(trailer_summary(&state), "2 received");
@@ -97,10 +96,7 @@ fn trailers_received_updates_headers_trace_and_events() {
 #[test]
 fn empty_trailers_are_observable_and_report_none() {
     let mut state = TuiState::new();
-    state.apply(&make_event(RequestPhase::TrailersReceived {
-        headers: vec![],
-    }));
-
+    state.apply_trailers(&[]);
     assert!(state.trailers_observable);
     assert!(state.trailers.is_empty());
     assert_eq!(trailer_summary(&state), "none received");

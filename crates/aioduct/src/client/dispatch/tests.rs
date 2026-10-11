@@ -164,11 +164,8 @@ async fn connection_protocol_returns_h1_for_h1_connection() {
         let _ = conn.await;
     });
 
-    let pooled = PooledConnection::new_h1(sender);
-    assert_eq!(
-        Core::connection_protocol(&pooled),
-        observer::NegotiatedProtocol::Http1,
-    );
+    let pooled: PooledConnection<RequestBodySend> = PooledConnection::new_h1(sender);
+    assert_eq!(pooled.version(), http::Version::HTTP_11,);
 }
 
 #[cfg(feature = "tokio")]
@@ -207,247 +204,17 @@ async fn connection_protocol_returns_h2_for_h2_connection() {
         let _ = conn.await;
     });
 
-    let pooled = PooledConnection::new_h2(sender);
-    assert_eq!(
-        Core::connection_protocol(&pooled),
-        observer::NegotiatedProtocol::Http2,
-    );
-}
-
-// --- notify / attach_observer / fire_connection_metrics tests ---
-
-#[cfg(feature = "tokio")]
-#[tokio::test]
-async fn notify_does_nothing_without_observer() {
-    use crate::client::HttpEngineSend;
-    use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
-
-    // Build engine without observer - notify should not panic
-    let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .build()
-        .unwrap();
-    let method = http::Method::GET;
-    let uri: http::Uri = "http://example.com/".parse().unwrap();
-    // Should not panic - observer is None
-    engine
-        .core
-        .notify(&method, &uri, observer::RequestPhase::Started);
+    let pooled: PooledConnection<RequestBodySend> = PooledConnection::new_h2(sender);
+    assert_eq!(pooled.version(), http::Version::HTTP_2,);
 }
 
 #[cfg(feature = "tokio")]
 #[tokio::test]
-async fn notify_fires_event_with_observer() {
-    use crate::client::HttpEngineSend;
-    use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    #[derive(Clone)]
-    struct CountingObserver {
-        count: Arc<AtomicU32>,
-    }
-    impl observer::RequestObserver for CountingObserver {
-        fn on_event(&self, _event: &observer::RequestEvent) {
-            self.count.fetch_add(1, Ordering::Relaxed);
-        }
-        fn on_connection_event(&self, _event: &observer::ConnectionEvent) {}
-    }
-
-    let count = Arc::new(AtomicU32::new(0));
-    let obs = CountingObserver {
-        count: count.clone(),
-    };
-    let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs)
-        .build()
-        .unwrap();
-    let method = http::Method::GET;
-    let uri: http::Uri = "http://example.com/".parse().unwrap();
-    engine
-        .core
-        .notify(&method, &uri, observer::RequestPhase::Started);
-    assert_eq!(count.load(Ordering::Relaxed), 1);
-    engine
-        .core
-        .notify(&method, &uri, observer::RequestPhase::Started);
-    assert_eq!(count.load(Ordering::Relaxed), 2);
-}
-
-#[cfg(feature = "tokio")]
-#[tokio::test]
-async fn fire_connection_metrics_does_nothing_without_observer() {
-    use crate::client::HttpEngineSend;
-    use crate::pool::PooledConnection;
-    use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
-
-    let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .build()
-        .unwrap();
-
-    let (client_io, mut server_io) = tokio::io::duplex(1024);
-    tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut buf = [0u8; 1024];
-        loop {
-            match server_io.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                _ => {}
-            }
-        }
-    });
-    let io = TokioIo::new(client_io);
-    let (sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("h1 handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let pooled = PooledConnection::new_h1(sender);
-    // Should not panic - observer is None
-    engine.core.fire_connection_metrics(&pooled, false);
-}
-
-#[cfg(feature = "tokio")]
-#[tokio::test]
-async fn fire_connection_metrics_fires_with_observer_and_remote_addr() {
-    use crate::client::HttpEngineSend;
-    use crate::pool::PooledConnection;
-    use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    #[derive(Clone)]
-    struct ConnObserver {
-        conn_events: Arc<AtomicU32>,
-    }
-    impl observer::RequestObserver for ConnObserver {
-        fn on_event(&self, _event: &observer::RequestEvent) {}
-        fn on_connection_event(&self, _event: &observer::ConnectionEvent) {
-            self.conn_events.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    let conn_events = Arc::new(AtomicU32::new(0));
-    let obs = ConnObserver {
-        conn_events: conn_events.clone(),
-    };
-    let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs)
-        .build()
-        .unwrap();
-
-    let (client_io, mut server_io) = tokio::io::duplex(1024);
-    tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut buf = [0u8; 1024];
-        loop {
-            match server_io.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                _ => {}
-            }
-        }
-    });
-    let io = TokioIo::new(client_io);
-    let (sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("h1 handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let mut pooled = PooledConnection::new_h1(sender);
-    pooled.remote_addr = Some(std::net::SocketAddr::from(([127, 0, 0, 1], 8080)));
-    pooled.record_request(100);
-    pooled.record_bytes_received(500);
-
-    engine.core.fire_connection_metrics(&pooled, false);
-    assert_eq!(conn_events.load(Ordering::Relaxed), 1);
-
-    engine.core.fire_connection_metrics(&pooled, true);
-    assert_eq!(conn_events.load(Ordering::Relaxed), 2);
-}
-
-#[cfg(feature = "tokio")]
-#[tokio::test]
-async fn fire_connection_metrics_no_remote_addr_skips() {
-    use crate::client::HttpEngineSend;
-    use crate::pool::PooledConnection;
-    use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    #[derive(Clone)]
-    struct ConnObserver {
-        conn_events: Arc<AtomicU32>,
-    }
-    impl observer::RequestObserver for ConnObserver {
-        fn on_event(&self, _event: &observer::RequestEvent) {}
-        fn on_connection_event(&self, _event: &observer::ConnectionEvent) {
-            self.conn_events.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    let conn_events = Arc::new(AtomicU32::new(0));
-    let obs = ConnObserver {
-        conn_events: conn_events.clone(),
-    };
-    let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs)
-        .build()
-        .unwrap();
-
-    let (client_io, mut server_io) = tokio::io::duplex(1024);
-    tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut buf = [0u8; 1024];
-        loop {
-            match server_io.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                _ => {}
-            }
-        }
-    });
-    let io = TokioIo::new(client_io);
-    let (sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("h1 handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let pooled = PooledConnection::new_h1(sender);
-    // remote_addr is None, so observer should NOT be called
-    engine.core.fire_connection_metrics(&pooled, false);
-    assert_eq!(conn_events.load(Ordering::Relaxed), 0);
-}
-
-#[cfg(feature = "tokio")]
-#[tokio::test]
-async fn checkin_connection_multiplex_clone_fires_metrics_but_skips_pool() {
+async fn checkin_connection_multiplex_clone_skips_pool() {
     use crate::client::HttpEngineSend;
     use crate::pool::{PoolKey, PooledConnection};
     use crate::runtime::tokio_rt::{TcpConnector, TokioIo, TokioRuntime};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    #[derive(Clone)]
-    struct ConnObserver {
-        conn_events: Arc<AtomicU32>,
-    }
-    impl observer::RequestObserver for ConnObserver {
-        fn on_event(&self, _event: &observer::RequestEvent) {}
-        fn on_connection_event(&self, _event: &observer::ConnectionEvent) {
-            self.conn_events.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    let conn_events = Arc::new(AtomicU32::new(0));
-    let obs = ConnObserver {
-        conn_events: conn_events.clone(),
-    };
     let engine = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs)
         .build()
         .unwrap();
 
@@ -490,9 +257,8 @@ async fn checkin_connection_multiplex_clone_fires_metrics_but_skips_pool() {
 
     let pool_key = PoolKey::new(http::uri::Scheme::HTTPS, "example.com:443".parse().unwrap());
 
-    // Checkin a multiplex clone: should fire metrics but not add to pool
+    // A multiplex clone must not add another physical transport to the pool
     engine.core.checkin_connection(pool_key.clone(), cloned);
-    assert_eq!(conn_events.load(Ordering::Relaxed), 1);
 
     // Pool should be empty since multiplex clones are not checked in
     assert!(engine.core.pool.checkout(&pool_key).is_none());
@@ -619,7 +385,13 @@ async fn bytes_sent_uses_content_length_header_for_streaming_body() {
         .unwrap();
 
     let uri: http::Uri = "http://example.com/upload".parse().unwrap();
-    let _ = Core::send_on_connection(&mut pooled, request, uri).await;
+    let _ = Core::send_on_connection(
+        &mut pooled,
+        request,
+        uri,
+        crate::observer::NoopAttemptStartObserver,
+    )
+    .await;
 
     assert_eq!(
         pooled.bytes_sent(),

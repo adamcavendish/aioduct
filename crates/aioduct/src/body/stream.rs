@@ -1,34 +1,44 @@
 //! Async byte-stream iterators over response bodies.
 
 use bytes::Bytes;
-use http_body_util::BodyExt;
+use http_body::Body;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::clock::Instant;
 use crate::error::Error;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::observer::{self, RequestEvent, RequestPhase, TransferDirection};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::response::BodyObserverCtx;
 
-use super::RequestBodySend;
 #[cfg(not(target_arch = "wasm32"))]
 use super::ResponseBodyLocal;
+use super::{BodyEnd, RequestBodySend, SendObservationHandle};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::response::ResponseBodySend;
 
 // ── BodyStreamSend ───────────────────────────────────────────────────────────
 
 /// Async iterator over response body data frames.
 pub struct BodyStreamSend {
     body: RequestBodySend,
+    owner: Option<SendObservationHandle>,
     done: bool,
     /// Trailer headers captured from the body's trailer frame, if any.
     trailers: Option<http::HeaderMap>,
-    #[cfg(not(target_arch = "wasm32"))]
-    observer_ctx: Option<BodyObserverCtx>,
-    #[cfg(not(target_arch = "wasm32"))]
-    cumulative_bytes: u64,
-    #[cfg(not(target_arch = "wasm32"))]
-    transfer_start: Instant,
+}
+
+/// Future returned by [`BodyStreamSend::next`].
+///
+/// Usually used through `.next().await`; its representation is not a stable ABI.
+#[must_use = "futures do nothing unless polled or awaited"]
+pub struct BodyNextSend<'a> {
+    stream: &'a mut BodyStreamSend,
+}
+
+impl Future for BodyNextSend<'_> {
+    type Output = Option<Result<Bytes, Error>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().stream.poll_next(cx)
+    }
 }
 
 impl std::fmt::Debug for BodyStreamSend {
@@ -42,30 +52,20 @@ impl BodyStreamSend {
     pub(crate) fn new(body: RequestBodySend) -> Self {
         Self {
             body,
+            owner: None,
             done: false,
             trailers: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            observer_ctx: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            cumulative_bytes: 0,
-            #[cfg(not(target_arch = "wasm32"))]
-            transfer_start: Instant::now(),
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn with_observer(body: RequestBodySend, ctx: Option<BodyObserverCtx>) -> Self {
-        let transfer_start = ctx
-            .as_ref()
-            .map(|c| c.response_started)
-            .unwrap_or_else(Instant::now);
+    pub(crate) fn from_response_body(body: ResponseBodySend) -> Self {
+        let (body, owner) = body.into_parts();
         Self {
             body,
+            owner,
             done: false,
             trailers: None,
-            observer_ctx: ctx,
-            cumulative_bytes: 0,
-            transfer_start,
         }
     }
 
@@ -78,125 +78,62 @@ impl BodyStreamSend {
     }
 
     /// Returns the next chunk of body data, or `None` when complete.
-    pub async fn next(&mut self) -> Option<Result<Bytes, Error>> {
+    #[allow(clippy::should_implement_trait)] // Async reading, not Iterator::next.
+    pub fn next(&mut self) -> BodyNextSend<'_> {
+        BodyNextSend { stream: self }
+    }
+
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, Error>>> {
         if self.done {
-            return None;
+            return Poll::Ready(None);
         }
 
         loop {
-            match self.body.frame().await {
-                Some(Ok(frame)) => match frame.into_data() {
-                    Ok(data) => {
-                        // Skip empty data frames: a consumer expects `Some` to
-                        // carry non-empty data and `None` to mean end of stream.
-                        if data.is_empty() {
-                            continue;
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            let chunk_bytes = data.len() as u64;
-                            self.cumulative_bytes += chunk_bytes;
-                            if let Some(ctx) = &self.observer_ctx {
-                                ctx.observer.on_event(&RequestEvent {
-                                    method: ctx.method.clone(),
-                                    uri: ctx.uri.clone(),
-                                    phase: RequestPhase::BytesTransferred {
-                                        direction: TransferDirection::Download,
-                                        chunk_bytes,
-                                        cumulative_bytes: self.cumulative_bytes,
-                                        elapsed: self.transfer_start.elapsed(),
-                                    },
-                                    at: observer::Instant::now(),
-                                });
-                            }
-                        }
-                        return Some(Ok(data));
+            match Pin::new(&mut self.body).poll_frame(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(Ok(frame))) => {
+                    if let Some(owner) = &self.owner
+                        && self.body.is_end_stream()
+                    {
+                        owner.finish(BodyEnd::Complete);
                     }
-                    Err(frame) => {
-                        // Capture trailers so callers can read them via
-                        // `trailers()` after the stream completes.
-                        match frame.into_trailers() {
-                            Ok(trailers) => {
-                                #[cfg(not(target_arch = "wasm32"))]
-                                if let Some(ctx) = &self.observer_ctx {
-                                    let headers: Vec<(String, String)> = trailers
-                                        .iter()
-                                        .map(|(k, v)| {
-                                            (
-                                                k.as_str().to_owned(),
-                                                v.to_str().unwrap_or("<binary>").to_owned(),
-                                            )
-                                        })
-                                        .collect();
-                                    ctx.observer.on_event(&RequestEvent {
-                                        method: ctx.method.clone(),
-                                        uri: ctx.uri.clone(),
-                                        phase: RequestPhase::TrailersReceived { headers },
-                                        at: observer::Instant::now(),
-                                    });
-                                }
-                                match &mut self.trailers {
+                    match frame.into_data() {
+                        Ok(data) => {
+                            // Skip empty data frames: a consumer expects `Some` to
+                            // carry non-empty data and `None` to mean end of stream.
+                            if data.is_empty() {
+                                continue;
+                            }
+                            return Poll::Ready(Some(Ok(data)));
+                        }
+                        Err(frame) => {
+                            // Capture trailers so callers can read them via
+                            // `trailers()` after the stream completes.
+                            match frame.into_trailers() {
+                                Ok(trailers) => match &mut self.trailers {
                                     Some(existing) => existing.extend(trailers),
                                     None => self.trailers = Some(trailers),
-                                }
+                                },
+                                Err(_non_trailer) => {}
                             }
-                            Err(_non_trailer) => {}
                         }
                     }
-                },
-                Some(Err(e)) => {
-                    self.done = true;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.fire_transfer_aborted(&e);
-                    return Some(Err(e));
                 }
-                None => {
+                Poll::Ready(Some(Err(e))) => {
                     self.done = true;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.fire_transfer_complete();
-                    return None;
+                    if let Some(owner) = &self.owner {
+                        owner.fail(&e);
+                    }
+                    return Poll::Ready(Some(Err(e)));
+                }
+                Poll::Ready(None) => {
+                    self.done = true;
+                    if let Some(owner) = &self.owner {
+                        owner.finish(BodyEnd::Complete);
+                    }
+                    return Poll::Ready(None);
                 }
             }
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fire_transfer_complete(&self) {
-        if let Some(ctx) = &self.observer_ctx {
-            let transfer_duration = self.transfer_start.elapsed();
-            let throughput = if transfer_duration.as_secs_f64() > 0.0 {
-                (self.cumulative_bytes as f64 / transfer_duration.as_secs_f64()) as f32
-            } else {
-                0.0
-            };
-            ctx.observer.on_event(&RequestEvent {
-                method: ctx.method.clone(),
-                uri: ctx.uri.clone(),
-                phase: RequestPhase::TransferComplete {
-                    direction: TransferDirection::Download,
-                    total_bytes: self.cumulative_bytes,
-                    transfer_duration,
-                    throughput_bytes_per_sec: throughput,
-                },
-                at: observer::Instant::now(),
-            });
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fire_transfer_aborted(&self, error: &crate::error::Error) {
-        if let Some(ctx) = &self.observer_ctx {
-            ctx.observer.on_event(&RequestEvent {
-                method: ctx.method.clone(),
-                uri: ctx.uri.clone(),
-                phase: RequestPhase::TransferAborted {
-                    direction: TransferDirection::Download,
-                    bytes_transferred: self.cumulative_bytes,
-                    elapsed: self.transfer_start.elapsed(),
-                    error: error.to_string(),
-                },
-                at: observer::Instant::now(),
-            });
         }
     }
 }
@@ -206,7 +143,9 @@ impl Drop for BodyStreamSend {
     fn drop(&mut self) {
         if !self.done {
             self.done = true;
-            self.fire_transfer_aborted(&crate::error::Error::Other("body stream dropped".into()));
+            if let Some(owner) = &self.owner {
+                owner.finish(BodyEnd::Abandoned);
+            }
         }
     }
 }
@@ -221,9 +160,30 @@ pub struct BodyStreamLocal {
     body: ResponseBodyLocal,
     done: bool,
     trailers: Option<http::HeaderMap>,
-    observer_ctx: Option<BodyObserverCtx>,
-    cumulative_bytes: u64,
-    transfer_start: Instant,
+}
+
+/// Future returned by [`BodyStreamLocal::next`].
+///
+/// Usually used through `.next().await`; its representation is not a stable ABI.
+/// Like its stream, this future does not implement `Send`.
+///
+/// ```compile_fail
+/// fn require_send<T: Send>() {}
+/// require_send::<aioduct::body::BodyNextLocal<'static>>();
+/// ```
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use = "futures do nothing unless polled or awaited"]
+pub struct BodyNextLocal<'a> {
+    stream: &'a mut BodyStreamLocal,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Future for BodyNextLocal<'_> {
+    type Output = Option<Result<Bytes, Error>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().stream.poll_next(cx)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -235,18 +195,11 @@ impl std::fmt::Debug for BodyStreamLocal {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl BodyStreamLocal {
-    pub(crate) fn with_observer(body: ResponseBodyLocal, ctx: Option<BodyObserverCtx>) -> Self {
-        let transfer_start = ctx
-            .as_ref()
-            .map(|c| c.response_started)
-            .unwrap_or_else(Instant::now);
+    pub(crate) fn from_response_body(body: ResponseBodyLocal) -> Self {
         Self {
             body,
             done: false,
             trailers: None,
-            observer_ctx: ctx,
-            cumulative_bytes: 0,
-            transfer_start,
         }
     }
 
@@ -258,115 +211,45 @@ impl BodyStreamLocal {
     }
 
     /// Returns the next chunk of body data, or `None` when complete.
-    pub async fn next(&mut self) -> Option<Result<Bytes, Error>> {
-        use std::pin::Pin;
+    #[allow(clippy::should_implement_trait)] // Async reading, not Iterator::next.
+    pub fn next(&mut self) -> BodyNextLocal<'_> {
+        BodyNextLocal { stream: self }
+    }
 
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, Error>>> {
         if self.done {
-            return None;
+            return Poll::Ready(None);
         }
 
         loop {
-            match Pin::new(&mut self.body).frame().await {
-                Some(Ok(frame)) => match frame.into_data() {
+            match Pin::new(&mut self.body).poll_frame(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
                     Ok(data) => {
                         // Skip empty data frames: a consumer expects `Some` to
                         // carry non-empty data and `None` to mean end of stream.
                         if data.is_empty() {
                             continue;
                         }
-                        let chunk_bytes = data.len() as u64;
-                        self.cumulative_bytes += chunk_bytes;
-                        if let Some(ctx) = &self.observer_ctx {
-                            ctx.observer.on_event(&RequestEvent {
-                                method: ctx.method.clone(),
-                                uri: ctx.uri.clone(),
-                                phase: RequestPhase::BytesTransferred {
-                                    direction: TransferDirection::Download,
-                                    chunk_bytes,
-                                    cumulative_bytes: self.cumulative_bytes,
-                                    elapsed: self.transfer_start.elapsed(),
-                                },
-                                at: observer::Instant::now(),
-                            });
-                        }
-                        return Some(Ok(data));
+                        return Poll::Ready(Some(Ok(data)));
                     }
                     Err(frame) => match frame.into_trailers() {
-                        Ok(trailers) => {
-                            if let Some(ctx) = &self.observer_ctx {
-                                let headers: Vec<(String, String)> = trailers
-                                    .iter()
-                                    .map(|(k, v)| {
-                                        (
-                                            k.as_str().to_owned(),
-                                            v.to_str().unwrap_or("<binary>").to_owned(),
-                                        )
-                                    })
-                                    .collect();
-                                ctx.observer.on_event(&RequestEvent {
-                                    method: ctx.method.clone(),
-                                    uri: ctx.uri.clone(),
-                                    phase: RequestPhase::TrailersReceived { headers },
-                                    at: observer::Instant::now(),
-                                });
-                            }
-                            match &mut self.trailers {
-                                Some(existing) => existing.extend(trailers),
-                                None => self.trailers = Some(trailers),
-                            }
-                        }
+                        Ok(trailers) => match &mut self.trailers {
+                            Some(existing) => existing.extend(trailers),
+                            None => self.trailers = Some(trailers),
+                        },
                         Err(_non_trailer) => {}
                     },
                 },
-                Some(Err(e)) => {
+                Poll::Ready(Some(Err(e))) => {
                     self.done = true;
-                    self.fire_transfer_aborted(&e);
-                    return Some(Err(e));
+                    return Poll::Ready(Some(Err(e)));
                 }
-                None => {
+                Poll::Ready(None) => {
                     self.done = true;
-                    self.fire_transfer_complete();
-                    return None;
+                    return Poll::Ready(None);
                 }
             }
-        }
-    }
-
-    fn fire_transfer_complete(&self) {
-        if let Some(ctx) = &self.observer_ctx {
-            let transfer_duration = self.transfer_start.elapsed();
-            let throughput = if transfer_duration.as_secs_f64() > 0.0 {
-                (self.cumulative_bytes as f64 / transfer_duration.as_secs_f64()) as f32
-            } else {
-                0.0
-            };
-            ctx.observer.on_event(&RequestEvent {
-                method: ctx.method.clone(),
-                uri: ctx.uri.clone(),
-                phase: RequestPhase::TransferComplete {
-                    direction: TransferDirection::Download,
-                    total_bytes: self.cumulative_bytes,
-                    transfer_duration,
-                    throughput_bytes_per_sec: throughput,
-                },
-                at: observer::Instant::now(),
-            });
-        }
-    }
-
-    fn fire_transfer_aborted(&self, error: &crate::error::Error) {
-        if let Some(ctx) = &self.observer_ctx {
-            ctx.observer.on_event(&RequestEvent {
-                method: ctx.method.clone(),
-                uri: ctx.uri.clone(),
-                phase: RequestPhase::TransferAborted {
-                    direction: TransferDirection::Download,
-                    bytes_transferred: self.cumulative_bytes,
-                    elapsed: self.transfer_start.elapsed(),
-                    error: error.to_string(),
-                },
-                at: observer::Instant::now(),
-            });
         }
     }
 }
@@ -376,7 +259,6 @@ impl Drop for BodyStreamLocal {
     fn drop(&mut self) {
         if !self.done {
             self.done = true;
-            self.fire_transfer_aborted(&crate::error::Error::Other("body stream dropped".into()));
         }
     }
 }

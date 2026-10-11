@@ -12,7 +12,12 @@ use super::{HttpEngineCore, HttpEngineSend};
 
 // ── Send path only (tower, h3, build) ────────────────────────────────────────
 
-impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
+impl<R: RuntimePoll, C: ConnectorSend, O> HttpEngineBuilder<R, C, O>
+where
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+{
     /// Enable async automatic RFC 9421 request signing for native send requests.
     ///
     /// The signer runs after default headers, cookies, cache validators,
@@ -140,7 +145,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
     }
 
     /// Build the configured [`HttpEngineSend`].
-    pub fn build(self) -> Result<HttpEngineSend<R, C>, crate::error::Error> {
+    pub fn build(self) -> Result<HttpEngineSend<R, C, O>, crate::error::Error> {
         let mut this = self;
         if let Some(error) = this.builder_error.take() {
             return Err(error.into_error());
@@ -322,7 +327,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                     .unwrap_or_else(crate::h2c_probe::H2cProbeCache::new),
                 connection_coalescing: self_.connection_coalescing,
                 sensitive_headers: self_.sensitive_headers,
-                observer: self_.observer,
                 #[cfg(feature = "rustls")]
                 tls,
                 #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -333,6 +337,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineBuilder<R, C> {
                 alt_svc_cache: crate::alt_svc::AltSvcCache::new(),
             },
             connector: self_.connector,
+            observer: std::sync::Arc::new(self_.observer),
             #[cfg(feature = "tower")]
             tower_connector: self_.tower_connector,
             _phantom: PhantomData,

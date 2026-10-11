@@ -10,9 +10,28 @@ use hyper::server::conn::http1 as server_http1;
 use hyper::service::service_fn;
 use tokio::net::TcpListener;
 
-use aioduct::HttpEngineSend;
 use aioduct::runtime::TokioRuntime;
 use aioduct::runtime::tokio_rt::TcpConnector;
+use aioduct::{
+    HttpEngineSend, Interest, NoopConnectionObservation, NoopRequestObservation, Observer,
+    RequestInfo,
+};
+
+struct LifecycleObserver;
+
+impl Observer for LifecycleObserver {
+    type Context = ();
+    type Observation = NoopRequestObservation;
+    type ConnectionObservation = NoopConnectionObservation;
+
+    fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self::Observation) {
+        (Interest::EMPTY, NoopRequestObservation)
+    }
+
+    fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
+        (Interest::CONNECTION_LIFECYCLE, NoopConnectionObservation)
+    }
+}
 
 #[tokio::test]
 async fn test_upgrade_websocket() {
@@ -151,4 +170,65 @@ async fn test_upgrade_flush_and_shutdown() {
     assert_eq!(&buf[..n], b"ping");
 
     let _inner = upgraded.into_inner();
+}
+
+#[tokio::test]
+async fn upgrade_into_inner_downcasts_original_transport_with_lifecycle_observation() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
+        let _ = server_http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|mut req: Request<hyper::body::Incoming>| async move {
+                    tokio::spawn(async move {
+                        if let Ok(mut upgraded) = hyper::upgrade::on(&mut req).await {
+                            let mut buf = [0_u8; 4];
+                            let mut read_buf = hyper::rt::ReadBuf::new(&mut buf);
+                            let _ = std::future::poll_fn(|cx| {
+                                hyper::rt::Read::poll_read(
+                                    std::pin::Pin::new(&mut upgraded),
+                                    cx,
+                                    read_buf.unfilled(),
+                                )
+                            })
+                            .await;
+                        }
+                    });
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(101)
+                            .header("connection", "Upgrade")
+                            .header("upgrade", "raw")
+                            .body(Full::new(Bytes::new()))
+                            .unwrap(),
+                    )
+                }),
+            )
+            .with_upgrades()
+            .await;
+    });
+
+    let client = HttpEngineSend::<TokioRuntime, TcpConnector, _>::builder()
+        .observer(LifecycleObserver)
+        .build()
+        .unwrap();
+    let response = client
+        .get(&format!("http://{addr}/raw"))
+        .unwrap()
+        .upgrade()
+        .send()
+        .await
+        .unwrap();
+    let upgraded = response.upgrade().await.unwrap();
+    let raw = upgraded.into_inner();
+    let parts = raw
+        .downcast::<aioduct::runtime::tokio_rt::TokioIo<tokio::net::TcpStream>>()
+        .unwrap_or_else(|_| {
+            panic!("lifecycle observation must not change the public downcast target")
+        });
+    assert!(parts.read_buf.is_empty());
 }

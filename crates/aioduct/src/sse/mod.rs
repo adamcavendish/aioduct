@@ -1,10 +1,12 @@
 //! Server-Sent Events (SSE) stream parser (WHATWG spec §9.2.5).
 
+#[cfg(not(target_arch = "wasm32"))]
+mod observation;
 mod stream;
 
+pub use stream::{SseNext, SseStream, SseStreamSend};
 #[cfg(not(target_arch = "wasm32"))]
-pub use stream::SseStreamLocal;
-pub use stream::{SseStream, SseStreamSend};
+pub use stream::{SseNextLocal, SseStreamLocal};
 
 use std::sync::Arc;
 
@@ -34,6 +36,22 @@ pub enum SseEvent {
 }
 
 const DEFAULT_MAX_PAYLOAD: usize = 512 * 1024;
+
+// Statically selected once per decode call, never an Interest check per line.
+trait DecodeStatistics {
+    fn comment(&mut self) {}
+    fn retry(&mut self) {}
+}
+struct Unobserved;
+impl DecodeStatistics for Unobserved {}
+impl DecodeStatistics for crate::observer::SseStatisticsSnapshot {
+    fn comment(&mut self) {
+        self.comment_lines_parsed = self.comment_lines_parsed.saturating_add(1);
+    }
+    fn retry(&mut self) {
+        self.retry_fields_accepted = self.retry_fields_accepted.saturating_add(1);
+    }
+}
 
 /// State-machine decoder for Server-Sent Events (WHATWG spec §9.2.5).
 ///
@@ -83,6 +101,22 @@ impl SseDecoder {
     /// Returns `Some(Ok(event))` when a complete event is parsed,
     /// `Some(Err(_))` on payload-too-large, or `None` when more data is needed.
     pub fn decode(&mut self, buf: &mut BytesMut) -> Option<Result<SseEvent, Error>> {
+        self.decode_impl(buf, &mut Unobserved)
+    }
+
+    pub(crate) fn decode_observed(
+        &mut self,
+        buf: &mut BytesMut,
+        statistics: &mut crate::observer::SseStatisticsSnapshot,
+    ) -> Option<Result<SseEvent, Error>> {
+        self.decode_impl(buf, statistics)
+    }
+
+    fn decode_impl<S: DecodeStatistics>(
+        &mut self,
+        buf: &mut BytesMut,
+        statistics: &mut S,
+    ) -> Option<Result<SseEvent, Error>> {
         self.strip_bom(buf);
 
         if let Some(state) = &mut self.draining {
@@ -149,7 +183,11 @@ impl SseDecoder {
                 let (line, rest) = next_line_str(remaining);
                 remaining = rest;
 
-                if line.is_empty() || line.starts_with(':') {
+                if line.is_empty() {
+                    continue;
+                }
+                if line.starts_with(':') {
+                    statistics.comment();
                     continue;
                 }
 
@@ -167,7 +205,13 @@ impl SseDecoder {
                         "retry"
                             if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) =>
                         {
-                            retry = value.parse().ok();
+                            retry = match value.parse() {
+                                Ok(interval) => {
+                                    statistics.retry();
+                                    Some(interval)
+                                }
+                                Err(_) => None,
+                            };
                         }
                         _ => {}
                     }

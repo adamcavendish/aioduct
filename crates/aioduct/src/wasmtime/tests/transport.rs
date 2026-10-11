@@ -162,6 +162,13 @@ async fn compio_transport_services_wasi_http_request() {
         .await
         .expect("compio transport should forward request");
     assert_eq!(incoming.resp.status(), http::StatusCode::OK);
+    let body = incoming
+        .resp
+        .into_body()
+        .collect()
+        .await
+        .expect("compio transport should forward response body");
+    assert_eq!(body.to_bytes(), Bytes::from_static(b"ok"));
     let text = seen.await.expect("server should capture request");
     assert!(
         text.to_ascii_lowercase()

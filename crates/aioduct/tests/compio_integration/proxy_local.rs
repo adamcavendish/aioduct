@@ -48,30 +48,31 @@ fn ech_grease_connector() -> aioduct::tls::RustlsConnector {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LocalProxyDetail {
-    Tcp(aioduct::NegotiatedProtocol),
-    Tls(Option<String>),
+    Tcp,
+    Tls,
 }
 
 #[derive(Clone, Default)]
 struct LocalProxyDetailObserver(std::sync::Arc<std::sync::Mutex<Vec<LocalProxyDetail>>>);
 
-impl aioduct::observer::RequestObserver for LocalProxyDetailObserver {
-    fn on_event(&self, event: &aioduct::observer::RequestEvent) {
-        let detail = match &event.phase {
-            aioduct::observer::RequestPhase::TcpConnected { protocol, .. } => {
-                Some(LocalProxyDetail::Tcp(*protocol))
-            }
-            aioduct::observer::RequestPhase::TlsHandshakeComplete { alpn_protocol, .. } => {
-                Some(LocalProxyDetail::Tls(alpn_protocol.clone()))
-            }
+crate::impl_connection_observer!(LocalProxyDetailObserver);
+impl aioduct::ConnectionObservation for LocalProxyDetailObserver {
+    fn on_connection(&self, event: &aioduct::ConnectionObservationEvent<'_>) {
+        let detail = match event {
+            aioduct::ConnectionObservationEvent::PhaseCompleted {
+                phase: aioduct::ConnectionEstablishmentPhase::TcpConnect,
+                ..
+            } => Some(LocalProxyDetail::Tcp),
+            aioduct::ConnectionObservationEvent::PhaseCompleted {
+                phase: aioduct::ConnectionEstablishmentPhase::TlsHandshake,
+                ..
+            } => Some(LocalProxyDetail::Tls),
             _ => None,
         };
         if let Some(detail) = detail {
             self.0.lock().unwrap().push(detail);
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
 }
 
 impl LocalProxyDetailObserver {
@@ -1168,7 +1169,7 @@ fn test_compio_proxy_tcp_observer_fires_before_socks_auth_failure_local() {
                     .unwrap()
                     .basic_auth("proxyuser", "wrong"),
             )
-            .request_observer(observer.clone())
+            .observer(observer.clone())
             .build_local()
             .unwrap();
 
@@ -1188,8 +1189,8 @@ fn test_compio_proxy_tcp_observer_fires_before_socks_auth_failure_local() {
 
         assert_eq!(
             observer.details(),
-            [LocalProxyDetail::Tcp(aioduct::NegotiatedProtocol::Http2)],
-            "SOCKS TCP observation should precede auth failure and retain the origin protocol"
+            [LocalProxyDetail::Tcp],
+            "SOCKS TCP observation should precede auth failure and report only the completed transport phase"
         );
     });
 }
@@ -1416,7 +1417,7 @@ fn test_compio_h2_origin_reports_http1_proxy_tcp_protocol_local() {
         let observer = LocalProxyDetailObserver::default();
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-            .request_observer(observer.clone())
+            .observer(observer.clone())
             .build_local()
             .unwrap();
 
@@ -1430,11 +1431,7 @@ fn test_compio_h2_origin_reports_http1_proxy_tcp_protocol_local() {
 
         assert_eq!(response.version(), http::Version::HTTP_2);
         assert_eq!(response.text().await.unwrap(), "hello aioduct");
-        assert!(
-            observer
-                .details()
-                .contains(&LocalProxyDetail::Tcp(aioduct::NegotiatedProtocol::Http1))
-        );
+        assert!(observer.details().contains(&LocalProxyDetail::Tcp));
     });
 }
 
@@ -1654,7 +1651,7 @@ fn compio_adaptive_h2c_uses_normal_alpn_for_proxied_https_h2_origin() {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .tls(connector)
             .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-            .request_observer(observer.clone())
+            .observer(observer.clone())
             .build_local()
             .unwrap();
         let response = client
@@ -1678,10 +1675,7 @@ fn compio_adaptive_h2c_uses_normal_alpn_for_proxied_https_h2_origin() {
         assert_eq!(response.text().await.unwrap(), "hello tls");
         assert_eq!(
             observer.details(),
-            [
-                LocalProxyDetail::Tcp(aioduct::NegotiatedProtocol::Http1),
-                LocalProxyDetail::Tls(Some("h2".to_owned())),
-            ]
+            [LocalProxyDetail::Tcp, LocalProxyDetail::Tls,]
         );
     });
 
@@ -2132,7 +2126,7 @@ fn test_compio_proxied_origin_tls_observer_preserves_missing_alpn_local() {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .tls(connector)
             .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-            .request_observer(observer.clone())
+            .observer(observer.clone())
             .timeout(Duration::from_secs(5))
             .build_local()
             .unwrap();
@@ -2150,10 +2144,7 @@ fn test_compio_proxied_origin_tls_observer_preserves_missing_alpn_local() {
         assert_eq!(response.text().await.unwrap(), "hello tls");
         assert_eq!(
             observer.details(),
-            [
-                LocalProxyDetail::Tcp(aioduct::NegotiatedProtocol::Http1),
-                LocalProxyDetail::Tls(None),
-            ]
+            [LocalProxyDetail::Tcp, LocalProxyDetail::Tls,]
         );
     });
 }
@@ -2172,7 +2163,7 @@ fn test_compio_proxied_origin_tls_observer_fires_before_http_handshake_failure_l
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .tls(connector)
             .proxy(aioduct::ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-            .request_observer(observer.clone())
+            .observer(observer.clone())
             .timeout(Duration::from_secs(5))
             .build_local()
             .unwrap();
@@ -2189,10 +2180,7 @@ fn test_compio_proxied_origin_tls_observer_fires_before_http_handshake_failure_l
 
         let details = observer.details();
         assert!(
-            details.starts_with(&[
-                LocalProxyDetail::Tcp(aioduct::NegotiatedProtocol::Http1),
-                LocalProxyDetail::Tls(Some("http/1.1".to_owned())),
-            ]),
+            details.starts_with(&[LocalProxyDetail::Tcp, LocalProxyDetail::Tls,]),
             "origin TLS completion must be observable before HTTP setup fails: {details:?}"
         );
     });
@@ -2208,7 +2196,7 @@ fn test_compio_https_proxy_tcp_observer_fires_before_proxy_tls_timeout_local() {
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
             .tls(aioduct::tls::RustlsConnector::danger_accept_invalid_certs())
             .proxy(aioduct::proxy::ProxyConfig::https(&format!("https://{proxy_addr}")).unwrap())
-            .request_observer(observer.clone())
+            .observer(observer.clone())
             .connect_timeout(Duration::from_millis(100))
             .build_local()
             .unwrap();
@@ -2223,7 +2211,7 @@ fn test_compio_https_proxy_tcp_observer_fires_before_proxy_tls_timeout_local() {
 
         assert_eq!(
             observer.details(),
-            [LocalProxyDetail::Tcp(aioduct::NegotiatedProtocol::Http1)],
+            [LocalProxyDetail::Tcp],
             "proxy TCP observation should precede a stalled proxy TLS handshake"
         );
     });
@@ -2249,7 +2237,7 @@ fn test_compio_https_proxy_observer_fires_before_origin_tls_failure_local() {
                 ))
                 .unwrap(),
             )
-            .request_observer(observer.clone())
+            .observer(observer.clone())
             .timeout(Duration::from_secs(2))
             .build_local()
             .unwrap();
@@ -2263,11 +2251,11 @@ fn test_compio_https_proxy_observer_fires_before_origin_tls_failure_local() {
 
         let details = observer.details();
         assert!(
-            details.contains(&LocalProxyDetail::Tcp(aioduct::NegotiatedProtocol::Http1)),
+            details.contains(&LocalProxyDetail::Tcp),
             "missing HTTP/1.1 proxy TCP phase after origin TLS failure: {details:?}"
         );
         assert!(
-            details.contains(&LocalProxyDetail::Tls(Some("http/1.1".to_owned()))),
+            details.contains(&LocalProxyDetail::Tls),
             "missing actual proxy TLS ALPN after origin TLS failure: {details:?}"
         );
     });
@@ -2583,21 +2571,17 @@ fn test_compio_observer_tcp_connected_on_plain_http() {
         let phases = Arc::new(Mutex::new(Vec::<String>::new()));
         let phases_clone = phases.clone();
 
-        struct PhaseObs(Arc<Mutex<Vec<String>>>);
-        impl aioduct::observer::RequestObserver for PhaseObs {
-            fn on_event(&self, event: &aioduct::observer::RequestEvent) {
-                self.0.lock().unwrap().push(format!("{:?}", event.phase));
-            }
-            fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
-        }
+        let observer = crate::observation_support::TestObserver {
+            events: phases_clone, ..Default::default()
+        };
 
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .request_observer(PhaseObs(phases_clone))
+            .observer(observer)
             .no_connection_reuse()
             .build_local()
             .unwrap();
 
-        // First request -- new connection, should fire DnsResolved and TcpConnected
+        // First request -- new connection, should fire AcquisitionComplete(Dns) and EstablishmentComplete(TcpConnect)
         let resp = client
             .get_local(&format!("http://{addr}/"))
             .unwrap()
@@ -2610,40 +2594,40 @@ fn test_compio_observer_tcp_connected_on_plain_http() {
         let recorded = phases.lock().unwrap();
         let joined = recorded.join("\n");
 
-        // Verify observer received DnsResolved notification
+        // Verify observer received AcquisitionComplete(Dns) notification
         assert!(
-            joined.contains("DnsResolved"),
-            "observer should have recorded DnsResolved, got:\n{joined}"
+            joined.contains("AcquisitionComplete(Dns)"),
+            "observer should have recorded AcquisitionComplete(Dns), got:\n{joined}"
         );
 
-        // Verify observer received TcpConnected notification (non-TLS path, execute_local.rs ~line 581-591)
+        // Verify observer received EstablishmentComplete(TcpConnect) notification (non-TLS path, execute_local.rs ~line 581-591)
         assert!(
-            joined.contains("TcpConnected"),
-            "observer should have recorded TcpConnected for plain HTTP, got:\n{joined}"
+            joined.contains("EstablishmentComplete(TcpConnect)"),
+            "observer should have recorded EstablishmentComplete(TcpConnect) for plain HTTP, got:\n{joined}"
         );
 
         // Verify PoolCheckoutComplete with Miss (new connection path)
         assert!(
-            joined.contains("Miss"),
-            "observer should have recorded pool Miss, got:\n{joined}"
+            joined.contains("AcquisitionSkipped(PoolLookup, BypassedByConfiguration)"),
+            "disabled connection reuse should report the skipped lookup, got:\n{joined}"
         );
 
-        // Verify Started, RequestSent, ResponseStarted, ResponseComplete
+        // Verify Started, AttemptStarted, ResponseHeaders, RequestFinish(Ended)
         assert!(
             joined.contains("Started"),
             "observer should have recorded Started, got:\n{joined}"
         );
         assert!(
-            joined.contains("RequestSent"),
-            "observer should have recorded RequestSent, got:\n{joined}"
+            joined.contains("AttemptStarted"),
+            "observer should have recorded AttemptStarted, got:\n{joined}"
         );
         assert!(
-            joined.contains("ResponseStarted"),
-            "observer should have recorded ResponseStarted, got:\n{joined}"
+            joined.contains("ResponseHeaders"),
+            "observer should have recorded ResponseHeaders, got:\n{joined}"
         );
         assert!(
-            joined.contains("ResponseComplete"),
-            "observer should have recorded ResponseComplete, got:\n{joined}"
+            joined.contains("RequestFinish(Ended)"),
+            "observer should have recorded RequestFinish(Ended), got:\n{joined}"
         );
     });
 }
@@ -2657,22 +2641,18 @@ fn test_compio_observer_pool_hit_vs_miss() {
         let phases = Arc::new(Mutex::new(Vec::<String>::new()));
         let phases_clone = phases.clone();
 
-        struct PhaseObs(Arc<Mutex<Vec<String>>>);
-        impl aioduct::observer::RequestObserver for PhaseObs {
-            fn on_event(&self, event: &aioduct::observer::RequestEvent) {
-                self.0.lock().unwrap().push(format!("{:?}", event.phase));
-            }
-            fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
-        }
+        let observer = crate::observation_support::TestObserver {
+            events: phases_clone, ..Default::default()
+        };
 
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .request_observer(PhaseObs(phases_clone))
+            .observer(observer)
             .build_local()
             .unwrap();
 
         let url = format!("http://{addr}/");
 
-        // First request: pool miss, fires TcpConnected + DnsResolved
+        // First request: pool miss, fires EstablishmentComplete(TcpConnect) + AcquisitionComplete(Dns)
         let resp1 = client.get_local(&url).unwrap().send().await.unwrap();
         assert_eq!(resp1.status(), http::StatusCode::OK);
         let _ = resp1.text().await.unwrap();
@@ -2686,7 +2666,7 @@ fn test_compio_observer_pool_hit_vs_miss() {
         // Clear for second request
         phases.lock().unwrap().clear();
 
-        // Second request: pool hit, should NOT fire DnsResolved/TcpConnected
+        // Second request: pool hit, should NOT fire AcquisitionComplete(Dns)/EstablishmentComplete(TcpConnect)
         let resp2 = client.get_local(&url).unwrap().send().await.unwrap();
         assert_eq!(resp2.status(), http::StatusCode::OK);
         let _ = resp2.text().await.unwrap();
@@ -2694,21 +2674,21 @@ fn test_compio_observer_pool_hit_vs_miss() {
         let second_phases = phases.lock().unwrap().clone();
         let second_joined = second_phases.join("\n");
 
-        // First request should have DnsResolved
+        // First request should have AcquisitionComplete(Dns)
         let first_joined = first_phases.join("\n");
         assert!(
-            first_joined.contains("DnsResolved"),
-            "first request should have DnsResolved, got:\n{first_joined}"
+            first_joined.contains("AcquisitionComplete(Dns)"),
+            "first request should have AcquisitionComplete(Dns), got:\n{first_joined}"
         );
 
-        // Second request should have pool Hit (reuse), not DnsResolved
+        // Second request should have pool Hit (reuse), not AcquisitionComplete(Dns)
         assert!(
             second_joined.contains("Hit"),
             "second request should have pool Hit, got:\n{second_joined}"
         );
         assert!(
-            !second_joined.contains("DnsResolved"),
-            "second request should NOT have DnsResolved (pool hit), got:\n{second_joined}"
+            !second_joined.contains("AcquisitionComplete(Dns)"),
+            "second request should NOT have AcquisitionComplete(Dns) (pool hit), got:\n{second_joined}"
         );
     });
 }

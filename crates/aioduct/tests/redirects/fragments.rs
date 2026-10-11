@@ -5,14 +5,45 @@ struct RetryTargetObserver {
     targets: std::sync::Arc<std::sync::Mutex<Vec<http::Uri>>>,
 }
 
-impl aioduct::RequestObserver for RetryTargetObserver {
-    fn on_event(&self, event: &aioduct::RequestEvent) {
-        if matches!(event.phase, aioduct::RequestPhase::Retrying { .. }) {
-            self.targets.lock().unwrap().push(event.uri.clone());
+struct RetryTargetObservation {
+    targets: std::sync::Arc<std::sync::Mutex<Vec<http::Uri>>>,
+    current: std::sync::Mutex<Option<http::Uri>>,
+}
+impl aioduct::Observer for RetryTargetObserver {
+    type Context = ();
+    type Observation = RetryTargetObservation;
+    type ConnectionObservation = aioduct::NoopConnectionObservation;
+    fn begin(
+        &self,
+        _: aioduct::RequestInfo<'_>,
+        _: Option<()>,
+    ) -> (aioduct::Interest, Self::Observation) {
+        (
+            aioduct::Interest::ATTEMPT,
+            RetryTargetObservation {
+                targets: self.targets.clone(),
+                current: std::sync::Mutex::new(None),
+            },
+        )
+    }
+    fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
+        (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
+    }
+}
+impl aioduct::RequestObservation for RetryTargetObservation {
+    fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
+        match event {
+            aioduct::AttemptEvent::Started { uri, .. } => {
+                *self.current.lock().unwrap() = Some((*uri).clone())
+            }
+            aioduct::AttemptEvent::RetryScheduled { .. } => {
+                if let Some(uri) = self.current.lock().unwrap().as_ref() {
+                    self.targets.lock().unwrap().push(uri.clone());
+                }
+            }
+            _ => {}
         }
     }
-
-    fn on_connection_event(&self, _event: &aioduct::ConnectionEvent) {}
 }
 
 #[tokio::test]
@@ -134,7 +165,7 @@ async fn configured_retry_preserves_fragment_selected_by_redirect() {
 
     let observer = RetryTargetObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .build()
         .unwrap();
     let response = client

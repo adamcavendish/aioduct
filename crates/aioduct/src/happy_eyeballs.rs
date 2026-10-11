@@ -27,29 +27,101 @@ use std::pin::Pin;
 use std::task::Poll;
 use std::time::Duration;
 
+use crate::error::Error;
+use crate::observer::{ConnectAttempt, ConnectAttemptObserver, TransportKind};
 use crate::runtime::{ConnectorLocal, ConnectorSend, RuntimeLocal, RuntimePoll};
 
 pub(crate) const HAPPY_EYEBALLS_DELAY: Duration = Duration::from_millis(250);
+
+#[derive(Clone, Copy, Default)]
+struct NoopConnectAttemptObserver;
+
+impl ConnectAttemptObserver for NoopConnectAttemptObserver {
+    #[inline]
+    fn connect_attempt_started(&self, _attempt: ConnectAttempt) {}
+    #[inline]
+    fn connect_attempt_succeeded(&self, _attempt: ConnectAttempt) {}
+    #[inline]
+    fn connect_attempt_failed(&self, _attempt: ConnectAttempt, _error: &Error) {}
+    #[inline]
+    fn connect_attempt_cancelled(&self, _attempt: ConnectAttempt) {}
+}
+
+struct ConnectAttemptGuard<'a, O: ConnectAttemptObserver + ?Sized> {
+    observer: &'a O,
+    attempt: ConnectAttempt,
+    completed: bool,
+}
+
+impl<O: ConnectAttemptObserver + ?Sized> Drop for ConnectAttemptGuard<'_, O> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.completed = true;
+            self.observer.connect_attempt_cancelled(self.attempt);
+        }
+    }
+}
+
+fn into_io_error(error: Error) -> io::Error {
+    match error {
+        Error::Io(error) => error,
+        error => io::Error::other(error),
+    }
+}
 
 pub(crate) async fn connect_happy_eyeballs<R: RuntimePoll, C: ConnectorSend>(
     connector: &C,
     addrs: &[SocketAddr],
     local_address: Option<std::net::IpAddr>,
 ) -> io::Result<(C::Stream, SocketAddr)> {
+    connect_happy_eyeballs_with_observer::<R, C, _>(
+        connector,
+        addrs,
+        local_address,
+        &NoopConnectAttemptObserver,
+    )
+    .await
+    .map_err(into_io_error)
+}
+
+pub(crate) async fn connect_happy_eyeballs_observed<
+    R: RuntimePoll,
+    C: ConnectorSend,
+    O: ConnectAttemptObserver + Sync,
+>(
+    connector: &C,
+    addrs: &[SocketAddr],
+    local_address: Option<std::net::IpAddr>,
+    observer: &O,
+) -> Result<(C::Stream, SocketAddr), Error> {
+    connect_happy_eyeballs_with_observer::<R, C, O>(connector, addrs, local_address, observer).await
+}
+
+async fn connect_happy_eyeballs_with_observer<
+    R: RuntimePoll,
+    C: ConnectorSend,
+    O: ConnectAttemptObserver + Sync,
+>(
+    connector: &C,
+    addrs: &[SocketAddr],
+    local_address: Option<std::net::IpAddr>,
+    observer: &O,
+) -> Result<(C::Stream, SocketAddr), Error> {
     if addrs.is_empty() {
-        return Err(io::Error::new(
+        return Err(Error::Io(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
             "no addresses to connect to",
-        ));
+        )));
     }
 
     if addrs.len() == 1 {
-        let stream = tcp_connect_send::<C>(connector, addrs[0], local_address).await?;
+        let stream =
+            connect_candidate_send::<C, O>(connector, addrs[0], local_address, 0, observer).await?;
         return Ok((stream, addrs[0]));
     }
 
     let interleaved = interleave_addrs(addrs);
-    race_connect::<R, C>(connector, &interleaved, local_address).await
+    race_connect::<R, C, O>(connector, &interleaved, local_address, observer).await
 }
 
 pub(crate) fn interleave_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
@@ -94,10 +166,44 @@ async fn tcp_connect_send<C: ConnectorSend>(
     }
 }
 
+async fn connect_candidate_send<C: ConnectorSend, O: ConnectAttemptObserver + Sync>(
+    connector: &C,
+    addr: SocketAddr,
+    local_address: Option<std::net::IpAddr>,
+    sequence: u32,
+    observer: &O,
+) -> Result<C::Stream, Error> {
+    let attempt = ConnectAttempt {
+        sequence,
+        kind: TransportKind::Tcp,
+        remote_addr: addr,
+    };
+    observer.connect_attempt_started(attempt);
+    let mut guard = ConnectAttemptGuard {
+        observer,
+        attempt,
+        completed: false,
+    };
+    let result = tcp_connect_send::<C>(connector, addr, local_address)
+        .await
+        .map_err(Error::Io);
+    match &result {
+        Ok(_) => {
+            guard.completed = true;
+            observer.connect_attempt_succeeded(attempt);
+        }
+        Err(error) => {
+            guard.completed = true;
+            observer.connect_attempt_failed(attempt, error);
+        }
+    }
+    result
+}
+
 enum RaceEvent<S> {
     Attempt {
         index: usize,
-        result: io::Result<S>,
+        result: Result<S, Error>,
         addr: SocketAddr,
     },
     Delay,
@@ -112,40 +218,74 @@ macro_rules! impl_race_connect {
         connector_trait: $C:ident $(: $extra_bound:ident)*,
         runtime_trait: $R:ident,
         future_bounds: [$($future_bound:ident),* $(,)?],
+        observer_bounds: [$($observer_bound:ident),* $(,)?],
     ) => {
-        async fn $race_fn<R: $R, C: $C $(+ $extra_bound)*>(
+        async fn $race_fn<R: $R, C: $C $(+ $extra_bound)*, O: ConnectAttemptObserver $(+ $observer_bound)*>(
             connector: &C,
             addrs: &[SocketAddr],
             local_address: Option<std::net::IpAddr>,
-        ) -> io::Result<(C::Stream, SocketAddr)> {
-            fn attempt<'a, C: $C $(+ $extra_bound)*>(
+            observer: &O,
+        ) -> Result<(C::Stream, SocketAddr), Error> {
+            fn attempt<'a, C: $C $(+ $extra_bound)*, O: ConnectAttemptObserver $(+ $observer_bound)*>(
                 connector: &'a C,
                 addr: SocketAddr,
                 local_address: Option<std::net::IpAddr>,
+                sequence: u32,
+                observer: &'a O,
             ) -> Pin<
                 Box<
-                    dyn Future<Output = (io::Result<C::Stream>, SocketAddr)>
+                    dyn Future<Output = (Result<C::Stream, Error>, SocketAddr, u32)>
                         $(+ $future_bound)*
                         + 'a,
                 >,
             > {
                 Box::pin(async move {
-                    let result = $connect_fn::<C>(connector, addr, local_address).await;
-                    (result, addr)
+                    let attempt = ConnectAttempt {
+                        sequence,
+                        kind: TransportKind::Tcp,
+                        remote_addr: addr,
+                    };
+                    observer.connect_attempt_started(attempt);
+                    let mut guard = ConnectAttemptGuard {
+                        observer,
+                        attempt,
+                        completed: false,
+                    };
+                    let result = $connect_fn::<C>(connector, addr, local_address)
+                        .await
+                        .map_err(Error::Io);
+                    match &result {
+                        Ok(_) => {
+                            guard.completed = true;
+                            observer.connect_attempt_succeeded(attempt);
+                        }
+                        Err(error) => {
+                            guard.completed = true;
+                            observer.connect_attempt_failed(attempt, error);
+                        }
+                    }
+                    (result, addr, sequence)
                 })
             }
 
             let mut attempts: Vec<
                 Pin<
                     Box<
-                        dyn Future<Output = (io::Result<C::Stream>, SocketAddr)>
+                        dyn Future<Output = (Result<C::Stream, Error>, SocketAddr, u32)>
                             $(+ $future_bound)*
                             + '_,
                     >,
                 >,
             > = Vec::new();
             let mut next_idx = 0;
-            attempts.push(attempt::<C>(connector, addrs[next_idx], local_address));
+            attempts.push(attempt::<C, O>(
+                connector,
+                addrs[next_idx],
+                local_address,
+                u32::try_from(next_idx)
+                    .unwrap_or_else(|_| unreachable!("connection attempt sequence overflow")),
+                observer,
+            ));
             next_idx += 1;
 
             let mut delay: Pin<
@@ -159,7 +299,7 @@ macro_rules! impl_race_connect {
             loop {
                 let event = std::future::poll_fn(|cx| {
                     for (index, attempt) in attempts.iter_mut().enumerate() {
-                        if let Poll::Ready((result, addr)) = attempt.as_mut().poll(cx) {
+                        if let Poll::Ready((result, addr, _sequence)) = attempt.as_mut().poll(cx) {
                             return Poll::Ready(RaceEvent::Attempt {
                                 index,
                                 result,
@@ -192,10 +332,14 @@ macro_rules! impl_race_connect {
                             if next_idx >= addrs.len() {
                                 return Err(error);
                             }
-                            attempts.push(attempt::<C>(
+                            attempts.push(attempt::<C, O>(
                                 connector,
                                 addrs[next_idx],
                                 local_address,
+                                u32::try_from(next_idx).unwrap_or_else(|_| {
+                                    unreachable!("connection attempt sequence overflow")
+                                }),
+                                observer,
                             ));
                             next_idx += 1;
                             delay = if next_idx < addrs.len() {
@@ -207,10 +351,14 @@ macro_rules! impl_race_connect {
                     }
                     RaceEvent::Delay => {
                         if next_idx < addrs.len() {
-                            attempts.push(attempt::<C>(
+                            attempts.push(attempt::<C, O>(
                                 connector,
                                 addrs[next_idx],
                                 local_address,
+                                u32::try_from(next_idx).unwrap_or_else(|_| {
+                                    unreachable!("connection attempt sequence overflow")
+                                }),
+                                observer,
                             ));
                             next_idx += 1;
                             delay = if next_idx < addrs.len() {
@@ -234,6 +382,7 @@ impl_race_connect! {
     connector_trait: ConnectorSend,
     runtime_trait: RuntimePoll,
     future_bounds: [Send],
+    observer_bounds: [Sync],
 }
 
 // ── Local variant (compio) ───────────────────────────────────────────────────
@@ -250,25 +399,95 @@ async fn tcp_connect_local<C: ConnectorLocal>(
     }
 }
 
+async fn connect_candidate_local<C: ConnectorLocal, O: ConnectAttemptObserver>(
+    connector: &C,
+    addr: SocketAddr,
+    local_address: Option<std::net::IpAddr>,
+    sequence: u32,
+    observer: &O,
+) -> Result<C::Stream, Error> {
+    let attempt = ConnectAttempt {
+        sequence,
+        kind: TransportKind::Tcp,
+        remote_addr: addr,
+    };
+    observer.connect_attempt_started(attempt);
+    let mut guard = ConnectAttemptGuard {
+        observer,
+        attempt,
+        completed: false,
+    };
+    let result = tcp_connect_local::<C>(connector, addr, local_address)
+        .await
+        .map_err(Error::Io);
+    match &result {
+        Ok(_) => {
+            guard.completed = true;
+            observer.connect_attempt_succeeded(attempt);
+        }
+        Err(error) => {
+            guard.completed = true;
+            observer.connect_attempt_failed(attempt, error);
+        }
+    }
+    result
+}
+
 pub(crate) async fn connect_happy_eyeballs_local<R: RuntimeLocal, C: ConnectorLocal + Clone>(
     connector: &C,
     addrs: &[SocketAddr],
     local_address: Option<std::net::IpAddr>,
 ) -> io::Result<(C::Stream, SocketAddr)> {
+    connect_happy_eyeballs_local_with_observer::<R, C, _>(
+        connector,
+        addrs,
+        local_address,
+        &NoopConnectAttemptObserver,
+    )
+    .await
+    .map_err(into_io_error)
+}
+
+pub(crate) async fn connect_happy_eyeballs_local_observed<
+    R: RuntimeLocal,
+    C: ConnectorLocal + Clone,
+    O: ConnectAttemptObserver,
+>(
+    connector: &C,
+    addrs: &[SocketAddr],
+    local_address: Option<std::net::IpAddr>,
+    observer: &O,
+) -> Result<(C::Stream, SocketAddr), Error> {
+    connect_happy_eyeballs_local_with_observer::<R, C, O>(connector, addrs, local_address, observer)
+        .await
+}
+
+async fn connect_happy_eyeballs_local_with_observer<
+    R: RuntimeLocal,
+    C: ConnectorLocal + Clone,
+    O: ConnectAttemptObserver,
+>(
+    connector: &C,
+    addrs: &[SocketAddr],
+    local_address: Option<std::net::IpAddr>,
+    observer: &O,
+) -> Result<(C::Stream, SocketAddr), Error> {
     if addrs.is_empty() {
-        return Err(io::Error::new(
+        return Err(Error::Io(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
             "no addresses to connect to",
-        ));
+        )));
     }
 
     if addrs.len() == 1 {
-        let stream = tcp_connect_local::<C>(connector, addrs[0], local_address).await?;
+        let stream =
+            connect_candidate_local::<C, O>(connector, addrs[0], local_address, 0, observer)
+                .await?;
         return Ok((stream, addrs[0]));
     }
 
     let interleaved = interleave_addrs(addrs);
-    race_connect_local::<R, C>(connector, &interleaved, local_address).await
+    race_connect_local::<R, C, O>(connector, &interleaved, local_address, observer).await
 }
 
 impl_race_connect! {
@@ -277,13 +496,15 @@ impl_race_connect! {
     connector_trait: ConnectorLocal: Clone,
     runtime_trait: RuntimeLocal,
     future_bounds: [],
+    observer_bounds: [],
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[derive(Debug)]
     struct DummyStream;
@@ -369,6 +590,103 @@ mod tests {
 
         async fn connect(&self, _addr: SocketAddr) -> io::Result<Self::Stream> {
             pending_attempt(self.clone()).await
+        }
+    }
+
+    #[derive(Default)]
+    #[allow(dead_code)]
+    struct CandidateRecords(Mutex<Vec<(u32, &'static str)>>);
+
+    impl ConnectAttemptObserver for CandidateRecords {
+        fn connect_attempt_started(&self, attempt: ConnectAttempt) {
+            self.0.lock().unwrap().push((attempt.sequence, "started"));
+        }
+
+        fn connect_attempt_succeeded(&self, attempt: ConnectAttempt) {
+            self.0.lock().unwrap().push((attempt.sequence, "succeeded"));
+        }
+
+        fn connect_attempt_failed(&self, attempt: ConnectAttempt, _error: &Error) {
+            self.0.lock().unwrap().push((attempt.sequence, "failed"));
+        }
+
+        fn connect_attempt_cancelled(&self, attempt: ConnectAttempt) {
+            self.0.lock().unwrap().push((attempt.sequence, "cancelled"));
+        }
+    }
+
+    #[derive(Debug)]
+    #[allow(dead_code)]
+    struct CandidateSource;
+
+    impl std::fmt::Display for CandidateSource {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("candidate source")
+        }
+    }
+
+    impl std::error::Error for CandidateSource {}
+
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct ErrorThenSuccessConnector;
+
+    impl ConnectorSend for ErrorThenSuccessConnector {
+        type Stream = DummyStream;
+
+        #[allow(clippy::manual_async_fn)]
+        fn connect(
+            &self,
+            addr: SocketAddr,
+        ) -> impl Future<Output = io::Result<Self::Stream>> + Send {
+            async move {
+                if addr.port() == 1 {
+                    Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        CandidateSource,
+                    ))
+                } else {
+                    Ok(DummyStream)
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "compio")]
+    impl ConnectorLocal for ErrorThenSuccessConnector {
+        type Stream = DummyStream;
+
+        async fn connect(&self, addr: SocketAddr) -> io::Result<Self::Stream> {
+            if addr.port() == 1 {
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    CandidateSource,
+                ))
+            } else {
+                Ok(DummyStream)
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    struct ErrorSourceRecords(AtomicBool);
+
+    impl ConnectAttemptObserver for ErrorSourceRecords {
+        fn connect_attempt_started(&self, _attempt: ConnectAttempt) {}
+        fn connect_attempt_succeeded(&self, _attempt: ConnectAttempt) {}
+        fn connect_attempt_cancelled(&self, _attempt: ConnectAttempt) {}
+
+        fn connect_attempt_failed(&self, _attempt: ConnectAttempt, error: &Error) {
+            let Error::Io(error) = error else {
+                return;
+            };
+            if error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<CandidateSource>())
+                .is_some()
+            {
+                self.0.store(true, Ordering::SeqCst);
+            }
         }
     }
 
@@ -565,6 +883,86 @@ mod tests {
         .unwrap();
         assert_eq!(connected_addr, good_addr);
         drop(stream);
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn observed_connect_reports_each_candidate() {
+        use crate::runtime::tokio_rt::{TcpConnector, TokioRuntime};
+
+        let connector = TcpConnector;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_addr = listener.local_addr().unwrap();
+        let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let records = CandidateRecords::default();
+
+        let (stream, connected_addr) = connect_happy_eyeballs_observed::<
+            TokioRuntime,
+            TcpConnector,
+            _,
+        >(&connector, &[bad_addr, good_addr], None, &records)
+        .await
+        .unwrap();
+        assert_eq!(connected_addr, good_addr);
+        drop(stream);
+
+        assert_eq!(
+            *records.0.lock().unwrap(),
+            [
+                (0, "started"),
+                (0, "failed"),
+                (1, "started"),
+                (1, "succeeded"),
+            ]
+        );
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn observed_candidate_failure_keeps_the_original_error_source() {
+        use crate::runtime::tokio_rt::TokioRuntime;
+
+        let connector = ErrorThenSuccessConnector;
+        let records = ErrorSourceRecords(AtomicBool::new(false));
+        let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let good_addr: SocketAddr = "127.0.0.1:2".parse().unwrap();
+
+        let (_, connected_addr) = connect_happy_eyeballs_observed::<
+            TokioRuntime,
+            ErrorThenSuccessConnector,
+            _,
+        >(&connector, &[bad_addr, good_addr], None, &records)
+        .await
+        .unwrap();
+
+        assert_eq!(connected_addr, good_addr);
+        assert!(records.0.load(Ordering::SeqCst));
+    }
+
+    #[cfg(feature = "compio")]
+    #[test]
+    fn local_observed_candidate_failure_keeps_the_original_error_source() {
+        use crate::runtime::compio_rt::CompioRuntime;
+
+        compio_runtime::Runtime::new().unwrap().block_on(async {
+            let connector = ErrorThenSuccessConnector;
+            let records = ErrorSourceRecords(AtomicBool::new(false));
+            let bad_addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let good_addr: SocketAddr = "127.0.0.1:2".parse().unwrap();
+
+            let (_, connected_addr) = connect_happy_eyeballs_local_observed::<
+                CompioRuntime,
+                ErrorThenSuccessConnector,
+                _,
+            >(
+                &connector, &[bad_addr, good_addr], None, &records
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(connected_addr, good_addr);
+            assert!(records.0.load(Ordering::SeqCst));
+        });
     }
 
     #[cfg(feature = "tokio")]

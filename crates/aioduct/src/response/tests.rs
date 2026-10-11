@@ -505,14 +505,16 @@ mod local_tests {
     use http_body_util::BodyExt;
 
     fn local_body(data: &[u8]) -> crate::body::ResponseBodyLocal {
-        Box::pin(
+        crate::body::ResponseBodyLocal::from_inner(Box::pin(
             http_body_util::Full::new(bytes::Bytes::from(data.to_vec()))
                 .map_err(|never| match never {}),
-        )
+        ))
     }
 
     fn empty_local_body() -> crate::body::ResponseBodyLocal {
-        Box::pin(http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}))
+        crate::body::ResponseBodyLocal::from_inner(Box::pin(
+            http_body_util::Full::new(bytes::Bytes::new()).map_err(|never| match never {}),
+        ))
     }
 
     fn make_local_response(status: u16) -> Response<crate::body::ResponseBodyLocal> {
@@ -525,7 +527,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         }
     }
@@ -587,7 +588,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         };
         assert_eq!(resp.content_length(), Some(42));
@@ -625,7 +625,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         };
         let bytes = resp.bytes().await.unwrap();
@@ -642,7 +641,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         };
         let text = resp.text().await.unwrap();
@@ -660,7 +658,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         };
         let result: Result<serde_json::Value, _> = resp.json().await;
@@ -679,7 +676,6 @@ mod local_tests {
             url: "http://example.com".parse().unwrap(),
             remote_addr: None,
             tls_info: None,
-            observer_ctx: None,
             fragment: None,
         };
         let result: Result<serde_json::Value, _> = resp.json().await;
@@ -692,107 +688,5 @@ mod local_tests {
         let dbg = format!("{resp:?}");
         assert!(dbg.contains("Response"));
         assert!(dbg.contains("200"));
-    }
-
-    #[tokio::test]
-    async fn bytes_local_fires_transfer_complete_observer() {
-        use crate::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
-        use std::sync::{Arc, Mutex};
-
-        struct RecordingObserver {
-            events: Arc<Mutex<Vec<RequestPhase>>>,
-        }
-        impl RequestObserver for RecordingObserver {
-            fn on_event(&self, event: &RequestEvent) {
-                self.events.lock().unwrap().push(event.phase.clone());
-            }
-            fn on_connection_event(&self, _event: &ConnectionEvent) {}
-        }
-
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let inner = http::Response::builder()
-            .body(local_body(b"observed"))
-            .unwrap();
-        let mut resp = Response {
-            inner,
-            url: "http://example.com".parse().unwrap(),
-            remote_addr: None,
-            tls_info: None,
-            observer_ctx: None,
-            fragment: None,
-        };
-        resp.set_observer_ctx(super::BodyObserverCtx {
-            observer: Arc::new(RecordingObserver {
-                events: events.clone(),
-            }),
-            method: http::Method::GET,
-            uri: "http://example.com/".parse().unwrap(),
-            response_started: crate::clock::Instant::now(),
-        });
-
-        let bytes = resp.bytes().await.unwrap();
-        assert_eq!(&bytes[..], b"observed");
-
-        let captured = events.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert!(matches!(captured[0], RequestPhase::TransferComplete { .. }));
-    }
-
-    #[tokio::test]
-    async fn bytes_local_fires_transfer_aborted_on_error() {
-        use crate::observer::{ConnectionEvent, RequestEvent, RequestObserver, RequestPhase};
-        use http_body::Body;
-        use std::pin::Pin;
-        use std::sync::{Arc, Mutex};
-        use std::task::{Context, Poll};
-
-        struct ErrorBody;
-        impl Body for ErrorBody {
-            type Data = bytes::Bytes;
-            type Error = Error;
-            fn poll_frame(
-                self: Pin<&mut Self>,
-                _cx: &mut Context<'_>,
-            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-                Poll::Ready(Some(Err(Error::Other("local error".into()))))
-            }
-        }
-
-        struct RecordingObserver {
-            events: Arc<Mutex<Vec<RequestPhase>>>,
-        }
-        impl RequestObserver for RecordingObserver {
-            fn on_event(&self, event: &RequestEvent) {
-                self.events.lock().unwrap().push(event.phase.clone());
-            }
-            fn on_connection_event(&self, _event: &ConnectionEvent) {}
-        }
-
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let error_body: crate::body::ResponseBodyLocal = Box::pin(ErrorBody);
-        let inner = http::Response::builder().body(error_body).unwrap();
-        let mut resp = Response {
-            inner,
-            url: "http://example.com".parse().unwrap(),
-            remote_addr: None,
-            tls_info: None,
-            observer_ctx: None,
-            fragment: None,
-        };
-        resp.set_observer_ctx(super::BodyObserverCtx {
-            observer: Arc::new(RecordingObserver {
-                events: events.clone(),
-            }),
-            method: http::Method::POST,
-            uri: "http://example.com/upload".parse().unwrap(),
-            response_started: crate::clock::Instant::now(),
-        });
-
-        let result = resp.bytes().await;
-        assert!(result.is_err());
-
-        let captured = events.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert!(matches!(captured[0], RequestPhase::TransferAborted { .. }));
     }
 }

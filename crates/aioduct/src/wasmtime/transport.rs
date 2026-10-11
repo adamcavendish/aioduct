@@ -343,7 +343,7 @@ async fn pump_local_response_body(
     mut body: crate::body::ResponseBodyLocal,
     mut sender: BodyFrameSender,
 ) {
-    while let Some(frame) = std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
+    while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
         let should_stop = frame.is_err();
         if sender.send(frame).await.is_err() || should_stop {
             break;

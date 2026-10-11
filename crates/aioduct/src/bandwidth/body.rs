@@ -146,7 +146,7 @@ mod tests {
     }
 
     fn local_body(chunk: Bytes) -> crate::body::ResponseBodyLocal {
-        Box::pin(OneChunkBody { data: Some(chunk) })
+        crate::body::ResponseBodyLocal::from_inner(Box::pin(OneChunkBody { data: Some(chunk) }))
     }
 
     #[test]

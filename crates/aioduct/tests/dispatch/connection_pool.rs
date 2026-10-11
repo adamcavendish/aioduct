@@ -501,7 +501,7 @@ async fn h2_pool_hit_observer_reports_hit() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .pool_idle_timeout(Duration::from_secs(60))
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .build()
         .unwrap();
 
@@ -527,12 +527,9 @@ async fn h2_pool_hit_observer_reports_hit() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "h2 observed");
 
-    let phases = obs.phases.lock().unwrap();
+    let phases = obs.events.lock().unwrap();
     // The second request should get PoolCheckoutComplete (hit)
-    let pool_checkout_count = phases
-        .iter()
-        .filter(|p| *p == "PoolCheckoutComplete")
-        .count();
+    let pool_checkout_count = phases.iter().filter(|p| p.contains("PoolLookup(")).count();
     assert!(
         pool_checkout_count >= 2,
         "expected at least 2 PoolCheckoutComplete events, got {pool_checkout_count}"

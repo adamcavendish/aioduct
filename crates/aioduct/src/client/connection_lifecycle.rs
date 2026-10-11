@@ -1,11 +1,8 @@
-use crate::clock::Instant;
-
 use http::Uri;
 
 use crate::error::Error;
-use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::pool::{HttpConnection, PoolKey, PooledConnection};
-use crate::response::{BodyObserverCtx, Response};
+use crate::response::Response;
 
 use super::replay::ReplayReason;
 
@@ -54,7 +51,40 @@ use super::HttpEngineCore;
 
 // ── Shared helpers (no runtime/connector bounds) ─────────────────────────────
 
+#[derive(Clone, Copy)]
+struct ObservationAttemptStarted;
+
 impl<B: 'static> HttpEngineCore<B> {
+    pub(crate) fn start_observed_attempt(
+        request: &mut http::Request<B>,
+        uri: &http::Uri,
+        local_observer: &impl crate::observer::AttemptStartObserver,
+    ) {
+        if request
+            .extensions()
+            .get::<ObservationAttemptStarted>()
+            .is_some()
+        {
+            return;
+        }
+        let Some(attempt) = request
+            .extensions()
+            .get::<crate::observer::RequestAttemptCounter>()
+            .map(crate::observer::RequestAttemptCounter::started)
+        else {
+            return;
+        };
+        request.extensions_mut().insert(ObservationAttemptStarted);
+        if let Some(observer) = request
+            .extensions()
+            .get::<crate::observer::SendAttemptObserver>()
+        {
+            observer.started(attempt, request.method(), uri);
+        }
+        if let Some(at) = local_observer.start_time() {
+            local_observer.started(attempt, request.method(), uri, at);
+        }
+    }
     pub(super) fn finalize_deferred_request_headers<ReqBody>(
         request: &mut http::Request<ReqBody>,
         connection: &PooledConnection<B>,
@@ -190,10 +220,8 @@ impl<B: 'static> HttpEngineCore<B> {
     ) {
         Self::populate_sans(&mut conn);
         if conn.is_multiplex_clone {
-            self.fire_connection_metrics(&conn, false);
             return;
         }
-        self.fire_connection_metrics(&conn, false);
         self.pool.checkin(key, conn);
     }
 
@@ -224,10 +252,8 @@ impl<B: 'static> HttpEngineCore<B> {
 
         Self::populate_sans(&mut conn);
         if conn.is_multiplex_clone {
-            self.fire_connection_metrics(&conn, false);
             return;
         }
-        self.fire_connection_metrics(&conn, false);
 
         if !conn.is_h1() || conn.is_ready() {
             self.pool.checkin(key, conn);
@@ -262,10 +288,8 @@ impl<B: 'static> HttpEngineCore<B> {
 
         Self::populate_sans(&mut conn);
         if conn.is_multiplex_clone {
-            self.fire_connection_metrics(&conn, false);
             return;
         }
-        self.fire_connection_metrics(&conn, false);
 
         if !conn.is_h1() || conn.is_ready() {
             self.pool.checkin(key, conn);
@@ -282,40 +306,18 @@ impl<B: 'static> HttpEngineCore<B> {
         }));
     }
 
-    pub(super) fn fire_connection_metrics(&self, conn: &PooledConnection<B>, closed: bool) {
-        if let Some(ref obs) = self.observer
-            && let Some(remote_addr) = conn.remote_addr
-        {
-            obs.on_connection_event(&observer::ConnectionEvent {
-                phase: observer::ConnectionPhase::Metrics {
-                    remote_addr,
-                    protocol: Self::connection_protocol(conn),
-                    bytes_sent: conn.bytes_sent(),
-                    bytes_received: conn.bytes_received(),
-                    connection_age: conn.created_at.elapsed(),
-                    requests_served: conn.requests_served(),
-                    closed,
-                },
-                at: observer::Instant::now(),
-            });
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_exact_pooled_recovery(
         &self,
         conn: &PooledConnection<B>,
         evict_key: &PoolKey,
-        method: &http::Method,
-        uri: &Uri,
-        error: &Error,
-        request_start: Instant,
-        pool_checkout_start: Instant,
+        _uri: &Uri,
+        _error: &Error,
     ) {
         #[cfg(feature = "tracing")]
         tracing::debug!(
-            host = uri.host().unwrap_or(""),
-            error = %error,
+            host = _uri.host().unwrap_or(""),
+            error = %_error,
             recovery = "exact_request",
             "connection.pool.rejected_before_serialization"
         );
@@ -323,56 +325,6 @@ impl<B: 'static> HttpEngineCore<B> {
             self.pool.evict(evict_key);
         }
         self.pool.record_stale_reuse_retry();
-        self.fire_connection_metrics(conn, true);
-        self.notify(
-            method,
-            uri,
-            RequestPhase::Failed {
-                error: error.to_string(),
-                retry: RetryKind::StaleConnection,
-                elapsed: request_start.elapsed(),
-            },
-        );
-        self.notify(
-            method,
-            uri,
-            RequestPhase::PoolCheckoutComplete {
-                outcome: observer::PoolOutcome::StaleRetry,
-                blocked_duration: pool_checkout_start.elapsed(),
-            },
-        );
-    }
-
-    #[inline]
-    pub(super) fn notify(&self, method: &http::Method, uri: &Uri, phase: RequestPhase) {
-        if let Some(ref obs) = self.observer {
-            obs.on_event(&RequestEvent {
-                method: method.clone(),
-                uri: uri.clone(),
-                phase,
-                at: observer::Instant::now(),
-            });
-        }
-    }
-
-    pub(super) fn attach_observer(&self, resp: &mut Response, method: &http::Method, uri: &Uri) {
-        if let Some(ref obs) = self.observer {
-            resp.set_observer_ctx(BodyObserverCtx {
-                observer: obs.clone(),
-                method: method.clone(),
-                uri: uri.clone(),
-                response_started: Instant::now(),
-            });
-        }
-    }
-
-    pub(super) fn connection_protocol(conn: &PooledConnection<B>) -> observer::NegotiatedProtocol {
-        match &conn.conn {
-            HttpConnection::H1(_) => observer::NegotiatedProtocol::Http1,
-            HttpConnection::H2(_) => observer::NegotiatedProtocol::Http2,
-            #[cfg(all(feature = "http3", feature = "rustls"))]
-            HttpConnection::H3(_) => observer::NegotiatedProtocol::Http3,
-        }
     }
 
     pub(super) fn is_stale_connection_error(err: &Error) -> bool {
@@ -450,10 +402,11 @@ impl<B: 'static> HttpEngineCore<B> {
         Self::is_stale_connection_error(err)
     }
 
-    pub(super) async fn send_on_connection(
+    pub(super) async fn send_on_connection<A: crate::observer::AttemptStartObserver>(
         conn: &mut PooledConnection<B>,
         mut request: http::Request<B>,
         url: Uri,
+        attempt_observer: A,
     ) -> Result<Response, Error>
     where
         B: http_body::Body<Data = bytes::Bytes, Error = crate::error::Error>,
@@ -484,7 +437,10 @@ impl<B: 'static> HttpEngineCore<B> {
             .unwrap_or(0);
         conn.record_request(body_size);
 
-        let result = match &mut conn.conn {
+        Self::start_observed_attempt(&mut request, &url, &attempt_observer);
+
+        let observed_handoff_request = crate::upgrade::HandoffRequest::capture(&request);
+        let mut result = match &mut conn.conn {
             HttpConnection::H1(sender) => {
                 let resp = sender.send_request(request).await?;
                 let resp = resp.map(crate::response::ResponseBodySend::from_incoming);
@@ -507,6 +463,18 @@ impl<B: 'static> HttpEngineCore<B> {
             )),
         };
 
+        if let (Ok(response), Some(request)) = (&mut result, observed_handoff_request)
+            && let Some(metadata) = crate::upgrade::HandoffMetadata::selected(
+                &request,
+                response.version(),
+                response.status(),
+                response.headers(),
+                || conn.metrics.association(),
+            )
+        {
+            response.extensions_mut().insert(metadata);
+        }
+
         if let Ok(ref resp) = result
             && let Some(len) = resp.content_length()
         {
@@ -521,10 +489,11 @@ impl<B: 'static> HttpEngineCore<B> {
         result
     }
 
-    pub(super) async fn try_send_on_pooled_connection(
+    pub(super) async fn try_send_on_pooled_connection<A: crate::observer::AttemptStartObserver>(
         conn: &mut PooledConnection<B>,
         mut request: http::Request<B>,
         url: Uri,
+        attempt_observer: A,
     ) -> Result<Response, PooledSendError<B>>
     where
         B: http_body::Body<Data = bytes::Bytes, Error = crate::error::Error>,
@@ -536,7 +505,7 @@ impl<B: 'static> HttpEngineCore<B> {
 
         #[cfg(all(feature = "http3", feature = "rustls"))]
         if matches!(&conn.conn, HttpConnection::H3(_)) {
-            return Self::send_on_connection(conn, request, url)
+            return Self::send_on_connection(conn, request, url, attempt_observer)
                 .await
                 .map_err(PooledSendError::Failed);
         }
@@ -549,6 +518,8 @@ impl<B: 'static> HttpEngineCore<B> {
             .or_else(|| http_body::Body::size_hint(request.body()).exact())
             .unwrap_or(0);
 
+        Self::start_observed_attempt(&mut request, &url, &attempt_observer);
+        let observed_handoff_request = crate::upgrade::HandoffRequest::capture(&request);
         let result = match &mut conn.conn {
             HttpConnection::H1(sender) => match sender.try_send_request(request).await {
                 Ok(response) => Ok(response),
@@ -597,7 +568,18 @@ impl<B: 'static> HttpEngineCore<B> {
         if !matches!(result, Err(PooledSendError::Recovered { .. })) {
             conn.record_request(body_size);
         }
-        let response = result.map(|response| {
+        let response = result.map(|mut response| {
+            if let Some(request) = observed_handoff_request
+                && let Some(metadata) = crate::upgrade::HandoffMetadata::selected(
+                    &request,
+                    response.version(),
+                    response.status(),
+                    response.headers(),
+                    || conn.metrics.association(),
+                )
+            {
+                response.extensions_mut().insert(metadata);
+            }
             let response = response.map(crate::response::ResponseBodySend::from_incoming);
             Response::new(response, url)
         });
@@ -622,7 +604,13 @@ impl HttpEngineCore<crate::body::RequestBodySend> {
         R: crate::runtime::RuntimePoll,
     {
         if !matches!(conn.conn, HttpConnection::H3(_)) {
-            return Self::send_on_connection(conn, request, url).await;
+            return Self::send_on_connection(
+                conn,
+                request,
+                url,
+                crate::observer::NoopAttemptStartObserver,
+            )
+            .await;
         }
         Self::finalize_deferred_request_headers(&mut request, conn)?;
         Self::prepare_request_target_for_connection(&mut request, conn, &url)?;
@@ -642,6 +630,12 @@ impl HttpEngineCore<crate::body::RequestBodySend> {
             .or_else(|| http_body::Body::size_hint(request.body()).exact())
             .unwrap_or(0);
         conn.record_request(body_size);
+
+        Self::start_observed_attempt(
+            &mut request,
+            &url,
+            &crate::observer::NoopAttemptStartObserver,
+        );
 
         let HttpConnection::H3(sender) = &mut conn.conn else {
             unreachable!("HTTP/3 connection changed during dispatch")
@@ -677,7 +671,13 @@ impl HttpEngineCore<crate::body::RequestBodySend> {
                 .await
                 .map_err(PooledSendError::Failed);
         }
-        Self::try_send_on_pooled_connection(conn, request, url).await
+        Self::try_send_on_pooled_connection(
+            conn,
+            request,
+            url,
+            crate::observer::NoopAttemptStartObserver,
+        )
+        .await
     }
 }
 
@@ -749,7 +749,28 @@ fn prepare_h2_or_h3_request_target<B>(
     full_uri: &Uri,
     version: http::Version,
 ) -> Result<(), Error> {
-    if request.method() == http::Method::CONNECT || request.uri().scheme().is_some() {
+    if request.method() == http::Method::CONNECT {
+        // Extended CONNECT retains :scheme and :path (RFC 8441 §4).
+        if request.extensions().get::<hyper::ext::Protocol>().is_some() {
+            return Ok(());
+        }
+        // HTTP/2 and HTTP/3 CONNECT use authority-form.  Leaving the
+        // user-facing absolute URI in place encodes forbidden :scheme/:path
+        // pseudo-headers, which peers reject with PROTOCOL_ERROR (RFC 9113
+        // §8.5). The origin URI remains available to the caller;
+        // only the wire request target is normalized here.
+        let authority = request
+            .uri()
+            .authority()
+            .or_else(|| full_uri.authority())
+            .ok_or_else(|| Error::InvalidUrl("CONNECT request is missing authority".to_owned()))?;
+        *request.uri_mut() = Uri::builder()
+            .authority(authority.as_str())
+            .build()
+            .map_err(|error| Error::InvalidUrl(format!("invalid CONNECT authority: {error}")))?;
+        return Ok(());
+    }
+    if request.uri().scheme().is_some() {
         return Ok(());
     }
     if request.uri().path() == "*" {

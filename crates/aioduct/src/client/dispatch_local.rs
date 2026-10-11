@@ -7,14 +7,11 @@ use super::connection_deadline::ConnectionDeadline;
 use super::connection_lifecycle::{H2ConnectGuard, PooledSendError};
 use super::replay::{ReplayReason, RequestReplayPolicy};
 use super::request_replay::{ReplayableRequestHead, replay_request_local};
-use super::{
-    BodyReplayability, FreshConnectionRequired, HttpEngineCore, HttpEngineLocal, extract_headers,
-};
+use super::{BodyReplayability, FreshConnectionRequired, HttpEngineCore, HttpEngineLocal};
 use crate::body::RequestBodyLocal;
-use crate::clock::Instant;
 use crate::error::Error;
 use crate::h2c_probe::H2cProbeAction;
-use crate::observer::{self, RequestPhase, RetryKind};
+use crate::observer;
 use crate::pool::PooledConnection;
 use crate::response::Response;
 use crate::runtime::{ConnectorLocal, RuntimeLocal, SocketConfig};
@@ -33,7 +30,25 @@ fn attach_local_upgrade_handle(
 
 // ── Local path (RuntimeLocal + ConnectorLocal) ────────────────────────────────────
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
+fn observe_request_source(
+    request: http::Request<RequestBodyLocal>,
+    observer: &Option<crate::observer::LocalAttemptObserver>,
+) -> http::Request<RequestBodyLocal> {
+    match observer
+        .as_ref()
+        .filter(|observer| observer.request_body_enabled())
+    {
+        Some(observer) => {
+            request.map(|body| crate::body::observe_request_body_local(body, observer.clone()))
+        }
+        None => request,
+    }
+}
+
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O> HttpEngineLocal<R, C, O>
+where
+    O: crate::observer::Observer + 'static,
+{
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute_single_local(
         &self,
@@ -47,19 +62,26 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         protocol_hint: crate::pool::ProtocolHint,
         sign_stale_retries: bool,
         body_replayability: BodyReplayability,
+        attempt_observer: Option<crate::observer::LocalAttemptObserver>,
     ) -> Result<Response, Error> {
-        let request_start = Instant::now();
-
+        HttpEngineCore::<RequestBodyLocal>::start_observed_attempt(
+            &mut request,
+            original_uri,
+            &attempt_observer,
+        );
+        request = observe_request_source(request, &attempt_observer);
         if let Some(ref limiter) = self.core.rate_limiter {
+            let admission = attempt_observer
+                .as_ref()
+                .and_then(|observer| observer.rate_limit());
             while !limiter.try_acquire() {
                 let wait = limiter.wait_duration();
                 R::sleep(wait).await;
             }
+            if let Some(admission) = admission {
+                admission.admitted();
+            }
         }
-
-        self.core
-            .notify(request.method(), original_uri, RequestPhase::Started);
-        let pool_checkout_start = Instant::now();
 
         let proxy_dispatch_route = crate::proxy::ProxyDispatchRoute::resolve(
             original_uri,
@@ -151,7 +173,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             && replay_policy.permits(ReplayReason::ProvenUnprocessed);
         let can_use_pooled_connection =
             !self.core.no_connection_reuse && !fresh_connection_required;
+        if !can_use_pooled_connection && let Some(observer) = attempt_observer.as_ref() {
+            observer.acquisition_skipped(
+                observer::ConnectionAcquisitionPhase::PoolLookup,
+                observer::PhaseSkipReason::BypassedByConfiguration,
+            );
+        }
         let mut checked_out_pool_key = pool_key.clone();
+        if can_use_pooled_connection
+            && let Some(observer) = attempt_observer.as_ref()
+            && observer.acquisition_enabled()
+        {
+            observer.acquisition_started(observer::ConnectionAcquisitionPhase::PoolLookup);
+        }
         let pooled_connection = can_use_pooled_connection.then(|| {
             self.core.pool.checkout(&pool_key).or_else(|| {
                 adaptive_h1_pool_key.as_ref().and_then(|key| {
@@ -163,20 +197,23 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 })
             })
         });
+        if can_use_pooled_connection
+            && let Some(observer) = attempt_observer.as_ref()
+            && observer.acquisition_enabled()
+        {
+            observer.acquisition_completed(observer::ConnectionAcquisitionPhase::PoolLookup);
+            observer.pool_lookup(if pooled_connection.as_ref().is_some_and(Option::is_some) {
+                observer::PoolLookupResult::Hit
+            } else {
+                observer::PoolLookupResult::Miss
+            });
+        }
         if let Some(mut conn) = pooled_connection.flatten()
             && body_replayability
                 .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
         {
             pool_key = checked_out_pool_key;
             self.core.pool.record_checkout_hit();
-            self.core.notify(
-                request.method(),
-                original_uri,
-                RequestPhase::PoolCheckoutComplete {
-                    outcome: observer::PoolOutcome::Hit,
-                    blocked_duration: pool_checkout_start.elapsed(),
-                },
-            );
 
             let saved_request = if can_stale_retry {
                 Some(ReplayableRequestHead::capture(&request))
@@ -185,46 +222,31 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             };
 
             let req_method = request.method().clone();
-            let transfer_start = Instant::now();
-            self.core.notify(
-                &req_method,
-                original_uri,
-                RequestPhase::RequestSent {
-                    duration: transfer_start.duration_since(pool_checkout_start),
-                    headers: extract_headers(request.headers()),
-                },
-            );
+            if let Some(observer) = attempt_observer.as_ref()
+                && observer.acquisition_enabled()
+            {
+                observer.acquisition_acquired(
+                    if conn.is_h2_or_h3() {
+                        observer::ConnectionAcquisitionResource::Stream
+                    } else {
+                        observer::ConnectionAcquisitionResource::Connection
+                    },
+                    conn.metrics.association(),
+                    conn.version(),
+                );
+            }
             match Self::try_send_on_pooled_connection_with_first_byte_timeout(
                 &mut conn,
                 request,
                 original_uri.clone(),
                 first_byte_timeout,
+                attempt_observer.clone(),
             )
             .await
             {
                 Ok(mut resp) => {
-                    let transfer = transfer_start.elapsed();
-                    self.core.notify(
-                        &req_method,
-                        original_uri,
-                        RequestPhase::ResponseStarted {
-                            waiting_duration: transfer,
-                        },
-                    );
-                    let protocol = HttpEngineCore::connection_protocol(&conn);
-                    self.core.notify(
-                        &req_method,
-                        original_uri,
-                        RequestPhase::ResponseComplete {
-                            status: resp.status(),
-                            protocol,
-                            total_duration: request_start.elapsed(),
-                        },
-                    );
                     resp.set_remote_addr(conn.remote_addr);
                     resp.set_tls_info(conn.tls_info.clone());
-                    self.core
-                        .attach_observer(&mut resp, &req_method, original_uri);
                     attach_local_upgrade_handle(&mut resp, &req_method, &mut conn);
                     HttpEngineCore::<RequestBodyLocal>::retain_connect_stream_permit(
                         &mut resp,
@@ -246,15 +268,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     error,
                     request: recovered,
                 }) if replay_policy.permits(ReplayReason::ExactRequestRecovered) => {
-                    self.core.record_exact_pooled_recovery(
-                        &conn,
-                        &pool_key,
-                        &req_method,
-                        original_uri,
-                        &error,
-                        request_start,
-                        pool_checkout_start,
-                    );
+                    self.core
+                        .record_exact_pooled_recovery(&conn, &pool_key, original_uri, &error);
                     request = *recovered;
                 }
                 Err(PooledSendError::Failed(e))
@@ -272,29 +287,20 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         self.core.pool.evict(&pool_key);
                     }
                     self.core.pool.record_stale_reuse_retry();
-                    self.core.fire_connection_metrics(&conn, true);
-                    self.core.notify(
-                        &req_method,
-                        original_uri,
-                        RequestPhase::Failed {
-                            error: e.to_string(),
-                            retry: RetryKind::StaleConnection,
-                            elapsed: request_start.elapsed(),
-                        },
-                    );
-                    self.core.notify(
-                        &req_method,
-                        original_uri,
-                        RequestPhase::PoolCheckoutComplete {
-                            outcome: observer::PoolOutcome::StaleRetry,
-                            blocked_duration: pool_checkout_start.elapsed(),
-                        },
-                    );
+                    if let Some(observer) = attempt_observer.as_ref() {
+                        observer.stale_retry(&e);
+                    }
                     // saved_request is guaranteed Some by the match arm guard.
                     let Some(saved_request) = saved_request else {
                         return Err(e);
                     };
                     request = replay_request_local(saved_request, &replay_body);
+                    HttpEngineCore::<RequestBodyLocal>::start_observed_attempt(
+                        &mut request,
+                        original_uri,
+                        &attempt_observer,
+                    );
+                    request = observe_request_source(request, &attempt_observer);
                     if sign_stale_retries
                         && let Some(signature) = self
                             .core
@@ -312,28 +318,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     {
                         self.core.pool.evict(&pool_key);
                     }
-                    self.core.notify(
-                        &req_method,
-                        original_uri,
-                        RequestPhase::Failed {
-                            error: e.to_string(),
-                            retry: RetryKind::None,
-                            elapsed: request_start.elapsed(),
-                        },
-                    );
                     return Err(e);
                 }
             }
         }
-
-        self.core.notify(
-            request.method(),
-            original_uri,
-            RequestPhase::PoolCheckoutComplete {
-                outcome: observer::PoolOutcome::Miss,
-                blocked_duration: pool_checkout_start.elapsed(),
-            },
-        );
 
         let mut connection_deadline = ConnectionDeadline::new(connect_timeout);
         let mut owns_h2_mark = false;
@@ -342,6 +330,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             owns_h2_mark = !already_marked;
             already_marked
         } {
+            let pool_wait_observed = attempt_observer
+                .as_ref()
+                .is_some_and(|observer| observer.acquisition_enabled());
+            if pool_wait_observed && let Some(observer) = attempt_observer.as_ref() {
+                observer.acquisition_started(observer::ConnectionAcquisitionPhase::PoolWait);
+            }
             let poll_interval = std::time::Duration::from_millis(5);
             let max_polls = if connect_timeout.is_some() {
                 usize::MAX
@@ -349,66 +343,59 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 200
             };
             for _ in 0..max_polls {
-                connection_deadline.sleep::<R>(poll_interval).await?;
+                if let Err(error) = connection_deadline.sleep::<R>(poll_interval).await {
+                    if let Some(observer) = attempt_observer.as_ref()
+                        && pool_wait_observed
+                    {
+                        observer.acquisition_failed(
+                            observer::ConnectionAcquisitionPhase::PoolWait,
+                            &error,
+                        );
+                    }
+                    return Err(error);
+                }
                 if let Some(mut conn) = self.core.pool.checkout(&pool_key)
                     && body_replayability
                         .can_start_on_pooled_connection(conn.supports_unsent_request_recovery())
                 {
+                    if let Some(observer) = attempt_observer.as_ref()
+                        && pool_wait_observed
+                    {
+                        observer
+                            .acquisition_completed(observer::ConnectionAcquisitionPhase::PoolWait);
+                    }
                     self.core.pool.record_checkout_hit();
-                    self.core.notify(
-                        request.method(),
-                        original_uri,
-                        RequestPhase::PoolCheckoutComplete {
-                            outcome: observer::PoolOutcome::Hit,
-                            blocked_duration: pool_checkout_start.elapsed(),
-                        },
-                    );
                     let saved_request = if can_stale_retry {
                         Some(ReplayableRequestHead::capture(&request))
                     } else {
                         None
                     };
                     let req_method = request.method().clone();
-                    let transfer_start = Instant::now();
-                    self.core.notify(
-                        &req_method,
-                        original_uri,
-                        RequestPhase::RequestSent {
-                            duration: transfer_start.duration_since(pool_checkout_start),
-                            headers: extract_headers(request.headers()),
-                        },
-                    );
+                    if let Some(observer) = attempt_observer.as_ref()
+                        && observer.acquisition_enabled()
+                    {
+                        observer.acquisition_acquired(
+                            if conn.is_h2_or_h3() {
+                                observer::ConnectionAcquisitionResource::Stream
+                            } else {
+                                observer::ConnectionAcquisitionResource::Connection
+                            },
+                            conn.metrics.association(),
+                            conn.version(),
+                        );
+                    }
                     match Self::try_send_on_pooled_connection_with_first_byte_timeout(
                         &mut conn,
                         request,
                         original_uri.clone(),
                         first_byte_timeout,
+                        attempt_observer.clone(),
                     )
                     .await
                     {
                         Ok(mut resp) => {
-                            let transfer = transfer_start.elapsed();
-                            self.core.notify(
-                                &req_method,
-                                original_uri,
-                                RequestPhase::ResponseStarted {
-                                    waiting_duration: transfer,
-                                },
-                            );
-                            let protocol = HttpEngineCore::connection_protocol(&conn);
-                            self.core.notify(
-                                &req_method,
-                                original_uri,
-                                RequestPhase::ResponseComplete {
-                                    status: resp.status(),
-                                    protocol,
-                                    total_duration: request_start.elapsed(),
-                                },
-                            );
                             resp.set_remote_addr(conn.remote_addr);
                             resp.set_tls_info(conn.tls_info.clone());
-                            self.core
-                                .attach_observer(&mut resp, &req_method, original_uri);
                             attach_local_upgrade_handle(&mut resp, &req_method, &mut conn);
                             HttpEngineCore::<RequestBodyLocal>::retain_connect_stream_permit(
                                 &mut resp,
@@ -435,11 +422,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             self.core.record_exact_pooled_recovery(
                                 &conn,
                                 &pool_key,
-                                &req_method,
                                 original_uri,
                                 &error,
-                                request_start,
-                                pool_checkout_start,
                             );
                             request = *recovered;
                             connection_deadline = ConnectionDeadline::new(connect_timeout);
@@ -462,28 +446,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                 self.core.pool.evict(&pool_key);
                             }
                             self.core.pool.record_stale_reuse_retry();
-                            self.core.fire_connection_metrics(&conn, true);
-                            self.core.notify(
-                                &req_method,
-                                original_uri,
-                                RequestPhase::Failed {
-                                    error: e.to_string(),
-                                    retry: RetryKind::StaleConnection,
-                                    elapsed: request_start.elapsed(),
-                                },
-                            );
-                            self.core.notify(
-                                &req_method,
-                                original_uri,
-                                RequestPhase::PoolCheckoutComplete {
-                                    outcome: observer::PoolOutcome::StaleRetry,
-                                    blocked_duration: pool_checkout_start.elapsed(),
-                                },
-                            );
+                            if let Some(observer) = attempt_observer.as_ref() {
+                                observer.stale_retry(&e);
+                            }
                             let Some(saved_request) = saved_request else {
                                 return Err(e);
                             };
                             request = replay_request_local(saved_request, &replay_body);
+                            HttpEngineCore::<RequestBodyLocal>::start_observed_attempt(
+                                &mut request,
+                                original_uri,
+                                &attempt_observer,
+                            );
+                            request = observe_request_source(request, &attempt_observer);
                             if sign_stale_retries
                                 && let Some(signature) = self
                                     .core
@@ -505,19 +480,15 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             {
                                 self.core.pool.evict(&pool_key);
                             }
-                            self.core.notify(
-                                &req_method,
-                                original_uri,
-                                RequestPhase::Failed {
-                                    error: e.to_string(),
-                                    retry: RetryKind::None,
-                                    elapsed: request_start.elapsed(),
-                                },
-                            );
                             return Err(e);
                         }
                     }
                 }
+            }
+            if let Some(observer) = attempt_observer.as_ref()
+                && pool_wait_observed
+            {
+                observer.acquisition_cancelled(observer::ConnectionAcquisitionPhase::PoolWait);
             }
             // Timed out waiting — connect ourselves.
             // Just ensure the mark is set; don't unmark first (avoids TOCTOU race).
@@ -539,7 +510,6 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
         self.core.pool.record_checkout_miss();
 
-        let request_method = request.method().clone();
         let (mut pooled, pending_h1_probe) = if let Some(plan) = proxy_establishment_plan.as_ref() {
             let connect_fut = async {
                 if effective_hint == crate::pool::ProtocolHint::AdaptiveH2c {
@@ -552,66 +522,139 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     self.connect_via_proxy_plan_adaptive_h2c_local(
                         plan,
                         fallback_plan,
-                        &request_method,
-                        original_uri,
                         force_addr,
                         probe_key,
+                        attempt_observer.as_ref(),
+                        connection_deadline,
                     )
                     .await
                 } else {
                     self.connect_via_proxy_plan_local(
                         plan,
-                        &request_method,
-                        original_uri,
                         force_addr,
                         super::h2_peer_settings::H2PeerSettingsRequirement::NotRequired,
+                        attempt_observer.as_ref(),
+                        connection_deadline,
                     )
                     .await
                     .map(|connection| (connection, None))
                 }
             };
-            connection_deadline.run::<R, _, _>(connect_fut).await?
+            connect_fut.await?
         } else {
             let host = authority.host();
             let port = destination.effective_port();
 
-            let dns_start = Instant::now();
+            let mut connection_observation = self.begin_connection_observation();
+            let establishment = connection_observation
+                .as_ref()
+                .and_then(|owner| owner.establishment_scope());
             let addrs = if let Some(addr) = force_addr {
+                if let Some(observer) = attempt_observer.as_ref() {
+                    observer.acquisition_skipped(
+                        observer::ConnectionAcquisitionPhase::Dns,
+                        observer::PhaseSkipReason::BypassedByConfiguration,
+                    );
+                }
                 vec![addr]
             } else {
-                connection_deadline
+                if let Some(observation) = connection_observation.as_ref()
+                    && observation
+                        .interest()
+                        .contains(observer::Interest::CONNECTION_ESTABLISHMENT)
+                {
+                    observation.emit(&observer::ConnectionObservationEvent::PhaseStarted {
+                        phase: observer::ConnectionEstablishmentPhase::Dns,
+                        at: observer::Instant::now(),
+                    });
+                }
+                let mut dns_acquisition = attempt_observer.as_ref().and_then(|observer| {
+                    observer.acquisition_scope(observer::ConnectionAcquisitionPhase::Dns)
+                });
+                let resolved = connection_deadline
                     .run::<R, _, _>(self.core.resolve_all_authority_raw(host, port))
-                    .await?
+                    .await;
+                if let Some(acquisition) = &mut dns_acquisition {
+                    acquisition.result(&resolved);
+                }
+                let addrs = match resolved {
+                    Ok(addrs) => addrs,
+                    Err(error) => {
+                        if let Some(observation) = connection_observation.as_ref() {
+                            observation.establishment_failed(&error);
+                        }
+                        return Err(error);
+                    }
+                };
+                if let Some(observation) = connection_observation.as_ref()
+                    && observation
+                        .interest()
+                        .contains(observer::Interest::CONNECTION_ESTABLISHMENT)
+                {
+                    observation.emit(&observer::ConnectionObservationEvent::PhaseCompleted {
+                        phase: observer::ConnectionEstablishmentPhase::Dns,
+                        at: observer::Instant::now(),
+                    });
+                }
+                addrs
             };
-            self.core.notify(
-                request.method(),
-                original_uri,
-                RequestPhase::DnsResolved {
-                    addrs: addrs.clone(),
-                    duration: dns_start.elapsed(),
-                },
-            );
 
-            let tcp_start = Instant::now();
+            let mut tcp_acquisition = attempt_observer.as_ref().and_then(|observer| {
+                observer.acquisition_scope(observer::ConnectionAcquisitionPhase::TcpConnect)
+            });
+            let mut tls_acquisition =
+                crate::observer::AcquisitionPhases::new(attempt_observer.as_ref());
+            let mut fallback_establishment = None;
             let connect_fut = async {
+                if let Some(observation) = connection_observation.as_ref()
+                    && observation
+                        .interest()
+                        .contains(observer::Interest::CONNECTION_ESTABLISHMENT)
+                {
+                    observation.emit(&observer::ConnectionObservationEvent::PhaseStarted {
+                        phase: observer::ConnectionEstablishmentPhase::TcpConnect,
+                        at: observer::Instant::now(),
+                    });
+                }
                 let local_address = self.core.local_address;
                 let (tcp_stream, addr) = if addrs.len() > 1 {
                     #[cfg(feature = "tower")]
                     let _ = original_uri;
-                    crate::happy_eyeballs::connect_happy_eyeballs_local::<R, C>(
-                        &self.connector,
-                        &addrs,
-                        local_address,
-                    )
-                    .await
-                    .map_err(Error::Io)?
+                    if let Some(observation) = connection_observation.as_ref()
+                        && observation
+                            .interest()
+                            .contains(observer::Interest::CONNECTION_ESTABLISHMENT)
+                    {
+                        crate::happy_eyeballs::connect_happy_eyeballs_local_observed::<R, C, _>(
+                            &self.connector,
+                            &addrs,
+                            local_address,
+                            observation,
+                        )
+                        .await?
+                    } else {
+                        crate::happy_eyeballs::connect_happy_eyeballs_local::<R, C>(
+                            &self.connector,
+                            &addrs,
+                            local_address,
+                        )
+                        .await
+                        .map_err(Error::Io)?
+                    }
                 } else {
                     let addr = addrs[0];
+                    let mut candidate = connection_observation.as_ref().and_then(|observation| {
+                        observation.connect_attempt_scope(observer::ConnectAttempt {
+                            sequence: 0,
+                            kind: observer::TransportKind::Tcp,
+                            remote_addr: addr,
+                        })
+                    });
                     let stream = if let Some(local_addr) = local_address {
                         self.connector
                             .connect_bound(addr, local_addr)
                             .await
-                            .map_err(|e| Error::Io(e).with_remote_addr(addr))?
+                            .map_err(|e| Error::Io(e).with_remote_addr(addr))
                     } else {
                         #[cfg(feature = "tower")]
                         if let Some(ref tower_slot) = self.tower_connector_local {
@@ -623,21 +666,47 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             tower_conn
                                 .connect(info)
                                 .await
-                                .map_err(|e| Error::Io(e).with_remote_addr(addr))?
+                                .map_err(|e| Error::Io(e).with_remote_addr(addr))
                         } else {
                             self.connector
                                 .connect(addr)
                                 .await
-                                .map_err(|e| Error::Io(e).with_remote_addr(addr))?
+                                .map_err(|e| Error::Io(e).with_remote_addr(addr))
                         }
                         #[cfg(not(feature = "tower"))]
                         self.connector
                             .connect(addr)
                             .await
-                            .map_err(|e| Error::Io(e).with_remote_addr(addr))?
+                            .map_err(|e| Error::Io(e).with_remote_addr(addr))
                     };
+                    match &stream {
+                        Ok(_) => {
+                            if let Some(candidate) = &mut candidate {
+                                candidate.succeeded();
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(candidate) = &mut candidate {
+                                candidate.failed(error);
+                            }
+                        }
+                    }
+                    let stream = stream?;
                     (stream, addr)
                 };
+                if let Some(observation) = connection_observation.as_ref()
+                    && observation
+                        .interest()
+                        .contains(observer::Interest::CONNECTION_ESTABLISHMENT)
+                {
+                    observation.emit(&observer::ConnectionObservationEvent::PhaseCompleted {
+                        phase: observer::ConnectionEstablishmentPhase::TcpConnect,
+                        at: observer::Instant::now(),
+                    });
+                }
+                if let Some(acquisition) = &mut tcp_acquisition {
+                    acquisition.complete();
+                }
 
                 if let Some(time) = self.core.tcp_keepalive {
                     tcp_stream
@@ -654,9 +723,16 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
 
                 let mut pending_h1_probe = None;
                 let mut conn = if is_https {
-                    self.connect_tls_local_with_hint(tcp_stream, authority.host(), effective_hint)
-                        .await
-                        .map_err(|e| e.with_remote_addr(addr))?
+                    tls_acquisition.start(observer::ConnectionAcquisitionPhase::TlsHandshake);
+                    self.connect_tls_local_with_hint_observed_with_owner(
+                        tcp_stream,
+                        authority.host(),
+                        effective_hint,
+                        connection_observation.take(),
+                        |_, _| tls_acquisition.complete(),
+                    )
+                    .await
+                    .map_err(|e| e.with_remote_addr(addr))?
                 } else if force_h2c && effective_hint == crate::pool::ProtocolHint::AdaptiveH2c {
                     let probe_key = h2c_probe_key.as_ref().ok_or_else(|| {
                         Error::Other("adaptive h2c probe is missing its route identity".into())
@@ -667,25 +743,31 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         .begin_endpoint_probe(probe_key.endpoint(addr))
                     {
                         H2cProbeAction::UseH1 => self
-                            .connect_h1_local(tcp_stream)
+                            .connect_h1_local_with_observation(
+                                tcp_stream,
+                                connection_observation.take(),
+                            )
                             .await
                             .map_err(|e| e.with_remote_addr(addr))?,
                         H2cProbeAction::Probe(token) => {
-                            let h2c = match self
-                                .connect_h2_prior_knowledge_local_confirmed(tcp_stream)
+                            let h2c = self
+                                .connect_h2_prior_knowledge_local_confirmed_with_observation(
+                                    tcp_stream,
+                                    connection_observation.take(),
+                                )
                                 .await
-                            {
-                                Ok((connection, confirmation)) => confirmation
-                                    .confirmed_within::<R>()
-                                    .await
-                                    .then_some(connection),
-                                Err(_) => None,
-                            };
+                                .ok();
                             if let Some(connection) = h2c {
                                 self.core.h2c_probe_cache.confirm_h2c_endpoint(*token);
                                 connection
                             } else {
                                 self.core.h2c_probe_cache.reject_h2c_endpoint(&token);
+                                let mut fallback_observation = self.begin_connection_observation();
+                                fallback_establishment = fallback_observation
+                                    .as_ref()
+                                    .and_then(|owner| owner.establishment_scope());
+                                tls_acquisition
+                                    .start(observer::ConnectionAcquisitionPhase::TcpConnect);
                                 let stream2 = if let Some(local_addr) = local_address {
                                     self.connector
                                         .connect_bound(addr, local_addr)
@@ -718,6 +800,7 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                         .map_err(|e| Error::Io(e).with_remote_addr(addr))?;
                                     stream
                                 };
+                                tls_acquisition.complete();
                                 if let Some(time) = self.core.tcp_keepalive {
                                     stream2
                                         .set_keepalive(
@@ -731,7 +814,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                                     let _ = stream2.set_fast_open();
                                 }
                                 let mut c = self
-                                    .connect_h1_local(stream2)
+                                    .connect_h1_local_with_observation(
+                                        stream2,
+                                        fallback_observation.take(),
+                                    )
                                     .await
                                     .map_err(|e| e.with_remote_addr(addr))?;
                                 c.remote_addr = Some(addr);
@@ -741,77 +827,32 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         }
                     }
                 } else {
-                    self.connect_plaintext_local_with_hint(tcp_stream, force_h2c)
-                        .await
-                        .map_err(|e| e.with_remote_addr(addr))?
+                    self.connect_plaintext_local_with_hint_observed(
+                        tcp_stream,
+                        force_h2c,
+                        connection_observation.take(),
+                    )
+                    .await
+                    .map_err(|e| e.with_remote_addr(addr))?
                 };
                 if conn.remote_addr.is_none() {
                     conn.remote_addr = Some(addr);
                 }
-                Ok::<_, Error>((conn, Instant::now(), pending_h1_probe))
+                Ok::<_, Error>((conn, pending_h1_probe))
             };
 
-            let (conn, connect_done, pending_h1_probe) =
-                connection_deadline.run::<R, _, _>(connect_fut).await?;
-            let tcp_tls_elapsed = connect_done.duration_since(tcp_start);
-            if is_https {
-                if let Some(tls_dur) = conn.tls_handshake_duration {
-                    let tcp_dur = tcp_tls_elapsed.saturating_sub(tls_dur);
-                    if let Some(addr) = conn.remote_addr {
-                        self.core.notify(
-                            request.method(),
-                            original_uri,
-                            RequestPhase::TcpConnected {
-                                remote_addr: addr,
-                                duration: tcp_dur,
-                                protocol: HttpEngineCore::connection_protocol(&conn),
-                            },
-                        );
-                    }
-                    self.core.notify(
-                        request.method(),
-                        original_uri,
-                        RequestPhase::TlsHandshakeComplete {
-                            duration: tls_dur,
-                            alpn_protocol: match &conn.conn {
-                                crate::pool::HttpConnection::H2(_) => Some("h2".into()),
-                                crate::pool::HttpConnection::H1(_) => Some("http/1.1".into()),
-                                #[cfg(all(feature = "http3", feature = "rustls"))]
-                                crate::pool::HttpConnection::H3(_) => Some("h3".into()),
-                            },
-                            peer_certificate_der: conn
-                                .tls_info
-                                .as_ref()
-                                .and_then(|t| t.peer_certificate())
-                                .map(|c| c.to_vec()),
-                        },
-                    );
-                } else {
-                    if let Some(addr) = conn.remote_addr {
-                        self.core.notify(
-                            request.method(),
-                            original_uri,
-                            RequestPhase::TcpConnected {
-                                remote_addr: addr,
-                                duration: tcp_tls_elapsed,
-                                protocol: HttpEngineCore::connection_protocol(&conn),
-                            },
-                        );
-                    }
-                }
-            } else {
-                if let Some(addr) = conn.remote_addr {
-                    self.core.notify(
-                        request.method(),
-                        original_uri,
-                        RequestPhase::TcpConnected {
-                            remote_addr: addr,
-                            duration: tcp_tls_elapsed,
-                            protocol: HttpEngineCore::connection_protocol(&conn),
-                        },
-                    );
-                }
+            let result = connection_deadline.run::<R, _, _>(connect_fut).await;
+            tls_acquisition.finish(result.as_ref().err());
+            if let Some(establishment) = &fallback_establishment {
+                establishment.result(&result);
             }
+            if let Some(acquisition) = &mut tcp_acquisition {
+                acquisition.result(&result);
+            }
+            if let Some(establishment) = &establishment {
+                establishment.result(&result);
+            }
+            let (conn, pending_h1_probe) = result?;
             (conn, pending_h1_probe)
         };
 
@@ -872,47 +913,32 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         }
 
         let req_method = request.method().clone();
-        let transfer_start = Instant::now();
-        self.core.notify(
-            &req_method,
-            original_uri,
-            RequestPhase::RequestSent {
-                duration: transfer_start.duration_since(pool_checkout_start),
-                headers: extract_headers(request.headers()),
-            },
-        );
+        if let Some(observer) = attempt_observer.as_ref()
+            && observer.acquisition_enabled()
+        {
+            observer.acquisition_acquired(
+                if pooled.is_h2_or_h3() {
+                    observer::ConnectionAcquisitionResource::Stream
+                } else {
+                    observer::ConnectionAcquisitionResource::Connection
+                },
+                pooled.metrics.association(),
+                pooled.version(),
+            );
+        }
         let mut resp = Self::send_on_connection_with_first_byte_timeout(
             &mut pooled,
             request,
             original_uri.clone(),
             first_byte_timeout,
+            attempt_observer.clone(),
         )
         .await?;
         if let Some(token) = pending_h1_probe {
             self.core.h2c_probe_cache.confirm_h1_endpoint(token);
         }
-        let transfer = transfer_start.elapsed();
-        self.core.notify(
-            &req_method,
-            original_uri,
-            RequestPhase::ResponseStarted {
-                waiting_duration: transfer,
-            },
-        );
-        let resp_protocol = HttpEngineCore::connection_protocol(&pooled);
-        self.core.notify(
-            &req_method,
-            original_uri,
-            RequestPhase::ResponseComplete {
-                status: resp.status(),
-                protocol: resp_protocol,
-                total_duration: request_start.elapsed(),
-            },
-        );
         resp.set_remote_addr(pooled.remote_addr);
         resp.set_tls_info(pooled.tls_info.clone());
-        self.core
-            .attach_observer(&mut resp, &req_method, original_uri);
         attach_local_upgrade_handle(&mut resp, &req_method, &mut pooled);
         HttpEngineCore::<RequestBodyLocal>::retain_connect_stream_permit(
             &mut resp,
@@ -938,11 +964,12 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         request: http::Request<RequestBodyLocal>,
         original_uri: Uri,
         first_byte_timeout: Option<Duration>,
+        attempt_observer: Option<crate::observer::LocalAttemptObserver>,
     ) -> Result<Response, Error> {
         let (parts, body) = request.into_parts();
         let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
         let request = http::Request::from_parts(parts, Box::pin(body) as RequestBodyLocal);
-        let fut = HttpEngineCore::send_on_connection(conn, request, original_uri);
+        let fut = HttpEngineCore::send_on_connection(conn, request, original_uri, attempt_observer);
         match first_byte_timeout {
             Some(duration) => {
                 match crate::timeout::FirstByteTimeout::<_, R>::new(
@@ -965,11 +992,17 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         request: http::Request<RequestBodyLocal>,
         original_uri: Uri,
         first_byte_timeout: Option<Duration>,
+        attempt_observer: Option<crate::observer::LocalAttemptObserver>,
     ) -> Result<Response, PooledSendError<RequestBodyLocal>> {
         let (parts, body) = request.into_parts();
         let (body, request_body_complete) = crate::timeout::mark_body_completion(body);
         let request = http::Request::from_parts(parts, Box::pin(body) as RequestBodyLocal);
-        let future = HttpEngineCore::try_send_on_pooled_connection(conn, request, original_uri);
+        let future = HttpEngineCore::try_send_on_pooled_connection(
+            conn,
+            request,
+            original_uri,
+            attempt_observer,
+        );
         match first_byte_timeout {
             Some(duration) => {
                 match crate::timeout::FirstByteTimeout::<_, R>::new(

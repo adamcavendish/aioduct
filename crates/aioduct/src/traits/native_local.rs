@@ -15,12 +15,34 @@ use crate::runtime::{ConnectorLocal, RuntimeLocal};
 /// Returned by [`HttpClient::request()`] on [`HttpEngineLocal`]. Internally wraps
 /// a standard [`RequestBuilderLocal`](crate::request::RequestBuilderLocal) with an
 /// owned client reference.
-pub struct OwnedRequestBuilderLocal<R: RuntimeLocal, C: ConnectorLocal + Clone> {
-    inner: crate::request::RequestBuilderLocal<'static, R, C>,
+pub struct OwnedRequestBuilderLocal<
+    R: RuntimeLocal,
+    C: ConnectorLocal + Clone,
+    O: crate::observer::Observer = crate::observer::NoopObserver,
+> {
+    inner: crate::request::RequestBuilderLocal<'static, R, C, O>,
 }
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpClient for HttpEngineLocal<R, C> {
-    type RequestBuilder = OwnedRequestBuilderLocal<R, C>;
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O: crate::observer::Observer>
+    OwnedRequestBuilderLocal<R, C, O>
+{
+    /// Skip observation for this logical request, before `Observer::begin`.
+    pub fn disable_observation(mut self) -> Self {
+        self.inner = self.inner.disable_observation();
+        self
+    }
+
+    /// Supply request-scoped context to the configured observer.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.inner = self.inner.observation_context(context);
+        self
+    }
+}
+
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O: crate::observer::Observer> HttpClient
+    for HttpEngineLocal<R, C, O>
+{
+    type RequestBuilder = OwnedRequestBuilderLocal<R, C, O>;
 
     fn request(&self, method: Method, uri: &str) -> Result<Self::RequestBuilder, Error> {
         let (uri, fragment) =
@@ -36,8 +58,8 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpClient for HttpEngineLocal<
     }
 }
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderExt
-    for OwnedRequestBuilderLocal<R, C>
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O: crate::observer::Observer> RequestBuilderExt
+    for OwnedRequestBuilderLocal<R, C, O>
 {
     type Response = Response<ResponseBodyLocal>;
 
@@ -137,7 +159,9 @@ impl ResponseExt for Response<ResponseBodyLocal> {
 }
 
 impl ByteStreamExt for BodyStreamLocal {
-    async fn next(&mut self) -> Option<Result<Bytes, Error>> {
-        self.next().await
+    type Next<'a> = crate::body::BodyNextLocal<'a>;
+
+    fn next(&mut self) -> Self::Next<'_> {
+        BodyStreamLocal::next(self)
     }
 }

@@ -198,8 +198,15 @@ pub use message_signatures::{
 pub use multipart::{Multipart, Part};
 pub use netrc::Netrc;
 pub use observer::{
-    ConnectionEvent, ConnectionPhase, NegotiatedProtocol, PoolOutcome, RequestEvent,
-    RequestObserver, RequestPhase, RetryKind, TransferDirection,
+    AttemptEvent, BackoffState, ChannelDetachReason, ChannelHandoffInfo, ChannelHandoffMode,
+    ChannelIoEvent, ChannelIoOperation, CleanupState, ConnectAttempt, ConnectionAcquisitionEvent,
+    ConnectionAcquisitionPhase, ConnectionAcquisitionResource, ConnectionAssociation,
+    ConnectionEstablishmentPhase, ConnectionObservation, ConnectionObservationEvent, Interest,
+    NoopConnectionObservation, NoopContext, NoopObserver, NoopRequestObservation, Observer,
+    PhaseSkipReason, PoolLookupResult, RateLimitState, RequestBodyEvent, RequestFinish,
+    RequestFinishReason, RequestInfo, RequestObservation, RequestStart, ResponseBodyEvent,
+    ResponseChannelHandoffEvent, ResponseDisposition, ResponseHeaders, ResponseInfo,
+    ResponseSource, ResponseSseEvent, RetryReason, SseStatisticsSnapshot, TransportKind,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use pool::{PoolHostStats, PoolStats};
@@ -211,7 +218,7 @@ pub use retry::{RetryBudget, RetryConfig, RetryContext, RetryDecision, RetryOutc
 pub use sse::SseStreamLocal;
 pub use sse::{SseDecoder, SseEvent, SseMessage, SseStream, SseStreamSend};
 pub use throttle::RateLimiter;
-pub use traits::{HttpClient, RequestBuilderExt, ResponseExt};
+pub use traits::{HttpClient, RequestBuilderExt, ResponseExt, SseResponseExt, SseStreamExt};
 
 #[cfg(feature = "json")]
 pub use problem::ProblemDetails;
@@ -262,54 +269,58 @@ pub use traits::{OwnedRequestBuilderLocal, OwnedRequestBuilderSend};
 pub use upgrade::UpgradedLocal;
 #[cfg(not(target_arch = "wasm32"))]
 pub use upgrade::UpgradedSend;
+#[cfg(not(target_arch = "wasm32"))]
+pub use upgrade::{RawUpgraded, RawUpgradedParts};
 
 /// Convenience alias for [`HttpEngineSend`] using the Tokio runtime.
 #[cfg(feature = "tokio")]
-pub type TokioClient =
-    HttpEngineSend<runtime::tokio_rt::TokioRuntime, runtime::tokio_rt::TcpConnector>;
+pub type TokioClient<O = NoopObserver> =
+    HttpEngineSend<runtime::tokio_rt::TokioRuntime, runtime::tokio_rt::TcpConnector, O>;
 
 /// Alias for [`TokioClient`].
 #[cfg(feature = "tokio")]
-pub type TokioEngine = TokioClient;
+pub type TokioEngine<O = NoopObserver> = TokioClient<O>;
 
 /// Convenience alias for [`HttpEngineSend`] using the smol runtime.
 #[cfg(feature = "smol")]
-pub type SmolClient = HttpEngineSend<runtime::smol_rt::SmolRuntime, runtime::smol_rt::TcpConnector>;
+pub type SmolClient<O = NoopObserver> =
+    HttpEngineSend<runtime::smol_rt::SmolRuntime, runtime::smol_rt::TcpConnector, O>;
 
 /// Alias for [`SmolClient`].
 #[cfg(feature = "smol")]
-pub type SmolEngine = SmolClient;
+pub type SmolEngine<O = NoopObserver> = SmolClient<O>;
 
 /// Convenience alias for [`HttpEngineLocal`] using the compio runtime.
 #[cfg(feature = "compio")]
-pub type CompioClient =
-    HttpEngineLocal<runtime::compio_rt::CompioRuntime, runtime::compio_rt::TcpConnector>;
+pub type CompioClient<O = NoopObserver> =
+    HttpEngineLocal<runtime::compio_rt::CompioRuntime, runtime::compio_rt::TcpConnector, O>;
 
 /// Alias for [`CompioClient`].
 #[cfg(feature = "compio")]
-pub type CompioEngine = CompioClient;
+pub type CompioEngine<O = NoopObserver> = CompioClient<O>;
 
 /// Convenience alias for the compatible WebAssembly host Fetch API client.
 #[cfg(feature = "wasm")]
-pub type WasmClient = wasm::WasmClient;
+pub type WasmClient<O = NoopObserver> = wasm::WasmClient<O>;
 
 /// Convenience alias for the WASI Preview 2 HTTP client.
 #[cfg(feature = "wasi-p2")]
-pub type WasiClient = wasi_p2::WasiClient;
+pub type WasiClient<O = NoopObserver> = wasi_p2::WasiClient<O>;
 
 /// Blocking client backed by the tokio runtime.
 #[cfg(all(feature = "blocking", feature = "tokio"))]
-pub type BlockingTokioClient =
-    blocking::BlockingClient<TokioClient, runtime::tokio_rt::TokioRuntime>;
+pub type BlockingTokioClient<O = NoopObserver> =
+    blocking::BlockingClient<TokioClient<O>, runtime::tokio_rt::TokioRuntime>;
 
 /// Blocking client backed by the smol runtime.
 #[cfg(all(feature = "blocking", feature = "smol"))]
-pub type BlockingSmolClient = blocking::BlockingClient<SmolClient, runtime::smol_rt::SmolRuntime>;
+pub type BlockingSmolClient<O = NoopObserver> =
+    blocking::BlockingClient<SmolClient<O>, runtime::smol_rt::SmolRuntime>;
 
 /// Blocking client backed by the compio runtime.
 #[cfg(all(feature = "blocking", feature = "compio"))]
-pub type BlockingCompioClient =
-    blocking::BlockingClient<CompioClient, runtime::compio_rt::CompioRuntime>;
+pub type BlockingCompioClient<O = NoopObserver> =
+    blocking::BlockingClient<CompioClient<O>, runtime::compio_rt::CompioRuntime>;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use tls::TlsInfo;

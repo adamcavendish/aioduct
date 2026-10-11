@@ -263,12 +263,6 @@ impl FinalizedRequestState {
         &self.method
     }
 
-    pub(crate) fn effective_uri(&self) -> Option<&Uri> {
-        self.snapshot
-            .as_ref()
-            .map(FinalizedRequestSnapshot::effective_uri)
-    }
-
     pub(crate) fn body(&self) -> BodyReplayability {
         self.snapshot
             .as_ref()

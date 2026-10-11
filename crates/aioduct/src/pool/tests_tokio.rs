@@ -44,6 +44,9 @@ fn key(host: &str) -> PoolKey {
 #[path = "tests_tokio/reaper.rs"]
 mod reaper;
 
+#[path = "tests_tokio/observation.rs"]
+mod observation;
+
 #[tokio::test]
 async fn checkin_then_checkout_returns_connection() {
     let pool = ConnectionPool::<RequestBodySend>::new()

@@ -25,7 +25,7 @@ use super::DEFAULT_USER_AGENT;
 
 /// Builder for configuring an [`HttpEngineSend`](super::HttpEngineSend).
 #[must_use = "a HttpEngineBuilder does nothing unless you call `.build()` or `.build_local()`"]
-pub struct HttpEngineBuilder<R, C> {
+pub struct HttpEngineBuilder<R, C, O = crate::observer::NoopObserver> {
     pub(super) connector: C,
     pub(super) base_url: Option<Arc<url::Url>>,
     pub(super) address_family: crate::address_family::AddressFamily,
@@ -73,7 +73,7 @@ pub struct HttpEngineBuilder<R, C> {
     pub(super) h2c_probe_ttl: Option<Duration>,
     pub(super) connection_coalescing: bool,
     pub(super) sensitive_headers: HashSet<HeaderName>,
-    pub(super) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
+    pub(super) observer: O,
     #[cfg(feature = "tower")]
     pub(super) tower_connector: Option<crate::connector::TowerConnectorSendSlot>,
     #[cfg(feature = "tower")]
@@ -104,7 +104,7 @@ pub struct HttpEngineBuilder<R, C> {
     pub(super) _phantom: PhantomData<(R, C)>,
 }
 
-impl<R, C> HttpEngineBuilder<R, C> {
+impl<R, C> HttpEngineBuilder<R, C, crate::observer::NoopObserver> {
     /// Create a new builder with the given connector and default settings.
     pub fn new(connector: C) -> Self {
         let mut default_headers = HeaderMap::new();
@@ -157,7 +157,7 @@ impl<R, C> HttpEngineBuilder<R, C> {
             h2c_probe_ttl: None,
             connection_coalescing: true,
             sensitive_headers: HashSet::new(),
-            observer: None,
+            observer: crate::observer::NoopObserver,
             #[cfg(feature = "tower")]
             tower_connector: None,
             #[cfg(feature = "tower")]
@@ -190,7 +190,93 @@ impl<R, C> HttpEngineBuilder<R, C> {
     }
 }
 
-impl<R, C> std::fmt::Debug for HttpEngineBuilder<R, C> {
+impl<R, C, O> HttpEngineBuilder<R, C, O> {
+    /// Replace the request-level observer used by subsequently built clients.
+    ///
+    /// The observer type is selected at the builder boundary. It is not
+    /// propagated into responses, body streams, SSE streams, or upgrades.
+    pub fn observer<O2>(self, observer: O2) -> HttpEngineBuilder<R, C, O2> {
+        HttpEngineBuilder {
+            connector: self.connector,
+            base_url: self.base_url,
+            address_family: self.address_family,
+            pool_idle_timeout: self.pool_idle_timeout,
+            pool_max_lifetime: self.pool_max_lifetime,
+            pool_max_idle_per_host: self.pool_max_idle_per_host,
+            pool_max_active_per_host: self.pool_max_active_per_host,
+            pool_max_active_streams_per_connection: self.pool_max_active_streams_per_connection,
+            no_connection_reuse: self.no_connection_reuse,
+            tcp_fast_open: self.tcp_fast_open,
+            redirect_policy: self.redirect_policy,
+            timeout: self.timeout,
+            connect_timeout: self.connect_timeout,
+            read_timeout: self.read_timeout,
+            write_timeout: self.write_timeout,
+            tcp_keepalive: self.tcp_keepalive,
+            tcp_keepalive_interval: self.tcp_keepalive_interval,
+            tcp_keepalive_retries: self.tcp_keepalive_retries,
+            local_address: self.local_address,
+            #[cfg(target_os = "linux")]
+            interface: self.interface,
+            #[cfg(unix)]
+            unix_socket: self.unix_socket,
+            https_only: self.https_only,
+            referer: self.referer,
+            accept_encoding: self.accept_encoding,
+            default_headers: self.default_headers,
+            retry: self.retry,
+            cookie_jar: self.cookie_jar,
+            proxy: self.proxy,
+            proxy_chain: self.proxy_chain,
+            resolver: self.resolver,
+            static_resolves: self.static_resolves,
+            auto_tune: self.auto_tune,
+            http2: self.http2,
+            netrc: self.netrc,
+            rate_limiter: self.rate_limiter,
+            bandwidth_limiter: self.bandwidth_limiter,
+            digest_auth: self.digest_auth,
+            message_signature: self.message_signature,
+            automatic_content_digest: self.automatic_content_digest,
+            cache: self.cache,
+            hsts: self.hsts,
+            h2c_probe_ttl: self.h2c_probe_ttl,
+            connection_coalescing: self.connection_coalescing,
+            sensitive_headers: self.sensitive_headers,
+            observer,
+            #[cfg(feature = "tower")]
+            tower_connector: self.tower_connector,
+            #[cfg(feature = "tower")]
+            tower_connector_local: self.tower_connector_local,
+            #[cfg(feature = "rustls")]
+            tls: self.tls,
+            #[cfg(feature = "rustls")]
+            min_tls_version: self.min_tls_version,
+            #[cfg(feature = "rustls")]
+            max_tls_version: self.max_tls_version,
+            #[cfg(feature = "rustls")]
+            tls_sni: self.tls_sni,
+            #[cfg(feature = "rustls")]
+            extra_root_certs: self.extra_root_certs,
+            #[cfg(feature = "rustls")]
+            client_identity: self.client_identity,
+            #[cfg(feature = "rustls")]
+            crls: self.crls,
+            #[cfg(feature = "rustls")]
+            danger_accept_invalid_hostnames: self.danger_accept_invalid_hostnames,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            h3_endpoint: self.h3_endpoint,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            prefer_h3: self.prefer_h3,
+            #[cfg(all(feature = "http3", feature = "rustls"))]
+            h3_zero_rtt: self.h3_zero_rtt,
+            builder_error: self.builder_error,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<R, C, O> std::fmt::Debug for HttpEngineBuilder<R, C, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpEngineBuilder").finish()
     }

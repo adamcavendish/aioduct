@@ -55,6 +55,34 @@ impl ConnectionDeadline {
         })
         .await
     }
+
+    /// Keep target/endpoint failure classification inside a proxy attempt,
+    /// while expiry of the shared connection budget remains a fatal timeout.
+    pub(super) async fn run_proxy<R, F, T>(
+        self,
+        future: F,
+    ) -> Result<T, super::proxy_connect::ProxyAttemptError>
+    where
+        R: RuntimeCompletion,
+        F: Future<Output = Result<T, super::proxy_connect::ProxyAttemptError>>,
+    {
+        let result = match self.remaining()? {
+            Some(duration) => {
+                crate::timeout::Timeout::WithTimeout {
+                    future,
+                    sleep: R::sleep(duration),
+                }
+                .await
+            }
+            None => future.await,
+        };
+        match result {
+            Err(error) if matches!(error.error(), Error::Timeout) => {
+                Err(Error::ConnectTimeout.into())
+            }
+            other => other,
+        }
+    }
 }
 
 #[cfg(test)]

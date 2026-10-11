@@ -58,6 +58,7 @@ dependencies = [
  "js-sys",
  "memchr",
  "mime",
+ "parking_lot",
  "paste",
  "percent-encoding",
  "pin-project-lite",
@@ -2600,6 +2601,17 @@ dependencies = [
  "aioduct",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "example-wasi-p2-test-runner"
+version = "0.2.6"
+dependencies = [
+ "hyper",
+ "tokio",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-http",
 ]
 
 [[package]]

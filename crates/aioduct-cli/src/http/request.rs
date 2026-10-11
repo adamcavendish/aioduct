@@ -7,7 +7,7 @@ use super::cli::HttpArgs;
 
 pub async fn execute(
     cli: &HttpArgs,
-    client: &aioduct::TokioClient,
+    client: &aioduct::TokioClient<super::observer::CliObserver>,
 ) -> Result<Response, aioduct::Error> {
     let method: Method = cli.effective_method().parse().map_err(|_| {
         aioduct::Error::InvalidUrl(format!("invalid method: {}", cli.effective_method()))
@@ -24,10 +24,16 @@ pub async fn execute(
     Ok(req.send().await?)
 }
 
-fn apply_headers<'a>(
+fn apply_headers<'a, O>(
     cli: &HttpArgs,
-    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
-) -> RequestBuilderSend<'a, TokioRuntime, TcpConnector> {
+    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector, O>,
+) -> RequestBuilderSend<'a, TokioRuntime, TcpConnector, O>
+where
+    O: aioduct::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
     if cli.compressed {
         req = req.header(
             http::header::ACCEPT_ENCODING,
@@ -55,10 +61,16 @@ fn apply_headers<'a>(
     req
 }
 
-fn apply_auth<'a>(
+fn apply_auth<'a, O>(
     cli: &HttpArgs,
-    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
-) -> RequestBuilderSend<'a, TokioRuntime, TcpConnector> {
+    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector, O>,
+) -> RequestBuilderSend<'a, TokioRuntime, TcpConnector, O>
+where
+    O: aioduct::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
     if let Some(ref user_str) = cli.user {
         let (user, pass) = match user_str.split_once(':') {
             Some((u, p)) => (u, Some(p)),
@@ -74,10 +86,16 @@ fn apply_auth<'a>(
     req
 }
 
-fn apply_body<'a>(
+fn apply_body<'a, O>(
     cli: &HttpArgs,
-    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector>,
-) -> Result<RequestBuilderSend<'a, TokioRuntime, TcpConnector>, aioduct::Error> {
+    mut req: RequestBuilderSend<'a, TokioRuntime, TcpConnector, O>,
+) -> Result<RequestBuilderSend<'a, TokioRuntime, TcpConnector, O>, aioduct::Error>
+where
+    O: aioduct::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
     if let Some(ref data) = cli.data {
         let body = if let Some(path) = data.strip_prefix('@') {
             std::fs::read(path).map_err(aioduct::Error::Io)?

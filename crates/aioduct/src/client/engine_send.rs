@@ -55,11 +55,6 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         HttpEngineBuilder::new(connector)
     }
 
-    /// Resolve a request input URL against the configured base URL, if any.
-    fn resolve_url(&self, uri: &str) -> Result<(Uri, Option<String>), Error> {
-        resolve_request_url(self.core.base_url.as_deref(), uri)
-    }
-
     /// Create a new client with default settings and a specific connector.
     #[allow(clippy::expect_used)]
     pub fn with_connector(connector: C) -> Self {
@@ -105,39 +100,51 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
             .alt_svc_h3(true)?
             .build()
     }
+}
+
+impl<R: RuntimePoll, C: ConnectorSend, O> HttpEngineSend<R, C, O>
+where
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
+    fn resolve_url(&self, uri: &str) -> Result<(Uri, Option<String>), Error> {
+        resolve_request_url(self.core.base_url.as_deref(), uri)
+    }
 
     /// Start a GET request to the given URL.
-    pub fn get(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
+    pub fn get(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(RequestBuilderSend::new(self, Method::GET, uri, fragment))
     }
 
     /// Start a HEAD request to the given URL.
-    pub fn head(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
+    pub fn head(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(RequestBuilderSend::new(self, Method::HEAD, uri, fragment))
     }
 
     /// Start a POST request to the given URL.
-    pub fn post(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
+    pub fn post(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(RequestBuilderSend::new(self, Method::POST, uri, fragment))
     }
 
     /// Start a PUT request to the given URL.
-    pub fn put(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
+    pub fn put(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(RequestBuilderSend::new(self, Method::PUT, uri, fragment))
     }
 
     /// Start a PATCH request to the given URL.
-    pub fn patch(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
+    pub fn patch(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(RequestBuilderSend::new(self, Method::PATCH, uri, fragment))
     }
 
     /// Start a DELETE request to the given URL.
-    pub fn delete(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C>, Error> {
+    pub fn delete(&self, uri: &str) -> Result<RequestBuilderSend<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(RequestBuilderSend::new(self, Method::DELETE, uri, fragment))
     }
@@ -147,13 +154,13 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
         &self,
         method: Method,
         uri: &str,
-    ) -> Result<RequestBuilderSend<'_, R, C>, Error> {
+    ) -> Result<RequestBuilderSend<'_, R, C, O>, Error> {
         let (uri, fragment) = self.resolve_url(uri)?;
         Ok(RequestBuilderSend::new(self, method, uri, fragment))
     }
 
     /// Start a parallel chunk download for the given URL.
-    pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownloadSend<R, C> {
+    pub fn chunk_download(&self, url: &str) -> crate::chunk_download::ChunkDownloadSend<R, C, O> {
         crate::chunk_download::ChunkDownloadSend::new(self.clone(), url.to_owned())
     }
 
@@ -179,7 +186,7 @@ impl<R: RuntimePoll, C: ConnectorSend> HttpEngineSend<R, C> {
     pub fn forward<B>(
         &self,
         request: http::Request<B>,
-    ) -> crate::forward::ForwardBuilderSend<'_, R, C, B>
+    ) -> crate::forward::ForwardBuilderSend<'_, R, C, B, O>
     where
         B: http_body::Body<Data = bytes::Bytes> + Send + 'static,
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,

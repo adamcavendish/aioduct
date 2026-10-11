@@ -727,16 +727,31 @@ fn test_compio_observer() {
         let phases = Arc::new(Mutex::new(Vec::new()));
         let phases_clone = phases.clone();
 
+        #[derive(Clone)]
         struct Obs(Arc<Mutex<Vec<String>>>);
-        impl aioduct::observer::RequestObserver for Obs {
-            fn on_event(&self, event: &aioduct::observer::RequestEvent) {
-                self.0.lock().unwrap().push(format!("{:?}", event.phase));
+        impl aioduct::Observer for Obs {
+            type Context = ();
+            type Observation = Self;
+            type ConnectionObservation = aioduct::NoopConnectionObservation;
+            fn begin(
+                &self,
+                _: aioduct::RequestInfo<'_>,
+                _: Option<()>,
+            ) -> (aioduct::Interest, Self) {
+                (aioduct::Interest::REQUEST_FINISH, self.clone())
             }
-            fn on_connection_event(&self, _event: &aioduct::observer::ConnectionEvent) {}
+            fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
+                (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
+            }
+        }
+        impl aioduct::RequestObservation for Obs {
+            fn on_request_finish(&self, event: &aioduct::RequestFinish<'_>) {
+                self.0.lock().unwrap().push(format!("{:?}", event.reason));
+            }
         }
 
         let client = HttpEngineLocal::<CompioRuntime, TcpConnector>::builder()
-            .request_observer(Obs(phases_clone))
+            .observer(Obs(phases_clone))
             .build_local()
             .unwrap();
         let resp = client
@@ -1372,3 +1387,6 @@ fn h1_deferred_checkin_reuses_connection() {
     let requests = accept_count.load(Ordering::SeqCst);
     assert_eq!(requests, 5, "all 5 requests should succeed");
 }
+
+#[path = "support/observation.rs"]
+mod observation_support;

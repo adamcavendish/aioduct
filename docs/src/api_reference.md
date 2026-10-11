@@ -117,6 +117,21 @@ To change the threshold, use
 > (e.g. `client.get("users")`) resolves against it per RFC 3986, while an
 > absolute request URL overrides it.
 
+### Retry Boundaries
+
+Configured retry applies to execution errors and response statuses before the
+final response is selected. Once selected, response body reads, decoding, and
+library processing errors fail directly; they do not invoke a custom retry
+classifier. This also applies to eager cache pre-reading, which can make
+`send()` return an error before exposing a response. Without a cache, the same
+body failure may instead be returned by a later `bytes()` or stream read.
+Returned streaming data is never transparently retried or spliced.
+
+This rule is independent of whether observation is enabled. It removes the
+previous eager-cache-only opportunity to retry body failures, while preserving
+pre-selection execution/status retry and its replay, retry-count, and budget
+limits. Retry remains disabled unless configured.
+
 ### Timeout Boundaries
 
 | Timeout | Phase covered | Phase not covered |
@@ -690,6 +705,15 @@ These traits provide a common interface across client types. Implementations mus
 
 Use these traits to write generic code that works with any aioduct client type.
 
+`ByteStreamExt` names its reading future through `type Next<'a>`; normal calls
+remain `stream.next().await`. A generic task that must be `Send` can require
+`S: ByteStreamExt + Send` and `for<'a> S::Next<'a>: Send`. The base trait does not
+force local or host-managed streams to be `Send`. The higher-ranked bound has a
+current compiler limitation that can imply `'static` for third-party streams
+borrowing external data; aioduct's self-contained stream types avoid that case.
+The named futures have private fields and no public layout guarantee. WASI's
+trait future still performs the existing synchronous host read when polled.
+
 ## Redirects
 
 aioduct follows redirects automatically (up to `max_redirects`, default 10):
@@ -708,63 +732,92 @@ Disable with `.max_redirects(0)` on the builder.
 
 ## Request Lifecycle Observer
 
-The `RequestObserver` trait provides real-time callbacks at every connection
-phase transition with monotonic timestamps and diagnostic data. Use it for
-per-request tracing, load testing metrics, or custom instrumentation.
+The native 0.3 request-level API uses an `Observer` provider on the client and
+one `RequestObservation` per executing logical request. Retries and redirects
+reuse that observation. The response, byte-stream, and SSE types remain
+independent of the observer type.
 
 ```rust,no_run
-use aioduct::{TokioClient, RequestObserver, RequestEvent, ConnectionEvent};
+use aioduct::{Interest, Observer, RequestObservation, RequestInfo,
+              RequestFinish, TokioClient};
 
-#[derive(Clone)]
-struct MetricsObserver { /* atomic counters, channels, etc. */ }
+struct Metrics;
+struct RequestMetrics { request_id: Option<u64> }
 
-impl RequestObserver for MetricsObserver {
-    fn on_event(&self, event: &RequestEvent) {
-        match &event.phase {
-            RequestPhase::DnsResolved { addrs, duration } => { /* ... */ }
-            RequestPhase::TlsHandshakeComplete { duration, alpn_protocol, .. } => { /* ... */ }
-            RequestPhase::ResponseComplete { status, total_duration, .. } => { /* ... */ }
-            _ => {}
-        }
+impl Observer for Metrics {
+    type Context = u64;
+    type Observation = RequestMetrics;
+    type ConnectionObservation = aioduct::NoopConnectionObservation;
+
+    fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
+        (Interest::EMPTY, aioduct::NoopConnectionObservation)
     }
 
-    fn on_connection_event(&self, event: &ConnectionEvent) {
-        // Connection-level metrics fire when a connection is checked back into
-        // the pool or closed. The metrics include protocol, remote address,
-        // approximate bytes sent/received, connection age, requests served, and
-        // whether the connection was closed instead of returned to the pool.
+    fn begin(&self, _: RequestInfo<'_>, context: Option<u64>)
+        -> (Interest, RequestMetrics)
+    {
+        (Interest::REQUEST_FINISH | Interest::RESPONSE_BODY_BYTES,
+         RequestMetrics { request_id: context })
     }
 }
 
-let client = TokioClient::builder()
-    .observer(MetricsObserver { /* ... */ })
-    .build()?;
+impl RequestObservation for RequestMetrics {
+    fn on_request_finish(&self, event: &RequestFinish<'_>) {
+        // Export event.reason, response, attempt_count and original_data_bytes
+        // together with self.request_id to your chosen backend.
+    }
+}
+
+let client = TokioClient::builder().observer(Metrics).build()?;
+let response: aioduct::Response = client.get("https://example.com/")?
+    .observation_context(42).send().await?;
+let bytes = response.bytes().await?;
 ```
 
-### RequestPhase Variants
+Observation is enabled by default, including when context is absent.
+`.disable_observation()` on a request skips `begin`; returning `Interest::EMPTY`
+from `begin` creates no continuation. Original DATA summaries are opt-in and
+do not enable per-chunk callbacks. The finish event follows actual body
+completion, error, abandonment, or successful channel handoff, not merely
+receipt of headers. Callbacks are synchronous, receive `&self`, and run outside
+aioduct's internal locks. Exporting and fan-out are the implementation's job.
 
-| Phase | Key Fields | Fires When |
-|-------|-----------|------------|
-| `Started` | — | Request execution begins |
-| `PoolCheckoutComplete` | `outcome`, `blocked_duration` | Pool lookup finishes |
-| `DnsResolved` | `addrs`, `duration` | DNS resolution completes |
-| `TcpConnected` | `remote_addr`, `duration`, `protocol` | TCP connection established |
-| `TlsHandshakeComplete` | `duration`, `alpn_protocol`, `peer_certificate_der` | TLS negotiation done |
-| `RequestSent` | `duration`, `headers` | Finalized request is about to be handed to the protocol sender |
-| `ResponseStarted` | `waiting_duration` | TTFB — first response byte received |
-| `ResponseComplete` | `status`, `protocol`, `total_duration` | Response headers complete |
-| `Redirected` | `status`, `from`, `to` | A redirect was followed |
-| `Retrying` | `reason`, `attempt`, `max_retries`, `backoff` | A retry is about to be attempted |
-| `Failed` | `error`, `retry`, `elapsed` | Request failed with an error |
-| `BytesTransferred` | `direction`, `chunk_bytes`, `cumulative_bytes` | Per-chunk (body streaming) |
-| `TransferComplete` | `direction`, `total_bytes`, `throughput_bytes_per_sec` | Transfer in one direction finished |
-| `TransferAborted` | `direction`, `bytes_transferred`, `error` | Transfer aborted mid-stream |
-| `TrailersReceived` | `headers` | HTTP trailers received after body |
+**Implementation status:** start, selected headers, finish, original DATA
+summaries, and independent SSE lifecycle/statistics are wired on native Send/Local
+requests, including owned and blocking adapters. Detailed attempt/acquisition/upload
+events, independent channel/connection observations, forwarding, and host-managed Observer
+integration remain unfinished. Reserved interest bits do not yet deliver
+those callbacks; this is not the complete 0.3 contract or a performance claim.
 
-`RetryKind` (`None` / `StaleConnection` / `Explicit`) indicates whether and
-how a failed request will be retried.
+### Independent SSE observations
 
-Phases that are skipped (DNS for pool hits, TLS for plain HTTP) simply don't fire.
+Select `Interest::SSE_LIFECYCLE` for `on_response_sse(ResponseSseEvent)` callbacks:
+`Started` at conversion, original borrowed `Error`, reliable `Ended` when no next
+event remains, and `Abandoned` when the unfinished stream is dropped. An error
+does not itself end SSE or prevent parser recovery. Cancelling one `next()` future
+does not abandon the still-owned stream. There are no successful-message, Pending,
+per-read, or per-comment callbacks.
+
+`Interest::SSE_STATISTICS` internally enables this lifecycle and attaches optional
+`SseStatisticsSnapshot` references to error/end/abandonment events, not `Started`.
+It records delivered Message events, actually parsed comment lines, accepted retry
+fields, and pending/peak parser input lengths. These are protocol facts, not
+application success, HTTP retry counts, message sizes, or total-memory metrics.
+Lifecycle-only events carry `None`; collected but unused counters are real zeros.
+
+HTTP/body and SSE finish independently. A cache pre-read or the last body frame
+can complete HTTP while SSE still has buffered events to deliver. Dropping that
+SSE stream must not change the completed HTTP result. Library body errors and
+SSE errors borrow the same original error; decoder errors do not rewrite HTTP.
+
+Generic async code can use `SseResponseExt::into_sse_stream` and `SseStreamExt`.
+Its named `Next<'a>` future supports an optional `for<'a> S::Next<'a>: Send`
+bound, without imposing it on Local consumers. Blocking SSE reuses this associated
+stream and its persistent runtime session; it has no second parser or observer.
+Browser/WASI implement these extension traits too, but their new Observer integration
+is still pending. Browser pending reads remain owned by each `next` future; WASI's
+trait future still drives the existing synchronous host read.
+
 
 ## Trailers
 
@@ -824,10 +877,6 @@ while let Some(frame) = body.frame().await {
 }
 ```
 
-### Via the request observer
-
-The `RequestObserver` fires a `TrailersReceived` phase when trailers
-arrive, with all trailer header fields.
 
 ## Error Types
 

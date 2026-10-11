@@ -1,19 +1,18 @@
 use std::net::SocketAddr;
 
-use http::{Method, Uri};
-
 use crate::body::RequestBodyLocal;
-use crate::clock::Instant;
 use crate::error::Error;
 use crate::h2c_probe::{H2cProbeAction, H2cProbeKey, H2cProbeToken};
+use crate::observer::LocalConnectionObservationOwner;
 use crate::pool::PooledConnection;
 use crate::proxy::ProxyEstablishmentPlan;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
 use super::HttpEngineLocal;
+use super::connection_deadline::ConnectionDeadline;
 use super::h2_peer_settings::H2PeerSettingsRequirement;
 use super::proxy_connect::{
-    ProxyAttemptError, ProxyAttemptObservation, ProxyConnectCandidates, ProxyConnectionTransitions,
+    ProxyAttemptError, ProxyConnectCandidates, ProxyConnectionTransitions,
     ProxyEndpointFailureOwner, ProxyHopTransition, ProxyHopTransport, ProxyNegotiation,
     ProxyOriginProtocol, ProxyTargetAttempt, classify_first_proxy_endpoint_error,
     classify_pre_request_endpoint_error, classify_socks4_error, classify_socks5_error,
@@ -21,16 +20,19 @@ use super::proxy_connect::{
 };
 use super::proxy_stream::ProxyStreamLocal;
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O> HttpEngineLocal<R, C, O>
+where
+    O: crate::observer::Observer + 'static,
+{
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn connect_via_proxy_plan_adaptive_h2c_local(
         &self,
         h2_plan: &ProxyEstablishmentPlan,
         h1_plan: &ProxyEstablishmentPlan,
-        method: &Method,
-        uri: &Uri,
         force_addr: Option<SocketAddr>,
         probe_key: &H2cProbeKey,
+        attempt_observer: Option<&crate::observer::LocalAttemptObserver>,
+        deadline: ConnectionDeadline,
     ) -> Result<(PooledConnection<RequestBodyLocal>, Option<H2cProbeToken>), Error> {
         #[cfg(all(feature = "rustls", feature = "compio"))]
         if h2_plan.requires_tls() && self.core.tls.is_none() {
@@ -48,8 +50,18 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             ));
         }
 
-        let candidates =
-            ProxyConnectCandidates::resolve(&self.core, h2_plan, method, uri, force_addr).await?;
+        let mut acquisition = attempt_observer.and_then(|observer| {
+            observer.acquisition_scope(crate::observer::ConnectionAcquisitionPhase::Dns)
+        });
+        let resolved = deadline
+            .run::<R, _, _>(ProxyConnectCandidates::resolve(
+                &self.core, h2_plan, force_addr,
+            ))
+            .await;
+        if let Some(acquisition) = &mut acquisition {
+            acquisition.result(&resolved);
+        }
+        let candidates = resolved?;
         candidates
             .try_each_target(|first_proxy_addrs, targets| {
                 self.connect_via_proxy_attempt_adaptive_h2c_local(
@@ -57,9 +69,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     h1_plan,
                     first_proxy_addrs,
                     targets,
-                    method,
-                    uri,
                     probe_key,
+                    attempt_observer,
+                    deadline,
                 )
             })
             .await
@@ -68,10 +80,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     pub(super) async fn connect_via_proxy_plan_local(
         &self,
         plan: &ProxyEstablishmentPlan,
-        method: &Method,
-        uri: &Uri,
         force_addr: Option<SocketAddr>,
         h2_peer_settings: H2PeerSettingsRequirement,
+        attempt_observer: Option<&crate::observer::LocalAttemptObserver>,
+        deadline: ConnectionDeadline,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         #[cfg(all(feature = "rustls", feature = "compio"))]
         if plan.requires_tls() && self.core.tls.is_none() {
@@ -88,44 +100,78 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
             ));
         }
 
-        let candidates =
-            ProxyConnectCandidates::resolve(&self.core, plan, method, uri, force_addr).await?;
+        let mut acquisition = attempt_observer.and_then(|observer| {
+            observer.acquisition_scope(crate::observer::ConnectionAcquisitionPhase::Dns)
+        });
+        let resolved = deadline
+            .run::<R, _, _>(ProxyConnectCandidates::resolve(
+                &self.core, plan, force_addr,
+            ))
+            .await;
+        if let Some(acquisition) = &mut acquisition {
+            acquisition.result(&resolved);
+        }
+        let candidates = resolved?;
         candidates
             .try_each_target(|first_proxy_addrs, targets| {
                 self.connect_via_proxy_attempt_local(
                     plan,
                     first_proxy_addrs,
                     targets,
-                    method,
-                    uri,
                     h2_peer_settings,
+                    attempt_observer,
+                    deadline,
                 )
             })
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_via_proxy_attempt_local(
         &self,
         plan: &ProxyEstablishmentPlan,
         first_proxy_addrs: Vec<SocketAddr>,
         targets: ProxyTargetAttempt,
-        method: &Method,
-        uri: &Uri,
         h2_peer_settings: H2PeerSettingsRequirement,
+        attempt_observer: Option<&crate::observer::LocalAttemptObserver>,
+        deadline: ConnectionDeadline,
     ) -> Result<PooledConnection<RequestBodyLocal>, ProxyAttemptError> {
-        let tcp_start = Instant::now();
-        let (stream, remote_addr) = self.connect_first_proxy_local(&first_proxy_addrs).await?;
-        self.connect_via_proxy_stream_local(
-            stream,
-            remote_addr,
-            tcp_start,
-            plan,
-            targets,
-            method,
-            uri,
-            h2_peer_settings,
-        )
-        .await
+        let connection_observation = self.begin_connection_observation();
+        let establishment = connection_observation
+            .as_ref()
+            .and_then(|owner| owner.establishment_scope());
+        let mut tcp_acquisition = attempt_observer.and_then(|observer| {
+            observer.acquisition_scope(crate::observer::ConnectionAcquisitionPhase::TcpConnect)
+        });
+        let transport = deadline
+            .run::<R, _, _>(
+                self.connect_first_proxy_local(&first_proxy_addrs, connection_observation.clone()),
+            )
+            .await;
+        if let Some(acquisition) = &mut tcp_acquisition {
+            acquisition.result(&transport);
+        }
+        if let Some(establishment) = &establishment {
+            establishment.result(&transport);
+        }
+        let (stream, remote_addr) = transport?;
+        let mut acquisition = crate::observer::AcquisitionPhases::new(attempt_observer);
+        let result = deadline
+            .run_proxy::<R, _, _>(self.connect_via_proxy_stream_local(
+                stream,
+                remote_addr,
+                plan,
+                targets,
+                h2_peer_settings,
+                connection_observation,
+                &mut acquisition,
+            ))
+            .await;
+        acquisition.finish(result.as_ref().err().map(ProxyAttemptError::error));
+        if let (Err(error), Some(establishment)) = (&result, &establishment) {
+            establishment.failed(error.error());
+        }
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -135,13 +181,31 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         h1_plan: &ProxyEstablishmentPlan,
         first_proxy_addrs: Vec<SocketAddr>,
         targets: ProxyTargetAttempt,
-        method: &Method,
-        uri: &Uri,
         probe_key: &H2cProbeKey,
+        attempt_observer: Option<&crate::observer::LocalAttemptObserver>,
+        deadline: ConnectionDeadline,
     ) -> Result<(PooledConnection<RequestBodyLocal>, Option<H2cProbeToken>), ProxyAttemptError>
     {
-        let tcp_start = Instant::now();
-        let (stream, remote_addr) = self.connect_first_proxy_local(&first_proxy_addrs).await?;
+        let connection_observation = self.begin_connection_observation();
+        let establishment = connection_observation
+            .as_ref()
+            .and_then(|owner| owner.establishment_scope());
+        let mut tcp_acquisition = attempt_observer.and_then(|observer| {
+            observer.acquisition_scope(crate::observer::ConnectionAcquisitionPhase::TcpConnect)
+        });
+        let transport = deadline
+            .run::<R, _, _>(
+                self.connect_first_proxy_local(&first_proxy_addrs, connection_observation.clone()),
+            )
+            .await;
+        if let Some(acquisition) = &mut tcp_acquisition {
+            acquisition.result(&transport);
+        }
+        if let Some(establishment) = &establishment {
+            establishment.result(&transport);
+        }
+        let (stream, remote_addr) = transport?;
+        let mut acquisition = crate::observer::AcquisitionPhases::new(attempt_observer);
         let endpoint_key = probe_key.proxy_endpoint(
             remote_addr,
             targets.first_target_addr,
@@ -149,67 +213,89 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         );
         let probe_token = match self.core.h2c_probe_cache.begin_endpoint_probe(endpoint_key) {
             H2cProbeAction::UseH1 => {
-                let connection = self
-                    .connect_via_proxy_stream_local(
+                let result = deadline
+                    .run_proxy::<R, _, _>(self.connect_via_proxy_stream_local(
                         stream,
                         remote_addr,
-                        tcp_start,
                         h1_plan,
                         targets,
-                        method,
-                        uri,
                         H2PeerSettingsRequirement::NotRequired,
-                    )
-                    .await?;
-                return Ok((connection, None));
+                        connection_observation,
+                        &mut acquisition,
+                    ))
+                    .await;
+                acquisition.finish(result.as_ref().err().map(ProxyAttemptError::error));
+                if let (Err(error), Some(establishment)) = (&result, &establishment) {
+                    establishment.failed(error.error());
+                }
+                return result.map(|connection| (connection, None));
             }
             H2cProbeAction::Probe(token) => *token,
         };
-
-        match self
-            .connect_via_proxy_stream_local(
+        let result = deadline
+            .run_proxy::<R, _, _>(self.connect_via_proxy_stream_local(
                 stream,
                 remote_addr,
-                tcp_start,
                 h2_plan,
                 targets,
-                method,
-                uri,
                 H2PeerSettingsRequirement::Required,
-            )
-            .await
-        {
+                connection_observation,
+                &mut acquisition,
+            ))
+            .await;
+        acquisition.finish(result.as_ref().err().map(ProxyAttemptError::error));
+        if let (Err(error), Some(establishment)) = (&result, &establishment) {
+            establishment.failed(error.error());
+        }
+        match result {
             Ok(connection) => {
                 self.core.h2c_probe_cache.confirm_h2c_endpoint(probe_token);
                 Ok((connection, None))
             }
-            Err(ProxyAttemptError::LocalTarget { hop, source }) => {
-                Err(ProxyAttemptError::LocalTarget { hop, source })
-            }
-            Err(error @ ProxyAttemptError::FirstProxyEndpoint { .. }) => Err(error),
-            Err(ProxyAttemptError::Fatal(error)) => Err(ProxyAttemptError::Fatal(error)),
             Err(ProxyAttemptError::AdaptiveH2cRejected(_)) => {
                 self.core.h2c_probe_cache.reject_h2c_endpoint(&probe_token);
-                let fallback_start = Instant::now();
-                let (stream, fallback_addr) = self
-                    .connect_first_proxy_local(&[remote_addr])
-                    .await
+                let fallback_observation = self.begin_connection_observation();
+                let fallback_establishment = fallback_observation
+                    .as_ref()
+                    .and_then(|owner| owner.establishment_scope());
+                let mut tcp_acquisition = attempt_observer.and_then(|observer| {
+                    observer
+                        .acquisition_scope(crate::observer::ConnectionAcquisitionPhase::TcpConnect)
+                });
+                let transport =
+                    deadline
+                        .run::<R, _, _>(self.connect_first_proxy_local(
+                            &[remote_addr],
+                            fallback_observation.clone(),
+                        ))
+                        .await;
+                if let Some(acquisition) = &mut tcp_acquisition {
+                    acquisition.result(&transport);
+                }
+                if let Some(establishment) = &fallback_establishment {
+                    establishment.result(&transport);
+                }
+                let (stream, fallback_addr) = transport
                     .map_err(|error| classify_first_proxy_endpoint_error(remote_addr, error))?;
                 debug_assert_eq!(fallback_addr, remote_addr);
-                let connection = self
-                    .connect_via_proxy_stream_local(
+                let result = deadline
+                    .run_proxy::<R, _, _>(self.connect_via_proxy_stream_local(
                         stream,
                         fallback_addr,
-                        fallback_start,
                         h1_plan,
                         targets,
-                        method,
-                        uri,
                         H2PeerSettingsRequirement::NotRequired,
-                    )
-                    .await?;
-                Ok((connection, Some(probe_token)))
+                        fallback_observation,
+                        &mut acquisition,
+                    ))
+                    .await;
+                acquisition.finish(result.as_ref().err().map(ProxyAttemptError::error));
+                if let (Err(error), Some(establishment)) = (&result, &fallback_establishment) {
+                    establishment.failed(error.error());
+                }
+                result.map(|connection| (connection, Some(probe_token)))
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -218,22 +304,15 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         &self,
         stream: C::Stream,
         remote_addr: SocketAddr,
-        tcp_start: Instant,
         plan: &ProxyEstablishmentPlan,
         targets: ProxyTargetAttempt,
-        method: &Method,
-        uri: &Uri,
         h2_peer_settings: H2PeerSettingsRequirement,
+        connection_observation: Option<LocalConnectionObservationOwner>,
+        acquisition: &mut crate::observer::AcquisitionPhases<
+            '_,
+            crate::observer::LocalAttemptObserver,
+        >,
     ) -> Result<PooledConnection<RequestBodyLocal>, ProxyAttemptError> {
-        let mut observation = ProxyAttemptObservation::new(
-            &self.core,
-            method,
-            uri,
-            plan.first().scheme(),
-            plan.protocol_hint(),
-            remote_addr,
-            tcp_start.elapsed(),
-        );
         let mut connection = match ProxyHopTransport::for_hop(plan.first()) {
             ProxyHopTransport::Tls {
                 server_name: _server_name,
@@ -245,7 +324,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         .tls
                         .as_deref()
                         .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                    let tls_start = Instant::now();
+                    if let Some(observation) = connection_observation.as_ref()
+                        && observation
+                            .interest()
+                            .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+                    {
+                        observation.emit(
+                            &crate::observer::ConnectionObservationEvent::PhaseStarted {
+                                phase: crate::observer::ConnectionEstablishmentPhase::TlsHandshake,
+                                at: crate::observer::Instant::now(),
+                            },
+                        );
+                    }
+                    acquisition.start(crate::observer::ConnectionAcquisitionPhase::TlsHandshake);
                     let stream = super::proxy_tls::connect_local(
                         connector,
                         _server_name,
@@ -253,14 +344,27 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     )
                     .await
                     .map_err(|error| classify_first_proxy_endpoint_error(remote_addr, error))?;
-                    observation.record_proxy_tls(&stream, tls_start.elapsed());
+                    acquisition.complete();
+                    if let Some(observation) = connection_observation.as_ref()
+                        && observation
+                            .interest()
+                            .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+                    {
+                        observation.emit(
+                            &crate::observer::ConnectionObservationEvent::PhaseCompleted {
+                                phase: crate::observer::ConnectionEstablishmentPhase::TlsHandshake,
+                                at: crate::observer::Instant::now(),
+                            },
+                        );
+                    }
                     self.connect_after_first_proxy_local(
                         ProxyStreamLocal::new(stream),
                         remote_addr,
                         plan,
                         targets,
-                        &mut observation,
                         h2_peer_settings,
+                        connection_observation,
+                        acquisition,
                     )
                     .await?
                 }
@@ -273,8 +377,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                     remote_addr,
                     plan,
                     targets,
-                    &mut observation,
                     h2_peer_settings,
+                    connection_observation,
+                    acquisition,
                 )
                 .await?
             }
@@ -286,28 +391,80 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
     async fn connect_first_proxy_local(
         &self,
         addrs: &[SocketAddr],
+        observation: Option<LocalConnectionObservationOwner>,
     ) -> Result<(C::Stream, SocketAddr), Error> {
-        let (stream, remote_addr) = crate::happy_eyeballs::connect_happy_eyeballs_local::<R, C>(
-            &self.connector,
-            addrs,
-            self.core.local_address,
-        )
-        .await
-        .map_err(Error::Io)?;
+        if let Some(observation) = observation.as_ref()
+            && observation
+                .interest()
+                .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+        {
+            observation.emit(&crate::observer::ConnectionObservationEvent::PhaseStarted {
+                phase: crate::observer::ConnectionEstablishmentPhase::TcpConnect,
+                at: crate::observer::Instant::now(),
+            });
+        }
+        let connect = if let Some(observation) = observation.as_ref()
+            && observation
+                .interest()
+                .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+        {
+            crate::happy_eyeballs::connect_happy_eyeballs_local_observed::<R, C, _>(
+                &self.connector,
+                addrs,
+                self.core.local_address,
+                observation,
+            )
+            .await
+        } else {
+            crate::happy_eyeballs::connect_happy_eyeballs_local::<R, C>(
+                &self.connector,
+                addrs,
+                self.core.local_address,
+            )
+            .await
+            .map_err(Error::Io)
+        };
+        let (stream, remote_addr) = connect.inspect_err(|error| {
+            if let Some(observation) = observation.as_ref() {
+                observation.establishment_failed(error);
+            }
+        })?;
+        if let Some(observation) = observation.as_ref()
+            && observation
+                .interest()
+                .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+        {
+            observation.emit(
+                &crate::observer::ConnectionObservationEvent::PhaseCompleted {
+                    phase: crate::observer::ConnectionEstablishmentPhase::TcpConnect,
+                    at: crate::observer::Instant::now(),
+                },
+            );
+        }
 
-        configure_proxy_socket(&self.core, &stream)?;
+        if let Err(error) = configure_proxy_socket(&self.core, &stream) {
+            if let Some(observation) = observation.as_ref() {
+                observation.establishment_failed(&error);
+            }
+            return Err(error);
+        }
 
         Ok((stream, remote_addr))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_after_first_proxy_local(
         &self,
         stream: ProxyStreamLocal,
         first_proxy_addr: SocketAddr,
         plan: &ProxyEstablishmentPlan,
         targets: ProxyTargetAttempt,
-        observation: &mut ProxyAttemptObservation,
         h2_peer_settings: H2PeerSettingsRequirement,
+        connection_observation: Option<LocalConnectionObservationOwner>,
+        acquisition: &mut crate::observer::AcquisitionPhases<
+            '_,
+            crate::observer::LocalAttemptObserver,
+        >,
     ) -> Result<PooledConnection<RequestBodyLocal>, ProxyAttemptError> {
         let transitions = ProxyConnectionTransitions::new(
             plan,
@@ -320,11 +477,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 stream,
                 first.negotiation()?,
                 Some(ProxyEndpointFailureOwner::FirstProxy(first_proxy_addr)),
+                connection_observation.clone(),
+                acquisition,
             )
             .await?;
         let Some(second) = transitions.second() else {
             return self
-                .connect_proxy_origin_local(stream, plan, observation, h2_peer_settings)
+                .connect_proxy_origin_local(
+                    stream,
+                    plan,
+                    h2_peer_settings,
+                    connection_observation,
+                    acquisition,
+                )
                 .await
                 .map_err(|error| {
                     if h2_peer_settings.is_required() {
@@ -346,11 +511,41 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         .tls
                         .as_deref()
                         .ok_or_else(|| Error::Tls("no TLS connector configured".into()))?;
-                    let tls_start = Instant::now();
+                    if let Some(observation) = connection_observation.as_ref()
+                        && observation
+                            .interest()
+                            .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+                    {
+                        observation.emit(
+                            &crate::observer::ConnectionObservationEvent::PhaseStarted {
+                                phase: crate::observer::ConnectionEstablishmentPhase::TlsHandshake,
+                                at: crate::observer::Instant::now(),
+                            },
+                        );
+                    }
+                    acquisition.start(crate::observer::ConnectionAcquisitionPhase::TlsHandshake);
                     let stream = super::proxy_tls::connect_local(connector, _server_name, stream)
                         .await
-                        .map_err(|error| first.classify_target_setup_error(error))?;
-                    observation.record_proxy_tls(&stream, tls_start.elapsed());
+                        .map_err(|error| {
+                            let error = first.classify_target_setup_error(error);
+                            if let Some(connection_observation) = connection_observation.as_ref() {
+                                connection_observation.establishment_failed(error.error());
+                            }
+                            error
+                        })?;
+                    acquisition.complete();
+                    if let Some(observation) = connection_observation.as_ref()
+                        && observation
+                            .interest()
+                            .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+                    {
+                        observation.emit(
+                            &crate::observer::ConnectionObservationEvent::PhaseCompleted {
+                                phase: crate::observer::ConnectionEstablishmentPhase::TlsHandshake,
+                                at: crate::observer::Instant::now(),
+                            },
+                        );
+                    }
                     self.connect_final_proxy_local(
                         ProxyStreamLocal::new(stream),
                         second,
@@ -358,8 +553,9 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                             .local_target_hop()
                             .map(ProxyEndpointFailureOwner::LocalTarget),
                         plan,
-                        observation,
                         h2_peer_settings,
+                        connection_observation,
+                        acquisition,
                     )
                     .await
                 }
@@ -374,35 +570,53 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                         .local_target_hop()
                         .map(ProxyEndpointFailureOwner::LocalTarget),
                     plan,
-                    observation,
                     h2_peer_settings,
+                    connection_observation,
+                    acquisition,
                 )
                 .await
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_final_proxy_local(
         &self,
         stream: ProxyStreamLocal,
         transition: ProxyHopTransition<'_>,
         endpoint_failure_owner: Option<ProxyEndpointFailureOwner>,
         plan: &ProxyEstablishmentPlan,
-        observation: &mut ProxyAttemptObservation,
         h2_peer_settings: H2PeerSettingsRequirement,
+        connection_observation: Option<LocalConnectionObservationOwner>,
+        acquisition: &mut crate::observer::AcquisitionPhases<
+            '_,
+            crate::observer::LocalAttemptObserver,
+        >,
     ) -> Result<PooledConnection<RequestBodyLocal>, ProxyAttemptError> {
         let stream = self
-            .negotiate_proxy_local(stream, transition.negotiation()?, endpoint_failure_owner)
+            .negotiate_proxy_local(
+                stream,
+                transition.negotiation()?,
+                endpoint_failure_owner,
+                connection_observation.clone(),
+                acquisition,
+            )
             .await?;
-        self.connect_proxy_origin_local(stream, plan, observation, h2_peer_settings)
-            .await
-            .map_err(|error| {
-                if h2_peer_settings.is_required() {
-                    transition.classify_adaptive_h2c_setup_error(error)
-                } else {
-                    transition.classify_target_setup_error(error)
-                }
-            })
+        self.connect_proxy_origin_local(
+            stream,
+            plan,
+            h2_peer_settings,
+            connection_observation,
+            acquisition,
+        )
+        .await
+        .map_err(|error| {
+            if h2_peer_settings.is_required() {
+                transition.classify_adaptive_h2c_setup_error(error)
+            } else {
+                transition.classify_target_setup_error(error)
+            }
+        })
     }
 
     async fn negotiate_proxy_local(
@@ -410,8 +624,24 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         mut stream: ProxyStreamLocal,
         negotiation: ProxyNegotiation<'_>,
         endpoint_failure_owner: Option<ProxyEndpointFailureOwner>,
+        connection_observation: Option<LocalConnectionObservationOwner>,
+        acquisition: &mut crate::observer::AcquisitionPhases<
+            '_,
+            crate::observer::LocalAttemptObserver,
+        >,
     ) -> Result<ProxyStreamLocal, ProxyAttemptError> {
-        match negotiation {
+        acquisition.start(crate::observer::ConnectionAcquisitionPhase::ProxyConnect);
+        if let Some(observation) = connection_observation.as_ref()
+            && observation
+                .interest()
+                .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+        {
+            observation.emit(&crate::observer::ConnectionObservationEvent::PhaseStarted {
+                phase: crate::observer::ConnectionEstablishmentPhase::ProxyConnect,
+                at: crate::observer::Instant::now(),
+            });
+        }
+        let result = match negotiation {
             ProxyNegotiation::HttpConnect {
                 proxy,
                 connect_target,
@@ -467,6 +697,30 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
                 })?;
                 Ok(stream)
             }
+        };
+        match result {
+            Ok(stream) => {
+                acquisition.complete();
+                if let Some(observation) = connection_observation.as_ref()
+                    && observation
+                        .interest()
+                        .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+                {
+                    observation.emit(
+                        &crate::observer::ConnectionObservationEvent::PhaseCompleted {
+                            phase: crate::observer::ConnectionEstablishmentPhase::ProxyConnect,
+                            at: crate::observer::Instant::now(),
+                        },
+                    );
+                }
+                Ok(stream)
+            }
+            Err(error) => {
+                if let Some(observation) = connection_observation.as_ref() {
+                    observation.establishment_failed(error.error());
+                }
+                Err(error)
+            }
         }
     }
 
@@ -474,40 +728,50 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> HttpEngineLocal<R, C> {
         &self,
         stream: ProxyStreamLocal,
         plan: &ProxyEstablishmentPlan,
-        _observation: &mut ProxyAttemptObservation,
         h2_peer_settings: H2PeerSettingsRequirement,
+        connection_observation: Option<LocalConnectionObservationOwner>,
+        acquisition: &mut crate::observer::AcquisitionPhases<
+            '_,
+            crate::observer::LocalAttemptObserver,
+        >,
     ) -> Result<PooledConnection<RequestBodyLocal>, Error> {
         match ProxyOriginProtocol::for_plan(plan)? {
             ProxyOriginProtocol::Tls {
                 server_name: _server_name,
                 protocol_hint: _protocol_hint,
             } => {
+                acquisition.start(crate::observer::ConnectionAcquisitionPhase::TlsHandshake);
                 #[cfg(all(feature = "rustls", feature = "compio"))]
                 return self
-                    .connect_tls_local_with_hint_observed(
+                    .connect_tls_local_with_hint_observed_with_owner(
                         stream,
                         _server_name,
                         _protocol_hint,
-                        |stream, duration| _observation.record_proxy_tls(stream, duration),
+                        connection_observation,
+                        |_, _| acquisition.complete(),
                     )
                     .await;
                 #[cfg(not(all(feature = "rustls", feature = "compio")))]
                 unreachable!();
             }
-            ProxyOriginProtocol::Http1 => self.connect_h1_local(stream).await,
-            ProxyOriginProtocol::Http2 if h2_peer_settings.is_required() => {
-                let (connection, confirmation) = self
-                    .connect_h2_prior_knowledge_local_confirmed(stream)
-                    .await?;
-                if confirmation.confirmed_within::<R>().await {
-                    Ok(connection)
-                } else {
-                    Err(Error::Other(
-                        "proxy tunnel peer did not send an HTTP/2 SETTINGS preface".into(),
-                    ))
-                }
+            ProxyOriginProtocol::Http1 => {
+                self.connect_h1_local_with_observation(stream, connection_observation)
+                    .await
             }
-            ProxyOriginProtocol::Http2 => self.connect_h2_prior_knowledge_local(stream).await,
+            ProxyOriginProtocol::Http2 if h2_peer_settings.is_required() => {
+                self.connect_h2_prior_knowledge_local_confirmed_with_observation(
+                    stream,
+                    connection_observation,
+                )
+                .await
+            }
+            ProxyOriginProtocol::Http2 => {
+                self.connect_h2_prior_knowledge_local_with_observation(
+                    stream,
+                    connection_observation,
+                )
+                .await
+            }
         }
     }
 }

@@ -3,9 +3,9 @@
 //! # Why not `std::time::Instant`?
 //!
 //! `std::time::Instant::now()` issues a syscall on every invocation (~25 ns on
-//! Linux, ~60 ns on macOS). The `RequestObserver` fires 8+ timing events per
-//! request; at 80k req/s (speedboat target), that's 640k+ `Instant::now()`
-//! calls per second — adding ~16–40 ms/s of pure clock overhead.
+//! Linux, ~60 ns on macOS). Internal timing and explicitly selected
+//! observation milestones use the clock below. Unsubscribed observation
+//! categories do not read a clock.
 //!
 //! # Default: `coarsetime::Instant`
 //!
@@ -79,6 +79,7 @@ impl Instant {
     }
 
     #[inline]
+    #[cfg(test)]
     pub(crate) fn duration_since(&self, earlier: Instant) -> Duration {
         #[cfg(not(feature = "precise-timing"))]
         {

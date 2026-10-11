@@ -8,27 +8,44 @@ use bytes::{Bytes, BytesMut};
 use http::header::HeaderValue;
 use http::{HeaderMap, Method, StatusCode, Uri};
 use std::time::Duration;
+use std::{
+    future::Future,
+    pin::Pin,
+    rc::Rc,
+    task::{Context, Poll},
+};
 
 use crate::error::{BuilderError, Error};
+use crate::observer::{HostRequestObservation, NoopObserver, Observer};
 use crate::sse::{SseDecoder, SseEvent};
 
 /// HTTP client for WASI Preview 2 environments.
 ///
 /// Uses `wasi:http/outgoing-handler` to make requests. The WASI runtime handles
 /// TLS, connection pooling, and DNS resolution transparently.
-#[derive(Debug, Clone)]
-pub struct WasiClient {
+pub struct WasiClient<O = NoopObserver> {
     default_headers: HeaderMap,
+    observer: Rc<O>,
 }
 
 /// Builder for configuring a [`WasiClient`].
 #[derive(Debug, Clone)]
-pub struct WasiClientBuilder {
+pub struct WasiClientBuilder<O = NoopObserver> {
     default_headers: HeaderMap,
     builder_error: Option<BuilderError>,
+    observer: O,
 }
 
-impl WasiClientBuilder {
+impl<O> WasiClientBuilder<O> {
+    /// Configure the backend-neutral request observer.
+    pub fn observer<O2>(self, observer: O2) -> WasiClientBuilder<O2> {
+        WasiClientBuilder {
+            default_headers: self.default_headers,
+            builder_error: self.builder_error,
+            observer,
+        }
+    }
+
     /// Set a default User-Agent header.
     pub fn user_agent(mut self, value: impl AsRef<str>) -> Self {
         match HeaderValue::from_str(value.as_ref()) {
@@ -50,17 +67,21 @@ impl WasiClientBuilder {
     }
 
     /// Build the client.
-    pub fn build(mut self) -> Result<WasiClient, crate::error::Error> {
+    pub fn build(mut self) -> Result<WasiClient<O>, crate::error::Error>
+    where
+        O: Observer,
+    {
         if let Some(error) = self.builder_error.take() {
             return Err(error.into_error());
         }
         Ok(WasiClient {
             default_headers: self.default_headers,
+            observer: Rc::new(self.observer),
         })
     }
 }
 
-impl WasiClient {
+impl WasiClient<NoopObserver> {
     /// Create a new client with default settings.
     #[allow(clippy::expect_used)]
     pub fn new() -> Self {
@@ -68,7 +89,7 @@ impl WasiClient {
     }
 
     /// Create a builder for configuring the client.
-    pub fn builder() -> WasiClientBuilder {
+    pub fn builder() -> WasiClientBuilder<NoopObserver> {
         let mut default_headers = HeaderMap::new();
         let ua = concat!("aioduct/", env!("CARGO_PKG_VERSION"));
         if let Ok(val) = HeaderValue::from_str(ua) {
@@ -77,41 +98,44 @@ impl WasiClient {
         WasiClientBuilder {
             default_headers,
             builder_error: None,
+            observer: NoopObserver,
         }
     }
+}
 
+impl<O: Observer> WasiClient<O> {
     /// Start a GET request.
-    pub fn get(&self, uri: &str) -> Result<WasiRequestBuilder<'_>, Error> {
+    pub fn get(&self, uri: &str) -> Result<WasiRequestBuilder<'_, O>, Error> {
         self.request(Method::GET, uri)
     }
 
     /// Start a HEAD request.
-    pub fn head(&self, uri: &str) -> Result<WasiRequestBuilder<'_>, Error> {
+    pub fn head(&self, uri: &str) -> Result<WasiRequestBuilder<'_, O>, Error> {
         self.request(Method::HEAD, uri)
     }
 
     /// Start a POST request.
-    pub fn post(&self, uri: &str) -> Result<WasiRequestBuilder<'_>, Error> {
+    pub fn post(&self, uri: &str) -> Result<WasiRequestBuilder<'_, O>, Error> {
         self.request(Method::POST, uri)
     }
 
     /// Start a PUT request.
-    pub fn put(&self, uri: &str) -> Result<WasiRequestBuilder<'_>, Error> {
+    pub fn put(&self, uri: &str) -> Result<WasiRequestBuilder<'_, O>, Error> {
         self.request(Method::PUT, uri)
     }
 
     /// Start a PATCH request.
-    pub fn patch(&self, uri: &str) -> Result<WasiRequestBuilder<'_>, Error> {
+    pub fn patch(&self, uri: &str) -> Result<WasiRequestBuilder<'_, O>, Error> {
         self.request(Method::PATCH, uri)
     }
 
     /// Start a DELETE request.
-    pub fn delete(&self, uri: &str) -> Result<WasiRequestBuilder<'_>, Error> {
+    pub fn delete(&self, uri: &str) -> Result<WasiRequestBuilder<'_, O>, Error> {
         self.request(Method::DELETE, uri)
     }
 
     /// Start a request with a custom method.
-    pub fn request(&self, method: Method, uri: &str) -> Result<WasiRequestBuilder<'_>, Error> {
+    pub fn request(&self, method: Method, uri: &str) -> Result<WasiRequestBuilder<'_, O>, Error> {
         let uri: Uri = uri.parse().map_err(|e| Error::InvalidUrl(format!("{e}")))?;
         Ok(WasiRequestBuilder {
             client: WasiClientRef::Borrowed(self),
@@ -124,20 +148,42 @@ impl WasiClient {
             read_timeout: None,
             no_decompression: false,
             builder_error: None,
+            observation_context: None,
+            observation_disabled: false,
         })
     }
 }
 
-impl Default for WasiClient {
+impl Default for WasiClient<NoopObserver> {
     fn default() -> Self {
         Self::new()
     }
 }
 
+impl<O> std::fmt::Debug for WasiClient<O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasiClient")
+            .field("default_headers", &self.default_headers)
+            .finish()
+    }
+}
+
+impl<O> Clone for WasiClient<O> {
+    fn clone(&self) -> Self {
+        Self {
+            default_headers: self.default_headers.clone(),
+            observer: self.observer.clone(),
+        }
+    }
+}
+
 /// A request being built before sending.
 #[derive(Debug)]
-pub struct WasiRequestBuilder<'a> {
-    client: WasiClientRef<'a>,
+pub struct WasiRequestBuilder<'a, O = NoopObserver>
+where
+    O: Observer,
+{
+    client: WasiClientRef<'a, O>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -147,17 +193,19 @@ pub struct WasiRequestBuilder<'a> {
     read_timeout: Option<Duration>,
     no_decompression: bool,
     builder_error: Option<BuilderError>,
+    observation_context: Option<O::Context>,
+    observation_disabled: bool,
 }
 
 #[derive(Debug)]
-enum WasiClientRef<'a> {
-    Borrowed(&'a WasiClient),
-    Owned(WasiClient),
+enum WasiClientRef<'a, O> {
+    Borrowed(&'a WasiClient<O>),
+    Owned(WasiClient<O>),
 }
 
-impl std::ops::Deref for WasiClientRef<'_> {
-    type Target = WasiClient;
-    fn deref(&self) -> &WasiClient {
+impl<O> std::ops::Deref for WasiClientRef<'_, O> {
+    type Target = WasiClient<O>;
+    fn deref(&self) -> &WasiClient<O> {
         match self {
             WasiClientRef::Borrowed(r) => r,
             WasiClientRef::Owned(o) => o,
@@ -165,12 +213,12 @@ impl std::ops::Deref for WasiClientRef<'_> {
     }
 }
 
-impl<'a> WasiRequestBuilder<'a> {
+impl<'a, O: Observer> WasiRequestBuilder<'a, O> {
     pub(crate) fn new_owned(
-        client: WasiClient,
+        client: WasiClient<O>,
         method: Method,
         uri: Uri,
-    ) -> WasiRequestBuilder<'static> {
+    ) -> WasiRequestBuilder<'static, O> {
         WasiRequestBuilder {
             client: WasiClientRef::Owned(client),
             method,
@@ -182,7 +230,23 @@ impl<'a> WasiRequestBuilder<'a> {
             read_timeout: None,
             no_decompression: false,
             builder_error: None,
+            observation_context: None,
+            observation_disabled: false,
         }
+    }
+
+    /// Skip observation for this logical request.
+    pub fn disable_observation(mut self) -> Self {
+        self.observation_disabled = true;
+        self.observation_context = None;
+        self
+    }
+
+    /// Supply request-scoped context to the configured observer.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.observation_context = Some(context);
+        self.observation_disabled = false;
+        self
     }
 
     pub(crate) fn uri(&self) -> &Uri {
@@ -359,12 +423,36 @@ impl<'a> WasiRequestBuilder<'a> {
 
     /// Send the request and return the response.
     pub fn send(mut self) -> Result<WasiResponse, Error> {
-        use wasi::http::outgoing_handler;
-        use wasi::http::types::{Fields, OutgoingBody, OutgoingRequest, RequestOptions, Scheme};
-
         if let Some(error) = self.builder_error.take() {
             return Err(error.into_error());
         }
+        let observation = (!self.observation_disabled).then(|| {
+            HostRequestObservation::begin(
+                self.client.observer.as_ref(),
+                &self.method,
+                &self.uri,
+                self.observation_context.take(),
+            )
+        });
+        let mut observation = observation.flatten();
+        match self.send_inner(&mut observation) {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                if let Some(observation) = observation {
+                    observation.execution_failed(&error);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn send_inner(
+        self,
+        observation: &mut Option<HostRequestObservation>,
+    ) -> Result<WasiResponse, Error> {
+        use wasi::http::outgoing_handler;
+        use wasi::http::types::{Fields, OutgoingBody, OutgoingRequest, RequestOptions, Scheme};
+
         let _raw_response_requested = self.no_decompression;
 
         let fields = Fields::new();
@@ -482,6 +570,9 @@ impl<'a> WasiRequestBuilder<'a> {
                 .map_err(|()| Error::Other("failed to set WASI between-bytes timeout".into()))?;
         }
 
+        if let Some(observation) = observation.as_ref() {
+            observation.attempt_started();
+        }
         let future_resp = outgoing_handler::handle(request, Some(options))
             .map_err(|e| Error::Other(format!("outgoing-handler: {e:?}").into()))?;
 
@@ -500,6 +591,10 @@ impl<'a> WasiRequestBuilder<'a> {
 
         let status = StatusCode::from_u16(incoming_resp.status())
             .map_err(|e| Error::Other(format!("invalid status code: {e}").into()))?;
+
+        if let Some(observation) = observation.as_ref() {
+            observation.observe_headers(status);
+        }
 
         let mut headers = HeaderMap::new();
         let resp_headers = incoming_resp.headers();
@@ -527,6 +622,7 @@ impl<'a> WasiRequestBuilder<'a> {
                 stream: body_stream,
             },
             url: self.uri,
+            observation: observation.take(),
         })
     }
 }
@@ -537,6 +633,7 @@ pub struct WasiResponse {
     headers: HeaderMap,
     body: WasiBody,
     url: Uri,
+    observation: Option<HostRequestObservation>,
 }
 
 impl std::fmt::Debug for WasiResponse {
@@ -551,6 +648,9 @@ impl std::fmt::Debug for WasiResponse {
 
 impl Drop for WasiResponse {
     fn drop(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.body_abandoned();
+        }
         if let WasiBody::Stream {
             incoming_body,
             stream,
@@ -588,29 +688,42 @@ impl WasiResponse {
 
     /// Consume the response and return the body bytes.
     pub fn bytes(mut self) -> Result<Bytes, Error> {
-        match std::mem::replace(&mut self.body, WasiBody::Consumed) {
+        let observation = self.observation.take();
+        let result = match std::mem::replace(&mut self.body, WasiBody::Consumed) {
             WasiBody::Stream {
                 incoming_body,
                 stream,
             } => {
                 let mut buf = Vec::new();
+                let mut read_error = None;
                 loop {
                     match stream.blocking_read(64 * 1024) {
                         Ok(chunk) => buf.extend_from_slice(&chunk),
                         Err(wasi::io::streams::StreamError::Closed) => break,
                         Err(e) => {
-                            return Err(Error::Io(std::io::Error::other(format!(
+                            read_error = Some(Error::Io(std::io::Error::other(format!(
                                 "body read: {e:?}"
                             ))));
+                            break;
                         }
                     }
                 }
                 drop(stream);
                 wasi::http::types::IncomingBody::finish(incoming_body);
-                Ok(Bytes::from(buf))
+                match read_error {
+                    Some(error) => Err(error),
+                    None => Ok(Bytes::from(buf)),
+                }
             }
             WasiBody::Consumed => Ok(Bytes::new()),
+        };
+        if let Some(observation) = observation {
+            match &result {
+                Ok(_) => observation.body_ended(),
+                Err(error) => observation.body_failed(error),
+            }
         }
+        result
     }
 
     /// Consume the response and return the body as UTF-8 text.
@@ -628,6 +741,7 @@ impl WasiResponse {
 
     /// Convert the response into a streaming byte reader.
     pub fn into_bytes_stream(mut self) -> WasiBodyStream {
+        let observation = self.observation.take();
         match std::mem::replace(&mut self.body, WasiBody::Consumed) {
             WasiBody::Stream {
                 incoming_body,
@@ -636,22 +750,30 @@ impl WasiResponse {
                 stream: Some(stream),
                 incoming_body: Some(incoming_body),
                 done: false,
+                observation,
             },
             WasiBody::Consumed => WasiBodyStream {
                 stream: None,
                 incoming_body: None,
                 done: true,
+                observation,
             },
         }
     }
 
     /// Convert the response into a streaming Server-Sent Events reader.
     pub fn into_sse_stream(self) -> WasiSseStream {
+        let mut body = self.into_bytes_stream();
+        let observation = body.take_observation();
+        if let Some(observation) = observation.as_ref() {
+            observation.sse_started();
+        }
         WasiSseStream {
-            body: self.into_bytes_stream(),
+            body,
             buf: BytesMut::new(),
             decoder: SseDecoder::new(),
             done: false,
+            observation,
         }
     }
 
@@ -671,6 +793,7 @@ pub struct WasiBodyStream {
     stream: Option<wasi::io::streams::InputStream>,
     incoming_body: Option<wasi::http::types::IncomingBody>,
     done: bool,
+    observation: Option<HostRequestObservation>,
 }
 
 /// Synchronous Server-Sent Events stream for WASI Preview 2.
@@ -679,6 +802,27 @@ pub struct WasiSseStream {
     buf: BytesMut,
     decoder: SseDecoder,
     done: bool,
+    observation: Option<HostRequestObservation>,
+}
+
+/// Future adapting the existing synchronous WASI SSE read to `SseStreamExt`.
+/// Polling still performs a blocking host read; no nonblocking behavior is implied.
+#[must_use = "futures do nothing unless polled or awaited"]
+pub struct WasiSseNext<'a> {
+    stream: &'a mut WasiSseStream,
+}
+
+impl<'a> WasiSseNext<'a> {
+    pub(crate) fn new(stream: &'a mut WasiSseStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Future for WasiSseNext<'_> {
+    type Output = Option<Result<SseEvent, Error>>;
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(self.get_mut().stream.next())
+    }
 }
 
 impl std::fmt::Debug for WasiSseStream {
@@ -699,18 +843,60 @@ impl WasiSseStream {
     pub fn next(&mut self) -> Option<Result<SseEvent, Error>> {
         loop {
             if let Some(event) = self.decoder.decode(&mut self.buf) {
+                if let Some(observation) = self.observation.as_ref() {
+                    observation.sse_buffered(self.buf.len());
+                }
+                if let Err(error) = &event
+                    && let Some(observation) = self.observation.as_ref()
+                {
+                    observation.sse_error(error);
+                }
+                if let Some(observation) = self.observation.as_ref()
+                    && let Ok(event) = &event
+                {
+                    observation.sse_event_delivered(event);
+                }
                 return Some(event);
             }
             if self.done {
+                if let Some(observation) = self.observation.take() {
+                    observation.sse_ended();
+                }
                 return None;
             }
             match self.body.next() {
-                Some(Ok(chunk)) => self.buf.extend_from_slice(&chunk),
-                Some(Err(error)) => return Some(Err(error)),
+                Some(Ok(chunk)) => {
+                    self.buf.extend_from_slice(&chunk);
+                    if let Some(observation) = self.observation.as_ref() {
+                        observation.sse_buffered(self.buf.len());
+                    }
+                }
+                Some(Err(error)) => {
+                    if let Some(observation) = self.observation.take() {
+                        observation.sse_failed(&error);
+                    }
+                    return Some(Err(error));
+                }
                 None => {
                     self.done = true;
                     if let Some(event) = self.decoder.decode(&mut self.buf) {
+                        if let Some(observation) = self.observation.as_ref() {
+                            observation.sse_buffered(self.buf.len());
+                        }
+                        if let Err(error) = &event
+                            && let Some(observation) = self.observation.as_ref()
+                        {
+                            observation.sse_error(error);
+                        }
+                        if let Some(observation) = self.observation.as_ref()
+                            && let Ok(event) = &event
+                        {
+                            observation.sse_event_delivered(event);
+                        }
                         return Some(event);
+                    }
+                    if let Some(observation) = self.observation.take() {
+                        observation.sse_ended();
                     }
                     return None;
                 }
@@ -727,11 +913,52 @@ impl std::fmt::Debug for WasiBodyStream {
     }
 }
 
+/// Future used by [`ByteStreamExt::next`](crate::traits::ByteStreamExt::next)
+/// for a WASI response body.
+///
+/// Polling performs the existing synchronous host read; it does not make that
+/// read nonblocking. Its fields and representation are implementation details.
+#[must_use = "futures do nothing unless polled or awaited"]
+pub struct WasiBodyNext<'a> {
+    stream: &'a mut WasiBodyStream,
+}
+
+impl<'a> WasiBodyNext<'a> {
+    pub(crate) fn new(stream: &'a mut WasiBodyStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Future for WasiBodyNext<'_> {
+    type Output = Option<Result<Bytes, Error>>;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Ready(self.get_mut().stream.next())
+    }
+}
+
 impl WasiBodyStream {
+    fn take_observation(&mut self) -> Option<HostRequestObservation> {
+        self.observation.take()
+    }
+
+    fn observation_ended(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.body_ended();
+        }
+    }
+
+    fn observation_failed(&mut self, error: &Error) {
+        if let Some(observation) = self.observation.take() {
+            observation.body_failed(error);
+        }
+    }
+
     /// Returns the next chunk of body data, or `None` when complete.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Result<Bytes, Error>> {
         if self.done {
+            self.observation_ended();
             return None;
         }
 
@@ -739,6 +966,7 @@ impl WasiBodyStream {
             Some(s) => s,
             None => {
                 self.done = true;
+                self.observation_ended();
                 return None;
             }
         };
@@ -748,6 +976,7 @@ impl WasiBodyStream {
                 if chunk.is_empty() {
                     self.done = true;
                     self.finish();
+                    self.observation_ended();
                     None
                 } else {
                     Some(Ok(Bytes::from(chunk)))
@@ -756,14 +985,15 @@ impl WasiBodyStream {
             Err(wasi::io::streams::StreamError::Closed) => {
                 self.done = true;
                 self.finish();
+                self.observation_ended();
                 None
             }
             Err(e) => {
                 self.done = true;
                 self.finish();
-                Some(Err(Error::Io(std::io::Error::other(format!(
-                    "body read: {e:?}"
-                )))))
+                let error = Error::Io(std::io::Error::other(format!("body read: {e:?}")));
+                self.observation_failed(&error);
+                Some(Err(error))
             }
         }
     }
@@ -778,7 +1008,18 @@ impl WasiBodyStream {
 
 impl Drop for WasiBodyStream {
     fn drop(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.body_abandoned();
+        }
         self.finish();
+    }
+}
+
+impl Drop for WasiSseStream {
+    fn drop(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.sse_abandoned();
+        }
     }
 }
 
@@ -998,5 +1239,28 @@ mod tests {
                 .default_headers
                 .contains_key(http::header::USER_AGENT)
         );
+    }
+
+    #[test]
+    fn named_body_next_is_lazy_and_keeps_sync_inherent_next() {
+        use crate::traits::ByteStreamExt;
+        let mut stream = WasiBodyStream {
+            stream: None,
+            incoming_body: None,
+            done: false,
+            observation: None,
+        };
+        drop(ByteStreamExt::next(&mut stream));
+        assert!(!stream.done);
+        {
+            let mut next = std::pin::pin!(ByteStreamExt::next(&mut stream));
+            assert!(matches!(
+                next.as_mut()
+                    .poll(&mut Context::from_waker(std::task::Waker::noop())),
+                Poll::Ready(None)
+            ));
+        }
+        assert!(stream.done);
+        assert!(WasiBodyStream::next(&mut stream).is_none());
     }
 }

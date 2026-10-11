@@ -601,6 +601,7 @@ impl<B: 'static> ConnectionPool<B> {
         key: &PoolKey,
         matches: impl Fn(&PooledConnection<B>) -> bool,
     ) -> Option<PooledConnection<B>> {
+        let mut retired = Vec::new();
         let pool_weak = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().ok()?;
 
@@ -630,12 +631,16 @@ impl<B: 'static> ConnectionPool<B> {
                     self.counters
                         .idle_timeout_evictions
                         .fetch_add(1, Ordering::Relaxed);
+                    let change = entry.connection.metrics.reserve_eligibility(false);
+                    retired.push((entry, change));
                     continue;
                 }
                 if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
                     self.counters
                         .max_lifetime_evictions
                         .fetch_add(1, Ordering::Relaxed);
+                    let change = entry.connection.metrics.reserve_eligibility(false);
+                    retired.push((entry, change));
                     continue;
                 }
                 if !matches(&entry.connection) {
@@ -674,6 +679,8 @@ impl<B: 'static> ConnectionPool<B> {
                 self.counters
                     .checkout_not_ready_evictions
                     .fetch_add(1, Ordering::Relaxed);
+                let change = entry.connection.metrics.reserve_eligibility(false);
+                retired.push((entry, change));
             }
 
             if result.is_none() {
@@ -691,6 +698,12 @@ impl<B: 'static> ConnectionPool<B> {
         if result.is_some() {
             *inner.active.entry(key.clone()).or_insert(0) += 1;
         }
+        drop(inner);
+        for (_entry, change) in retired {
+            if let Some(change) = change {
+                change.dispatch();
+            }
+        }
         result
     }
 
@@ -698,6 +711,8 @@ impl<B: 'static> ConnectionPool<B> {
     ///
     /// When at capacity, evicts the oldest idle connection to make room.
     pub(crate) fn checkin(&self, key: PoolKey, mut connection: PooledConnection<B>) {
+        let mut changes = Vec::new();
+        let evicted;
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
@@ -715,6 +730,11 @@ impl<B: 'static> ConnectionPool<B> {
         let max = inner.max_idle_per_host;
 
         if max == 0 {
+            let change = connection.metrics.reserve_eligibility(false);
+            drop(inner);
+            if let Some(change) = change {
+                change.dispatch();
+            }
             return;
         }
 
@@ -722,6 +742,11 @@ impl<B: 'static> ConnectionPool<B> {
             self.counters
                 .max_lifetime_evictions
                 .fetch_add(1, Ordering::Relaxed);
+            let change = connection.metrics.reserve_eligibility(false);
+            drop(inner);
+            if let Some(change) = change {
+                change.dispatch();
+            }
             return;
         }
 
@@ -733,18 +758,33 @@ impl<B: 'static> ConnectionPool<B> {
                 .insert(key.clone());
         }
 
+        if let Some(change) = connection.metrics.reserve_eligibility(true) {
+            changes.push(change);
+        }
         let queue = inner.idle.entry(key).or_default();
 
         if queue.len() >= max {
-            queue.pop_front();
+            evicted = queue.pop_front();
+            if let Some(entry) = &evicted
+                && let Some(change) = entry.connection.metrics.reserve_eligibility(false)
+            {
+                changes.push(change);
+            }
             self.counters
                 .capacity_evictions
                 .fetch_add(1, Ordering::Relaxed);
+        } else {
+            evicted = None;
         }
         queue.push_back(IdleConnection {
             connection,
             idle_since: Instant::now(),
         });
+        drop(inner);
+        for change in changes {
+            change.dispatch();
+        }
+        drop(evicted);
     }
 
     /// Record a checkout hit (pool reuse) at the request level.
@@ -838,10 +878,24 @@ impl<B: 'static> ConnectionPool<B> {
     /// Used after detecting a stale H2/H3 connection to ensure multiplexed
     /// clones sharing the same broken transport are not re-issued on retry.
     pub(crate) fn evict(&self, key: &PoolKey) {
+        let mut changes = Vec::new();
+        let removed;
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
-        inner.idle.remove(key);
+        removed = inner.idle.remove(key);
+        if let Some(queue) = &removed {
+            for entry in queue {
+                if let Some(change) = entry.connection.metrics.reserve_eligibility(false) {
+                    changes.push(change);
+                }
+            }
+        }
+        drop(inner);
+        for change in changes {
+            change.dispatch();
+        }
+        drop(removed);
     }
 
     /// Returns true if there is an in-progress H2/H3 connection for this key.
@@ -1014,6 +1068,48 @@ impl<B: 'static> ConnectionPool<B> {
         }
     }
 
+    fn prune_expired(
+        inner: &mut PoolInner<B>,
+        counters: &PoolCounters,
+        retired: &mut Vec<(
+            IdleConnection<B>,
+            Option<crate::observer::EligibilityChange>,
+        )>,
+    ) {
+        let now = Instant::now();
+        let idle_timeout = inner.idle_timeout;
+        let max_lifetime = inner.max_lifetime;
+        for queue in inner.idle.values_mut() {
+            // Rotate each entry once, preserving order with linear pruning.
+            let count = queue.len();
+            for _ in 0..count {
+                let Some(entry) = queue.pop_front() else {
+                    break;
+                };
+                let counter = if now.duration_since(entry.idle_since) >= idle_timeout {
+                    Some(&counters.idle_timeout_evictions)
+                } else if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
+                    Some(&counters.max_lifetime_evictions)
+                } else {
+                    None
+                };
+                if let Some(counter) = counter {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    let change = entry.connection.metrics.reserve_eligibility(false);
+                    retired.push((entry, change));
+                } else {
+                    queue.push_back(entry);
+                }
+            }
+        }
+        inner.idle.retain(|_, queue| !queue.is_empty());
+        let live_keys: HashSet<PoolKey> = inner.idle.keys().cloned().collect();
+        inner.san_index.retain(|_, keys| {
+            keys.retain(|key| live_keys.contains(key));
+            !keys.is_empty()
+        });
+    }
+
     fn spawn_reaper<R: RuntimePoll>(&self)
     where
         B: Send,
@@ -1037,35 +1133,17 @@ impl<B: 'static> ConnectionPool<B> {
                 let Some(inner) = inner.upgrade() else {
                     return;
                 };
+                let mut retired = Vec::new();
                 let Ok(mut guard) = inner.lock() else {
                     return;
                 };
-                let now = Instant::now();
-                let idle_timeout = guard.idle_timeout;
-                let max_lifetime = guard.max_lifetime;
-                guard.idle.retain(|_, queue| {
-                    queue.retain(|entry| {
-                        if now.duration_since(entry.idle_since) >= idle_timeout {
-                            counters
-                                .idle_timeout_evictions
-                                .fetch_add(1, Ordering::Relaxed);
-                            return false;
-                        }
-                        if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
-                            counters
-                                .max_lifetime_evictions
-                                .fetch_add(1, Ordering::Relaxed);
-                            return false;
-                        }
-                        true
-                    });
-                    !queue.is_empty()
-                });
-                let live_keys: HashSet<PoolKey> = guard.idle.keys().cloned().collect();
-                guard.san_index.retain(|_, keys| {
-                    keys.retain(|k| live_keys.contains(k));
-                    !keys.is_empty()
-                });
+                Self::prune_expired(&mut guard, &counters, &mut retired);
+                drop(guard);
+                for (_entry, change) in retired {
+                    if let Some(change) = change {
+                        change.dispatch();
+                    }
+                }
             }
         });
     }
@@ -1096,35 +1174,17 @@ impl<B: 'static> ConnectionPool<B> {
                 let Some(inner) = inner.upgrade() else {
                     return;
                 };
+                let mut retired = Vec::new();
                 let Ok(mut guard) = inner.lock() else {
                     return;
                 };
-                let now = Instant::now();
-                let idle_timeout = guard.idle_timeout;
-                let max_lifetime = guard.max_lifetime;
-                guard.idle.retain(|_, queue| {
-                    queue.retain(|entry| {
-                        if now.duration_since(entry.idle_since) >= idle_timeout {
-                            counters
-                                .idle_timeout_evictions
-                                .fetch_add(1, Ordering::Relaxed);
-                            return false;
-                        }
-                        if !Self::connection_within_lifetime(&entry.connection, max_lifetime) {
-                            counters
-                                .max_lifetime_evictions
-                                .fetch_add(1, Ordering::Relaxed);
-                            return false;
-                        }
-                        true
-                    });
-                    !queue.is_empty()
-                });
-                let live_keys: HashSet<PoolKey> = guard.idle.keys().cloned().collect();
-                guard.san_index.retain(|_, keys| {
-                    keys.retain(|k| live_keys.contains(k));
-                    !keys.is_empty()
-                });
+                Self::prune_expired(&mut guard, &counters, &mut retired);
+                drop(guard);
+                for (_entry, change) in retired {
+                    if let Some(change) = change {
+                        change.dispatch();
+                    }
+                }
             }
         });
     }

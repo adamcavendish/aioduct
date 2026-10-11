@@ -71,39 +71,7 @@ async fn cookie_jar_stores_and_sends() {
 
 // ── 4. Observer receives events ──────────────────────────────────────────────
 
-#[derive(Default, Clone)]
-pub struct TestObserver {
-    pub phases: Arc<Mutex<Vec<String>>>,
-    pub conn_events: Arc<Mutex<Vec<String>>>,
-}
-
-impl RequestObserver for TestObserver {
-    fn on_event(&self, event: &RequestEvent) {
-        let phase_name = match &event.phase {
-            RequestPhase::Started => "Started".to_string(),
-            RequestPhase::PoolCheckoutComplete { .. } => "PoolCheckoutComplete".to_string(),
-            RequestPhase::DnsResolved { .. } => "DnsResolved".to_string(),
-            RequestPhase::TcpConnected { .. } => "TcpConnected".to_string(),
-            RequestPhase::TlsHandshakeComplete { .. } => "TlsHandshakeComplete".to_string(),
-            RequestPhase::RequestSent { .. } => "RequestSent".to_string(),
-            RequestPhase::ResponseStarted { .. } => "ResponseStarted".to_string(),
-            RequestPhase::ResponseComplete { .. } => "ResponseComplete".to_string(),
-            RequestPhase::Failed { .. } => "Failed".to_string(),
-            RequestPhase::BytesTransferred { .. } => "BytesTransferred".to_string(),
-            RequestPhase::TransferComplete { .. } => "TransferComplete".to_string(),
-            RequestPhase::TransferAborted { .. } => "TransferAborted".to_string(),
-            RequestPhase::Redirected { .. } => "Redirected".to_string(),
-            RequestPhase::Retrying { .. } => "Retrying".to_string(),
-            RequestPhase::TrailersReceived { .. } => "TrailersReceived".to_string(),
-        };
-        self.phases.lock().unwrap().push(phase_name);
-    }
-
-    fn on_connection_event(&self, event: &ConnectionEvent) {
-        let name = format!("{:?}", event.phase);
-        self.conn_events.lock().unwrap().push(name);
-    }
-}
+pub use super::observation_support::TestObserver;
 
 #[tokio::test]
 async fn observer_receives_lifecycle_events() {
@@ -111,7 +79,7 @@ async fn observer_receives_lifecycle_events() {
     let obs = TestObserver::default();
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .build()
         .unwrap();
 
@@ -123,27 +91,19 @@ async fn observer_receives_lifecycle_events() {
         .unwrap();
     let _ = resp.bytes().await.unwrap();
 
-    let phases = obs.phases.lock().unwrap();
-    assert!(
-        phases.contains(&"Started".to_string()),
-        "phases: {phases:?}"
-    );
-    assert!(
-        phases.contains(&"DnsResolved".to_string()),
-        "phases: {phases:?}"
-    );
-    assert!(
-        phases.contains(&"TcpConnected".to_string()),
-        "phases: {phases:?}"
-    );
-    assert!(
-        phases.contains(&"RequestSent".to_string()),
-        "phases: {phases:?}"
-    );
-    assert!(
-        phases.contains(&"ResponseComplete".to_string()),
-        "phases: {phases:?}"
-    );
+    let phases = obs.phases();
+    for expected in [
+        "RequestStart",
+        "AttemptStarted",
+        "ResponseHeaders",
+        "ResponseBodyEnded",
+        "RequestFinish(Ended)",
+    ] {
+        assert!(
+            phases.iter().any(|fact| fact == expected),
+            "missing {expected}: {phases:?}"
+        );
+    }
 }
 
 // ── 5. Read timeout on body ──────────────────────────────────────────────────

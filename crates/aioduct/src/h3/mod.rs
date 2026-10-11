@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::body::RequestBodySend;
 use crate::error::Error;
+use crate::observer::{ConnectAttempt, ConnectionObservationOwner, TransportKind};
 use crate::pool::PooledConnection;
 use crate::runtime::RuntimePoll;
 
@@ -63,21 +64,32 @@ impl Clone for H3Connection {
 
 pub(crate) async fn connect_h3<R: RuntimePoll>(
     quinn_conn: quinn::Connection,
+    observation: Option<crate::observer::ConnectionObservationOwner>,
 ) -> Result<PooledConnection<RequestBodySend>, Error> {
     let h3_conn = quinn_adapter::Connection::new(quinn_conn);
     let request_streams = h3_conn.request_streams();
-    let (mut driver, send_request) = h3::client::new(h3_conn)
-        .await
-        .map_err(|e| Error::Other(Box::new(e)))?;
+    let (mut driver, send_request) = h3::client::new(h3_conn).await.map_err(|e| {
+        let error = Error::Other(Box::new(e));
+        if let Some(observation) = observation.as_ref() {
+            observation.establishment_failed(&error);
+        }
+        error
+    })?;
+
+    let mut pooled = PooledConnection::new_h3_with_observation(
+        H3Connection::new(send_request, request_streams),
+        observation,
+    );
+    pooled.observe_established();
+    let metrics = std::sync::Arc::clone(&pooled.metrics);
 
     R::spawn_send(async move {
-        let _ = futures_util::future::poll_fn(|cx| driver.poll_close(cx)).await;
+        let result = futures_util::future::poll_fn(|cx| driver.poll_close(cx)).await;
+        let error = (!result.is_h3_no_error()).then(|| Error::Other(Box::new(result)));
+        metrics.observe_closed(error);
     });
 
-    Ok(PooledConnection::new_h3(H3Connection::new(
-        send_request,
-        request_streams,
-    )))
+    Ok(pooled)
 }
 
 pub(crate) async fn connect_h3_addrs<R: RuntimePoll>(
@@ -85,11 +97,53 @@ pub(crate) async fn connect_h3_addrs<R: RuntimePoll>(
     addrs: &[SocketAddr],
     server_name: &str,
     local_address: Option<IpAddr>,
+    observation: Option<crate::observer::ConnectionObservationOwner>,
+    on_quic_complete: impl FnOnce(),
 ) -> Result<(PooledConnection<RequestBodySend>, SocketAddr), Error> {
-    let addrs = h3_candidate_addrs(endpoint, addrs, local_address)?;
+    let addrs = match h3_candidate_addrs(endpoint, addrs, local_address) {
+        Ok(addrs) => addrs,
+        Err(error) => {
+            if let Some(observation) = observation.as_ref() {
+                observation.establishment_failed(&error);
+            }
+            return Err(error);
+        }
+    };
 
-    let (quinn_conn, addr) = race_quic_connect::<R>(endpoint, &addrs, server_name).await?;
-    let pooled = connect_h3::<R>(quinn_conn).await?;
+    if let Some(observation) = observation.as_ref()
+        && observation
+            .interest()
+            .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+    {
+        observation.emit(&crate::observer::ConnectionObservationEvent::PhaseStarted {
+            phase: crate::observer::ConnectionEstablishmentPhase::QuicConnect,
+            at: crate::observer::Instant::now(),
+        });
+    }
+    let (quinn_conn, addr) =
+        match race_quic_connect::<R>(endpoint, &addrs, server_name, observation.as_ref()).await {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(observation) = observation.as_ref() {
+                    observation.establishment_failed(&error);
+                }
+                return Err(error);
+            }
+        };
+    on_quic_complete();
+    if let Some(observation) = observation.as_ref()
+        && observation
+            .interest()
+            .contains(crate::observer::Interest::CONNECTION_ESTABLISHMENT)
+    {
+        observation.emit(
+            &crate::observer::ConnectionObservationEvent::PhaseCompleted {
+                phase: crate::observer::ConnectionEstablishmentPhase::QuicConnect,
+                at: crate::observer::Instant::now(),
+            },
+        );
+    }
+    let pooled = connect_h3::<R>(quinn_conn, observation).await?;
     Ok((pooled, addr))
 }
 
@@ -138,28 +192,78 @@ async fn race_quic_connect<R: RuntimePoll>(
     endpoint: &quinn::Endpoint,
     addrs: &[SocketAddr],
     server_name: &str,
+    observation: Option<&ConnectionObservationOwner>,
 ) -> Result<(quinn::Connection, SocketAddr), Error> {
     if addrs.len() == 1 {
-        return quic_connect_one(endpoint, addrs[0], server_name).await;
+        return quic_connect_candidate(endpoint, addrs[0], server_name, 0, observation).await;
     }
 
     let mut last_err = Error::Other("failed to establish HTTP/3 connection".into());
     for (i, &addr) in addrs.iter().enumerate() {
         let is_last = i == addrs.len() - 1;
         if is_last {
-            match quic_connect_one(endpoint, addr, server_name).await {
+            match quic_connect_candidate(endpoint, addr, server_name, i, observation).await {
                 Ok(result) => return Ok(result),
                 Err(e) => last_err = e,
             }
         } else {
+            let mut candidate = observation.and_then(|observation| {
+                observation.connect_attempt_scope(ConnectAttempt {
+                    sequence: u32::try_from(i)
+                        .unwrap_or_else(|_| unreachable!("connection attempt sequence overflow")),
+                    kind: TransportKind::Quic,
+                    remote_addr: addr,
+                })
+            });
             match quic_connect_with_deadline::<R>(endpoint, addr, server_name).await {
-                H3ConnectResult::Connected(conn, addr) => return Ok((conn, addr)),
-                H3ConnectResult::Failed(e) => last_err = e,
-                H3ConnectResult::DeadlineReached => {}
+                H3ConnectResult::Connected(conn, addr) => {
+                    if let Some(candidate) = &mut candidate {
+                        candidate.succeeded();
+                    }
+                    return Ok((conn, addr));
+                }
+                H3ConnectResult::Failed(e) => {
+                    if let Some(candidate) = &mut candidate {
+                        candidate.failed(&e);
+                    }
+                    last_err = e;
+                }
+                H3ConnectResult::DeadlineReached => drop(candidate),
             }
         }
     }
     Err(last_err)
+}
+
+async fn quic_connect_candidate(
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    server_name: &str,
+    sequence: usize,
+    observation: Option<&ConnectionObservationOwner>,
+) -> Result<(quinn::Connection, SocketAddr), Error> {
+    let mut candidate = observation.and_then(|observation| {
+        observation.connect_attempt_scope(ConnectAttempt {
+            sequence: u32::try_from(sequence)
+                .unwrap_or_else(|_| unreachable!("connection attempt sequence overflow")),
+            kind: TransportKind::Quic,
+            remote_addr: addr,
+        })
+    });
+    let result = quic_connect_one(endpoint, addr, server_name).await;
+    match &result {
+        Ok(_) => {
+            if let Some(candidate) = &mut candidate {
+                candidate.succeeded();
+            }
+        }
+        Err(error) => {
+            if let Some(candidate) = &mut candidate {
+                candidate.failed(error);
+            }
+        }
+    }
+    result
 }
 
 async fn quic_connect_one(

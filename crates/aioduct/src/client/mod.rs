@@ -28,6 +28,67 @@ mod resolve;
 
 pub use builder::HttpEngineBuilder;
 
+/// A selected candidate whose body has not entered client response processing.
+/// Configured retry decides whether to accept it before decoding or pre-reading.
+#[derive(Debug)]
+pub(crate) struct PendingResponse {
+    pub(crate) response: crate::response::Response,
+    pub(crate) source: crate::observer::ResponseSource,
+    pub(crate) processing: Option<ResponseProcessing>,
+    pub(crate) processing_timeout: Option<std::time::Duration>,
+    pub(crate) awaiting_handoff: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct ResponseProcessing {
+    pub(crate) method: http::Method,
+    pub(crate) uri: http::Uri,
+    pub(crate) request_headers: http::HeaderMap,
+    pub(crate) read_timeout: Option<std::time::Duration>,
+    pub(crate) no_decompression: bool,
+}
+
+impl PendingResponse {
+    pub(crate) fn ready(
+        response: crate::response::Response,
+        source: crate::observer::ResponseSource,
+    ) -> Self {
+        Self {
+            response,
+            source,
+            processing: None,
+            processing_timeout: None,
+            awaiting_handoff: false,
+        }
+    }
+
+    pub(crate) fn info(&self) -> crate::observer::ResponseInfo {
+        crate::observer::ResponseInfo {
+            status: self.response.status(),
+            version: Some(self.response.version()),
+            source: self.source,
+        }
+    }
+
+    pub(crate) fn status(&self) -> http::StatusCode {
+        self.response.status()
+    }
+    pub(crate) fn headers(&self) -> &http::HeaderMap {
+        self.response.headers()
+    }
+
+    pub(crate) fn with_remaining_timeout(
+        mut self,
+        timeout: Option<std::time::Duration>,
+        started: Option<crate::clock::Instant>,
+    ) -> Self {
+        self.processing_timeout = timeout
+            .zip(started)
+            .map(|(timeout, started)| timeout.saturating_sub(started.elapsed()));
+        self
+    }
+}
+
 use std::marker::PhantomData;
 use std::net::IpAddr;
 #[cfg(unix)]
@@ -48,18 +109,6 @@ pub(crate) use replay::{
     BodyReplayability, FinalizedRequestState, FreshConnectionRequired, ReplayReason,
     RequestReplayPolicy,
 };
-
-pub(crate) fn extract_headers(headers: &HeaderMap) -> Vec<(String, String)> {
-    headers
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().to_owned(),
-                v.to_str().unwrap_or("<binary>").to_owned(),
-            )
-        })
-        .collect()
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::body::RequestBodyLocal;
@@ -127,7 +176,6 @@ pub struct HttpEngineCore<B> {
     pub(crate) h2c_probe_cache: H2cProbeCache,
     pub(crate) connection_coalescing: bool,
     pub(crate) sensitive_headers: HashSet<HeaderName>,
-    pub(crate) observer: Option<Arc<dyn crate::observer::RequestObserver>>,
     #[cfg(feature = "rustls")]
     pub(crate) tls: Option<Arc<crate::tls::RustlsConnector>>,
     #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -182,7 +230,6 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
             h2c_probe_cache: self.h2c_probe_cache.clone(),
             connection_coalescing: self.connection_coalescing,
             sensitive_headers: self.sensitive_headers.clone(),
-            observer: self.observer.clone(),
             #[cfg(feature = "rustls")]
             tls: self.tls.clone(),
             #[cfg(all(feature = "http3", feature = "rustls"))]
@@ -198,19 +245,21 @@ impl<B: 'static> Clone for HttpEngineCore<B> {
 /// HTTP client for poll-based runtimes (tokio, smol).
 ///
 /// Wraps [`HttpEngineCore`] with a `Send`-capable connector and optional tower layer.
-pub struct HttpEngineSend<R, C> {
+pub struct HttpEngineSend<R, C, O = crate::observer::NoopObserver> {
     pub(crate) core: HttpEngineCore<RequestBodySend>,
     pub(crate) connector: C,
+    pub(crate) observer: Arc<O>,
     #[cfg(feature = "tower")]
     pub(crate) tower_connector: Option<crate::connector::TowerConnectorSendSlot>,
     pub(crate) _phantom: PhantomData<R>,
 }
 
-impl<R, C: Clone> Clone for HttpEngineSend<R, C> {
+impl<R, C: Clone, O> Clone for HttpEngineSend<R, C, O> {
     fn clone(&self) -> Self {
         Self {
             core: self.core.clone(),
             connector: self.connector.clone(),
+            observer: self.observer.clone(),
             #[cfg(feature = "tower")]
             tower_connector: self.tower_connector.clone(),
             _phantom: PhantomData,
@@ -218,7 +267,7 @@ impl<R, C: Clone> Clone for HttpEngineSend<R, C> {
     }
 }
 
-impl<R, C> std::fmt::Debug for HttpEngineSend<R, C> {
+impl<R, C, O> std::fmt::Debug for HttpEngineSend<R, C, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpEngineSend").finish()
     }
@@ -227,19 +276,21 @@ impl<R, C> std::fmt::Debug for HttpEngineSend<R, C> {
 /// HTTP client for completion-based runtimes (compio).
 ///
 /// Wraps [`HttpEngineCore`] with a `!Send`-capable connector.
-pub struct HttpEngineLocal<R, C> {
+pub struct HttpEngineLocal<R, C, O = crate::observer::NoopObserver> {
     pub(crate) core: HttpEngineCore<RequestBodyLocal>,
     pub(crate) connector: C,
+    pub(crate) observer: std::rc::Rc<O>,
     #[cfg(feature = "tower")]
     pub(crate) tower_connector_local: Option<crate::connector::TowerConnectorLocalSlot>,
     pub(crate) _phantom: PhantomData<R>,
 }
 
-impl<R, C: Clone> Clone for HttpEngineLocal<R, C> {
+impl<R, C: Clone, O> Clone for HttpEngineLocal<R, C, O> {
     fn clone(&self) -> Self {
         Self {
             core: self.core.clone(),
             connector: self.connector.clone(),
+            observer: self.observer.clone(),
             #[cfg(feature = "tower")]
             tower_connector_local: self.tower_connector_local.clone(),
             _phantom: PhantomData,
@@ -247,7 +298,7 @@ impl<R, C: Clone> Clone for HttpEngineLocal<R, C> {
     }
 }
 
-impl<R, C> std::fmt::Debug for HttpEngineLocal<R, C> {
+impl<R, C, O> std::fmt::Debug for HttpEngineLocal<R, C, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpEngineLocal").finish()
     }
@@ -262,14 +313,14 @@ impl<B: 'static> HttpEngineCore<B> {
     }
 }
 
-impl<R, C> HttpEngineSend<R, C> {
+impl<R, C, O> HttpEngineSend<R, C, O> {
     /// Take a snapshot of connection pool statistics.
     pub fn pool_stats(&self) -> crate::pool::PoolStats {
         self.core.pool_stats()
     }
 }
 
-impl<R, C> HttpEngineLocal<R, C> {
+impl<R, C, O> HttpEngineLocal<R, C, O> {
     /// Take a snapshot of connection pool statistics.
     pub fn pool_stats(&self) -> crate::pool::PoolStats {
         self.core.pool_stats()

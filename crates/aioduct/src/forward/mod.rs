@@ -25,7 +25,7 @@ use crate::message_signatures::{
     MessageSignatureSigner,
 };
 use crate::pool::ProtocolHint;
-use crate::response::Response;
+use crate::response::{Response, ResponseBodySend};
 use crate::runtime::{ConnectorSend, RuntimeCompletion, RuntimePoll};
 
 use dispatch_plan::{
@@ -74,9 +74,16 @@ pub(crate) async fn sanitize_forward_response_body<R: RuntimeCompletion>(
     read_timeout: Option<Duration>,
 ) -> Result<Response, Error> {
     let eager_validate = policy.eager_validate_before_handoff();
-    let response = response.map_body(|body| SanitizedForwardResponseBody {
-        inner: Some(body.into_boxed()),
-        policy,
+    let response = response.map_body(|body| {
+        let (body, owner) = body.into_parts();
+        ResponseBodySend::with_owner(
+            SanitizedForwardResponseBody {
+                inner: Some(body),
+                policy,
+            }
+            .boxed_unsync(),
+            owner,
+        )
     });
     if eager_validate {
         if let Some(duration) = read_timeout {
@@ -88,8 +95,7 @@ pub(crate) async fn sanitize_forward_response_body<R: RuntimeCompletion>(
             response.into_drained_body().await
         }
     } else {
-        Ok(response
-            .map_body(|body| crate::response::ResponseBodySend::from_boxed(body.boxed_unsync())))
+        Ok(response)
     }
 }
 
@@ -398,8 +404,16 @@ fn response_has_no_content(request_method: &http::Method, status: http::StatusCo
 /// Created via [`HttpEngineSend::forward`]. Strips hop-by-hop headers, rewrites the URI
 /// to target the upstream, and streams the body through without buffering.
 /// Bypasses client response processing (redirects, cookies, cache, decompression).
-pub struct ForwardBuilderSend<'a, R: RuntimePoll, C: ConnectorSend, B> {
-    client: &'a HttpEngineSend<R, C>,
+pub struct ForwardBuilderSend<
+    'a,
+    R: RuntimePoll,
+    C: ConnectorSend,
+    B,
+    O = crate::observer::NoopObserver,
+> where
+    O: crate::observer::Observer,
+{
+    client: &'a HttpEngineSend<R, C, O>,
     request: http::Request<B>,
     upstream: Option<Uri>,
     strip_prefix: Option<String>,
@@ -421,14 +435,20 @@ pub struct ForwardBuilderSend<'a, R: RuntimePoll, C: ConnectorSend, B> {
     downstream_target_uri: Option<Uri>,
     response_content_digest_max_bytes: Option<usize>,
     response_message_signature: Option<AutomaticMessageSignature>,
+    observation_disabled: bool,
+    observation_context: Option<O::Context>,
 }
 
-impl<'a, R: RuntimePoll, C: ConnectorSend, B> ForwardBuilderSend<'a, R, C, B>
+impl<'a, R: RuntimePoll, C: ConnectorSend, B, O> ForwardBuilderSend<'a, R, C, B, O>
 where
+    O: crate::observer::Observer + Send + Sync + 'static,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    pub(crate) fn new(client: &'a HttpEngineSend<R, C>, request: http::Request<B>) -> Self {
+    pub(crate) fn new(client: &'a HttpEngineSend<R, C, O>, request: http::Request<B>) -> Self {
         let protocol_hint = request
             .extensions()
             .get::<ProtocolHint>()
@@ -457,6 +477,8 @@ where
             downstream_target_uri: None,
             response_content_digest_max_bytes: None,
             response_message_signature: None,
+            observation_disabled: false,
+            observation_context: None,
         }
     }
 
@@ -524,6 +546,18 @@ where
     /// Set a timeout for gaps while streaming the response body downstream.
     pub fn read_timeout(mut self, duration: Duration) -> Self {
         self.read_timeout = Some(duration);
+        self
+    }
+
+    /// Disable observation for this forwarded request.
+    pub fn disable_observation(mut self) -> Self {
+        self.observation_disabled = true;
+        self
+    }
+
+    /// Supply the observer context for this forwarded request.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.observation_context = Some(context);
         self
     }
 
@@ -802,6 +836,34 @@ where
         let response_request_method = request.method().clone();
         let on_response = self.on_response;
         let timeout = self.timeout.or(client.core.timeout);
+        let mut observation = if self.observation_disabled {
+            None
+        } else {
+            crate::observer::SendRequestObservationHandle::new(
+                &*client.observer,
+                crate::observer::RequestInfo {
+                    method: &response_request_method,
+                    initial_uri: &full_uri,
+                },
+                self.observation_context,
+            )
+        };
+        let attempt_observer = observation
+            .as_ref()
+            .and_then(|observation| observation.attempt_observer());
+        if let Some(counter) = observation
+            .as_ref()
+            .and_then(|observation| observation.attempt_counter())
+        {
+            request.extensions_mut().insert(counter);
+        }
+        if let Some(observer) = &attempt_observer {
+            request.extensions_mut().insert(observer.clone());
+        }
+        let response_observer = observation
+            .as_ref()
+            .map(|observation| observation.response_observer());
+        let response_request_method_for_observation = response_request_method.clone();
         // Bound the stack footprint of concurrent broker handlers. The
         // forwarding lifecycle includes dispatch and response finalization,
         // but callers should retain only one pointer per in-flight request.
@@ -815,7 +877,7 @@ where
                 let signature_headers = signature.sign_send().await?;
                 signature_headers.insert_into(request.headers_mut())?;
             }
-            let mut resp = client
+            let execution = client
                 .execute_single_with_hint_send(
                     request,
                     &full_uri,
@@ -827,8 +889,21 @@ where
                     None,
                     sign_final_request,
                     body_replayability,
+                    attempt_observer.as_ref(),
                 )
-                .await?;
+                .await;
+            if let (Err(error), Some(observer)) = (&execution, &attempt_observer) {
+                observer.failed(observer.current_attempt(), error);
+            }
+            let mut resp = execution?;
+
+            if let Some(observer) = response_observer.as_ref() {
+                observer.observe_headers(crate::observer::ResponseInfo {
+                    status: resp.status(),
+                    version: Some(resp.version()),
+                    source: crate::observer::ResponseSource::Transport,
+                });
+            }
 
             let upstream_response_version = resp.version();
             let upstream_response_status = resp.status();
@@ -914,7 +989,21 @@ where
         } else {
             send_fut.await
         };
-        let mut resp = result?;
+        let mut resp = match result {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(observation) = &mut observation {
+                    observation.finish_failed(&error);
+                }
+                return Err(error);
+            }
+        };
+        if let Some(observation) = &mut observation {
+            let awaiting_handoff = resp.status() == http::StatusCode::SWITCHING_PROTOCOLS
+                || (response_request_method_for_observation == http::Method::CONNECT
+                    && resp.status().is_success());
+            observation.attach_to_send_response(&mut resp, awaiting_handoff);
+        }
 
         if let Some(duration) = read_timeout {
             resp = resp.apply_read_timeout::<R>(duration);

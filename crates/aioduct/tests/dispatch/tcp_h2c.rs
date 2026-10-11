@@ -768,7 +768,7 @@ async fn observer_tls_handshake_complete_event() {
 
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
-        .request_observer(obs.clone())
+        .observer(obs.clone())
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -782,13 +782,13 @@ async fn observer_tls_handshake_complete_event() {
     assert_eq!(resp.status(), http::StatusCode::OK);
     let _ = resp.text().await.unwrap();
 
-    let phases = obs.phases.lock().unwrap();
+    let phases = obs.events.lock().unwrap();
     assert!(
-        phases.contains(&"TlsHandshakeComplete".to_string()),
+        phases.contains(&"EstablishmentComplete(TlsHandshake)".to_string()),
         "should emit TlsHandshakeComplete, got: {phases:?}"
     );
     assert!(
-        phases.contains(&"TcpConnected".to_string()),
+        phases.contains(&"Established".to_string()),
         "should emit TcpConnected, got: {phases:?}"
     );
 }

@@ -10,7 +10,6 @@ use crate::client::{
     BodyReplayability, FinalizedRequestState, HttpEngineLocal, ReplayReason, RequestReplayPolicy,
 };
 use crate::error::{BuilderError, Error};
-use crate::observer::{self, RequestEvent, RequestPhase, RetryKind};
 use crate::pool::ProtocolHint;
 use crate::response::Response;
 use crate::retry::RetryConfig;
@@ -21,8 +20,15 @@ use super::EngineRef;
 
 /// Builder for configuring and sending an HTTP request on a `!Send` runtime.
 #[must_use = "a RequestBuilder does nothing unless you call `.send()` or `.build()`"]
-pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
-    client: EngineRef<'a, HttpEngineLocal<R, C>>,
+pub struct RequestBuilderLocal<
+    'a,
+    R: RuntimeLocal,
+    C: ConnectorLocal + Clone,
+    O: crate::observer::Observer = crate::observer::NoopObserver,
+> {
+    client: EngineRef<'a, HttpEngineLocal<R, C, O>>,
+    observation_disabled: bool,
+    observation_context: Option<O::Context>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -43,7 +49,9 @@ pub struct RequestBuilderLocal<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> {
     fragment: Option<String>,
 }
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for RequestBuilderLocal<'_, R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O: crate::observer::Observer> std::fmt::Debug
+    for RequestBuilderLocal<'_, R, C, O>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RequestBuilderLocal")
             .field("method", &self.method)
@@ -53,15 +61,19 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for RequestBuil
     }
 }
 
-impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, C> {
+impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone, O: crate::observer::Observer>
+    RequestBuilderLocal<'a, R, C, O>
+{
     pub(crate) fn new(
-        client: &'a HttpEngineLocal<R, C>,
+        client: &'a HttpEngineLocal<R, C, O>,
         method: Method,
         uri: Uri,
         fragment: Option<String>,
     ) -> Self {
         Self {
             client: EngineRef::Borrowed(client),
+            observation_disabled: false,
+            observation_context: None,
             method,
             uri,
             headers: HeaderMap::new(),
@@ -82,13 +94,15 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
     }
 
     pub(crate) fn new_owned(
-        client: HttpEngineLocal<R, C>,
+        client: HttpEngineLocal<R, C, O>,
         method: Method,
         uri: Uri,
         fragment: Option<String>,
     ) -> Self {
         Self {
             client: EngineRef::Owned(Box::new(client)),
+            observation_disabled: false,
+            observation_context: None,
             method,
             uri,
             headers: HeaderMap::new(),
@@ -106,6 +120,19 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             builder_error: None,
             fragment,
         }
+    }
+
+    /// Disable observation for this logical request, including retries and redirects.
+    pub fn disable_observation(mut self) -> Self {
+        self.observation_disabled = true;
+        self
+    }
+
+    /// Supply the observer's associated context before this request executes.
+    /// Omitting context does not disable observation.
+    pub fn observation_context(mut self, context: O::Context) -> Self {
+        self.observation_context = Some(context);
+        self
     }
 
     /// Add a header to the request.
@@ -487,13 +514,18 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
     }
 
     /// Clone this request builder if the body is buffered.
-    pub fn try_clone(&self) -> Option<Self> {
+    pub fn try_clone(&self) -> Option<Self>
+    where
+        O::Context: Clone,
+    {
         let body = match &self.body {
             Some(b) => Some(b.try_clone()?),
             None => None,
         };
         Some(Self {
             client: self.client.try_clone_for_lifetime(),
+            observation_disabled: self.observation_disabled,
+            observation_context: self.observation_context.clone(),
             method: self.method.clone(),
             uri: self.uri.clone(),
             headers: self.headers.clone(),
@@ -518,14 +550,95 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
         if let Some(error) = self.builder_error.take() {
             return Err(error.into_error());
         }
+        let client = self.client.try_clone_for_lifetime();
+        let mut observation = if self.observation_disabled {
+            None
+        } else {
+            crate::observer::LocalRequestObservationHandle::new(
+                &*client.observer,
+                crate::observer::RequestInfo {
+                    method: &self.method,
+                    initial_uri: &self.uri,
+                },
+                self.observation_context.take(),
+            )
+        };
         let retry = self.client.core.retry.clone();
-        match retry {
-            Some(config) => Box::pin(self.send_with_retry(config)).await,
-            None => Box::pin(self.send_once()).await,
+        let counter = observation
+            .as_ref()
+            .and_then(|observation| observation.attempt_counter());
+        let attempt_observer = observation
+            .as_ref()
+            .and_then(|observation| observation.attempt_observer());
+        let result = match retry {
+            Some(config) => Box::pin(self.send_with_retry(config, counter, attempt_observer)).await,
+            None => Box::pin(self.send_once(counter, attempt_observer)).await,
+        };
+        // Keep post-selection body processing outside retry, just like Send.
+        // Eager cache reads must not create additional body retry opportunities.
+        let result = match result {
+            Ok(mut pending) => {
+                if let Some(observation) = &observation {
+                    observation.observe_headers(pending.info());
+                }
+                if let Some(observation) = &observation {
+                    pending.response = observation.count_original_data(pending.response);
+                }
+                let completion_timeout = pending.processing_timeout;
+                let awaiting_handoff = pending.awaiting_handoff;
+                let complete = async {
+                    match pending.processing {
+                        Some(processing) => {
+                            client
+                                .finalize_response_local(
+                                    pending.response,
+                                    &processing.method,
+                                    processing.uri,
+                                    &processing.request_headers,
+                                    processing.read_timeout,
+                                    processing.no_decompression,
+                                )
+                                .await
+                        }
+                        None => Ok((pending.response.into_local(), false)),
+                    }
+                };
+                let completed = match completion_timeout {
+                    Some(duration) => {
+                        Timeout::WithTimeout {
+                            future: complete,
+                            sleep: R::sleep(duration),
+                        }
+                        .await
+                    }
+                    None => complete.await,
+                };
+                match completed {
+                    Ok((mut response, buffered)) => {
+                        if let Some(observation) = &mut observation {
+                            if buffered {
+                                observation.finish_ended();
+                            }
+                            observation.attach_to_local_response(&mut response, awaiting_handoff);
+                        }
+                        Ok(response)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        if let (Err(error), Some(observation)) = (&result, &mut observation) {
+            observation.finish_failed(error);
         }
+        result
     }
 
-    async fn send_once(self) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
+    async fn send_once(
+        self,
+        counter: Option<crate::observer::RequestAttemptCounter>,
+        attempt_observer: Option<crate::observer::LocalAttemptObserver>,
+    ) -> Result<crate::client::PendingResponse, Error> {
         let effective_timeout = if self.force_no_timeout {
             None
         } else {
@@ -538,6 +651,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             .automatic_content_digest
             .unwrap_or(self.client.core.automatic_content_digest);
 
+        let attempt_start = effective_timeout.map(|_| crate::clock::Instant::now());
         let execute_fut = self.client.execute_local(
             self.method,
             self.uri,
@@ -553,9 +667,11 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             automatic_content_digest,
             self.fragment,
             None,
+            counter.as_ref(),
+            attempt_observer.as_ref(),
         );
 
-        match effective_timeout {
+        let result = match effective_timeout {
             Some(duration) => {
                 Timeout::WithTimeout {
                     future: execute_fut,
@@ -564,14 +680,24 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                 .await
             }
             None => execute_fut.await,
+        };
+        if let (Err(error), Some(observer)) = (&result, &attempt_observer) {
+            observer.failed(
+                counter
+                    .as_ref()
+                    .map_or(0, crate::observer::RequestAttemptCounter::current),
+                error,
+            );
         }
+        result.map(|pending| pending.with_remaining_timeout(effective_timeout, attempt_start))
     }
 
     async fn send_with_retry(
         mut self,
         config: RetryConfig,
-    ) -> Result<Response<crate::body::ResponseBodyLocal>, Error> {
-        let retry_start = crate::clock::Instant::now();
+        counter: Option<crate::observer::RequestAttemptCounter>,
+        attempt_observer: Option<crate::observer::LocalAttemptObserver>,
+    ) -> Result<crate::client::PendingResponse, Error> {
         let effective_timeout = if self.force_no_timeout {
             None
         } else {
@@ -603,7 +729,13 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                 let delay = retry_after_delay
                     .take()
                     .unwrap_or_else(|| config.delay_for_attempt(attempt - 1));
+                let backoff = attempt_observer
+                    .as_ref()
+                    .and_then(|observer| observer.backoff(delay));
                 R::sleep(delay).await;
+                if let Some(backoff) = backoff {
+                    backoff.complete();
+                }
             }
 
             let body_for_attempt = match &mut body {
@@ -611,6 +743,7 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                 Some(RequestBody::Streaming(_)) => body.take(),
                 None => None,
             };
+            let attempt_start = effective_timeout.map(|_| crate::clock::Instant::now());
             let execute_fut = self.client.execute_local(
                 self.method.clone(),
                 self.uri.clone(),
@@ -626,6 +759,8 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                 automatic_content_digest,
                 self.fragment.clone(),
                 Some(&finalized_request),
+                counter.as_ref(),
+                attempt_observer.as_ref(),
             );
             let result = match effective_timeout {
                 Some(duration) => {
@@ -637,16 +772,12 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                 }
                 None => execute_fut.await,
             };
-            let (wire_method, wire_uri, replay_policy, has_replay_snapshot, current_attempt) = {
+            let (wire_method, replay_policy, has_replay_snapshot, current_attempt) = {
                 let finalized_request = finalized_request
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 (
                     finalized_request.method().clone(),
-                    finalized_request
-                        .effective_uri()
-                        .cloned()
-                        .unwrap_or_else(|| self.uri.clone()),
                     RequestReplayPolicy::new(finalized_request.method(), finalized_request.body()),
                     finalized_request.has_replay_snapshot(),
                     finalized_request.retry_attempt(),
@@ -654,6 +785,8 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
             };
             attempt = current_attempt;
 
+            let result = result
+                .map(|pending| pending.with_remaining_timeout(effective_timeout, attempt_start));
             match result {
                 Ok(resp) => {
                     let default_should_retry = config.retry_on_status
@@ -679,21 +812,31 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                     };
                     if let Some(next_attempt) = next_attempt {
                         retry_after_delay = crate::retry::parse_retry_after(resp.headers());
-                        let error = Error::Other(format!("server error: {}", resp.status()).into());
-                        self.observe_retry_failure(
-                            &wire_method,
-                            &wire_uri,
-                            &error,
-                            retry_start.elapsed(),
-                        );
-                        self.observe_retrying(
-                            &wire_method,
-                            &wire_uri,
-                            &error,
-                            next_attempt,
-                            config.max_retries,
-                            retry_after_delay.unwrap_or_else(|| config.delay_for_attempt(attempt)),
-                        );
+                        if let Some(observer) = &attempt_observer {
+                            let attempt = counter
+                                .as_ref()
+                                .map_or(0, crate::observer::RequestAttemptCounter::current);
+                            observer.response_disposition(
+                                attempt,
+                                resp.info(),
+                                crate::observer::ResponseDisposition::Retry,
+                            );
+                            observer.retry_scheduled(
+                                attempt,
+                                attempt.saturating_add(1),
+                                crate::observer::RetryReason::ResponseStatus(resp.status()),
+                            );
+                        }
+                        if let Some(cleanup) = attempt_observer.as_ref().and_then(|observer| {
+                            observer.cleanup(
+                                counter
+                                    .as_ref()
+                                    .map_or(0, crate::observer::RequestAttemptCounter::current),
+                            )
+                        }) {
+                            cleanup.finish(crate::observer::CleanupState::Stopped, None);
+                        }
+                        drop(resp);
                         attempt = next_attempt;
                         continue;
                     }
@@ -730,66 +873,31 @@ impl<'a, R: RuntimeLocal, C: ConnectorLocal + Clone> RequestBuilderLocal<'a, R, 
                         None
                     };
                     if let Some(next_attempt) = next_attempt {
-                        self.observe_retry_failure(
-                            &wire_method,
-                            &wire_uri,
-                            &error,
-                            retry_start.elapsed(),
-                        );
-                        self.observe_retrying(
-                            &wire_method,
-                            &wire_uri,
-                            &error,
-                            next_attempt,
-                            config.max_retries,
-                            config.delay_for_attempt(attempt),
-                        );
+                        if let Some(observer) = &attempt_observer {
+                            let attempt = counter
+                                .as_ref()
+                                .map_or(0, crate::observer::RequestAttemptCounter::current);
+                            observer.failed(attempt, &error);
+                            observer.retry_scheduled(
+                                attempt,
+                                attempt.saturating_add(1),
+                                crate::observer::RetryReason::Error { error: &error },
+                            );
+                        }
                         attempt = next_attempt;
                         continue;
+                    }
+                    if let Some(observer) = &attempt_observer {
+                        observer.failed(
+                            counter
+                                .as_ref()
+                                .map_or(0, crate::observer::RequestAttemptCounter::current),
+                            &error,
+                        );
                     }
                     return Err(error);
                 }
             }
-        }
-    }
-
-    fn observe_retry_failure(&self, method: &Method, uri: &Uri, error: &Error, elapsed: Duration) {
-        if let Some(ref observer) = self.client.core.observer {
-            observer.on_event(&RequestEvent {
-                method: method.clone(),
-                uri: uri.clone(),
-                phase: RequestPhase::Failed {
-                    error: error.to_string(),
-                    retry: RetryKind::Explicit,
-                    elapsed,
-                },
-                at: observer::Instant::now(),
-            });
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn observe_retrying(
-        &self,
-        method: &Method,
-        uri: &Uri,
-        error: &Error,
-        attempt: u32,
-        max_retries: u32,
-        backoff: Duration,
-    ) {
-        if let Some(ref observer) = self.client.core.observer {
-            observer.on_event(&RequestEvent {
-                method: method.clone(),
-                uri: uri.clone(),
-                phase: RequestPhase::Retrying {
-                    reason: error.to_string(),
-                    attempt,
-                    max_retries,
-                    backoff,
-                },
-                at: observer::Instant::now(),
-            });
         }
     }
 }

@@ -12,14 +12,20 @@ use crate::error::Error;
 use crate::runtime::{ConnectorLocal, RuntimeLocal};
 
 /// Parallel range-request downloader for `!Send` runtimes.
-pub struct ChunkDownloadLocal<R: RuntimeLocal, C: ConnectorLocal + Clone> {
-    client: HttpEngineLocal<R, C>,
+pub struct ChunkDownloadLocal<
+    R: RuntimeLocal,
+    C: ConnectorLocal + Clone,
+    O = crate::observer::NoopObserver,
+> {
+    client: HttpEngineLocal<R, C, O>,
     url: String,
     chunks: usize,
     _runtime: PhantomData<(R, C)>,
 }
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for ChunkDownloadLocal<R, C> {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O> std::fmt::Debug
+    for ChunkDownloadLocal<R, C, O>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChunkDownloadLocal")
             .field("url", &self.url)
@@ -27,8 +33,10 @@ impl<R: RuntimeLocal, C: ConnectorLocal + Clone> std::fmt::Debug for ChunkDownlo
     }
 }
 
-impl<R: RuntimeLocal, C: ConnectorLocal + Clone> ChunkDownloadLocal<R, C> {
-    pub(crate) fn new(client: HttpEngineLocal<R, C>, url: String) -> Self {
+impl<R: RuntimeLocal, C: ConnectorLocal + Clone, O: crate::observer::Observer>
+    ChunkDownloadLocal<R, C, O>
+{
+    pub(crate) fn new(client: HttpEngineLocal<R, C, O>, url: String) -> Self {
         Self {
             client,
             url,

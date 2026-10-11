@@ -35,7 +35,7 @@ async fn completed_https_proxy_phases_survive_connection_deadline_cancellation()
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .tls(connector)
         .proxy(ProxyConfig::https(&format!("https://localhost:{}", proxy_addr.port())).unwrap())
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .connect_timeout(Duration::from_millis(300))
         .timeout(Duration::from_secs(2))
         .build()
@@ -52,11 +52,15 @@ async fn completed_https_proxy_phases_survive_connection_deadline_cancellation()
     assert_connect_timeout(&error);
     let phases = observer.phases();
     assert!(
-        phases.iter().any(|phase| phase == "TcpConnected"),
+        phases
+            .iter()
+            .any(|phase| phase == "EstablishmentComplete(TcpConnect)"),
         "completed proxy TCP phase was lost on cancellation: {phases:?}"
     );
     assert!(
-        phases.iter().any(|phase| phase == "TlsHandshakeComplete"),
+        phases
+            .iter()
+            .any(|phase| phase == "EstablishmentComplete(TlsHandshake)"),
         "completed proxy TLS phase was lost on cancellation: {phases:?}"
     );
 }
@@ -90,7 +94,7 @@ async fn connect_response_uses_the_connection_deadline() {
     let observer = RecordingObserver::default();
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .proxy(ProxyConfig::http(&format!("http://{proxy_addr}")).unwrap())
-        .request_observer(observer.clone())
+        .observer(observer.clone())
         .connect_timeout(Duration::from_millis(80))
         .timeout(Duration::from_secs(1))
         .build()
@@ -107,7 +111,9 @@ async fn connect_response_uses_the_connection_deadline() {
     assert_connect_timeout(&error);
     let phases = observer.phases();
     assert!(
-        phases.iter().any(|phase| phase == "TcpConnected"),
+        phases
+            .iter()
+            .any(|phase| phase == "EstablishmentComplete(TcpConnect)"),
         "completed proxy TCP phase was lost on cancellation: {phases:?}"
     );
 }
