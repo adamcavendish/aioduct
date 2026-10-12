@@ -18,6 +18,10 @@ use http::HeaderValue;
 use http::header::AUTHORIZATION;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod support {
+    pub mod observation;
+}
+
 struct HostState {
     table: ResourceTable,
     wasi: WasiCtx,
@@ -55,6 +59,7 @@ async fn guest_wasi_client_is_serviced_by_host_adapter() -> Result<(), Box<dyn s
             .inject_header(AUTHORIZATION, HeaderValue::from_static("Bearer e2e-secret"))
             .header_limit(16 * 1024)
             .body_limit(1024 * 1024),
+        aioduct::NoopObserver,
     )?;
 
     let stdout = MemoryOutputPipe::new(16 * 1024);
@@ -116,22 +121,37 @@ async fn guest_wasi_client_is_serviced_by_host_adapter() -> Result<(), Box<dyn s
     Ok(())
 }
 
-fn test_host(policy: ExactOriginPolicy) -> Result<WasiHttpHost, Box<dyn std::error::Error>> {
+fn test_host<O>(
+    policy: ExactOriginPolicy,
+    observer: O,
+) -> Result<WasiHttpHost, Box<dyn std::error::Error>>
+where
+    O: aioduct::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
+{
     let builder = WasiHttpHost::builder().policy(policy);
     #[cfg(feature = "tokio")]
     {
-        Ok(builder.build()?)
+        Ok(builder
+            .transport(aioduct::TokioClient::builder().observer(observer).build()?)
+            .build()?)
     }
     #[cfg(all(not(feature = "tokio"), feature = "smol"))]
     {
         Ok(builder
-            .transport(aioduct::SmolClient::builder().build()?)
+            .transport(aioduct::SmolClient::builder().observer(observer).build()?)
             .build()?)
     }
     #[cfg(all(not(feature = "tokio"), not(feature = "smol"), feature = "compio"))]
     {
         Ok(builder
-            .transport(aioduct::wasmtime::CompioHostTransport::new()?)
+            .transport(
+                aioduct::wasmtime::CompioHostTransport::from_builder_factory(move || {
+                    aioduct::CompioClient::builder().observer(observer)
+                })?,
+            )
             .build()?)
     }
 }
@@ -281,4 +301,79 @@ fn response_for_request(request: &str) -> String {
         "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn guest_wasi_client_reports_host_observer_events() -> Result<(), Box<dyn std::error::Error>>
+{
+    use support::observation::TestObserver;
+
+    let component = build_wasi_demo_component()?;
+    let (addr, server) = demo_server().await?;
+    let origin = format!("http://{addr}");
+    let observer = TestObserver::default();
+
+    let hooks = test_host(
+        ExactOriginPolicy::new(&origin)?
+            .forbid_sensitive_headers()
+            .inject_header(AUTHORIZATION, HeaderValue::from_static("Bearer e2e-secret"))
+            .header_limit(16 * 1024)
+            .body_limit(1024 * 1024),
+        observer.clone(),
+    )?;
+
+    let stdout = MemoryOutputPipe::new(16 * 1024);
+    let stderr = MemoryOutputPipe::new(16 * 1024);
+    let mut wasi = WasiCtx::builder();
+    wasi.stdout(stdout.clone());
+    wasi.stderr(stderr.clone());
+    wasi.env("AIODUCT_WASI_DEMO_URL", origin);
+
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.wasm_backtrace_details(::wasmtime::WasmBacktraceDetails::Enable);
+    let engine = Engine::new(&config)?;
+    let component = Component::from_file(&engine, component)?;
+    let mut store = Store::new(
+        &engine,
+        HostState {
+            table: ResourceTable::new(),
+            wasi: wasi.build(),
+            http: WasiHttpCtx::new(),
+            hooks,
+        },
+    );
+
+    let mut linker = Linker::new(&engine);
+    ::wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    ::wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
+    let command = WasiCommand::instantiate_async(&mut store, &component, &linker).await?;
+    command
+        .wasi_cli_run()
+        .call_run(&mut store)
+        .await?
+        .map_err(|()| std::io::Error::other("guest returned failure"))?;
+
+    let _requests = tokio::time::timeout(Duration::from_secs(5), server).await??;
+
+    let phases = observer.phases();
+    assert!(!phases.is_empty(), "observer should capture events");
+
+    let has_request_start = phases.iter().any(|e| e.contains("RequestStart"));
+    let has_response_headers = phases.iter().any(|e| e.contains("ResponseHeaders"));
+    assert!(
+        has_request_start,
+        "observer should capture RequestStart event. Events: {phases:?}"
+    );
+    assert!(
+        has_response_headers,
+        "observer should capture ResponseHeaders event. Events: {phases:?}"
+    );
+
+    let stdout = String::from_utf8_lossy(&stdout.contents()).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr.contents()).into_owned();
+    assert!(stderr.is_empty(), "guest stderr should be empty:\n{stderr}");
+    assert!(stdout.contains("Status: 200"), "guest stdout:\n{stdout}");
+
+    Ok(())
 }
