@@ -13,19 +13,27 @@ static NEXT_ASSOCIATION: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ConnectionAssociation {
-    #[allow(clippy::expect_used)] // Exhausting the identity space cannot wrap/reuse an identity.
+    /// Allocate a new connection association identifier.
+    ///
+    /// # Wraparound Behavior
+    ///
+    /// The counter wraps at `u64::MAX`. While practically impossible to exhaust
+    /// (requires ~584 billion requests/second sustained for a year), wraparound
+    /// is supported to avoid panic in theoretical extreme cases. Identity reuse
+    /// after wraparound is acceptable because connections that old will have
+    /// terminated long ago.
     pub(crate) fn allocate() -> Self {
         Self::allocate_from(&NEXT_ASSOCIATION)
     }
 
-    #[allow(clippy::expect_used)] // Exhaustion is an invariant failure, not silent identity reuse.
     fn allocate_from(counter: &std::sync::atomic::AtomicU64) -> Self {
         use std::sync::atomic::Ordering;
         let mut previous = counter.load(Ordering::Relaxed);
         loop {
-            let next = previous
-                .checked_add(1)
-                .expect("connection association identity space exhausted");
+            // Wrapping addition: allows counter to wrap at u64::MAX instead of panicking.
+            // Identity reuse after 2^64 allocations is acceptable - connections that old
+            // will have terminated long before the counter wraps.
+            let next = previous.wrapping_add(1);
             match counter.compare_exchange_weak(
                 previous,
                 next,
@@ -175,16 +183,29 @@ pub enum ChannelIoEvent<'a> {
 mod tests {
     use super::*;
     #[test]
-    fn association_allocator_exhaustion_never_reuses_an_identity() {
+    fn association_allocator_wraps_at_exhaustion() {
         use std::sync::atomic::{AtomicU64, Ordering};
         let counter = AtomicU64::new(u64::MAX - 1);
+
+        // Allocate u64::MAX
         assert_eq!(
             ConnectionAssociation::allocate_from(&counter),
             ConnectionAssociation(u64::MAX)
         );
-        assert!(
-            std::panic::catch_unwind(|| ConnectionAssociation::allocate_from(&counter)).is_err()
+
+        // Next allocation wraps around to 0
+        assert_eq!(
+            ConnectionAssociation::allocate_from(&counter),
+            ConnectionAssociation(0)
         );
-        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+
+        // Counter is now at 0 after wraparound
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        // Next allocation returns 1
+        assert_eq!(
+            ConnectionAssociation::allocate_from(&counter),
+            ConnectionAssociation(1)
+        );
     }
 }
