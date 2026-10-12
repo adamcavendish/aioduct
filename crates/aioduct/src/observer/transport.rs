@@ -193,8 +193,18 @@ impl<T, R: TransportRelease> ObservedIo<T, R> {
     }
     pub(crate) fn into_inner(self) -> T {
         let this = std::mem::ManuallyDrop::new(self);
+        // Detach from the observation lifecycle before extracting the inner value.
+        // Once detached, the observation handle is no longer interested in Drop events.
         this.observation.detach();
-        // `this` is never dropped, so moving the transport out is sound.
+
+        // SAFETY: Extracting `this.inner` is safe because:
+        // 1. We wrapped `self` in ManuallyDrop, preventing any Drop impl from running.
+        // 2. The observation lifecycle was detached above, so observation.released()
+        //    will never be called for this wrapper.
+        // 3. We never dereference any field of `this` again after this read.
+        // 4. T is moved out by value; the memory formerly occupied by self is never
+        //    accessed again.
+        // The invariant is: ManuallyDrop + detach + immediate move = no double-free.
         unsafe { std::ptr::read(&this.inner) }
     }
 }
