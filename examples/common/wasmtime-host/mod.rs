@@ -17,7 +17,24 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use wasmtime_wasi_http::WasiHttpCtx;
 use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
 
+#[allow(dead_code)]
+#[path = "../observability/mod.rs"]
+mod observability;
+
+pub use observability::ReferenceObserver as HostObserver;
+
 const SECRET_HEADER: &str = "Bearer host-owned-token";
+
+pub fn host_observer(runtime: &'static str) -> HostObserver {
+    let observer = HostObserver::new(runtime, trace_enabled());
+    observer.heading("WASI host forwarding transport");
+    observer.section(1, "native host transport · callback lifecycle");
+    observer
+}
+
+pub fn trace_enabled() -> bool {
+    std::env::args().any(|arg| arg == "--trace")
+}
 
 struct HostState {
     table: ResourceTable,
@@ -58,11 +75,13 @@ pub fn policy_for_origin(origin: &str) -> Result<ExactOriginPolicy, Box<dyn std:
 
 pub async fn run_with_host(
     runtime_name: &'static str,
+    observer: &HostObserver,
     build_host: impl FnOnce(&str) -> Result<WasiHttpHost, Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let component = component_path()?;
     let server = DemoServer::start()?;
     let origin = server.origin();
+    observer.application_line("HOST", format!("local fixture · {origin}"));
     let hooks = build_host(&origin)?;
 
     let stdout = MemoryOutputPipe::new(16 * 1024);
@@ -101,14 +120,16 @@ pub async fn run_with_host(
     let stdout = String::from_utf8_lossy(&stdout.contents()).into_owned();
     let stderr = String::from_utf8_lossy(&stderr.contents()).into_owned();
     validate_demo(&requests, &stdout, &stderr)?;
-    print_report(runtime_name, &origin, &requests, &stdout);
+    print_report(observer, runtime_name, &origin, &requests, &stdout);
 
     Ok(())
 }
 
 fn component_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Some(path) = std::env::args_os().nth(1) {
-        return Ok(PathBuf::from(path));
+    for argument in std::env::args_os().skip(1) {
+        if argument.to_string_lossy() != "--trace" {
+            return Ok(PathBuf::from(argument));
+        }
     }
     build_wasi_demo_component()
 }
@@ -285,8 +306,8 @@ fn validate_demo(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if requests.len() != 3 {
         return Err(std::io::Error::other(format!(
-            "expected 3 guest requests, observed {}",
-            requests.len()
+            "expected 3 guest requests, observed {}\nguest stdout:\n{stdout}\nguest stderr:\n{stderr}",
+            requests.len(),
         ))
         .into());
     }
@@ -329,12 +350,29 @@ fn has_injected_secret(request: &str) -> bool {
     })
 }
 
-fn print_report(runtime_name: &str, origin: &str, requests: &[String], stdout: &str) {
-    println!("aioduct wasmtime {runtime_name} host demo");
-    println!("origin: {origin}");
-    println!("guest stdout:");
-    println!("{stdout}");
-    println!("host observations:");
+fn print_report(
+    observer: &HostObserver,
+    runtime_name: &str,
+    origin: &str,
+    requests: &[String],
+    stdout: &str,
+) {
+    observer.section(2, "WASI guest · request-level result");
+    if trace_enabled() {
+        for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+            observer.application_line("GUEST", observability::compact_display(line));
+        }
+    } else {
+        for line in guest_summary(stdout) {
+            observer.application_line("GUEST", line);
+        }
+    }
+
+    observer.section(3, "host policy · local forwarding fixture");
+    observer.application_line(
+        "HOST",
+        format!("wasmtime-host-{runtime_name} · origin={origin} · secret value redacted"),
+    );
     for request in requests {
         let first_line = request.lines().next().unwrap_or_default();
         let injected = if has_injected_secret(request) {
@@ -342,7 +380,46 @@ fn print_report(runtime_name: &str, origin: &str, requests: &[String], stdout: &
         } else {
             "no"
         };
-        println!("  {first_line} | authorization injected: {injected}");
+        observer.application_line(
+            "HOST",
+            format!("{first_line} · authorization injected={injected}"),
+        );
     }
-    println!("host-owned secret header value was withheld from host output");
+}
+
+fn guest_summary(stdout: &str) -> Vec<String> {
+    let mut request = None;
+    let mut summary = Vec::new();
+    for line in stdout.lines() {
+        if let Some(header) = line
+            .strip_prefix("=== ")
+            .and_then(|line| line.strip_suffix(" ==="))
+        {
+            let mut parts = header.split_whitespace();
+            let method = parts.next().unwrap_or("?");
+            let uri = parts.next().unwrap_or("?");
+            request = Some(format!("{method} {}", compact_guest_uri(uri)));
+        } else if let Some(status) = line.strip_prefix("Status: ") {
+            if let Some(request) = &request {
+                summary.push(format!("{request} · {status}"));
+            }
+        } else if let Some(error) = line.strip_prefix("Expected error: ")
+            && let Some(request) = &request
+        {
+            summary.push(format!(
+                "{request} · error_for_status · {}",
+                observability::compact_display(error)
+            ));
+        }
+    }
+    summary
+}
+
+fn compact_guest_uri(uri: &str) -> &str {
+    uri.split_once("://")
+        .map_or(uri, |(_, authority_and_path)| {
+            authority_and_path
+                .find('/')
+                .map_or("/", |index| &authority_and_path[index..])
+        })
 }

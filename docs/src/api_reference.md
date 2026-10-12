@@ -782,12 +782,17 @@ completion, error, abandonment, or successful channel handoff, not merely
 receipt of headers. Callbacks are synchronous, receive `&self`, and run outside
 aioduct's internal locks. Exporting and fan-out are the implementation's job.
 
-**Implementation status:** start, selected headers, finish, original DATA
-summaries, and independent SSE lifecycle/statistics are wired on native Send/Local
-requests, including owned and blocking adapters. Detailed attempt/acquisition/upload
-events, independent channel/connection observations, forwarding, and host-managed Observer
-integration remain unfinished. Reserved interest bits do not yet deliver
-those callbacks; this is not the complete 0.3 contract or a performance claim.
+**Implementation status:** native Send/Local requests expose the request start,
+selected headers, typed attempt and acquisition facts, upload/body terminal
+facts, independent channel handoff/I/O, connection establishment/lifecycle,
+finish summaries, original DATA summaries, and independent SSE
+lifecycle/statistics callbacks. The response, body-stream, SSE, and upgraded
+channel types do not carry the observer type. Host-managed browser/WASI paths
+remain subject to their documented transport visibility limits. See the
+complete runtime-specific references for local executables that exercise the
+native callback families together: [Tokio](https://github.com/adamcavendish/aioduct/tree/main/examples/tokio/observability),
+[smol](https://github.com/adamcavendish/aioduct/tree/main/examples/smol/observability),
+and [compio](https://github.com/adamcavendish/aioduct/tree/main/examples/compio/observability).
 
 ### Independent SSE observations
 

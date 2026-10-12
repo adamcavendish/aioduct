@@ -26,25 +26,30 @@ use super::sealed;
 /// Tokio transport builder accepted by
 /// [`crate::wasmtime::WasiHttpHostBuilder::transport_builder`].
 #[cfg(feature = "tokio")]
-pub type TokioTransportBuilder = crate::client::HttpEngineBuilder<
-    crate::runtime::tokio_rt::TokioRuntime,
-    crate::runtime::tokio_rt::TcpConnector,
->;
+pub type TokioTransportBuilder<O = crate::observer::NoopObserver> =
+    crate::client::HttpEngineBuilder<
+        crate::runtime::tokio_rt::TokioRuntime,
+        crate::runtime::tokio_rt::TcpConnector,
+        O,
+    >;
 
 /// Smol transport builder for constructing a transport accepted by
 /// [`crate::wasmtime::WasiHttpHostBuilder::transport`].
 #[cfg(feature = "smol")]
-pub type SmolTransportBuilder = crate::client::HttpEngineBuilder<
+pub type SmolTransportBuilder<O = crate::observer::NoopObserver> = crate::client::HttpEngineBuilder<
     crate::runtime::smol_rt::SmolRuntime,
     crate::runtime::smol_rt::TcpConnector,
+    O,
 >;
 
 /// Compio transport builder accepted by [`crate::wasmtime::CompioHostTransport`].
 #[cfg(feature = "compio")]
-pub type CompioTransportBuilder = crate::client::HttpEngineBuilder<
-    crate::runtime::compio_rt::CompioRuntime,
-    crate::runtime::compio_rt::TcpConnector,
->;
+pub type CompioTransportBuilder<O = crate::observer::NoopObserver> =
+    crate::client::HttpEngineBuilder<
+        crate::runtime::compio_rt::CompioRuntime,
+        crate::runtime::compio_rt::TcpConnector,
+        O,
+    >;
 
 /// Boxed future returned by host transports.
 #[doc(hidden)]
@@ -91,7 +96,7 @@ pub struct HostForwardOptions {
 ///
 /// This trait is public so the host type can name its transport boundary, but
 /// it is sealed because aioduct still owns the compatibility contract for the
-/// bridge. Built-in implementations cover `HttpEngineSend<R, C>` for
+/// bridge. Built-in implementations cover `HttpEngineSend<R, C, O>` for
 /// `RuntimePoll` runtimes such as Tokio and smol, plus `CompioHostTransport`
 /// when the `compio` feature is enabled.
 pub trait WasiHostTransport: sealed::Sealed + Send + Sync + 'static {
@@ -104,10 +109,14 @@ pub trait WasiHostTransport: sealed::Sealed + Send + Sync + 'static {
     ) -> BoxFuture<Result<HostResponse, crate::Error>>;
 }
 
-impl<R, C> WasiHostTransport for crate::HttpEngineSend<R, C>
+impl<R, C, O> WasiHostTransport for crate::HttpEngineSend<R, C, O>
 where
     R: crate::RuntimePoll,
     C: crate::ConnectorSend,
+    O: crate::observer::Observer + Send + Sync,
+    O::Context: Send,
+    O::Observation: Send + Sync,
+    O::ConnectionObservation: Send + Sync,
 {
     fn forward_wasi_http(
         &self,
@@ -167,9 +176,12 @@ pub struct CompioHostTransport {
 impl CompioHostTransport {
     /// Start a host transport worker from a factory that creates the compio
     /// transport builder on the worker thread.
-    pub fn from_builder_factory(
-        transport: impl FnOnce() -> CompioTransportBuilder + Send + 'static,
-    ) -> Result<Self, BuildError> {
+    pub fn from_builder_factory<O>(
+        transport: impl FnOnce() -> CompioTransportBuilder<O> + Send + 'static,
+    ) -> Result<Self, BuildError>
+    where
+        O: crate::observer::Observer,
+    {
         let (sender, receiver) = mpsc::channel(LOCAL_WORKER_QUEUE);
         spawn_compio_worker(transport, receiver)?;
         Ok(Self {
@@ -243,10 +255,13 @@ struct LocalForwardRequest {
 }
 
 #[cfg(feature = "compio")]
-fn spawn_compio_worker(
-    transport: impl FnOnce() -> CompioTransportBuilder + Send + 'static,
+fn spawn_compio_worker<O>(
+    transport: impl FnOnce() -> CompioTransportBuilder<O> + Send + 'static,
     mut receiver: mpsc::Receiver<LocalForwardRequest>,
-) -> Result<(), BuildError> {
+) -> Result<(), BuildError>
+where
+    O: crate::observer::Observer,
+{
     let (ready_sender, ready_receiver) = std_mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("aioduct-wasi-host-compio".into())
@@ -286,11 +301,14 @@ fn spawn_compio_worker(
 }
 
 #[cfg(feature = "compio")]
-async fn forward_compio_request(
-    transport: crate::CompioClient,
+async fn forward_compio_request<O>(
+    transport: crate::CompioClient<O>,
     request: http::Request<ChannelBody>,
     options: HostForwardOptions,
-) -> Result<HostResponse, crate::Error> {
+) -> Result<HostResponse, crate::Error>
+where
+    O: crate::observer::Observer,
+{
     let mut forward = transport
         .forward_local(request)
         .upstream(options.upstream)

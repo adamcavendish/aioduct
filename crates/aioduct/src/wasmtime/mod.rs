@@ -42,10 +42,14 @@ mod sealed {
     /// Marker trait sealing [`WasiHostTransport`](crate::wasmtime::WasiHostTransport).
     pub trait Sealed {}
 
-    impl<R, C> Sealed for crate::HttpEngineSend<R, C>
+    impl<R, C, O> Sealed for crate::HttpEngineSend<R, C, O>
     where
         R: crate::RuntimePoll,
         C: crate::ConnectorSend,
+        O: crate::observer::Observer + Send + Sync,
+        O::Context: Send,
+        O::Observation: Send + Sync,
+        O::ConnectionObservation: Send + Sync,
     {
     }
 

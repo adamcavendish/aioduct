@@ -1,12 +1,103 @@
-use aioduct::WasiClient;
+use aioduct::{
+    AttemptEvent, ChannelIoEvent, ConnectionAcquisitionEvent, Interest, NoopConnectionObservation,
+    RequestBodyEvent, RequestFinish, RequestInfo, RequestObservation, RequestStart,
+    ResponseBodyEvent, ResponseChannelHandoffEvent, ResponseHeaders, ResponseSseEvent, WasiClient,
+};
+
+/// Guest-side observation is intentionally separate from the host transport
+/// observer.  WASI owns DNS, connection pooling, negotiated protocol, and wire
+/// boundaries, so those native facts are not synthesized in this component.
+struct GuestObserver;
+
+struct GuestRequestObservation;
+
+impl aioduct::Observer for GuestObserver {
+    type Context = ();
+    type Observation = GuestRequestObservation;
+    type ConnectionObservation = NoopConnectionObservation;
+
+    fn begin(
+        &self,
+        request: RequestInfo<'_>,
+        _context: Option<Self::Context>,
+    ) -> (Interest, Self::Observation) {
+        println!("guest begin {} {}", request.method, request.initial_uri);
+        (
+            Interest::REQUEST_START
+                | Interest::RESPONSE_HEADERS
+                | Interest::REQUEST_FINISH
+                | Interest::ATTEMPT
+                | Interest::CONNECTION_ACQUISITION
+                | Interest::REQUEST_BODY
+                | Interest::RESPONSE_BODY
+                | Interest::RESPONSE_BODY_BYTES
+                | Interest::SSE_LIFECYCLE
+                | Interest::RESPONSE_CHANNEL_HANDOFF
+                | Interest::CHANNEL_LIFECYCLE
+                | Interest::SSE_STATISTICS
+                | Interest::CHANNEL_BYTES,
+            GuestRequestObservation,
+        )
+    }
+
+    fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
+        (Interest::EMPTY, NoopConnectionObservation)
+    }
+}
+
+impl RequestObservation for GuestRequestObservation {
+    fn on_request_start(&self, event: &RequestStart<'_>) {
+        println!("guest request-start {} {}", event.method, event.initial_uri);
+    }
+
+    fn on_response_headers(&self, event: &ResponseHeaders) {
+        println!("guest response-headers {:?}", event.response);
+    }
+
+    fn on_request_finish(&self, event: &RequestFinish<'_>) {
+        println!(
+            "guest request-finish reason={:?} response={:?} attempts={} original_data_bytes={:?}",
+            event.reason, event.response, event.attempt_count, event.original_data_bytes
+        );
+    }
+
+    fn on_attempt(&self, event: &AttemptEvent<'_>) {
+        println!("guest attempt {event:?}");
+    }
+
+    fn on_connection_acquisition(&self, event: &ConnectionAcquisitionEvent<'_>) {
+        println!("guest acquisition {event:?}");
+    }
+
+    fn on_request_body(&self, event: &RequestBodyEvent<'_>) {
+        println!("guest request-body {event:?}");
+    }
+
+    fn on_response_body(&self, event: &ResponseBodyEvent<'_>) {
+        println!("guest response-body {event:?}");
+    }
+
+    fn on_response_sse(&self, event: ResponseSseEvent<'_>) {
+        println!("guest sse {event:?}");
+    }
+
+    fn on_response_channel_handoff(&self, event: &ResponseChannelHandoffEvent<'_>) {
+        println!("guest channel-handoff {event:?}");
+    }
+
+    fn on_channel_io(&self, event: &ChannelIoEvent<'_>) {
+        println!("guest channel {event:?}");
+    }
+}
 
 fn main() {
     let client = WasiClient::builder()
         .user_agent("aioduct-wasi-p2-demo/0.2")
+        .observer(GuestObserver)
         .build()
         .unwrap();
-    let base_url =
-        std::env::var("AIODUCT_WASI_DEMO_URL").unwrap_or_else(|_| "https://httpbin.org".into());
+    let base_url = std::env::var("AIODUCT_WASI_DEMO_URL")
+        .expect("AIODUCT_WASI_DEMO_URL must be provided by the host example");
 
     // Simple GET
     let get_url = format!("{base_url}/get");

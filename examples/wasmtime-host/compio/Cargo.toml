@@ -8,6 +8,8 @@ publish = false
 aioduct = { workspace = true, features = ["compio", "rustls", "rustls-ring", "wasmtime"] }
 compio-runtime.workspace = true
 http.workspace = true
+hyper.workspace = true
+nu-ansi-term.workspace = true
 wasmtime = { workspace = true, features = ["cranelift"] }
 wasmtime-wasi = { workspace = true, features = ["p2"] }
 wasmtime-wasi-http = { workspace = true, features = ["p2"] }

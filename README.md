@@ -172,6 +172,7 @@ below exercise complete request paths rather than configuration alone.
 | Route through a two-hop proxy chain | [`proxy-chain`](examples/tokio/proxy-chain) | [`proxy-chain`](examples/smol/proxy-chain) | [`proxy-chain`](examples/compio/proxy-chain) |
 | Select proxies by target scheme and `NO_PROXY` | [`proxy-routing`](examples/tokio/proxy-routing) | [`proxy-routing`](examples/smol/proxy-routing) | [`proxy-routing`](examples/compio/proxy-routing) |
 | Compare buffered and one-shot retry behavior | [`timeout-and-retry`](examples/tokio/timeout-and-retry) | [`timeout-and-retry`](examples/smol/timeout-and-retry) | [`timeout-and-retry`](examples/compio/timeout-and-retry) |
+| Complete native observability reference | [`observability`](examples/tokio/observability) | [`observability`](examples/smol/observability) | [`observability`](examples/compio/observability) |
 | Stream an HTTP/3 upload and fail closed | [`http3-streaming-upload`](examples/tokio/http3-streaming-upload) | Not supported | Not supported |
 
 ### JSON
