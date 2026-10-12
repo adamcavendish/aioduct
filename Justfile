@@ -115,6 +115,17 @@ coverage-lcov:
     cargo llvm-cov nextest -p aioduct --features {{ all_features_ring }} --no-report
     cargo llvm-cov nextest -p aioduct --features {{ all_features_aws_lc_rs }} --no-clean --lcov --output-path coverage/lcov.info
 
+# ---------- Miri ----------
+
+# Run Miri on unsafe code paths
+miri:
+    cargo +nightly miri test -p aioduct --features tokio,json -- observer::transport::into_inner
+    cargo +nightly miri test -p aioduct --features tokio,json -- observation_lifecycle
+
+# Run Miri on all tests (comprehensive, slow)
+miri-all:
+    cargo +nightly miri test -p aioduct --features tokio,json --lib
+
 # ---------- Bench ----------
 
 # Run all benchmarks
