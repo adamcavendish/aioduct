@@ -18,6 +18,10 @@ use http::HeaderValue;
 use http::header::AUTHORIZATION;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod support {
+    pub mod observation;
+}
+
 struct HostState {
     table: ResourceTable,
     wasi: WasiCtx,
@@ -281,4 +285,85 @@ fn response_for_request(request: &str) -> String {
         "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn guest_wasi_observer_receives_events() -> Result<(), Box<dyn std::error::Error>> {
+    use support::observation::TestObserver;
+    use aioduct::client::HttpEngineBuilder;
+    use aioduct::runtime::TokioRuntime;
+    use aioduct::runtime::tokio_rt::TcpConnector;
+
+    let component = build_wasi_demo_component()?;
+    let (addr, server) = demo_server().await?;
+    let origin = format!("http://{addr}");
+    let observer = TestObserver::default();
+    
+    // 构建带有观察者的 HttpEngine
+    let connector = TcpConnector::default();
+    let transport = HttpEngineBuilder::<TokioRuntime, TcpConnector, _>::new(connector)
+        .observer(observer.clone())
+        .build()?;
+
+    let hooks = WasiHttpHost::builder()
+        .policy(
+            ExactOriginPolicy::new(&origin)?
+                .forbid_sensitive_headers()
+                .inject_header(AUTHORIZATION, HeaderValue::from_static("Bearer e2e-secret"))
+                .header_limit(16 * 1024)
+                .body_limit(1024 * 1024)
+        )
+        .transport(transport)
+        .build()?;
+
+    let stdout = MemoryOutputPipe::new(16 * 1024);
+    let stderr = MemoryOutputPipe::new(16 * 1024);
+    let mut wasi = WasiCtx::builder();
+    wasi.stdout(stdout.clone());
+    wasi.stderr(stderr.clone());
+    wasi.env("AIODUCT_WASI_DEMO_URL", origin);
+
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.wasm_backtrace_details(::wasmtime::WasmBacktraceDetails::Enable);
+    let engine = Engine::new(&config)?;
+    let component = Component::from_file(&engine, component)?;
+    let mut store = Store::new(
+        &engine,
+        HostState {
+            table: ResourceTable::new(),
+            wasi: wasi.build(),
+            http: WasiHttpCtx::new(),
+            hooks,
+        },
+    );
+
+    let mut linker = Linker::new(&engine);
+    ::wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    ::wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
+    let command = WasiCommand::instantiate_async(&mut store, &component, &linker).await?;
+    command
+        .wasi_cli_run()
+        .call_run(&mut store)
+        .await?
+        .map_err(|()| std::io::Error::other("guest returned failure"))?;
+
+    let _requests = tokio::time::timeout(Duration::from_secs(5), server).await??;
+
+    // 验证观察者捕获了事件
+    let phases = observer.phases();
+    assert!(!phases.is_empty(), "observer should capture events");
+    
+    // 验证关键事件被记录
+    let has_request_start = phases.iter().any(|e| e.contains("RequestStart"));
+    let has_response_headers = phases.iter().any(|e| e.contains("ResponseHeaders"));
+    assert!(has_request_start, "observer should capture RequestStart event. Events: {phases:?}");
+    assert!(has_response_headers, "observer should capture ResponseHeaders event. Events: {phases:?}");
+
+    let stdout = String::from_utf8_lossy(&stdout.contents()).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr.contents()).into_owned();
+    assert!(stderr.is_empty(), "guest stderr should be empty:\n{stderr}");
+    assert!(stdout.contains("Status: 200"), "guest stdout:\n{stdout}");
+
+    Ok(())
 }
