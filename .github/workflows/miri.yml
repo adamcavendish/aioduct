@@ -1,0 +1,53 @@
+name: Miri
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  RUST_BACKTRACE: 1
+  # Miri-specific environment variables
+  MIRIFLAGS: -Zmiri-strict-provenance -Zmiri-symbolic-alignment-check
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  miri:
+    name: Miri (unsafe code verification)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: miri
+      
+      - uses: taiki-e/install-action@just
+      
+      - name: Run Miri on observer unsafe code
+        run: just miri
+      
+      - name: Report success
+        if: success()
+        run: echo "✅ Miri verification passed - no undefined behavior detected"
+      
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "❌ Miri detected undefined behavior in unsafe code"
+          echo "Review the logs above for details on memory safety violations"
+          exit 1

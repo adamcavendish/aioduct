@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep request/connection observation separate from request header preparation;
   trace propagation is performed by applications through existing headers.
 - Preserve decompression configuration and per-request `no_decompression()`.
+- **BREAKING CHANGE**: Selected response failures (e.g., decompression errors) no 
+  longer enter the configured retry boundary. Retries are scoped to request/connection 
+  failures only. Response body processing errors now propagate directly to the caller 
+  without automatic retry attempts.
 
 ### Fixed
 - Upgrade async-trait to 0.1.92 and remove a redundant formatting borrow for
