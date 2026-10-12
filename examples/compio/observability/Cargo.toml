@@ -1,0 +1,15 @@
+[package]
+name = "example-compio-observability"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["compio", "rustls", "rustls-ring"] }
+bytes.workspace = true
+compio-runtime.workspace = true
+futures-util.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+nu-ansi-term.workspace = true

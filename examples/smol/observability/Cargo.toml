@@ -1,0 +1,15 @@
+[package]
+name = "example-smol-observability"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["smol", "rustls", "rustls-ring"] }
+bytes.workspace = true
+futures-util.workspace = true
+nu-ansi-term.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+smol.workspace = true

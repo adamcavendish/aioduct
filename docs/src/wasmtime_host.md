@@ -31,16 +31,36 @@ cargo run -p example-wasmtime-host-smol
 cargo run -p example-wasmtime-host-compio
 ```
 
-Successful output includes the guest `Status: 200` path, the expected
-`error_for_status` path, and host observations like:
+Successful output uses the same summary/trace layout as the runtime
+observability examples. Summary mode includes the guest application results
+and host policy facts:
 
 ```text
-host observations:
-  GET /get HTTP/1.1 | authorization injected: yes
-  POST /post HTTP/1.1 | authorization injected: yes
-  GET /status/404 HTTP/1.1 | authorization injected: yes
-host-owned secret header value was withheld from host output
+02  WASI guest · request-level result
+────────────────────────────────────────
+    → GET /get · 200 OK
+    → POST /post · 200 OK
+    → GET /status/404 · error_for_status · HTTP status error: 404 Not Found
+
+03  host policy · local forwarding fixture
+────────────────────────────────────────
+    → GET /get HTTP/1.1 · authorization injected=yes
+    → POST /post HTTP/1.1 · authorization injected=yes
+    → GET /status/404 HTTP/1.1 · authorization injected=yes
+✓ complete
 ```
+
+Pass `--trace` after `cargo run --` to render every subscribed native and
+captured guest callback.
+
+The examples configure an observer on both sides of the Wasmtime boundary.
+Guest callbacks describe the `WasiClient` request lifecycle. Host callbacks
+describe the native forwarding client and its physical connections. These are
+strictly independent lifecycles: the adapter does not synthesize a correlation
+ID, copy host DNS/TLS/ALPN facts into the guest, or merge a host response into
+the guest request's event stream. Host-managed WASI leaves the negotiated HTTP
+version unknown to the guest-side observer, while a native host transport can
+report its own `ResponseInfo::version`.
 
 The examples live under `examples/wasmtime-host`. They use local HTTP so they
 can be run without external network access. Pass a component path after `--` if

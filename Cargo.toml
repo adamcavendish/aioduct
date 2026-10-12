@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*", "examples/*/*"]
+exclude = ["examples/common"]
 resolver = "3"
 
 [workspace.package]
@@ -46,6 +47,7 @@ indicatif = "0.18"
 js-sys = "0.3"
 memchr = "2"
 mime = "0.3"
+nu-ansi-term = "0.50"
 opentelemetry = { version = "0.32", default-features = false }
 opentelemetry-http = "0.32"
 opentelemetry-stdout = "0.32"

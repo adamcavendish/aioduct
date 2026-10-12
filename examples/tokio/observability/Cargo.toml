@@ -1,0 +1,15 @@
+[package]
+name = "example-tokio-observability"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+aioduct = { workspace = true, features = ["tokio"] }
+bytes.workspace = true
+futures-util.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["server", "http1"] }
+nu-ansi-term.workspace = true
+tokio = { workspace = true, features = ["full"] }

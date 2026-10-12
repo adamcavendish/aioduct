@@ -1808,6 +1808,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-compio-observability"
+version = "0.2.6"
+dependencies = [
+ "aioduct",
+ "bytes",
+ "compio-runtime",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "nu-ansi-term",
+]
+
+[[package]]
 name = "example-compio-post-form"
 version = "0.2.6"
 dependencies = [
@@ -2103,24 +2117,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-smol-observer-otel"
+name = "example-smol-observability"
 version = "0.2.6"
 dependencies = [
  "aioduct",
- "opentelemetry",
- "opentelemetry-stdout",
- "opentelemetry_sdk",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "nu-ansi-term",
  "smol",
-]
-
-[[package]]
-name = "example-smol-observer-tracing"
-version = "0.2.6"
-dependencies = [
- "aioduct",
- "smol",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2440,24 +2447,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-tokio-observer-otel"
+name = "example-tokio-observability"
 version = "0.2.6"
 dependencies = [
  "aioduct",
- "opentelemetry",
- "opentelemetry-stdout",
- "opentelemetry_sdk",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "nu-ansi-term",
  "tokio",
-]
-
-[[package]]
-name = "example-tokio-observer-tracing"
-version = "0.2.6"
-dependencies = [
- "aioduct",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2638,6 +2638,8 @@ dependencies = [
  "aioduct",
  "compio-runtime",
  "http",
+ "hyper",
+ "nu-ansi-term",
  "wasmtime",
  "wasmtime-wasi",
  "wasmtime-wasi-http",
@@ -2649,6 +2651,8 @@ version = "0.2.6"
 dependencies = [
  "aioduct",
  "http",
+ "hyper",
+ "nu-ansi-term",
  "smol",
  "wasmtime",
  "wasmtime-wasi",
@@ -2661,6 +2665,8 @@ version = "0.2.6"
 dependencies = [
  "aioduct",
  "http",
+ "hyper",
+ "nu-ansi-term",
  "tokio",
  "wasmtime",
  "wasmtime-wasi",
