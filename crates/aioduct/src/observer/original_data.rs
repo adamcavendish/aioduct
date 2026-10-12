@@ -40,8 +40,17 @@ impl<B: Body<Data = Bytes>> Body for OriginalDataBody<B> {
             && let Some(data) = frame.data_ref()
         {
             *this.total = this.total.saturating_add(data.len() as u64);
-            // A single body owns the writer; a relaxed store publishes its
-            // cumulative snapshot without a contended read-modify-write.
+            // Single-writer invariant: Each OriginalDataBody instance exclusively owns
+            // write access to its snapshot Arc<AtomicU64>. The snapshot is read exactly
+            // once after body completion in RequestObservation::emit_finish().
+            //
+            // Relaxed ordering is sufficient because:
+            // 1. No concurrent writes exist (single body instance per request)
+            // 2. The read happens after poll_frame returns Poll::Ready(None), establishing
+            //    a happens-before relationship through task scheduling
+            // 3. We only need eventual visibility, not synchronization with other atomics
+            //
+            // Using Relaxed avoids unnecessary memory barriers in the hot path.
             this.snapshot.store(*this.total, Ordering::Relaxed);
         }
         result
