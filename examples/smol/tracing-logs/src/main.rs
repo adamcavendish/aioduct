@@ -60,6 +60,7 @@ impl aioduct::Observer for TraceObserver {
             TraceObserver,
         )
     }
+
     fn begin_connection(&self) -> (aioduct::Interest, Self) {
         (
             aioduct::Interest::CONNECTION_ESTABLISHMENT | aioduct::Interest::CONNECTION_LIFECYCLE,
@@ -67,23 +68,29 @@ impl aioduct::Observer for TraceObserver {
         )
     }
 }
+
 impl aioduct::RequestObservation for TraceObserver {
     fn on_request_start(&self, event: &aioduct::RequestStart<'_>) {
         tracing::info!(method = %event.method, host = event.initial_uri.host().unwrap_or(""), "http.request.start");
     }
+
     fn on_response_headers(&self, event: &aioduct::ResponseHeaders) {
         tracing::info!(response = ?event.response, "http.response.headers");
     }
+
     fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
         tracing::debug!(event = ?event, "http.attempt");
     }
+
     fn on_connection_acquisition(&self, event: &aioduct::ConnectionAcquisitionEvent<'_>) {
         tracing::debug!(event = ?event, "http.connection.acquisition");
     }
+
     fn on_request_finish(&self, event: &aioduct::RequestFinish<'_>) {
         tracing::info!(event = ?event, "http.request.finish");
     }
 }
+
 impl aioduct::ConnectionObservation for TraceObserver {
     fn on_connection(&self, event: &aioduct::ConnectionObservationEvent<'_>) {
         tracing::debug!(event = ?event, "http.connection");

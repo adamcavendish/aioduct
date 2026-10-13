@@ -620,6 +620,7 @@ mod tests {
         fn clone_fn(p: *const ()) -> RawWaker {
             RawWaker::new(p, &VTABLE)
         }
+
         static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, noop, noop, noop);
         let raw = RawWaker::new(std::ptr::null(), &VTABLE);
         let waker = unsafe { Waker::from_raw(raw) };

@@ -9,6 +9,7 @@ struct RetryTargetObservation {
     targets: std::sync::Arc<std::sync::Mutex<Vec<http::Uri>>>,
     current: std::sync::Mutex<Option<http::Uri>>,
 }
+
 impl aioduct::Observer for RetryTargetObserver {
     type Context = ();
     type Observation = RetryTargetObservation;
@@ -26,10 +27,12 @@ impl aioduct::Observer for RetryTargetObserver {
             },
         )
     }
+
     fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
         (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
     }
 }
+
 impl aioduct::RequestObservation for RetryTargetObservation {
     fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
         match event {

@@ -21,6 +21,7 @@ impl SseStreamExt for crate::wasm::WasmSseStream {
     fn next(&mut self) -> Self::Next<'_> {
         self.next()
     }
+
     fn with_max_payload_size(self, max: usize) -> Self {
         self.with_max_payload_size(max)
     }

@@ -190,6 +190,7 @@ impl<B: http_body::Body<Data = Bytes, Error = Error> + Unpin> SseStreamExt
     fn next(&mut self) -> Self::Next<'_> {
         self.next()
     }
+
     fn with_max_payload_size(self, max: usize) -> Self {
         self.with_max_payload_size(max)
     }
@@ -201,6 +202,7 @@ impl SseStreamExt for crate::sse::SseStreamLocal {
     fn next(&mut self) -> Self::Next<'_> {
         self.next()
     }
+
     fn with_max_payload_size(self, max: usize) -> Self {
         self.with_max_payload_size(max)
     }

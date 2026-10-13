@@ -174,6 +174,7 @@ mod tests {
             ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
                 Box::pin(async { Err(io::Error::other("resolve not used")) })
             }
+
             fn resolve_all(
                 &self,
                 _host: &str,

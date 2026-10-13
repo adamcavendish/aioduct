@@ -499,6 +499,7 @@ mod tests {
             fn clone(ptr: *const ()) -> RawWaker {
                 RawWaker::new(ptr, &VTABLE)
             }
+
             const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
             RawWaker::new(std::ptr::null(), &VTABLE)
         }
@@ -520,6 +521,7 @@ mod tests {
             fn clone(ptr: *const ()) -> RawWaker {
                 RawWaker::new(ptr, &VTABLE)
             }
+
             const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
             RawWaker::new(std::ptr::null(), &VTABLE)
         }
@@ -542,6 +544,7 @@ mod tests {
             fn clone(ptr: *const ()) -> RawWaker {
                 RawWaker::new(ptr, &VTABLE)
             }
+
             const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
             RawWaker::new(std::ptr::null(), &VTABLE)
         }
@@ -561,6 +564,7 @@ mod tests {
             fn clone(ptr: *const ()) -> RawWaker {
                 RawWaker::new(ptr, &VTABLE)
             }
+
             const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
             RawWaker::new(std::ptr::null(), &VTABLE)
         }

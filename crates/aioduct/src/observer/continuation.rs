@@ -46,9 +46,11 @@ impl RequestAttemptCounter {
             interest,
         }
     }
+
     pub(crate) fn interest(&self) -> Interest {
         self.interest
     }
+
     pub(crate) fn started(&self) -> u64 {
         let mut current = self.total.load(Ordering::Relaxed);
         loop {
@@ -66,6 +68,7 @@ impl RequestAttemptCounter {
             }
         }
     }
+
     fn value(&self) -> u64 {
         self.total.load(Ordering::Relaxed)
     }
@@ -304,9 +307,11 @@ macro_rules! attempt_diagnostics {
             fn emit(&self, event: &AttemptEvent<'_>) {
                 self.0.on_attempt(event);
             }
+
             fn acquisition(&self, event: &super::ConnectionAcquisitionEvent<'_>) {
                 self.0.observation.on_connection_acquisition(event);
             }
+
             fn acquisition_scope(
                 &self,
                 phase: super::ConnectionAcquisitionPhase,
@@ -332,6 +337,7 @@ macro_rules! attempt_diagnostics {
                     admitted: false,
                 })
             }
+
             pub(crate) fn acquisition_scope(
                 &self,
                 phase: super::ConnectionAcquisitionPhase,
@@ -347,6 +353,7 @@ macro_rules! attempt_diagnostics {
                     completed: false,
                 })
             }
+
             pub(crate) fn backoff(
                 &self,
                 delay: std::time::Duration,
@@ -918,9 +925,11 @@ impl crate::body::SendBodyObserver for SendObservationInner {
     fn on_response_channel_handoff(&self, event: &super::ResponseChannelHandoffEvent<'_>) {
         self.observation.on_response_channel_handoff(event);
     }
+
     fn on_channel_io(&self, event: &super::ChannelIoEvent<'_>) {
         self.observation.on_channel_io(event);
     }
+
     fn sse_interest(&self) -> Interest {
         self.interest
     }
@@ -928,6 +937,7 @@ impl crate::body::SendBodyObserver for SendObservationInner {
     fn on_response_sse(&self, event: super::ResponseSseEvent<'_>) {
         self.observation.on_response_sse(event);
     }
+
     fn on_body_end(&self, end: crate::body::BodyEnd) {
         // The execution-side owner also exists before response selection. Its
         // drop is not a caller abandoning a returned response body.
@@ -1202,9 +1212,11 @@ impl crate::body::LocalBodyObserver for LocalObservationInner {
     fn on_response_channel_handoff(&self, event: &super::ResponseChannelHandoffEvent<'_>) {
         self.observation.on_response_channel_handoff(event);
     }
+
     fn on_channel_io(&self, event: &super::ChannelIoEvent<'_>) {
         self.observation.on_channel_io(event);
     }
+
     fn sse_interest(&self) -> Interest {
         self.interest
     }
@@ -1212,6 +1224,7 @@ impl crate::body::LocalBodyObserver for LocalObservationInner {
     fn on_response_sse(&self, event: super::ResponseSseEvent<'_>) {
         self.observation.on_response_sse(event);
     }
+
     fn on_body_end(&self, end: crate::body::BodyEnd) {
         if !self.has_response() || !self.claim_finish() {
             return;
@@ -1416,10 +1429,12 @@ mod tests {
         fn begin_connection(&self) -> (Interest, NoopConnectionObservation) {
             (Interest::EMPTY, NoopConnectionObservation)
         }
+
         fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self) {
             (Interest::CONNECTION_ACQUISITION, self.clone())
         }
     }
+
     impl RequestObservation for Phases {
         fn on_connection_acquisition(&self, event: &super::super::ConnectionAcquisitionEvent<'_>) {
             if let super::super::ConnectionAcquisitionEvent::PhaseCompleted {
@@ -1476,12 +1491,14 @@ mod tests {
             f.write_str("original source")
         }
     }
+
     impl std::error::Error for Marker {}
 
     struct Recorder {
         source: Arc<()>,
         errors: Arc<AtomicU64>,
     }
+
     impl Observer for Recorder {
         type Context = ();
         type Observation = Self;
@@ -1489,6 +1506,7 @@ mod tests {
         fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
             (Interest::EMPTY, NoopConnectionObservation)
         }
+
         fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self) {
             (
                 Interest::REQUEST_FINISH,
@@ -1499,6 +1517,7 @@ mod tests {
             )
         }
     }
+
     impl RequestObservation for Recorder {
         fn on_request_finish(&self, event: &RequestFinish<'_>) {
             let RequestFinishReason::Failed { error } = event.reason else {

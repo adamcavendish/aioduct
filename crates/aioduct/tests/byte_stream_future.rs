@@ -19,6 +19,7 @@ fn server_url() -> String {
     });
     format!("http://{addr}/")
 }
+
 async fn read<S: ByteStreamExt>(mut stream: S) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     while let Some(chunk) = ByteStreamExt::next(&mut stream).await {

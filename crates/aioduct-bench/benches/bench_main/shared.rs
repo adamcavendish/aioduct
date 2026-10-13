@@ -129,30 +129,39 @@ pub fn range_addr() -> SocketAddr {
 pub fn h1_small_url() -> String {
     format!("http://{}/", h1_small_addr())
 }
+
 pub fn h1_64k_url() -> String {
     format!("http://{}/", h1_64k_addr())
 }
+
 pub fn h1_1m_url() -> String {
     format!("http://{}/", h1_1m_addr())
 }
+
 pub fn h1_echo_url() -> String {
     format!("http://{}/", h1_echo_addr())
 }
+
 pub fn h2c_small_url() -> String {
     format!("http://{}/", h2c_small_addr())
 }
+
 pub fn h2c_64k_url() -> String {
     format!("http://{}/", h2c_64k_addr())
 }
+
 pub fn h2c_1m_url() -> String {
     format!("http://{}/", h2c_1m_addr())
 }
+
 pub fn h2c_echo_url() -> String {
     format!("http://{}/", h2c_echo_addr())
 }
+
 pub fn sse_url() -> String {
     format!("http://{}/", sse_addr())
 }
+
 pub fn range_url() -> String {
     format!("http://{}/data", range_addr())
 }

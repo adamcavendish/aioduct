@@ -19,6 +19,7 @@ pub enum TuiMessage {
     PoolStats(PoolStats),
     Quit,
 }
+
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{

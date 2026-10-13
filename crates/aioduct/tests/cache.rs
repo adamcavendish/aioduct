@@ -713,16 +713,20 @@ async fn test_custom_cache_store_with_client() {
             self.get_count.fetch_add(1, Ordering::Relaxed);
             self.inner.get(method, uri)
         }
+
         fn put(&self, method: &http::Method, uri: &http::Uri, entry: aioduct::CacheEntry) {
             self.put_count.fetch_add(1, Ordering::Relaxed);
             self.inner.put(method, uri, entry);
         }
+
         fn remove(&self, method: &http::Method, uri: &http::Uri) {
             self.inner.remove(method, uri);
         }
+
         fn clear(&self) {
             self.inner.clear();
         }
+
         fn len(&self) -> usize {
             self.inner.len()
         }

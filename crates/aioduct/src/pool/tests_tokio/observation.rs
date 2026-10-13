@@ -9,6 +9,7 @@ struct Recorder {
     inner: Weak<Mutex<PoolInner<RequestBodySend>>>,
     facts: Arc<Mutex<Vec<(bool, u64)>>>,
 }
+
 impl ConnectionObservation for Recorder {
     fn on_connection(&self, event: &ConnectionObservationEvent<'_>) {
         if let ConnectionObservationEvent::PoolEligibilityChanged {
@@ -24,6 +25,7 @@ impl ConnectionObservation for Recorder {
         }
     }
 }
+
 impl Drop for Recorder {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.upgrade() {
@@ -34,6 +36,7 @@ impl Drop for Recorder {
         }
     }
 }
+
 struct Provider(Recorder);
 impl Observer for Provider {
     type Context = ();
@@ -42,6 +45,7 @@ impl Observer for Provider {
     fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self::Observation) {
         (Interest::EMPTY, NoopRequestObservation)
     }
+
     fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
         (Interest::CONNECTION_LIFECYCLE, self.0.clone())
     }

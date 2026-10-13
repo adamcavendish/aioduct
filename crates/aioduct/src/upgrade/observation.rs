@@ -30,6 +30,7 @@ pub(crate) struct HandoffRequest {
     upgrade_offered: bool,
     association_requested: bool,
 }
+
 impl HandoffRequest {
     pub(crate) fn capture<B>(request: &http::Request<B>) -> Option<Self> {
         let interest = request
@@ -105,6 +106,7 @@ impl HandoffMetadata {
             status,
         })
     }
+
     fn info(&self) -> ChannelHandoffInfo<'_> {
         ChannelHandoffInfo {
             mode: self.mode,
@@ -122,24 +124,30 @@ pub(super) trait Receiver: Clone {
     fn handoff(&self, event: &ResponseChannelHandoffEvent<'_>);
     fn io(&self, event: &ChannelIoEvent<'_>);
 }
+
 impl Receiver for Arc<dyn SendBodyObserver> {
     fn interest(&self) -> Interest {
         self.sse_interest()
     }
+
     fn handoff(&self, event: &ResponseChannelHandoffEvent<'_>) {
         self.on_response_channel_handoff(event);
     }
+
     fn io(&self, event: &ChannelIoEvent<'_>) {
         self.on_channel_io(event);
     }
 }
+
 impl Receiver for Rc<dyn LocalBodyObserver> {
     fn interest(&self) -> Interest {
         self.sse_interest()
     }
+
     fn handoff(&self, event: &ResponseChannelHandoffEvent<'_>) {
         self.on_response_channel_handoff(event);
     }
+
     fn io(&self, event: &ChannelIoEvent<'_>) {
         self.on_channel_io(event);
     }
@@ -151,10 +159,12 @@ pub(super) struct Handoff<R: Receiver> {
     metadata: HandoffMetadata,
     waiting: bool,
 }
+
 impl<R: Receiver> Handoff<R> {
     pub(super) fn resolved(&mut self) {
         self.waiting = false;
     }
+
     pub(super) fn start(receiver: R, metadata: HandoffMetadata) -> Self {
         let handoff = Self {
             receiver,
@@ -175,6 +185,7 @@ impl<R: Receiver> Handoff<R> {
         }
         handoff
     }
+
     pub(super) fn failed(&mut self, error: &Error) {
         self.waiting = false;
         if self
@@ -190,6 +201,7 @@ impl<R: Receiver> Handoff<R> {
                 });
         }
     }
+
     pub(super) fn succeeded(mut self) -> Option<Box<Channel<R>>> {
         self.waiting = false;
         let channel = self
@@ -213,6 +225,7 @@ impl<R: Receiver> Handoff<R> {
         channel
     }
 }
+
 impl<R: Receiver> Drop for Handoff<R> {
     fn drop(&mut self) {
         if std::mem::replace(&mut self.waiting, false)
@@ -238,6 +251,7 @@ pub(super) struct Channel<R: Receiver> {
     write_shutdown: bool,
     detached: bool,
 }
+
 impl<R: Receiver + Clone> Channel<R> {
     fn new(receiver: &R) -> Self {
         Self {
@@ -252,13 +266,16 @@ impl<R: Receiver + Clone> Channel<R> {
         }
     }
 }
+
 impl<R: Receiver> Channel<R> {
     fn read_bytes(&self) -> Option<u64> {
         self.bytes.as_ref().map(|bytes| bytes.0)
     }
+
     fn write_bytes(&self) -> Option<u64> {
         self.bytes.as_ref().map(|bytes| bytes.1)
     }
+
     pub(super) fn read(&mut self, available: usize, delivered: usize) {
         if self.detached || self.read_eof {
             return;
@@ -273,6 +290,7 @@ impl<R: Receiver> Channel<R> {
             });
         }
     }
+
     pub(super) fn written(&mut self, accepted: usize) {
         if !self.detached
             && !self.write_shutdown
@@ -281,6 +299,7 @@ impl<R: Receiver> Channel<R> {
             bytes.1 = bytes.1.saturating_add(accepted as u64);
         }
     }
+
     pub(super) fn shutdown(&mut self) {
         if !self.detached && !std::mem::replace(&mut self.write_shutdown, true) {
             self.receiver.io(&ChannelIoEvent::WriteShutdown {
@@ -288,6 +307,7 @@ impl<R: Receiver> Channel<R> {
             });
         }
     }
+
     pub(super) fn error(&self, operation: ChannelIoOperation, error: &Error) {
         let direction_ended = match operation {
             ChannelIoOperation::Read => self.read_eof,
@@ -304,6 +324,7 @@ impl<R: Receiver> Channel<R> {
             });
         }
     }
+
     pub(super) fn detach(&mut self, reason: ChannelDetachReason) {
         if std::mem::replace(&mut self.detached, true) || (self.read_eof && self.write_shutdown) {
             return;
@@ -317,6 +338,7 @@ impl<R: Receiver> Channel<R> {
         });
     }
 }
+
 impl<R: Receiver> Drop for Channel<R> {
     fn drop(&mut self) {
         self.detach(ChannelDetachReason::Dropped);

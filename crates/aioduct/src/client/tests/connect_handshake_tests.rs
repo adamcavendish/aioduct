@@ -331,6 +331,7 @@ mod tokio_tests {
                 flushed: Cell::new(false),
             }
         }
+
         fn was_flushed(&self) -> bool {
             self.flushed.get()
         }
@@ -344,10 +345,12 @@ mod tokio_tests {
         ) -> Poll<std::io::Result<usize>> {
             Poll::Ready(Ok(buf.len()))
         }
+
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             self.flushed.set(true);
             Poll::Ready(Ok(()))
         }
+
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
         }
@@ -418,6 +421,7 @@ mod tokio_tests {
                 ) -> Poll<std::io::Result<usize>> {
                     Poll::Ready(Ok(buf.len()))
                 }
+
                 fn poll_flush(
                     self: Pin<&mut Self>,
                     _cx: &mut Context<'_>,
@@ -427,6 +431,7 @@ mod tokio_tests {
                         "flush failed",
                     )))
                 }
+
                 fn poll_shutdown(
                     self: Pin<&mut Self>,
                     _cx: &mut Context<'_>,
@@ -434,6 +439,7 @@ mod tokio_tests {
                     Poll::Ready(Ok(()))
                 }
             }
+
             impl hyper::rt::Read for FlushFailingStream {
                 fn poll_read(
                     self: Pin<&mut Self>,

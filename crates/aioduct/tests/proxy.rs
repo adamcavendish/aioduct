@@ -64,10 +64,12 @@ impl aioduct::Observer for ProxyPhaseObserver {
     fn begin(&self, _: aioduct::RequestInfo<'_>, _: Option<()>) -> (aioduct::Interest, Self) {
         (aioduct::Interest::CONNECTION_ACQUISITION, self.clone())
     }
+
     fn begin_connection(&self) -> (aioduct::Interest, Self) {
         (aioduct::Interest::CONNECTION_ESTABLISHMENT, self.clone())
     }
 }
+
 impl aioduct::RequestObservation for ProxyPhaseObserver {
     fn on_connection_acquisition(&self, event: &aioduct::ConnectionAcquisitionEvent<'_>) {
         if matches!(
@@ -81,6 +83,7 @@ impl aioduct::RequestObservation for ProxyPhaseObserver {
         }
     }
 }
+
 impl aioduct::ConnectionObservation for ProxyPhaseObserver {
     fn on_connection(&self, event: &aioduct::ConnectionObservationEvent<'_>) {
         let phase = match event {

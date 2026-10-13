@@ -67,6 +67,7 @@ pub(crate) trait SendBodyObserver: Send + Sync + 'static {
         _event: &crate::observer::ResponseChannelHandoffEvent<'_>,
     ) {
     }
+
     fn on_channel_io(&self, _event: &crate::observer::ChannelIoEvent<'_>) {}
 }
 
@@ -90,6 +91,7 @@ impl SendObservationHandle {
             )
             .then(|| self.observer.clone())
     }
+
     pub(crate) fn is_terminal(&self) -> bool {
         self.terminal.load(Ordering::Acquire)
     }
@@ -374,6 +376,7 @@ pub(crate) trait LocalBodyObserver: 'static {
         _event: &crate::observer::ResponseChannelHandoffEvent<'_>,
     ) {
     }
+
     fn on_channel_io(&self, _event: &crate::observer::ChannelIoEvent<'_>) {}
 }
 
@@ -382,15 +385,18 @@ impl LocalBodyObserver for SendObservationHandle {
     fn on_response_body(&self, event: &crate::observer::ResponseBodyEvent<'_>) {
         self.observer.on_response_body(event);
     }
+
     fn on_response_channel_handoff(
         &self,
         event: &crate::observer::ResponseChannelHandoffEvent<'_>,
     ) {
         self.observer.on_response_channel_handoff(event);
     }
+
     fn on_channel_io(&self, event: &crate::observer::ChannelIoEvent<'_>) {
         self.observer.on_channel_io(event);
     }
+
     fn sse_interest(&self) -> crate::observer::Interest {
         self.observer.sse_interest()
     }
@@ -398,6 +404,7 @@ impl LocalBodyObserver for SendObservationHandle {
     fn on_response_sse(&self, event: crate::observer::ResponseSseEvent<'_>) {
         self.observer.on_response_sse(event);
     }
+
     fn on_body_end(&self, end: LocalBodyEnd) {
         self.finish(end);
     }
@@ -434,6 +441,7 @@ impl LocalObservationHandle {
             )
             .then(|| self.observer.clone())
     }
+
     pub(crate) fn is_terminal(&self) -> bool {
         self.terminal.get()
     }
@@ -444,6 +452,7 @@ impl LocalObservationHandle {
             .contains(crate::observer::Interest::SSE_LIFECYCLE)
             .then(|| self.observer.clone())
     }
+
     pub(crate) fn from_send(owner: SendObservationHandle) -> Self {
         Self::new(Rc::new(owner))
     }
@@ -503,6 +512,7 @@ impl ResponseBodyLocal {
     pub(crate) fn channel_receiver(&self) -> Option<Rc<dyn LocalBodyObserver>> {
         self.owner.as_ref()?.channel_receiver()
     }
+
     pub(crate) fn take_owner(&mut self) -> Option<LocalObservationHandle> {
         self.owner.take()
     }

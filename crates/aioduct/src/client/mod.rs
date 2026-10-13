@@ -73,6 +73,7 @@ impl PendingResponse {
     pub(crate) fn status(&self) -> http::StatusCode {
         self.response.status()
     }
+
     pub(crate) fn headers(&self) -> &http::HeaderMap {
         self.response.headers()
     }

@@ -550,6 +550,7 @@ mod tests {
             ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
                 Poll::Pending
             }
+
             fn is_end_stream(&self) -> bool {
                 false
             }

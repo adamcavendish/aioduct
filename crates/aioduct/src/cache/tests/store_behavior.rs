@@ -13,16 +13,20 @@ fn test_custom_store() {
         fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
             self.inner.get(method, uri)
         }
+
         fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
             self.put_count.fetch_add(1, Ordering::Relaxed);
             self.inner.put(method, uri, entry);
         }
+
         fn remove(&self, method: &Method, uri: &Uri) {
             self.inner.remove(method, uri);
         }
+
         fn clear(&self) {
             self.inner.clear();
         }
+
         fn len(&self) -> usize {
             self.inner.len()
         }
@@ -250,16 +254,20 @@ fn test_custom_store_invalidate_calls_remove() {
         fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
             self.inner.get(method, uri)
         }
+
         fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
             self.inner.put(method, uri, entry);
         }
+
         fn remove(&self, method: &Method, uri: &Uri) {
             self.remove_count.fetch_add(1, Ordering::Relaxed);
             self.inner.remove(method, uri);
         }
+
         fn clear(&self) {
             self.inner.clear();
         }
+
         fn len(&self) -> usize {
             self.inner.len()
         }
@@ -305,16 +313,20 @@ fn test_custom_store_clear_and_len() {
         fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
             self.inner.get(method, uri)
         }
+
         fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
             self.inner.put(method, uri, entry);
         }
+
         fn remove(&self, method: &Method, uri: &Uri) {
             self.inner.remove(method, uri);
         }
+
         fn clear(&self) {
             self.cleared.store(true, Ordering::Relaxed);
             self.inner.clear();
         }
+
         fn len(&self) -> usize {
             self.inner.len()
         }
@@ -411,16 +423,20 @@ fn test_with_store_no_store_directive_skips_put() {
         fn get(&self, method: &Method, uri: &Uri) -> Vec<CacheEntry> {
             self.inner.get(method, uri)
         }
+
         fn put(&self, method: &Method, uri: &Uri, entry: CacheEntry) {
             self.put_count.fetch_add(1, Ordering::Relaxed);
             self.inner.put(method, uri, entry);
         }
+
         fn remove(&self, method: &Method, uri: &Uri) {
             self.inner.remove(method, uri);
         }
+
         fn clear(&self) {
             self.inner.clear();
         }
+
         fn len(&self) -> usize {
             self.inner.len()
         }

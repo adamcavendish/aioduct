@@ -35,10 +35,12 @@ impl Observer for Recorder {
     fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
         (Interest::EMPTY, aioduct::NoopConnectionObservation)
     }
+
     fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self) {
         (self.1, self.clone())
     }
 }
+
 impl RequestObservation for Recorder {
     fn on_request_finish(&self, event: &RequestFinish<'_>) {
         let fact = match event.reason {
@@ -48,6 +50,7 @@ impl RequestObservation for Recorder {
         };
         self.0.lock().unwrap().push(fact);
     }
+
     fn on_response_channel_handoff(&self, event: &ResponseChannelHandoffEvent<'_>) {
         let fact = match event {
             ResponseChannelHandoffEvent::ChannelHandoffStarted { .. } => Fact::Started,
@@ -60,6 +63,7 @@ impl RequestObservation for Recorder {
         };
         self.0.lock().unwrap().push(fact);
     }
+
     fn on_channel_io(&self, event: &ChannelIoEvent<'_>) {
         let fact = match event {
             ChannelIoEvent::ReadEof { read_bytes_so_far } => Fact::ReadEof(*read_bytes_so_far),
@@ -84,6 +88,7 @@ impl RequestObservation for Recorder {
         self.0.lock().unwrap().push(fact);
     }
 }
+
 fn recorder(interest: Interest) -> Recorder {
     Recorder(Arc::new(Mutex::new(Vec::new())), interest)
 }
@@ -117,6 +122,7 @@ fn server(connect: bool) -> (String, std::thread::JoinHandle<Vec<u8>>) {
     });
     (format!("http://{address}/"), thread)
 }
+
 async fn exchange<U: hyper::rt::Read + hyper::rt::Write + Unpin>(mut channel: U) {
     // Zero capacity cannot prove EOF, including with already buffered upgrade DATA.
     let mut empty = [];
@@ -159,6 +165,7 @@ async fn exchange<U: hyper::rt::Read + hyper::rt::Write + Unpin>(mut channel: U)
     }
     assert_eq!(received, b"abc");
 }
+
 fn verify(recorder: &Recorder, connect: bool) {
     let facts = recorder.0.lock().unwrap();
     let handoff = recorder.1.contains(Interest::RESPONSE_CHANNEL_HANDOFF);

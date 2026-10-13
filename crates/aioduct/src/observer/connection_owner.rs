@@ -34,6 +34,7 @@ impl<T: EstablishmentReceiver> EstablishmentScope<T> {
     pub(crate) fn failed(&self, error: &Error) {
         self.0.fail(error);
     }
+
     pub(crate) fn result<U>(&self, result: &Result<U, Error>) {
         if let Err(error) = result {
             self.0.fail(error);
@@ -53,6 +54,7 @@ macro_rules! establishment_receiver {
             fn fail(&self, error: &Error) {
                 self.establishment_failed(error);
             }
+
             fn cancel(&self) {
                 if self.interest().contains(Interest::CONNECTION_ESTABLISHMENT)
                     && self.0.establishment.load(Ordering::Relaxed) == 0
@@ -63,6 +65,7 @@ macro_rules! establishment_receiver {
                 }
             }
         }
+
         impl $ty {
             pub(crate) fn establishment_scope(&self) -> Option<EstablishmentScope<Self>> {
                 self.interest()
@@ -204,6 +207,7 @@ impl State {
             .unwrap_or_else(|| unreachable!("connection callback admission overflow"));
         true
     }
+
     fn ready(&mut self) -> Option<Terminal> {
         if self.active == 0 {
             self.pending.take()
@@ -211,10 +215,12 @@ impl State {
             None
         }
     }
+
     fn leave(&mut self) -> Option<Terminal> {
         self.active -= 1;
         self.ready()
     }
+
     fn end(&mut self, incoming: &mut Option<Terminal>) -> Option<Terminal> {
         if self.ending {
             return None;
@@ -289,9 +295,11 @@ impl ConnectionObservationOwner {
                 .then(|| parking_lot::Mutex::new(State::default())),
         })))
     }
+
     pub(crate) fn interest(&self) -> Interest {
         self.0.interest
     }
+
     pub(crate) fn emit(&self, event: &ConnectionObservationEvent<'_>) {
         if !admit_establishment(&self.0.establishment, event) {
             return;
@@ -307,6 +315,7 @@ impl ConnectionObservationOwner {
         self.0.observation.on_connection(event);
         drop(lease);
     }
+
     pub(crate) fn establishment_failed(&self, error: &Error) {
         if self.interest().contains(Interest::CONNECTION_ESTABLISHMENT) {
             self.emit(&ConnectionObservationEvent::EstablishmentFailed {
@@ -315,6 +324,7 @@ impl ConnectionObservationOwner {
             });
         }
     }
+
     pub(crate) fn closed(&self, error: Option<Error>) {
         self.closed_at(error, Instant::now());
     }
@@ -389,12 +399,15 @@ impl LocalConnectionObservationOwner {
                 .then(|| RefCell::new(State::default())),
         })))
     }
+
     pub(crate) fn interest(&self) -> Interest {
         self.0.interest
     }
+
     pub(crate) fn closed_at(&self, error: Option<Error>, at: Instant) {
         self.0.closed_at(error, at);
     }
+
     pub(crate) fn detached_at(&self, at: Instant) {
         let Some(state) = &self.0.state else {
             return;
@@ -405,9 +418,11 @@ impl LocalConnectionObservationOwner {
             notify(&*self.0.observation, terminal);
         }
     }
+
     pub(crate) fn emit(&self, event: &ConnectionObservationEvent<'_>) {
         self.0.emit(event);
     }
+
     pub(crate) fn establishment_failed(&self, error: &Error) {
         if self.interest().contains(Interest::CONNECTION_ESTABLISHMENT) {
             self.emit(&ConnectionObservationEvent::EstablishmentFailed {
@@ -416,11 +431,13 @@ impl LocalConnectionObservationOwner {
             });
         }
     }
+
     pub(crate) fn register(self, connection: ConnectionAssociation) {
         let old = LOCAL_CONNECTION_OBSERVATIONS
             .with(|observations| observations.borrow_mut().insert(connection, self.0));
         drop(old);
     }
+
     pub(crate) fn emit_registered(
         connection: ConnectionAssociation,
         event: &ConnectionObservationEvent<'_>,
@@ -431,6 +448,7 @@ impl LocalConnectionObservationOwner {
             observation.emit(event);
         }
     }
+
     pub(crate) fn close_registered(connection: ConnectionAssociation, error: Option<Error>) {
         let observation = LOCAL_CONNECTION_OBSERVATIONS
             .with(|observations| observations.borrow().get(&connection).cloned());
@@ -438,6 +456,7 @@ impl LocalConnectionObservationOwner {
             observation.closed(error);
         }
     }
+
     pub(crate) fn unregister(connection: ConnectionAssociation) {
         let observation = LOCAL_CONNECTION_OBSERVATIONS
             .with(|observations| observations.borrow_mut().remove(&connection));
@@ -480,9 +499,11 @@ impl LocalInner {
         self.observation.on_connection(event);
         drop(lease);
     }
+
     fn closed(&self, error: Option<Error>) {
         self.closed_at(error, Instant::now());
     }
+
     fn closed_at(&self, error: Option<Error>, at: Instant) {
         let Some(state) = &self.state else {
             return;

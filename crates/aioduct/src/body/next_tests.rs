@@ -16,10 +16,12 @@ enum Step {
     Error(Error),
     Pending,
 }
+
 struct Script {
     steps: VecDeque<Step>,
     polls: Arc<AtomicUsize>,
 }
+
 impl Body for Script {
     type Data = Bytes;
     type Error = Error;
@@ -39,6 +41,7 @@ impl Body for Script {
         }
     }
 }
+
 fn script(steps: impl IntoIterator<Item = Step>) -> (Script, Arc<AtomicUsize>) {
     let polls = Arc::new(AtomicUsize::new(0));
     (
@@ -49,6 +52,7 @@ fn script(steps: impl IntoIterator<Item = Step>) -> (Script, Arc<AtomicUsize>) {
         polls,
     )
 }
+
 fn run<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
     let mut cx = Context::from_waker(Waker::noop());
@@ -59,6 +63,7 @@ fn run<F: Future>(future: F) -> F::Output {
     }
     panic!("script did not complete");
 }
+
 async fn collect<S: ByteStreamExt>(mut stream: S) -> Result<Vec<Bytes>, Error> {
     let mut chunks = Vec::new();
     while let Some(chunk) = ByteStreamExt::next(&mut stream).await {
@@ -66,6 +71,7 @@ async fn collect<S: ByteStreamExt>(mut stream: S) -> Result<Vec<Bytes>, Error> {
     }
     Ok(chunks)
 }
+
 fn collect_send<S>(stream: S) -> impl Future<Output = Result<Vec<Bytes>, Error>> + Send
 where
     S: ByteStreamExt + Send,
@@ -73,11 +79,13 @@ where
 {
     collect(stream)
 }
+
 fn trailer(name: &'static str, value: &'static str) -> Step {
     let mut headers = http::HeaderMap::new();
     headers.insert(name, http::HeaderValue::from_static(value));
     Step::Frame(Frame::trailers(headers))
 }
+
 fn data(bytes: &'static [u8]) -> Step {
     Step::Frame(Frame::data(Bytes::from_static(bytes)))
 }
@@ -178,6 +186,7 @@ impl std::fmt::Display for IdentityError {
         write!(f, "identity error {}", self.0)
     }
 }
+
 impl std::error::Error for IdentityError {}
 fn check_error<S: ByteStreamExt>(mut stream: S, identity: usize, polls: &AtomicUsize) {
     let Error::Other(error) = run(ByteStreamExt::next(&mut stream)).unwrap().unwrap_err() else {

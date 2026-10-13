@@ -740,10 +740,12 @@ fn test_compio_observer() {
             ) -> (aioduct::Interest, Self) {
                 (aioduct::Interest::REQUEST_FINISH, self.clone())
             }
+
             fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
                 (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
             }
         }
+
         impl aioduct::RequestObservation for Obs {
             fn on_request_finish(&self, event: &aioduct::RequestFinish<'_>) {
                 self.0.lock().unwrap().push(format!("{:?}", event.reason));

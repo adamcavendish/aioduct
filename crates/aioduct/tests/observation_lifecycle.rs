@@ -87,6 +87,7 @@ struct Recorder {
     records: Arc<Records>,
     interest: Interest,
 }
+
 struct Observation(Arc<Records>);
 
 impl Observer for Recorder {
@@ -96,6 +97,7 @@ impl Observer for Recorder {
     fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
         (Interest::EMPTY, aioduct::NoopConnectionObservation)
     }
+
     fn begin(&self, _: RequestInfo<'_>, context: Option<u64>) -> (Interest, Observation) {
         self.records.begins.fetch_add(1, Ordering::Relaxed);
         self.records.contexts.lock().unwrap().push(context);
@@ -107,9 +109,11 @@ impl RequestObservation for Observation {
     fn on_request_start(&self, _: &RequestStart<'_>) {
         self.0.starts.fetch_add(1, Ordering::Relaxed);
     }
+
     fn on_response_headers(&self, event: &ResponseHeaders) {
         self.0.headers.lock().unwrap().push(event.response);
     }
+
     fn on_request_finish(&self, event: &RequestFinish<'_>) {
         let reason = match event.reason {
             RequestFinishReason::Ended => Reason::Ended,
@@ -1331,10 +1335,12 @@ fn local_observation_accepts_non_send_state_and_fixed_response() {
         fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
             (Interest::EMPTY, aioduct::NoopConnectionObservation)
         }
+
         fn begin(&self, _: RequestInfo<'_>, _: Option<Self::Context>) -> (Interest, Self) {
             (Interest::REQUEST_FINISH, Self(self.0.clone()))
         }
     }
+
     impl RequestObservation for LocalObserver {
         fn on_request_finish(&self, event: &RequestFinish<'_>) {
             assert_eq!(event.attempt_count, 1);
