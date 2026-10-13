@@ -182,41 +182,49 @@ impl TransportRelease for LocalTransportObservation {
 
 /// Only lifecycle subscribers install this wrapper. Read/write operations
 /// merely delegate; no polls, bytes, clocks, or callbacks are tracked here.
+struct TransportReleaseGuard<R: TransportRelease> {
+    observation: Option<R>,
+}
+impl<R: TransportRelease> TransportReleaseGuard<R> {
+    fn new(observation: R) -> Self {
+        Self {
+            observation: Some(observation),
+        }
+    }
+
+    fn detach(mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.detach();
+        }
+    }
+}
+impl<R: TransportRelease> Drop for TransportReleaseGuard<R> {
+    fn drop(&mut self) {
+        if let Some(observation) = self.observation.take() {
+            observation.released();
+        }
+    }
+}
+
 pub(crate) struct ObservedIo<T, R: TransportRelease> {
     inner: T,
-    observation: R,
+    observation: TransportReleaseGuard<R>,
 }
 pub(crate) type SendObservedIo<T> = ObservedIo<T, SendTransportObservation>;
 impl<T, R: TransportRelease> ObservedIo<T, R> {
     pub(crate) fn new(inner: T, observation: R) -> Self {
-        Self { inner, observation }
+        Self {
+            inner,
+            observation: TransportReleaseGuard::new(observation),
+        }
     }
     pub(crate) fn into_inner(self) -> T {
-        let this = std::mem::ManuallyDrop::new(self);
+        let Self { inner, observation } = self;
+
         // Detach from the observation lifecycle before extracting the inner value.
         // Once detached, the observation handle is no longer interested in Drop events.
-        this.observation.detach();
-
-        // SAFETY: `this` is a ManuallyDrop, so moving this field out with
-        // `ptr::read` does not run the wrapper's Drop implementation. The
-        // observation has already been detached, so dropping the owned handle
-        // cannot deliver a second lifecycle event.
-        let observation = unsafe { std::ptr::read(&this.observation) };
-        drop(observation);
-
-        // SAFETY: Extracting `this.inner` is safe because:
-        // 1. We wrapped `self` in ManuallyDrop, preventing any Drop impl from running.
-        // 2. The observation lifecycle was detached and its field was destroyed above,
-        //    so observation.released() will never be called for this wrapper.
-        // 3. T is moved out by value; the memory formerly occupied by self is never
-        //    accessed again.
-        // The invariant is: ManuallyDrop + detach + immediate move = no double-free.
-        unsafe { std::ptr::read(&this.inner) }
-    }
-}
-impl<T, R: TransportRelease> Drop for ObservedIo<T, R> {
-    fn drop(&mut self) {
-        self.observation.released();
+        observation.detach();
+        inner
     }
 }
 impl<T: hyper::rt::Read + Unpin, R: TransportRelease + Unpin> hyper::rt::Read for ObservedIo<T, R> {
@@ -308,6 +316,16 @@ mod tests {
         drop(extracted);
         assert_eq!(Rc::strong_count(&inner), 1);
         assert_eq!(&*events.borrow(), &["detached", "dropped"]);
+    }
+
+    #[test]
+    fn dropping_observed_io_releases_once() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        {
+            let _io = ObservedIo::new(Rc::new(()), TestObservation(events.clone()));
+        }
+
+        assert_eq!(&*events.borrow(), &["released", "dropped"]);
     }
 
     #[test]
