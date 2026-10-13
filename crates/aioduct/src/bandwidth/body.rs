@@ -133,9 +133,11 @@ mod tests {
                 Poll::Ready(None)
             }
         }
+
         fn is_end_stream(&self) -> bool {
             self.data.is_none()
         }
+
         fn size_hint(&self) -> http_body::SizeHint {
             http_body::SizeHint::with_exact(self.data.as_ref().map(|d| d.len() as u64).unwrap_or(0))
         }
@@ -319,6 +321,7 @@ mod tests {
             ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
                 Poll::Pending
             }
+
             fn is_end_stream(&self) -> bool {
                 false
             }

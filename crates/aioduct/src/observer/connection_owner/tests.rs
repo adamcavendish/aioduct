@@ -13,6 +13,7 @@ impl<T: ConnectionObservation + Clone> Observer for Provider<T> {
     fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self::Observation) {
         (Interest::EMPTY, NoopRequestObservation)
     }
+
     fn begin_connection(&self) -> (Interest, T) {
         (self.1, self.0.clone())
     }
@@ -76,6 +77,7 @@ struct ConcurrentReceiver {
     active: Arc<AtomicUsize>,
     terminal: Arc<AtomicUsize>,
 }
+
 impl ConnectionObservation for ConcurrentReceiver {
     fn on_connection(&self, event: &ConnectionObservationEvent<'_>) {
         match event {
@@ -140,6 +142,7 @@ struct ReentrantSend {
     owner: Arc<Mutex<Option<ConnectionObservationOwner>>>,
     facts: Arc<Mutex<Vec<&'static str>>>,
 }
+
 impl ConnectionObservation for ReentrantSend {
     fn on_connection(&self, event: &ConnectionObservationEvent<'_>) {
         match event {
@@ -184,6 +187,7 @@ struct LocalReentry {
     connection: ConnectionAssociation,
     facts: Rc<RefCell<Vec<&'static str>>>,
 }
+
 impl ConnectionObservation for LocalReentry {
     fn on_connection(&self, event: &ConnectionObservationEvent<'_>) {
         match event {
@@ -261,6 +265,7 @@ impl std::fmt::Display for OriginalSource {
         f.write_str("original connection error")
     }
 }
+
 impl std::error::Error for OriginalSource {}
 impl Drop for OriginalSource {
     fn drop(&mut self) {
@@ -313,16 +318,19 @@ struct ReentrantErrorDrop {
     owner: std::sync::Weak<SendInner>,
     drops: Arc<AtomicUsize>,
 }
+
 impl std::fmt::Debug for ReentrantErrorDrop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ReentrantErrorDrop")
     }
 }
+
 impl std::fmt::Display for ReentrantErrorDrop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("rejected close")
     }
 }
+
 impl std::error::Error for ReentrantErrorDrop {}
 impl Drop for ReentrantErrorDrop {
     fn drop(&mut self) {
@@ -354,11 +362,13 @@ struct ReentrantLocalErrorDrop {
     connection: ConnectionAssociation,
     drops: Arc<AtomicUsize>,
 }
+
 impl std::fmt::Display for ReentrantLocalErrorDrop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("rejected local close")
     }
 }
+
 impl std::error::Error for ReentrantLocalErrorDrop {}
 impl Drop for ReentrantLocalErrorDrop {
     fn drop(&mut self) {

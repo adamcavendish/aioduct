@@ -21,6 +21,7 @@ impl SseStreamExt for crate::wasi_p2::WasiSseStream {
     fn next(&mut self) -> Self::Next<'_> {
         crate::wasi_p2::WasiSseNext::new(self)
     }
+
     fn with_max_payload_size(self, max: usize) -> Self {
         self.with_max_payload_size(max)
     }

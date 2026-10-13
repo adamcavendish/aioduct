@@ -57,6 +57,7 @@ mod tests {
     fn v4(n: u8) -> SocketAddr {
         format!("10.0.0.{n}:80").parse().unwrap()
     }
+
     fn v6(n: u8) -> SocketAddr {
         format!("[::{n}]:80").parse().unwrap()
     }

@@ -14,10 +14,12 @@ impl aioduct::Observer for LocalDigestRetryRecorder {
     fn begin(&self, _: aioduct::RequestInfo<'_>, _: Option<()>) -> (aioduct::Interest, Self) {
         (aioduct::Interest::ATTEMPT, self.clone())
     }
+
     fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
         (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
     }
 }
+
 impl aioduct::RequestObservation for LocalDigestRetryRecorder {
     fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
         match event {

@@ -58,6 +58,7 @@ impl Observer for Recorder {
     fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
         (Interest::EMPTY, aioduct::NoopConnectionObservation)
     }
+
     fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self) {
         (self.1, Self(self.0.clone(), self.1))
     }
@@ -67,6 +68,7 @@ impl RequestObservation for Recorder {
     fn on_response_sse(&self, event: ResponseSseEvent<'_>) {
         self.0.sse.lock().unwrap().push(record(event));
     }
+
     fn on_request_finish(&self, event: &RequestFinish<'_>) {
         self.0.http.lock().unwrap().push((
             matches!(event.reason, RequestFinishReason::Ended),
@@ -410,10 +412,12 @@ fn local_sse_accepts_rc_observation_and_generic_non_send_next() {
         fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
             (Interest::EMPTY, aioduct::NoopConnectionObservation)
         }
+
         fn begin(&self, _: RequestInfo<'_>, _: Option<Rc<()>>) -> (Interest, Self) {
             (Interest::SSE_STATISTICS, Self(self.0.clone()))
         }
     }
+
     impl RequestObservation for Local {
         fn on_response_sse(&self, event: ResponseSseEvent<'_>) {
             self.0.borrow_mut().push(record(event));

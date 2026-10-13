@@ -19,6 +19,7 @@ extern "C" {
     fn close(f: &JsValue);
     fn fail(f: &JsValue);
 }
+
 fn body(f: &JsValue) -> WasmBodyStream {
     WasmBodyStream {
         reader: Some(
@@ -30,6 +31,7 @@ fn body(f: &JsValue) -> WasmBodyStream {
         observation: None,
     }
 }
+
 async fn generic_next<S: ByteStreamExt>(stream: &mut S) -> Option<Result<Bytes, Error>> {
     ByteStreamExt::next(stream).await
 }

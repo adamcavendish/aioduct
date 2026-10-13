@@ -92,9 +92,11 @@ impl ResponseBodySend {
     pub(crate) fn channel_receiver(&self) -> Option<Arc<dyn crate::body::SendBodyObserver>> {
         self.owner.as_ref()?.channel_receiver()
     }
+
     pub(crate) fn take_owner(&mut self) -> Option<crate::body::SendObservationHandle> {
         self.owner.take()
     }
+
     pub(crate) fn from_incoming(incoming: hyper::body::Incoming) -> Self {
         Self {
             inner: SendBodyInner::Incoming {
@@ -210,12 +212,14 @@ impl http_body::Body for SendBodyInner {
             SendBodyInnerProj::Boxed { body } => body.poll_frame(cx),
         }
     }
+
     fn is_end_stream(&self) -> bool {
         match self {
             Self::Incoming { body } => body.is_end_stream(),
             Self::Boxed { body } => body.is_end_stream(),
         }
     }
+
     fn size_hint(&self) -> http_body::SizeHint {
         match self {
             Self::Incoming { body } => body.size_hint(),

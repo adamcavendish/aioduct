@@ -18,6 +18,7 @@ impl Receiver for Arc<dyn SendBodyObserver> {
     fn interest(&self) -> Interest {
         self.sse_interest()
     }
+
     fn event(&self, event: ResponseSseEvent<'_>) {
         self.on_response_sse(event);
     }
@@ -27,6 +28,7 @@ impl Receiver for Rc<dyn LocalBodyObserver> {
     fn interest(&self) -> Interest {
         self.sse_interest()
     }
+
     fn event(&self, event: ResponseSseEvent<'_>) {
         self.on_response_sse(event);
     }
@@ -45,12 +47,15 @@ impl HttpOwner for SendObservationHandle {
     fn receiver(&self) -> Option<Self::Receiver> {
         self.sse_receiver()
     }
+
     fn is_terminal(&self) -> bool {
         self.is_terminal()
     }
+
     fn complete(&self) {
         self.finish(BodyEnd::Complete);
     }
+
     fn fail(&self, error: &Error) {
         self.fail(error);
     }
@@ -61,12 +66,15 @@ impl HttpOwner for LocalObservationHandle {
     fn receiver(&self) -> Option<Self::Receiver> {
         self.sse_receiver()
     }
+
     fn is_terminal(&self) -> bool {
         self.is_terminal()
     }
+
     fn complete(&self) {
         self.finish(BodyEnd::Complete);
     }
+
     fn fail(&self, error: &Error) {
         self.fail(error);
     }
@@ -91,6 +99,7 @@ impl<R: Receiver> SseObservation<R> {
             active: true,
         }
     }
+
     fn end(&mut self) {
         if std::mem::replace(&mut self.active, false) {
             self.receiver.event(ResponseSseEvent::Ended {
@@ -136,10 +145,12 @@ impl<H: HttpOwner> SseSink for Option<Box<SseContinuation<H>>> {
     fn statistics(&mut self) -> Option<&mut SseStatisticsSnapshot> {
         self.as_mut()?.sse.as_mut()?.statistics.as_deref_mut()
     }
+
     fn observes_body(&self) -> bool {
         self.as_ref()
             .is_some_and(|continuation| continuation.http.is_some())
     }
+
     fn body_complete(&mut self) {
         if let Some(continuation) = self
             && let Some(http) = continuation.http.take()
@@ -147,6 +158,7 @@ impl<H: HttpOwner> SseSink for Option<Box<SseContinuation<H>>> {
             http.complete();
         }
     }
+
     fn body_error(&mut self, error: &Error) {
         if let Some(continuation) = self
             && let Some(http) = continuation.http.take()
@@ -154,6 +166,7 @@ impl<H: HttpOwner> SseSink for Option<Box<SseContinuation<H>>> {
             http.fail(error);
         }
     }
+
     fn error(&mut self, error: &Error) {
         if let Some(sse) = self
             .as_ref()
@@ -165,6 +178,7 @@ impl<H: HttpOwner> SseSink for Option<Box<SseContinuation<H>>> {
             });
         }
     }
+
     fn end(&mut self) {
         if let Some(sse) = self
             .as_mut()

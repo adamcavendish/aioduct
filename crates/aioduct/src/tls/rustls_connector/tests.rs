@@ -47,6 +47,7 @@ fn srv_read_tls<S: Read + Unpin>(
         stream: &'a mut S,
         cx: &'a mut Context<'b>,
     }
+
     impl<S: Read + Unpin> StdRead for AsyncReader<'_, '_, S> {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             let mut read_buf = rt::ReadBuf::new(buf);
@@ -74,6 +75,7 @@ fn srv_write_tls<S: Write + Unpin>(
         stream: &'a mut S,
         cx: &'a mut Context<'b>,
     }
+
     impl<S: Write + Unpin> StdWrite for AsyncWriter<'_, '_, S> {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             match Pin::new(&mut *self.stream).poll_write(self.cx, buf) {
@@ -81,6 +83,7 @@ fn srv_write_tls<S: Write + Unpin>(
                 Poll::Pending => Err(io::Error::from(io::ErrorKind::WouldBlock)),
             }
         }
+
         fn flush(&mut self) -> io::Result<()> {
             match Pin::new(&mut *self.stream).poll_flush(self.cx) {
                 Poll::Ready(r) => r,

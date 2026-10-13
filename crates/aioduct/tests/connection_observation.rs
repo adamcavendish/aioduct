@@ -61,6 +61,7 @@ impl StalledProxy {
             _ => ConnectionAcquisitionPhase::ProxyConnect,
         }
     }
+
     fn cases() -> Vec<Self> {
         vec![
             Self::Http,
@@ -844,6 +845,7 @@ impl Drop for DropProbe {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
+
 impl ConnectionObservation for DropProbe {}
 impl Observer for EstablishmentOnly {
     type Context = ();
@@ -852,6 +854,7 @@ impl Observer for EstablishmentOnly {
     fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self::Observation) {
         (Interest::EMPTY, NoopRequestObservation)
     }
+
     fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
         (
             Interest::CONNECTION_ESTABLISHMENT,

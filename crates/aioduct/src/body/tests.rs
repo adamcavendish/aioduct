@@ -33,6 +33,7 @@ impl crate::observer::Observer for UploadRecorder {
     ) -> (crate::observer::Interest, Self) {
         (crate::observer::Interest::REQUEST_BODY, self.clone())
     }
+
     fn begin_connection(&self) -> (crate::observer::Interest, Self::ConnectionObservation) {
         (
             crate::observer::Interest::EMPTY,
@@ -517,6 +518,7 @@ async fn body_stream_exposes_trailers_after_drain() {
     struct DataThenTrailer {
         state: u8,
     }
+
     impl http_body::Body for DataThenTrailer {
         type Data = Bytes;
         type Error = Error;

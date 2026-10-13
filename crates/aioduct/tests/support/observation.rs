@@ -50,12 +50,15 @@ impl aioduct::RequestObservation for TestObserver {
     fn on_request_start(&self, _: &aioduct::RequestStart<'_>) {
         self.record("RequestStart".into());
     }
+
     fn on_response_headers(&self, _: &aioduct::ResponseHeaders) {
         self.record("ResponseHeaders".into());
     }
+
     fn on_request_finish(&self, event: &aioduct::RequestFinish<'_>) {
         self.record(format!("RequestFinish({:?})", event.reason));
     }
+
     fn on_attempt(&self, event: &aioduct::AttemptEvent<'_>) {
         use aioduct::AttemptEvent;
         match event {
@@ -70,6 +73,7 @@ impl aioduct::RequestObservation for TestObserver {
             _ => {}
         }
     }
+
     fn on_connection_acquisition(&self, event: &aioduct::ConnectionAcquisitionEvent<'_>) {
         use aioduct::ConnectionAcquisitionEvent;
         match event {
@@ -85,6 +89,7 @@ impl aioduct::RequestObservation for TestObserver {
             _ => {}
         }
     }
+
     fn on_response_body(&self, event: &aioduct::ResponseBodyEvent<'_>) {
         if matches!(event, aioduct::ResponseBodyEvent::Ended { .. }) {
             self.record("ResponseBodyEnded".into());
@@ -121,6 +126,7 @@ macro_rules! impl_test_observer {
             ) -> (aioduct::Interest, Self) {
                 ($interest, self.clone())
             }
+
             fn begin_connection(&self) -> (aioduct::Interest, Self::ConnectionObservation) {
                 (aioduct::Interest::EMPTY, aioduct::NoopConnectionObservation)
             }
@@ -143,6 +149,7 @@ macro_rules! impl_connection_observer {
             ) -> (aioduct::Interest, Self::Observation) {
                 (aioduct::Interest::EMPTY, aioduct::NoopRequestObservation)
             }
+
             fn begin_connection(&self) -> (aioduct::Interest, Self) {
                 (
                     aioduct::Interest::CONNECTION_ESTABLISHMENT

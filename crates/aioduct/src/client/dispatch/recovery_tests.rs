@@ -177,10 +177,12 @@ impl Observer for DropDispatchOnHit {
             },
         )
     }
+
     fn begin_connection(&self) -> (Interest, NoopConnectionObservation) {
         (Interest::EMPTY, NoopConnectionObservation)
     }
 }
+
 impl RequestObservation for DropDispatchOnHit {
     fn on_connection_acquisition(&self, event: &ConnectionAcquisitionEvent<'_>) {
         if matches!(

@@ -85,6 +85,7 @@ impl<B: 'static> HttpEngineCore<B> {
             local_observer.started(attempt, request.method(), uri, at);
         }
     }
+
     pub(super) fn finalize_deferred_request_headers<ReqBody>(
         request: &mut http::Request<ReqBody>,
         connection: &PooledConnection<B>,
@@ -333,6 +334,7 @@ impl<B: 'static> HttpEngineCore<B> {
                 if e.is_canceled() || e.is_closed() || e.is_incomplete_message() {
                     return true;
                 }
+
                 use std::error::Error as _;
                 if let Some(io_err) = e.source().and_then(|s| s.downcast_ref::<std::io::Error>()) {
                     return matches!(

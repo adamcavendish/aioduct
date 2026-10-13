@@ -42,12 +42,14 @@ trait DecodeStatistics {
     fn comment(&mut self) {}
     fn retry(&mut self) {}
 }
+
 struct Unobserved;
 impl DecodeStatistics for Unobserved {}
 impl DecodeStatistics for crate::observer::SseStatisticsSnapshot {
     fn comment(&mut self) {
         self.comment_lines_parsed = self.comment_lines_parsed.saturating_add(1);
     }
+
     fn retry(&mut self) {
         self.retry_fields_accepted = self.retry_fields_accepted.saturating_add(1);
     }

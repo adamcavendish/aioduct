@@ -35,9 +35,11 @@ pub enum CliEvent {
 pub struct CliObserver {
     tx: Option<mpsc::UnboundedSender<CliEvent>>,
 }
+
 pub struct CliObservation {
     inner: Option<(mpsc::UnboundedSender<CliEvent>, Instant)>,
 }
+
 pub struct CliConnectionObservation {
     tx: Option<mpsc::UnboundedSender<CliEvent>>,
 }
@@ -48,6 +50,7 @@ impl CliObserver {
         (Self { tx: Some(tx) }, rx)
     }
 }
+
 impl Observer for CliObserver {
     type Context = ();
     type Observation = CliObservation;
@@ -68,6 +71,7 @@ impl Observer for CliObserver {
             },
         )
     }
+
     fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
         let interest = if self.tx.is_some() {
             Interest::CONNECTION_ESTABLISHMENT | Interest::CONNECTION_LIFECYCLE
@@ -82,6 +86,7 @@ impl Observer for CliObserver {
         )
     }
 }
+
 impl RequestObservation for CliObservation {
     fn on_request_start(&self, event: &RequestStart<'_>) {
         if let Some((tx, _)) = &self.inner {
@@ -91,6 +96,7 @@ impl RequestObservation for CliObservation {
             });
         }
     }
+
     fn on_response_headers(&self, event: &ResponseHeaders) {
         if let Some((tx, started_at)) = &self.inner {
             let _ = tx.send(CliEvent::ResponseHeaders {
@@ -99,6 +105,7 @@ impl RequestObservation for CliObservation {
             });
         }
     }
+
     fn on_request_finish(&self, event: &RequestFinish<'_>) {
         if let Some((tx, started_at)) = &self.inner {
             let _ = tx.send(CliEvent::Finished {
@@ -109,6 +116,7 @@ impl RequestObservation for CliObservation {
             });
         }
     }
+
     fn on_attempt(&self, event: &AttemptEvent<'_>) {
         if let Some((tx, _)) = &self.inner {
             let _ = tx.send(CliEvent::Diagnostic {
@@ -118,6 +126,7 @@ impl RequestObservation for CliObservation {
             });
         }
     }
+
     fn on_connection_acquisition(&self, event: &ConnectionAcquisitionEvent<'_>) {
         if let Some((tx, _)) = &self.inner {
             let _ = tx.send(CliEvent::Diagnostic {
@@ -128,6 +137,7 @@ impl RequestObservation for CliObservation {
         }
     }
 }
+
 impl ConnectionObservation for CliConnectionObservation {
     fn on_connection(&self, event: &ConnectionObservationEvent<'_>) {
         if let Some(tx) = self.tx.as_ref() {

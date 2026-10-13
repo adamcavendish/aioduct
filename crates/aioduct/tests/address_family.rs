@@ -178,6 +178,7 @@ async fn address_family_only_with_no_match_errors() {
         ) -> Pin<Box<dyn Future<Output = io::Result<SocketAddr>> + Send>> {
             Box::pin(async move { Ok(format!("[::1]:{port}").parse().unwrap()) })
         }
+
         fn resolve_all(
             &self,
             _host: &str,

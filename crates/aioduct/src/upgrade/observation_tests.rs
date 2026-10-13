@@ -18,6 +18,7 @@ impl Receiver for Recorder {
     fn interest(&self) -> Interest {
         self.1
     }
+
     fn handoff(&self, event: &ResponseChannelHandoffEvent<'_>) {
         let fact = match event {
             ResponseChannelHandoffEvent::ChannelHandoffStarted { .. } => Fact::Started,
@@ -29,6 +30,7 @@ impl Receiver for Recorder {
         };
         self.0.lock().unwrap().push(fact);
     }
+
     fn io(&self, event: &ChannelIoEvent<'_>) {
         let fact = match event {
             ChannelIoEvent::ReadEof { read_bytes_so_far } => Fact::Eof(*read_bytes_so_far),
@@ -66,6 +68,7 @@ impl Receiver for Recorder {
         self.0.lock().unwrap().push(fact);
     }
 }
+
 fn recorder(interest: Interest) -> Recorder {
     Recorder(Arc::new(Mutex::new(Vec::new())), interest)
 }
@@ -97,6 +100,7 @@ impl std::fmt::Display for Marker {
         write!(f, "{}", self.0)
     }
 }
+
 impl std::error::Error for Marker {}
 
 #[test]
@@ -236,6 +240,7 @@ fn terminal_callback_panic_does_not_generate_a_second_detach() {
         fn interest(&self) -> Interest {
             Interest::CHANNEL_LIFECYCLE
         }
+
         fn handoff(&self, _: &ResponseChannelHandoffEvent<'_>) {}
         fn io(&self, _: &ChannelIoEvent<'_>) {
             *self.0.lock().unwrap() += 1;

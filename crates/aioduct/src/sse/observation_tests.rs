@@ -33,16 +33,19 @@ enum Fact {
     HttpFailed(Option<usize>),
     HttpAbandoned,
 }
+
 struct Recorder {
     facts: Arc<Mutex<Vec<Fact>>>,
     panic_on_end: bool,
 }
+
 fn source(error: &Error) -> Option<usize> {
     match error {
         Error::Other(error) => Some(std::ptr::from_ref(&**error) as *const () as usize),
         _ => None,
     }
 }
+
 impl Observer for Recorder {
     type Context = ();
     type Observation = Self;
@@ -50,6 +53,7 @@ impl Observer for Recorder {
     fn begin_connection(&self) -> (Interest, Self::ConnectionObservation) {
         (Interest::EMPTY, NoopConnectionObservation)
     }
+
     fn begin(&self, _: RequestInfo<'_>, _: Option<()>) -> (Interest, Self) {
         (
             Interest::SSE_STATISTICS | Interest::REQUEST_FINISH,
@@ -60,6 +64,7 @@ impl Observer for Recorder {
         )
     }
 }
+
 impl RequestObservation for Recorder {
     fn on_request_finish(&self, event: &RequestFinish<'_>) {
         let fact = match event.reason {
@@ -70,6 +75,7 @@ impl RequestObservation for Recorder {
         };
         self.facts.lock().unwrap().push(fact);
     }
+
     fn on_response_sse(&self, event: ResponseSseEvent<'_>) {
         let fact = match event {
             ResponseSseEvent::Started => Fact::Started,
@@ -92,10 +98,12 @@ enum Step {
     Error(Error),
     Pending,
 }
+
 struct Script {
     steps: VecDeque<Step>,
     polls: Arc<AtomicUsize>,
 }
+
 impl Body for Script {
     type Data = Bytes;
     type Error = Error;
@@ -115,6 +123,7 @@ impl Body for Script {
         }
     }
 }
+
 fn response(steps: impl IntoIterator<Item = Step>) -> (crate::Response, Arc<AtomicUsize>) {
     let polls = Arc::new(AtomicUsize::new(0));
     let body = Script {
@@ -130,6 +139,7 @@ fn response(steps: impl IntoIterator<Item = Step>) -> (crate::Response, Arc<Atom
         polls,
     )
 }
+
 fn send(
     steps: impl IntoIterator<Item = Step>,
     recorder: &Recorder,
@@ -155,6 +165,7 @@ fn send(
     drop(handle);
     (response.into_sse_stream(), polls)
 }
+
 fn local(
     steps: impl IntoIterator<Item = Step>,
     recorder: &Recorder,
@@ -181,6 +192,7 @@ fn local(
     drop(handle);
     (response.into_sse_stream(), polls)
 }
+
 fn run<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
     let mut cx = Context::from_waker(Waker::noop());
@@ -191,6 +203,7 @@ fn run<F: Future>(future: F) -> F::Output {
     }
     panic!("script did not complete");
 }
+
 fn cancellation<S: SseStreamExt>(mut stream: S, recorder: &Recorder, polls: &AtomicUsize) {
     drop(SseStreamExt::next(&mut stream));
     assert_eq!(polls.load(Ordering::Relaxed), 0);
@@ -367,6 +380,7 @@ fn original_noncloneable_body_error_is_borrowed_by_both_lifecycles() {
             write!(f, "source {}", self.0)
         }
     }
+
     impl std::error::Error for Marker {}
     for is_local in [false, true] {
         let recorder = Recorder {

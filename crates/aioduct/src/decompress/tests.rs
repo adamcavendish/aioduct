@@ -628,16 +628,20 @@ async fn no_spurious_pending_on_buffered_decode() {
             unsafe { Arc::increment_strong_count(data as *const AtomicUsize) };
             RawWaker::new(data, &VTABLE)
         }
+
         unsafe fn wake_fn(data: *const ()) {
             let arc = unsafe { Arc::from_raw(data as *const AtomicUsize) };
             arc.fetch_add(1, Ordering::SeqCst);
         }
+
         unsafe fn wake_by_ref_fn(data: *const ()) {
             unsafe { &*(data as *const AtomicUsize) }.fetch_add(1, Ordering::SeqCst);
         }
+
         unsafe fn drop_fn(data: *const ()) {
             unsafe { Arc::decrement_strong_count(data as *const AtomicUsize) };
         }
+
         static VTABLE: RawWakerVTable =
             RawWakerVTable::new(clone_fn, wake_fn, wake_by_ref_fn, drop_fn);
         unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) }

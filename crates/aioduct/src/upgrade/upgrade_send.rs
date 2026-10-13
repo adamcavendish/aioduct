@@ -68,6 +68,7 @@ impl hyper::rt::Read for RawUpgraded {
         std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
+
 impl hyper::rt::Write for RawUpgraded {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
@@ -76,12 +77,14 @@ impl hyper::rt::Write for RawUpgraded {
     ) -> std::task::Poll<std::io::Result<usize>> {
         std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
     }
+
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.inner).poll_flush(cx)
     }
+
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

@@ -162,6 +162,7 @@ mod tests {
             name: &'static str,
             count: Arc<AtomicU32>,
         }
+
         impl CredentialResolver for CountingResolver {
             fn resolve(&self, _key: &str) -> Option<(String, String)> {
                 self.count.fetch_add(1, Ordering::SeqCst);

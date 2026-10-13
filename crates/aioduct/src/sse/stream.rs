@@ -15,9 +15,11 @@ pub(super) trait SseSink {
     fn statistics(&mut self) -> Option<&mut SseStatisticsSnapshot> {
         None
     }
+
     fn observes_body(&self) -> bool {
         false
     }
+
     fn body_complete(&mut self) {}
     fn body_error(&mut self, _error: &Error) {}
     fn error(&mut self, _error: &Error) {}
