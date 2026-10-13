@@ -197,12 +197,18 @@ impl<T, R: TransportRelease> ObservedIo<T, R> {
         // Once detached, the observation handle is no longer interested in Drop events.
         this.observation.detach();
 
+        // SAFETY: `this` is a ManuallyDrop, so moving this field out with
+        // `ptr::read` does not run the wrapper's Drop implementation. The
+        // observation has already been detached, so dropping the owned handle
+        // cannot deliver a second lifecycle event.
+        let observation = unsafe { std::ptr::read(&this.observation) };
+        drop(observation);
+
         // SAFETY: Extracting `this.inner` is safe because:
         // 1. We wrapped `self` in ManuallyDrop, preventing any Drop impl from running.
-        // 2. The observation lifecycle was detached above, so observation.released()
-        //    will never be called for this wrapper.
-        // 3. We never dereference any field of `this` again after this read.
-        // 4. T is moved out by value; the memory formerly occupied by self is never
+        // 2. The observation lifecycle was detached and its field was destroyed above,
+        //    so observation.released() will never be called for this wrapper.
+        // 3. T is moved out by value; the memory formerly occupied by self is never
         //    accessed again.
         // The invariant is: ManuallyDrop + detach + immediate move = no double-free.
         unsafe { std::ptr::read(&this.inner) }
@@ -252,7 +258,7 @@ impl<T: hyper::rt::Write + Unpin, R: TransportRelease + Unpin> hyper::rt::Write
 
 #[cfg(test)]
 mod tests {
-    use super::{Instant, Receiver, State};
+    use super::{Instant, ObservedIo, Receiver, State, TransportRelease};
     use crate::Error;
     use std::{cell::RefCell, rc::Rc};
 
@@ -267,6 +273,41 @@ mod tests {
         fn detached(&self, _at: Instant) {
             self.0.borrow_mut().push("detached");
         }
+    }
+
+    struct TestObservation(Rc<RefCell<Vec<&'static str>>>);
+
+    impl TransportRelease for TestObservation {
+        fn released(&self) {
+            self.0.borrow_mut().push("released");
+        }
+
+        fn detach(&self) {
+            self.0.borrow_mut().push("detached");
+        }
+    }
+
+    impl Drop for TestObservation {
+        fn drop(&mut self) {
+            self.0.borrow_mut().push("dropped");
+        }
+    }
+
+    #[test]
+    fn into_inner_drops_detached_observation_and_preserves_io() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let inner = Rc::new(());
+        let io = ObservedIo::new(inner.clone(), TestObservation(events.clone()));
+
+        let extracted = io.into_inner();
+
+        assert_eq!(&*events.borrow(), &["detached", "dropped"]);
+        assert_eq!(Rc::strong_count(&events), 1);
+        assert!(Rc::ptr_eq(&extracted, &inner));
+        assert_eq!(Rc::strong_count(&inner), 2);
+        drop(extracted);
+        assert_eq!(Rc::strong_count(&inner), 1);
+        assert_eq!(&*events.borrow(), &["detached", "dropped"]);
     }
 
     #[test]
