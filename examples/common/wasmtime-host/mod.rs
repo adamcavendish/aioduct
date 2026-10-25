@@ -14,8 +14,7 @@ use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::bindings::Command as WasiCommand;
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
-use wasmtime_wasi_http::WasiHttpCtx;
-use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+use wasmtime_wasi_http::{WasiHttpCtx, WasiHttpCtxView, WasiHttpView};
 
 #[allow(dead_code)]
 #[path = "../observability/mod.rs"]

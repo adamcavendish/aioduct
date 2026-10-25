@@ -28,7 +28,7 @@ async fn native_forward_deadline_timeout_notifies_rejection() {
         });
     let host = test_host(policy);
     let err = host
-        .send_inner(request(format!("http://{addr}/")), config(false))
+        .send_inner(request(format!("http://{addr}/")), config())
         .await
         .expect_err("host deadline should time out native forward");
     assert!(matches!(
@@ -69,7 +69,7 @@ async fn deadline_upload_timeout_notifies_rejection() {
         .body(pending_body())
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("host deadline should time out stalled upload");
     assert!(matches!(
@@ -100,8 +100,8 @@ async fn first_byte_timeout_maps_to_connection_read_timeout() {
 
     let policy = ExactOriginPolicy::new(&format!("http://{addr}")).expect("policy should build");
     let host = test_host(policy);
-    let mut cfg = config(false);
-    cfg.first_byte_timeout = Duration::from_millis(10);
+    let mut cfg = config();
+    cfg.first_byte_timeout = Some(Duration::from_millis(10));
     let err = host
         .send_inner(request(format!("http://{addr}/")), cfg)
         .await
@@ -129,7 +129,7 @@ async fn smol_transport_services_wasi_http_request() {
         .build()
         .expect("host should build");
     let incoming = host
-        .send_inner(request(format!("http://{addr}/")), config(false))
+        .send_inner(request(format!("http://{addr}/")), config())
         .await
         .expect("smol transport should forward request");
     assert_eq!(incoming.resp.status(), http::StatusCode::OK);
@@ -158,7 +158,7 @@ async fn compio_transport_services_wasi_http_request() {
         .build()
         .expect("host should build");
     let incoming = host
-        .send_inner(request(format!("http://{addr}/")), config(false))
+        .send_inner(request(format!("http://{addr}/")), config())
         .await
         .expect("compio transport should forward request");
     assert_eq!(incoming.resp.status(), http::StatusCode::OK);
@@ -195,7 +195,7 @@ async fn custom_ca_allows_self_signed_tls() {
     let incoming = host
         .send_inner(
             request(format!("https://localhost:{}/", addr.port())),
-            config(true),
+            config(),
         )
         .await
         .expect("custom CA should trust self-signed server");
@@ -217,7 +217,7 @@ async fn insecure_transport_allows_self_signed_tls() {
     let incoming = host
         .send_inner(
             request(format!("https://localhost:{}/", addr.port())),
-            config(true),
+            config(),
         )
         .await
         .expect("insecure mode should accept self-signed server");

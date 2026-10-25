@@ -57,10 +57,26 @@ async fn origin_mismatch_is_denied_before_transport() {
     let policy = ExactOriginPolicy::new("http://127.0.0.1:1").expect("policy should build");
     let host = test_host(policy);
     let err = host
-        .send_inner(request("http://127.0.0.1:2/".into()), config(false))
+        .send_inner(request("http://127.0.0.1:2/".into()), config())
         .await
         .expect_err("origin mismatch should be rejected");
     assert!(matches!(err, ErrorCode::HttpRequestDenied));
+}
+
+#[tokio::test]
+async fn guest_supplied_host_header_is_denied_before_transport() {
+    let host = WasiHttpHost::builder()
+        .transport(PanickingTransport)
+        .policy(ExactOriginPolicy::new("http://example.com").unwrap())
+        .build()
+        .unwrap();
+    let request = http::Request::builder()
+        .uri("http://example.com/")
+        .header(http::header::HOST, "other.example.com")
+        .body(empty_body())
+        .unwrap();
+    let error = host.send_inner(request, config()).await.unwrap_err();
+    assert!(matches!(error, ErrorCode::HttpRequestDenied));
 }
 
 #[tokio::test]
@@ -74,7 +90,7 @@ async fn rejection_observer_receives_low_cardinality_reason() {
         });
     let host = test_host(policy);
     let err = host
-        .send_inner(request("http://127.0.0.1:2/".into()), config(false))
+        .send_inner(request("http://127.0.0.1:2/".into()), config())
         .await
         .expect_err("origin mismatch should be rejected");
     assert!(matches!(err, ErrorCode::HttpRequestDenied));
@@ -97,7 +113,7 @@ async fn forbidden_sensitive_header_is_denied() {
         .body(empty_body())
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("sensitive header should be rejected");
     assert!(matches!(err, ErrorCode::HttpRequestDenied));
@@ -123,7 +139,7 @@ async fn exact_denied_header_is_denied_before_transport() {
         .body(empty_body())
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("denied header should be rejected");
 
@@ -152,7 +168,7 @@ async fn batch_denied_header_is_denied_before_transport() {
         .body(empty_body())
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("batch denied header should be rejected");
 
@@ -176,7 +192,7 @@ async fn denied_prefix_rejects_forwarded_header() {
         .body(empty_body())
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("denied prefix should reject header");
 
@@ -203,24 +219,26 @@ fn denied_headers_are_forbidden_for_wasmtime_field_construction() {
         .policy(
             ExactOriginPolicy::new("http://example.com")
                 .expect("policy should build")
+                .forbid_sensitive_headers()
+                .inject_header(
+                    HeaderName::from_static("x-owned"),
+                    HeaderValue::from_static("host-secret"),
+                )
                 .deny_header(HeaderName::from_static("x-denied"))
                 .deny_header_prefix("x-forwarded-"),
         )
         .build()
         .expect("host should build");
 
-    assert!(WasiHttpHooks::is_forbidden_header(
-        &mut host,
-        &HeaderName::from_static("x-denied")
-    ));
-    assert!(WasiHttpHooks::is_forbidden_header(
-        &mut host,
-        &HeaderName::from_static("x-forwarded-for")
-    ));
-    assert!(!WasiHttpHooks::is_forbidden_header(
-        &mut host,
-        &HeaderName::from_static("x-forwardedness")
-    ));
+    let filter = WasiHttpHooks::forbidden_header_filter(&mut host);
+    assert!(filter(&HeaderName::from_static("x-denied")));
+    assert!(filter(&HeaderName::from_static("x-forwarded-for")));
+    assert!(!filter(&HeaderName::from_static("x-forwardedness")));
+    drop(host);
+    assert!(filter(&HeaderName::from_static("x-owned")));
+    assert!(filter(&HeaderName::from_static("x-denied")));
+    assert!(filter(&HeaderName::from_static("x-forwarded-for")));
+    assert!(!filter(&HeaderName::from_static("x-forwardedness")));
 }
 
 #[tokio::test]
@@ -239,7 +257,7 @@ async fn batch_denied_prefix_rejects_matching_header() {
         .body(empty_body())
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("batch denied prefix should reject header");
 
@@ -270,7 +288,7 @@ async fn denied_request_trailer_is_rejected() {
         .body(request_trailers_body(trailers))
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("denied request trailer should be rejected");
 
@@ -300,7 +318,7 @@ async fn nonmatching_denied_headers_still_pass() {
         .body(request_trailers_body(trailers))
         .expect("request should build");
     let incoming = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect("nonmatching request should pass");
 
@@ -317,7 +335,7 @@ async fn host_injects_secret_header_after_validation() {
         .inject_header(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
     let host = test_host(policy);
     let incoming = host
-        .send_inner(request(format!("http://{addr}/")), config(false))
+        .send_inner(request(format!("http://{addr}/")), config())
         .await
         .expect("request should succeed");
     assert_eq!(incoming.resp.status(), http::StatusCode::OK);

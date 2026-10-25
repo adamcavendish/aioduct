@@ -77,21 +77,14 @@ async fn wasmtime_body_wrapper_preserves_host_deadline_mapping() {
         .policy(policy)
         .build()
         .expect("host should build");
-    let cfg = config(false);
-    let guest_between_bytes_timeout = cfg.between_bytes_timeout;
+    let cfg = config();
     let incoming = host
         .send_inner(request("http://example.com/".to_string()), cfg)
         .await
         .expect("host should return response headers");
 
-    assert_eq!(incoming.between_bytes_timeout, guest_between_bytes_timeout);
-
-    let IncomingResponse {
-        resp,
-        worker,
-        between_bytes_timeout,
-    } = incoming;
-    let mut body = HostIncomingBody::new(resp.into_body(), between_bytes_timeout);
+    let IncomingResponse { resp, worker } = incoming;
+    let mut body = HostIncomingBody::new(resp.into_body());
     if let Some(worker) = worker {
         body.retain_worker(worker);
     }
@@ -118,6 +111,21 @@ fn wasi_body_error_mapping_preserves_error_code() {
         map_aioduct_error(err),
         ErrorCode::ConnectionWriteTimeout
     ));
+}
+
+#[test]
+fn wasi_body_error_mapping_preserves_owned_io_error() {
+    let error = map_wasi_body_error(ErrorCode::Connect(std::io::Error::new(
+        std::io::ErrorKind::ConnectionReset,
+        "guest transport reset",
+    )));
+    match map_aioduct_error(error) {
+        ErrorCode::Connect(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+            assert_eq!(error.to_string(), "guest transport reset");
+        }
+        other => panic!("expected original owned I/O error, got {other:?}"),
+    }
 }
 
 #[test]
@@ -180,7 +188,7 @@ async fn wasi_body_error_mapping_preserves_hyper_wrapped_error() {
         .body(failing_body(ErrorCode::ConnectionWriteTimeout))
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("request body error should be preserved");
     assert!(matches!(err, ErrorCode::ConnectionWriteTimeout));

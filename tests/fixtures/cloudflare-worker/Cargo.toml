@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 aioduct = { path = "../../../crates/aioduct", default-features = false, features = ["wasm"] }
-worker = "=0.8.5"
+worker = "=0.8.7"
 
 [workspace]
 

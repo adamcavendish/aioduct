@@ -1,12 +1,12 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
-use ::wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
 use ::wasmtime_wasi_http::p2::body::{HyperIncomingBody, HyperOutgoingBody};
-use ::wasmtime_wasi_http::p2::types::{
-    HostFutureIncomingResponse, IncomingResponse, OutgoingRequestConfig,
-};
-use ::wasmtime_wasi_http::p2::{HttpResult, WasiHttpHooks};
-use http::header::{HOST, HeaderName, HeaderValue};
+use ::wasmtime_wasi_http::p2::types::IncomingResponse;
+use ::wasmtime_wasi_http::{Error as ErrorCode, RequestOptions, WasiHttpHooks};
+use http::header::{HOST, HeaderValue};
 use http_body_util::BodyExt;
 
 #[cfg(feature = "tokio")]
@@ -33,14 +33,21 @@ impl WasiHttpHost {
     pub(crate) async fn send_inner(
         self,
         request: hyper::Request<HyperOutgoingBody>,
-        config: OutgoingRequestConfig,
+        config: RequestOptions,
     ) -> Result<IncomingResponse, ErrorCode> {
-        let native_request = self.prepare_request(request, config.use_tls)?;
-        let connect_timeout = self.policy.cap_with_deadline(config.connect_timeout)?;
-        let first_byte_timeout = self.policy.cap_with_deadline(config.first_byte_timeout)?;
+        let native_request = self.prepare_request(request)?;
+        // Wasmtime passes unset guest options through to the host hook.
+        // Retain the ten-minute defaults previously applied by its P2 handler.
+        let default_timeout = Duration::from_secs(600);
+        let connect_timeout = self
+            .policy
+            .cap_with_deadline(config.connect_timeout.unwrap_or(default_timeout))?;
+        let first_byte_timeout = self
+            .policy
+            .cap_with_deadline(config.first_byte_timeout.unwrap_or(default_timeout))?;
         let read_timeout = self
             .policy
-            .cap_with_deadline(config.between_bytes_timeout)?;
+            .cap_with_deadline(config.between_bytes_timeout.unwrap_or(default_timeout))?;
 
         let total_timeout = self.policy.deadline_remaining()?;
         let options = HostForwardOptions {
@@ -81,16 +88,14 @@ impl WasiHttpHost {
         Ok(IncomingResponse {
             resp: hyper::Response::from_parts(parts, body),
             worker,
-            between_bytes_timeout: config.between_bytes_timeout,
         })
     }
 
     fn prepare_request(
         &self,
         request: hyper::Request<HyperOutgoingBody>,
-        use_tls: bool,
     ) -> Result<http::Request<crate::body::RequestBodySend>, ErrorCode> {
-        self.policy.validate_origin(request.uri(), use_tls)?;
+        self.policy.validate_origin(request.uri())?;
         self.policy.check_request_headers(request.headers())?;
         self.policy.check_request_header_limit(request.headers())?;
         self.policy
@@ -126,22 +131,51 @@ impl WasiHttpHost {
 }
 
 impl WasiHttpHooks for WasiHttpHost {
+    fn set_host_header(&mut self) -> bool {
+        // Validate guest headers before deriving Host from the allowed URI in
+        // prepare_request. Wasmtime's default injection would look guest-supplied.
+        false
+    }
+
     fn send_request(
         &mut self,
         request: hyper::Request<HyperOutgoingBody>,
-        config: OutgoingRequestConfig,
-    ) -> HttpResult<HostFutureIncomingResponse> {
+        config: Option<RequestOptions>,
+        response_done: Box<dyn Future<Output = Result<(), ErrorCode>> + Send>,
+    ) -> Box<
+        dyn Future<
+                Output = Result<
+                    (
+                        hyper::Response<HyperIncomingBody>,
+                        Box<dyn Future<Output = Result<(), ErrorCode>> + Send>,
+                    ),
+                    ErrorCode,
+                >,
+            > + Send,
+    > {
         let host = self.clone();
-        let task = ::wasmtime_wasi::runtime::spawn(async move {
-            Ok::<Result<IncomingResponse, ErrorCode>, ::wasmtime::Error>(
-                host.send_inner(request, config).await,
-            )
-        });
-        Ok(HostFutureIncomingResponse::pending(task))
+        Box::new(async move {
+            let IncomingResponse { resp, worker } =
+                host.send_inner(request, config.unwrap_or_default()).await?;
+            // Wasmtime retains this future with the response body. Keep the
+            // Local transport worker owned until that task completes or drops.
+            let completion: Box<dyn Future<Output = Result<(), ErrorCode>> + Send> =
+                Box::new(async move {
+                    Pin::from(response_done).await?;
+                    if let Some(worker) = worker {
+                        worker.await;
+                    }
+                    Ok(())
+                });
+            Ok((resp, completion))
+        })
     }
 
-    fn is_forbidden_header(&mut self, name: &HeaderName) -> bool {
-        self.policy.is_protected_request_header(name) || self.policy.is_denied_request_header(name)
+    fn forbidden_header_filter(&mut self) -> ::wasmtime_wasi_http::ForbiddenHeaderFilter {
+        let policy = self.policy.clone();
+        Arc::new(move |name| {
+            policy.is_protected_request_header(name) || policy.is_denied_request_header(name)
+        })
     }
 }
 

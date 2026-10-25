@@ -1,25 +1,36 @@
 use std::error::Error;
+use std::future::Future;
 use std::io;
 
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::p2::bindings::Command;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
-use wasmtime_wasi_http::WasiHttpCtx;
-use wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
-use wasmtime_wasi_http::p2::body::HyperOutgoingBody;
-use wasmtime_wasi_http::p2::types::{HostFutureIncomingResponse, OutgoingRequestConfig};
-use wasmtime_wasi_http::p2::{HttpResult, WasiHttpCtxView, WasiHttpHooks, WasiHttpView};
+use wasmtime_wasi_http::{
+    Error as HttpError, RequestOptions, WasiBody, WasiHttpCtx, WasiHttpCtxView, WasiHttpHooks,
+    WasiHttpView,
+};
 
 struct RejectHttpRequests;
 
 impl WasiHttpHooks for RejectHttpRequests {
     fn send_request(
         &mut self,
-        _request: hyper::Request<HyperOutgoingBody>,
-        _config: OutgoingRequestConfig,
-    ) -> HttpResult<HostFutureIncomingResponse> {
-        Err(ErrorCode::HttpProtocolError.into())
+        _request: hyper::Request<WasiBody>,
+        _config: Option<RequestOptions>,
+        _response_done: Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+    ) -> Box<
+        dyn Future<
+                Output = Result<
+                    (
+                        hyper::Response<WasiBody>,
+                        Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+                    ),
+                    HttpError,
+                >,
+            > + Send,
+    > {
+        Box::new(async { Err(HttpError::HttpProtocolError) })
     }
 }
 
