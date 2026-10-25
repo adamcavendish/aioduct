@@ -3,6 +3,5 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2026-07-29"
 
 [build]
-# This fixture tests worker-rs 0.8.5 independently of worker-build 0.8.5's
-# forced abort-handler packaging path.
-command = "cargo install --quiet --locked --version 0.8.4 worker-build && worker-build --release"
+# Keep the existing bundler packaging path while updating the worker toolchain.
+command = "cargo install --quiet --locked --version 0.8.7 worker-build && worker-build --release --no-panic-recovery"

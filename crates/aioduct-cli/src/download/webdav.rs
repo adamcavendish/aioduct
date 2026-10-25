@@ -110,7 +110,7 @@ fn parse_multistatus(xml: &str, base_url: &str) -> Result<Vec<DavEntry>, aioduct
         match reader.read_event() {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let name = e.name();
-                let local = local_name(name.as_ref());
+                let local = local_name(name.as_ref().as_bytes());
                 match local {
                     b"response" => {
                         in_response = true;
@@ -135,7 +135,7 @@ fn parse_multistatus(xml: &str, base_url: &str) -> Result<Vec<DavEntry>, aioduct
             }
             Ok(Event::End(e)) => {
                 let name = e.name();
-                let local = local_name(name.as_ref());
+                let local = local_name(name.as_ref().as_bytes());
                 match local {
                     b"response" => {
                         if in_response && !current_href.is_empty() {
@@ -156,11 +156,9 @@ fn parse_multistatus(xml: &str, base_url: &str) -> Result<Vec<DavEntry>, aioduct
             }
             Ok(Event::Text(e)) => {
                 if in_href {
-                    if let Ok(text) = e.decode() {
-                        current_href = text.into_owned();
-                    }
-                } else if in_contentlength && let Ok(text) = e.decode() {
-                    current_length = text.trim().parse().ok();
+                    current_href = e.into_inner().into_owned();
+                } else if in_contentlength {
+                    current_length = e.trim().parse().ok();
                 }
             }
             Ok(Event::Eof) => break,

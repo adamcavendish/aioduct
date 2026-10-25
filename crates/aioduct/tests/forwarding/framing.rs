@@ -136,7 +136,7 @@ async fn start_h2_forwarder(
 async fn exchange_h2(
     addr: SocketAddr,
     request: Request<Full<Bytes>>,
-) -> Response<hyper::body::Incoming> {
+) -> Result<Response<hyper::body::Incoming>, hyper::Error> {
     let stream = TcpStream::connect(addr).await.unwrap();
     let io = aioduct::runtime::tokio_rt::TokioIo::new(stream);
     let (mut sender, connection) = client_http2::Builder::new(TokioExec)
@@ -146,7 +146,7 @@ async fn exchange_h2(
     tokio::spawn(async move {
         let _ = connection.await;
     });
-    sender.send_request(request).await.unwrap()
+    sender.send_request(request).await
 }
 
 async fn exchange_raw(addr: SocketAddr, request: &[u8]) -> Vec<u8> {
@@ -274,13 +274,46 @@ async fn h2_request_identical_content_lengths_normalize_before_h1_forwarding() {
         .append(http::header::CONTENT_LENGTH, "4".parse().unwrap());
     request
         .headers_mut()
-        .append(http::header::CONTENT_LENGTH, "004, 4".parse().unwrap());
+        .append(http::header::CONTENT_LENGTH, "004".parse().unwrap());
 
-    let response = exchange_h2(broker, request).await;
+    let response = exchange_h2(broker, request).await.unwrap();
     assert_eq!(response.status(), http::StatusCode::OK);
     assert_eq!(
         response.into_body().collect().await.unwrap().to_bytes(),
         Bytes::from_static(b"lengths=[\"4\"];body=data")
+    );
+}
+
+#[tokio::test]
+async fn h2_request_comma_separated_content_length_is_rejected_before_forwarding() {
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    upstream.set_nonblocking(true).unwrap();
+    let broker = start_h2_forwarder(
+        HttpEngineSend::<TokioRuntime, TcpConnector>::new(),
+        format!("http://{}", upstream.local_addr().unwrap())
+            .parse()
+            .unwrap(),
+    )
+    .await;
+    let request = Request::builder()
+        .method(http::Method::POST)
+        .uri(format!("http://{broker}/upload"))
+        .version(http::Version::HTTP_2)
+        .header(http::header::CONTENT_LENGTH, "4")
+        .header(http::header::CONTENT_LENGTH, "004, 4")
+        .body(Full::new(Bytes::from_static(b"data")))
+        .unwrap();
+
+    // RFC 9110 section 8.6 permits rejection of repeated comma-separated
+    // lengths. h2 validates every field before handing the request to us.
+    let error = exchange_h2(broker, request).await.unwrap_err();
+    let source = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<h2::Error>())
+        .expect("HTTP/2 stream error");
+    assert_eq!(source.reason(), Some(h2::Reason::PROTOCOL_ERROR));
+    assert!(
+        matches!(upstream.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "invalid Content-Length reached upstream I/O"
     );
 }
 
@@ -491,7 +524,7 @@ async fn h2_response_identical_content_lengths_normalize_before_h1_forwarding() 
             .append(http::header::CONTENT_LENGTH, "4".parse().unwrap());
         response
             .headers_mut()
-            .append(http::header::CONTENT_LENGTH, "004, 4".parse().unwrap());
+            .append(http::header::CONTENT_LENGTH, "004".parse().unwrap());
         Ok::<_, Infallible>(response)
     })
     .await;
@@ -510,6 +543,31 @@ async fn h2_response_identical_content_lengths_normalize_before_h1_forwarding() 
 
     assert_eq!(lengths, ["content-length: 4"]);
     assert!(response.ends_with("\r\n\r\ndata"), "{response}");
+}
+
+#[tokio::test]
+async fn h2_response_comma_separated_content_length_is_rejected_before_forwarding() {
+    let (upstream_addr, _) = aioduct_test_server::h2::h2_server_with(|_request| async move {
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header(http::header::CONTENT_LENGTH, "4")
+                .header(http::header::CONTENT_LENGTH, "004, 4")
+                .body(Full::new(Bytes::from_static(b"data")))
+                .unwrap(),
+        )
+    })
+    .await;
+    let broker = start_h1_forwarder(
+        HttpEngineSend::<TokioRuntime, TcpConnector>::new(),
+        format!("http://{upstream_addr}").parse().unwrap(),
+        ForwardProtocol::H2c,
+    )
+    .await;
+    let request = format!("GET /result HTTP/1.1\r\nHost: {broker}\r\nConnection: close\r\n\r\n");
+    let response = String::from_utf8(exchange_raw(broker, request.as_bytes()).await).unwrap();
+
+    assert!(response.starts_with("HTTP/1.1 502 "), "{response}");
+    assert!(!response.ends_with("\r\n\r\ndata"), "{response}");
 }
 
 #[tokio::test]

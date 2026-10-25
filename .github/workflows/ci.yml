@@ -15,7 +15,7 @@ concurrency:
 env:
   RUSTFLAGS: -Dwarnings
   RUST_BACKTRACE: 1
-  rust_min: "1.95.0"
+  rust_min: "1.97.0"
 
 defaults:
   run:
@@ -175,7 +175,7 @@ jobs:
       - name: Run browser WASM integration tests
         run: just test-wasm
       - name: Install pinned worker-build
-        run: cargo install --locked --version 0.8.4 worker-build
+        run: cargo install --locked --version 0.8.7 worker-build
       - name: Run Cloudflare Worker integration tests
         run: just test-wasm-worker
 

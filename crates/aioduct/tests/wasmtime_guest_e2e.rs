@@ -11,8 +11,7 @@ use ::wasmtime::{Config, Engine, Store};
 use ::wasmtime_wasi::p2::bindings::Command as WasiCommand;
 use ::wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use ::wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
-use ::wasmtime_wasi_http::WasiHttpCtx;
-use ::wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+use ::wasmtime_wasi_http::{WasiHttpCtx, WasiHttpCtxView, WasiHttpView};
 use aioduct::wasmtime::{ExactOriginPolicy, WasiHttpHost};
 use http::HeaderValue;
 use http::header::AUTHORIZATION;
@@ -98,6 +97,7 @@ async fn guest_wasi_client_is_serviced_by_host_adapter() -> Result<(), Box<dyn s
     assert_eq!(requests.len(), 3);
     for request in &requests {
         assert!(request.contains("authorization: Bearer e2e-secret"));
+        assert!(request.contains(&format!("host: {addr}\r\n")));
     }
     let post = requests
         .iter()

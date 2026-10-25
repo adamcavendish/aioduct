@@ -536,12 +536,14 @@ async fn execute_rejects_http_when_https_only() {
 async fn execute_allows_https_when_https_only() {
     let client = HttpEngineSend::<TokioRuntime, TcpConnector>::builder()
         .https_only(true)
+        // Reach DNS after the HTTPS-only gate without depending on the network.
+        .resolver(crate::runtime::StaticResolver::new(None))
         .build()
         .unwrap();
     let result = client
         .execute_send(
             Method::GET,
-            "https://example.com".parse().unwrap(),
+            "https://example.test".parse().unwrap(),
             http::HeaderMap::new(),
             None,
             None,
@@ -558,8 +560,11 @@ async fn execute_allows_https_when_https_only() {
             None,
         )
         .await;
-    // Will fail with connection error, not HttpsOnly
-    assert!(!matches!(result, Err(crate::error::Error::HttpsOnly(_))));
+    assert!(matches!(
+        result,
+        Err(crate::error::Error::InvalidUrl(message))
+            if message.contains("cannot resolve example.test:443")
+    ));
 }
 
 #[cfg(feature = "rustls")]

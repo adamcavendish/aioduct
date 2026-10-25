@@ -9,7 +9,7 @@ async fn response_header_limit_is_enforced() {
         .header_limit(64);
     let host = test_host(policy);
     let err = host
-        .send_inner(request(format!("http://{addr}/")), config(false))
+        .send_inner(request(format!("http://{addr}/")), config())
         .await
         .expect_err("response headers should exceed limit");
     assert!(matches!(
@@ -42,7 +42,7 @@ async fn request_trailer_injected_header_is_denied() {
         .body(request_trailers_body(trailers))
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("injected header trailer should be rejected");
 
@@ -80,7 +80,7 @@ async fn request_trailer_header_limit_is_enforced() {
         .body(request_trailers_body(trailers))
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("oversized request trailers should be rejected");
 
@@ -116,7 +116,7 @@ async fn response_trailer_header_limit_is_enforced() {
         .expect("host should build");
 
     let incoming = host
-        .send_inner(request("http://example.com/".into()), config(false))
+        .send_inner(request("http://example.com/".into()), config())
         .await
         .expect("response headers should succeed");
     let err = incoming
@@ -148,7 +148,7 @@ async fn request_body_limit_is_mapped_to_wasi_error() {
         .body(full_body(b"abcd"))
         .expect("request should build");
     let err = host
-        .send_inner(req, config(false))
+        .send_inner(req, config())
         .await
         .expect_err("request body should exceed limit");
     match err {

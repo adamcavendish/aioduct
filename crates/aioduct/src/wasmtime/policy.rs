@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ::wasmtime_wasi_http::DEFAULT_FORBIDDEN_HEADERS;
-use ::wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
+use ::wasmtime_wasi_http::Error as ErrorCode;
 use ::wasmtime_wasi_http::p2::body::HyperOutgoingBody;
 use http::header::{
     AUTHORIZATION, CONTENT_LENGTH, COOKIE, HeaderName, HeaderValue, PROXY_AUTHORIZATION,
@@ -170,12 +170,8 @@ impl ExactOriginPolicy {
         Ok(())
     }
 
-    pub(crate) fn validate_origin(&self, uri: &Uri, use_tls: bool) -> Result<(), ErrorCode> {
+    pub(crate) fn validate_origin(&self, uri: &Uri) -> Result<(), ErrorCode> {
         let request_origin = Origin::from_uri(uri).map_err(|_| ErrorCode::HttpRequestUriInvalid)?;
-        let scheme_is_tls = request_origin.scheme == "https";
-        if scheme_is_tls != use_tls {
-            return Err(ErrorCode::HttpRequestUriInvalid);
-        }
         if request_origin != self.origin {
             return Err(self.request_denied(RejectionReason::OriginMismatch));
         }

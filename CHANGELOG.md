@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased — 0.3 middleware removal
 
 ### Changed
+- Refresh workspace and Cloudflare Worker dependencies, including the HTTP
+  transports, compression libraries, synchronization primitives, and telemetry
+  examples.
+- **BREAKING CHANGE**: Raise the minimum supported Rust version from 1.95 to 1.97.
+- **BREAKING CHANGE**: Upgrade the optional Wasmtime host integration from
+  Wasmtime 46 to 50. Hosts enabling `wasmtime` must use matching Wasmtime 50
+  `wasmtime`, `wasmtime-wasi`, and `wasmtime-wasi-http` dependencies. Import
+  `WasiHttpView`, `WasiHttpCtxView`, and `WasiHttpHooks` from the
+  `wasmtime_wasi_http` crate root instead of its `p2` module.
+- Updated HTTP/2 transport validation rejects comma-separated `Content-Length`
+  values, including repeated equal lengths, before forwarding. Separate fields
+  with equal numeric lengths still normalize to one field for HTTP/1 forwarding.
 - Replace netrc middleware with explicit native client `.netrc(Netrc)` configuration.
 - Keep request/connection observation separate from request header preparation;
   trace propagation is performed by applications through existing headers.

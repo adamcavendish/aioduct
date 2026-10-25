@@ -1,10 +1,9 @@
 use super::*;
 use ::wasmtime_wasi::p2::{InputStream, Pollable, StreamError};
-use ::wasmtime_wasi_http::p2::WasiHttpHooks;
-use ::wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
 use ::wasmtime_wasi_http::p2::body::HostIncomingBody;
 use ::wasmtime_wasi_http::p2::body::{HyperIncomingBody, HyperOutgoingBody};
-use ::wasmtime_wasi_http::p2::types::{IncomingResponse, OutgoingRequestConfig};
+use ::wasmtime_wasi_http::p2::types::IncomingResponse;
+use ::wasmtime_wasi_http::{Error as ErrorCode, RequestOptions, WasiHttpHooks};
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, FORWARDED, HeaderName};
 use http::{HeaderMap, HeaderValue};
@@ -18,12 +17,11 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn config(use_tls: bool) -> OutgoingRequestConfig {
-    OutgoingRequestConfig {
-        use_tls,
-        connect_timeout: Duration::from_secs(5),
-        first_byte_timeout: Duration::from_secs(5),
-        between_bytes_timeout: Duration::from_secs(5),
+fn config() -> RequestOptions {
+    RequestOptions {
+        connect_timeout: Some(Duration::from_secs(5)),
+        first_byte_timeout: Some(Duration::from_secs(5)),
+        between_bytes_timeout: Some(Duration::from_secs(5)),
     }
 }
 
@@ -253,6 +251,7 @@ fn record_rejections(
 }
 
 mod body;
+mod hooks;
 mod limits;
 mod policy;
 mod transport;

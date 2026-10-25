@@ -1,10 +1,11 @@
 use std::error::Error as StdError;
 use std::fmt;
 use std::pin::Pin;
+use std::sync::Mutex;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
-use ::wasmtime_wasi_http::p2::bindings::http::types::ErrorCode;
+use ::wasmtime_wasi_http::Error as ErrorCode;
 use bytes::Bytes;
 use http_body::{Body, Frame};
 use pin_project_lite::pin_project;
@@ -15,7 +16,9 @@ use super::policy::{
 };
 
 pub(crate) fn map_wasi_body_error(code: ErrorCode) -> crate::Error {
-    crate::Error::Other(Box::new(WasiOutgoingBodyError { code }))
+    crate::Error::Other(Box::new(WasiOutgoingBodyError {
+        code: Mutex::new(Some(code)),
+    }))
 }
 
 pub(crate) fn map_aioduct_error(error: crate::Error) -> ErrorCode {
@@ -146,12 +149,12 @@ fn wasi_body_error_from_error(error: &(dyn StdError + 'static)) -> Option<ErrorC
     let mut current = Some(error);
     while let Some(error) = current {
         if let Some(error) = error.downcast_ref::<WasiOutgoingBodyError>() {
-            return Some(error.code.clone());
+            return error.take_code();
         }
         if let Some(crate::Error::Other(source)) = error.downcast_ref::<crate::Error>()
             && let Some(error) = source.downcast_ref::<WasiOutgoingBodyError>()
         {
-            return Some(error.code.clone());
+            return error.take_code();
         }
         current = error.source();
     }
@@ -160,7 +163,19 @@ fn wasi_body_error_from_error(error: &(dyn StdError + 'static)) -> Option<ErrorC
 
 #[derive(Debug)]
 struct WasiOutgoingBodyError {
-    code: ErrorCode,
+    // The shared Wasmtime error can own I/O errors and is no longer Clone.
+    // Recovery consumes the enclosing aioduct error but traverses its sources
+    // by reference, so move the original error out exactly once.
+    code: Mutex<Option<ErrorCode>>,
+}
+
+impl WasiOutgoingBodyError {
+    fn take_code(&self) -> Option<ErrorCode> {
+        self.code
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
 impl fmt::Display for WasiOutgoingBodyError {

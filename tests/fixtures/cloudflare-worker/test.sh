@@ -19,7 +19,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-cargo install --quiet --locked --version 0.8.4 worker-build
+cargo install --quiet --locked --version 0.8.7 worker-build
 
 (
     cd "$workspace_dir"

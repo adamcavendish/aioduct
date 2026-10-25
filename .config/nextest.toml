@@ -10,6 +10,11 @@ filter = "test(write_timeout_triggers_on_slow_server) | test(write_timeout_not_r
 slow-timeout = { period = "10s", terminate-after = 2 }
 
 [[profile.default.overrides]]
+# This test deliberately starts 64 OS threads sharing the test's Tokio runtime.
+filter = "test(request_callbacks_work_across_64_concurrent_threads)"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.default.overrides]]
 # Guest end-to-end tests build a WASI component before executing it.
 filter = "binary(wasmtime_guest_e2e)"
 slow-timeout = { period = "30s", terminate-after = 2 }

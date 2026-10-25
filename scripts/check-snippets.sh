@@ -20,7 +20,7 @@ dep_for_crate() {
     case "$1" in
         serde_json)      echo 'serde_json = "1"' ;;
         serde)           echo 'serde = "1"' ;;
-        base64)          echo 'base64 = "0.22"' ;;
+        base64)          echo 'base64 = "0.23"' ;;
         smol)            echo 'smol = "2"' ;;
         url)             echo 'url = "2"' ;;
         serde_urlencoded) echo 'serde_urlencoded = "0.7"' ;;

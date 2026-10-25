@@ -20,12 +20,12 @@ build-all:
     cargo build -p aioduct --features {{ wasmtime_features_smol_ring }}
     cargo build -p aioduct --features {{ wasmtime_features_compio_ring }}
 
-# Check MSRV (1.95)
+# Check MSRV (1.97)
 msrv:
-    cargo +1.95.0 check -p aioduct --features {{ all_features_ring }}
-    cargo +1.95.0 check -p aioduct --features {{ all_features_aws_lc_rs }}
-    cargo +1.95.0 check -p aioduct --features {{ wasmtime_features_smol_ring }}
-    cargo +1.95.0 check -p aioduct --features {{ wasmtime_features_compio_ring }}
+    cargo +1.97.0 check -p aioduct --features {{ all_features_ring }}
+    cargo +1.97.0 check -p aioduct --features {{ all_features_aws_lc_rs }}
+    cargo +1.97.0 check -p aioduct --features {{ wasmtime_features_smol_ring }}
+    cargo +1.97.0 check -p aioduct --features {{ wasmtime_features_compio_ring }}
 
 # ---------- Lint ----------
 

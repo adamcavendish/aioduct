@@ -1693,27 +1693,26 @@ async fn request_callbacks_work_across_64_concurrent_threads() {
     let url = server().await;
     let records = Arc::new(Records::default());
     let client = client(&records, interests());
+    // Poll requests on 64 OS threads while keeping pooled connection drivers
+    // on the test runtime, which stays alive until every request has finished.
+    // Separate short-lived runtimes can stop a driver that another thread is
+    // still using through the shared pool.
+    let runtime = tokio::runtime::Handle::current();
     let barrier = Arc::new(std::sync::Barrier::new(64));
     let threads: Vec<_> = (0..64)
         .map(|_| {
             let client = client.clone();
             let url = url.clone();
             let barrier = barrier.clone();
+            let runtime = runtime.clone();
             std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
                 barrier.wait();
                 runtime.block_on(async {
                     assert_eq!(
                         client
                             .get(&url)
                             .unwrap()
-                            // This test deliberately creates 64 OS threads, each with its
-                            // own current-thread runtime. Keep scheduler contention from
-                            // turning the callback-concurrency check into a 5-second
-                            // request-latency check on a loaded CI runner.
+                            // Allow for scheduling 64 OS threads on a loaded CI runner.
                             .timeout(Duration::from_secs(30))
                             .send()
                             .await
