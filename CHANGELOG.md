@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without automatic retry attempts.
 
 ### Fixed
+- Update the locked smol executor dependency to async-executor 1.14.1, which
+  fixes a use-after-free when a Waker fires during executor destruction.
 - Upgrade async-trait to 0.1.92 and remove a redundant formatting borrow for
   Rust 1.99 Clippy compatibility.
 
